@@ -197,7 +197,8 @@ export function nameInText(name: string, text: string): boolean {
 	if (!name || !text) return false;
 	if (name.length >= 2) return text.includes(name);
 	const wordClass = "A-Za-z0-9_\\u4e00-\\u9fff\\u3400-\\u4dbf";
-	return new RegExp(`(?<![${wordClass}])` + escapeRegExp(name) + `(?![${wordClass}])`).test(text);
+	// 前置否定用「(?:^|[^…])」前缀字符替代 lookbehind（iOS Safari <16.4 不支持）；仅用于存在性检测，消耗一个边界字符无副作用
+	return new RegExp(`(?:^|[^${wordClass}])` + escapeRegExp(name) + `(?![${wordClass}])`).test(text);
 }
 
 /** 提取大纲 <角色：...>/<场景：...> 标记中的名字集合 */

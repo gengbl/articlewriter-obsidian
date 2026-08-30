@@ -1050,10 +1050,13 @@ export class StoryManager {
 		if (oldTitle === newTitle) return newTitle;
 		const newPath = `${this.storyPath(storyName)}/第${String(num).padStart(2, "0")}章-${newTitle}`;
 		await this.vault.rename(ch.dir, newPath);
-		for (const f of await this.listMarkdownFiles(this.vault.getAbstractFileByPath(newPath) as TFolder)) {
-			const text = await this.vault.read(f);
-			if (text.includes(oldTitle)) {
-				await this.vault.modify(f, text.split(oldTitle).join(newTitle));
+		const renamed = this.vault.getAbstractFileByPath(newPath); // instanceof 收窄替代断言（本地 dts 返回 TAbstractFile | null）
+		if (renamed instanceof TFolder) {
+			for (const f of await this.listMarkdownFiles(renamed)) {
+				const text = await this.vault.read(f);
+				if (text.includes(oldTitle)) {
+					await this.vault.modify(f, text.split(oldTitle).join(newTitle));
+				}
 			}
 		}
 		const state = (await this.loadState(storyName)) ?? this.emptyState(storyName);

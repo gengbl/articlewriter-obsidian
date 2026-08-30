@@ -164,7 +164,7 @@ export default class ArticleWriterPlugin extends Plugin {
 						} else {
 							msg += `；共 ${stories.length} 本书，可用「切换当前小说」选择`;
 						}
-					} catch (_e) {
+					} catch {
 						/* 列表失败不影响切换结果 */
 					}
 					new Notice(msg, 8000);
@@ -198,7 +198,7 @@ export default class ArticleWriterPlugin extends Plugin {
 				const chCount = Object.keys(state?.chapters ?? {}).length;
 				sub = `${chCount} 章`;
 				if (state && state.current_chapter != null) sub += `　当前第${String(state.current_chapter).padStart(2, "0")}章`;
-			} catch (_e) {
+			} catch {
 				sub = "（状态读取失败）";
 			}
 			items.push({ label: s, sub, marker: s === this.settings.lastStory ? "◀ 当前" : undefined });
@@ -432,7 +432,7 @@ export default class ArticleWriterPlugin extends Plugin {
 				const vols = await this.manager.loadVolumes(story);
 				volName = this.manager.findVolumeIn(vols, state.current_volume)?.name ?? state.current_volume;
 			}
-		} catch (_e) {
+		} catch {
 			volName = state.current_volume || "";
 		}
 		lines.push(`当前卷：${volName || "-"}　当前场景：${state.current_scene || "-"}`);
@@ -1397,7 +1397,7 @@ export default class ArticleWriterPlugin extends Plugin {
 		try {
 			const existing = this.app.workspace.getLeavesOfType(LlmChatView.VIEW_TYPE);
 			if (existing.length) {
-				this.app.workspace.revealLeaf(existing[0]);
+				this.app.workspace.setActiveLeaf(existing[0]); // revealLeaf 已废弃，改用 setActiveLeaf（minAppVersion 1.4+ 可用）
 				return;
 			}
 			const leaf = this.app.workspace.getLeaf("split");
@@ -1411,7 +1411,7 @@ export default class ArticleWriterPlugin extends Plugin {
 		try {
 			const existing = this.app.workspace.getLeavesOfType(StatusView.VIEW_TYPE);
 			if (existing.length) {
-				this.app.workspace.revealLeaf(existing[0]);
+				this.app.workspace.setActiveLeaf(existing[0]); // revealLeaf 已废弃，改用 setActiveLeaf（minAppVersion 1.4+ 可用）
 				return;
 			}
 			// 不分割新面板：直接复用左栏现有叶子（与文件列表同一位置，替换其内容显示状态面板；点侧栏文件图标可切回文件列表）；左栏为空才退回新建
@@ -2532,9 +2532,7 @@ class StatusModal extends Modal {
 
 	onOpen(): void {
 		this.contentEl.createEl("h3", { text: "小说状态 / 统计" });
-		const pre = this.contentEl.createEl("pre");
-		pre.style.whiteSpace = "pre-wrap";
-		pre.setText(this.lines.join("\n"));
+		this.contentEl.createEl("pre", { cls: "aw-status-pre" }).setText(this.lines.join("\n")); // white-space:pre-wrap 走类名
 	}
 
 	override onClose(): void {
@@ -2581,7 +2579,7 @@ class ArticleWriterSettingTab extends PluginSettingTab {
 
 		new Setting(containerEl)
 			.setName("LLM 模型配置")
-			.setDesc("多组 OpenAI 兼容配置（base_url/model_name/api_key/采样参数）+ active_llm + 全局系统提示词，存于插件数据目录 .obsidian/plugins/articlewriter/data.json（首次运行已预置 local/deepseek/qwen-dashscope 模板）。api_key 明文存放——勿将 .obsidian 同步/共享到不可信位置");
+			.setDesc("多组 OpenAI 兼容配置（base_url/model_name/api_key/采样参数）+ active_llm + 全局系统提示词，存于插件数据目录 data.json（首次运行已预置 local/deepseek/qwen-dashscope 模板）。api_key 明文存放——同步/分享 vault 时注意不要泄露配置文件");
 		const llmHolder = containerEl.createDiv();
 		this.renderLlm(llmHolder);
 

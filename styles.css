@@ -401,3 +401,72 @@
 	margin: 4px 8px;
 	background: var(--background-modifier-border);
 }
+
+/* ===== 静态样式集中化（原 JS 内联 style 赋值迁移至此）===== */
+
+/* 动作列表滚动区 / 行光标态 */
+.aw-action-list {
+	max-height: 60vh;
+	overflow-y: auto;
+}
+
+.aw-action-row {
+	cursor: pointer;
+}
+
+.aw-action-row.aw-disabled {
+	cursor: default;
+}
+
+/* 多行输入框默认尺寸 */
+.aw-prompt-textarea {
+	width: 100%;
+	min-height: 240px;
+}
+
+/* 只读文本面板滚动区 / 加粗行 / 底部提示间距 */
+.aw-panel-body {
+	max-height: 65vh;
+	overflow-y: auto;
+}
+
+.aw-bold {
+	font-weight: bold;
+}
+
+.aw-hint-gap {
+	margin-top: 8px;
+}
+
+/* 流式预览 Modal：宽度 + 正文滚动区 + pre 换行 */
+.aw-stream-modal {
+	width: min(720px, 90vw);
+}
+
+.aw-stream-body {
+	max-height: 65vh;
+	overflow-y: auto;
+}
+
+.aw-stream-pre {
+	white-space: pre-wrap;
+}
+
+/* 状态统计弹窗的 pre 换行 */
+.aw-status-pre {
+	white-space: pre-wrap;
+}
+
+/* 对话面板动态状态行：空闲隐藏 / 错误配色 */
+.aw-chat-status.is-hidden {
+	display: none;
+}
+
+.aw-chat-status.is-error {
+	color: var(--text-error);
+}
+
+/* @ 引用候选弹窗打开态（基础规则 display:none） */
+.aw-ref-popup.is-open {
+	display: block;
+}

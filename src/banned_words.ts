@@ -1,6 +1,6 @@
 // 移植自 Python 版 story_types.py：网文高频禁用词表、AI腔变体规则、
 // 否定对比/重复强调句式简化、AI 常用词检测与标红、写作指南分类解析合并。
-// 纯函数层，不接触 Vault / LLM。（V8/Electron 支持后行断言与命名捕获组）
+// 纯函数层，不接触 Vault / LLM。（正则不用 lookbehind 断言——iOS Safari <16.4 不支持、会直接抛 SyntaxError；前置否定改用「(?:^|[^X])」前缀字符替代，替换规则中经 $N 回补该字符）
 
 // ===== 网文高频禁用词表（按类别分组）=====
 // 每项为 [禁用词, 说明/替代建议]
@@ -75,9 +75,10 @@ export const YE_BU_SHI = Y + "\u4e0d\u662f"; // 「也」+「不」+「是」（
 
 const P = (re: RegExp, word: string): BannedPattern => ({ re, word });
 
-// 两段式否定转折公共前缀：(?<!也)没(?:有)? + lookahead 排除三段式开头「也没…」
+// 两段式否定转折公共前缀：(?:^|[^也])没(?:有)? + lookahead 排除三段式开头「也没…」
+// （不用 lookbehind——iOS Safari <16.4 不支持；前置字符被消耗进匹配，检测用途可接受）
 // （用字符串拼接构造，避免长正则字面量）
-const NO_TWO_PREFIX = "(?<!也)没(?:有)?(?:(?!";
+const NO_TWO_PREFIX = "(?:^|[^也])没(?:有)?(?:(?!";
 const NO_TWO_MID = ")[^。！？\\n]){0,16}?[，,；;、]?";
 const RE_NO_JIZHI = new RegExp(NO_TWO_PREFIX + "也没" + NO_TWO_MID + "只是");
 const RE_NO_ERSHI = new RegExp(NO_TWO_PREFIX + "也没" + NO_TWO_MID + "而是");
@@ -128,11 +129,11 @@ export const WEB_NOVEL_BANNED_PATTERNS: BannedPattern[] = [
 		"没有…也没有…就是/只是/就像",
 	),
 	P(
-		new RegExp("(?<![要可])不是[^。！？\\n]{0,16}?也不是[^。！？\\n]{0,16}?(?:而)?是"),
+		new RegExp("(?:^|[^要可])不是[^。！？\\n]{0,16}?也不是[^。！？\\n]{0,16}?(?:而)?是"),
 		"不是…也不是…而是/是",
 	),
 	// 两段式否定转折变体：没/没有A，只是B / 而是B（AI 腔否定转折）
-	// (?<!也) 避免从「也没有」内部的「没有」开始误匹配三段式；
+	// (?:^|[^也]) 避免从「也没有」内部的「没有」开始误匹配三段式（前缀字符被消耗进匹配，仅检测用途）；
 	// lookahead (?!也没…) 排除后接「也没」的三段式开头
 	P(RE_NO_JIZHI, "没/没有…，只是…"),
 	P(RE_NO_ERSHI, "没/没有…，而是…"),
@@ -145,8 +146,10 @@ export const WEB_NOVEL_BANNED_PATTERNS: BannedPattern[] = [
 	P(/不是.{0,16}?而是/, "不是…而是…"),
 	P(/并非.{0,16}?而是/, "并非…而是…"),
 	P(/不是.{0,16}?反而/, "不是…反而…"),
-	P(/(?<![要可])不是[^是]{0,16}?[，,；;、]?(?<!而)是/, "不是…是…"),
-	P(/不像[^像]{0,16}?[，,；;、]?(?<!倒)像/, "不像…像…"),
+	// 「不是…是…」：尾段须以「分隔符」或「非是非而字」收尾（替代 (?<!而) lookbehind）
+	P(/(?:^|[^要可])不是(?:[^是]{0,16}?[，,；;、]|[^是]{0,15}[^是而])是/, "不是…是…"),
+	// 「不像…像…」：同理替代 (?<!倒) lookbehind
+	P(/不像(?:[^像]{0,16}?[，,；;、]|[^像]{0,15}[^像倒])像/, "不像…像…"),
 	P(/不像[^像]{0,16}?[，,；;、]?(?:反?倒)像/, "不像…倒像…"),
 	// 越是…越…式平行强调句式（AI 腔排比强调）
 	P(/越是.{0,16}?越(?:是)?/, "越是…越…"),
@@ -175,16 +178,18 @@ export function buildBannedWordsBlock(): string {
 const SEP = "[，,；;、]?"; // 可选分隔符
 const NEGATION_CONTRAST_RULES: Array<{ re: () => RegExp; repl: string }> = [
 	// 三段式：不是A，也没B，而是/是C → 是C（先于二段式规则，整段一次吞掉）
-	{ re: () => new RegExp("(?<![要可])不是([^。！？\\n]{1,24}?)" + SEP + YE_BU_SHI + "([^。！？\\n]{1,24}?)" + SEP + "(?:而)?是", "g"), repl: "是" },
+	// (^|([^要可])) 前缀捕获组替代 lookbehind：边界字符被消耗进匹配，替换串 "$1是" 回补该字符（行首时 $1 为空）
+	{ re: () => new RegExp("(^|([^要可]))不是([^。！？\\n]{1,24}?)" + SEP + YE_BU_SHI + "([^。！？\\n]{1,24}?)" + SEP + "(?:而)?是", "g"), repl: "$1是" },
 	// 三段式：没有A，也有B，就是/只是/就像C → 就是/只是/就像C
 	{ re: () => new RegExp("没有([^。！？\\n]{1,24}?)" + SEP + YE_MEIYOU + "([^。！？\\n]{1,24}?)" + SEP + "就是", "g"), repl: "就是" },
 	{ re: () => new RegExp("没有([^。！？\\n]{1,24}?)" + SEP + YE_MEIYOU + "([^。！？\\n]{1,24}?)" + SEP + "只是", "g"), repl: "只是" },
 	{ re: () => new RegExp("没有([^。！？\\n]{1,24}?)" + SEP + YE_MEIYOU + "([^。！？\\n]{1,24}?)" + SEP + "就像", "g"), repl: "就像" },
 	// 二段式：不像A，倒像B → 倒像B；不像A，像B → 像B
 	{ re: () => /不像([^像]{1,16}?)[，,；;、]?(?:反?倒)像/g, repl: "倒像" },
-	{ re: () => /不像([^像]{1,16}?)[，,；;、]?(?<!倒)像/g, repl: "像" },
-	// 二段式：不是A，而是/是B → 是B（(?<!不) 防止误吞「也不是」里的「是」）
-	{ re: () => /(?<![要可])不是([^是]{1,16}?)[，,；;、]?(?:而是)?(?<!不)是/g, repl: "是" },
+	// 尾段以「分隔符」或「非像非倒字」收尾（替代 (?<!倒) lookbehind）
+	{ re: () => /不像(?:[^像]{1,16}?[，,；;、]|[^像]{0,15}[^像倒])像/g, repl: "像" },
+	// 二段式：不是A，而是/是B → 是B（尾段须以非「不」字收尾防误吞「也不是」；前置否定用 (^|([^要可])) 捕获组替代 lookbehind，替换串经 $1 回补边界字符）
+	{ re: () => /(^|([^要可]))不是(?:[^是]{1,16}?[，,；;、]|[^是]{0,15}[^是不])是/g, repl: "$1是" },
 ];
 
 /**
@@ -206,9 +211,11 @@ export function simplifyNegationContrast(text: string): [string, Array<[string, 
 		let pos = 0;
 		let m: RegExpExecArray | null;
 		while ((m = re.exec(current)) !== null) {
+			const hit = m; // 捕获为非空局部量，供替换回调引用（TS 不跨闭包保留 let 的判空收窄）
+			const replText = rule.repl.replace(/\$(\d)/g, (_, d) => hit[Number(d)] ?? ""); // $N → 捕获组（用于回补被消耗的前缀边界字符）
 			parts.push(current.slice(pos, m.index));
-			parts.push(rule.repl);
-			pairs.push([m[0].trim(), rule.repl]);
+			parts.push(replText);
+			pairs.push([m[0].trim(), replText]);
 			pos = m.index + m[0].length;
 			if (m[0].length === 0) re.lastIndex++; // 防御零长匹配死循环
 		}
@@ -222,7 +229,8 @@ export function simplifyNegationContrast(text: string): [string, Array<[string, 
 // 那种X，<修饰>的X → 那种<修饰>的X（删掉逗号前的重复词，合并为一句）
 // 仅当重复词紧跟在「那种」后时确定性合并（中间有其它成分的交给 LLM 改写轮），
 // 避免「那种说不出的痛，撕心裂肺的痛」这类被错误拼成不通顺的句子。
-const EMPHATIC_REPETITION_RULE = () => /那种(?<x1>[^，。！？\n]{1,6}?)[，,](?<fill>[^。！？\n]{0,12}?)的\k<x1>/g;
+// 编号捕获组 + \1 反向引用（与全文件「无 lookbehind」规则风格统一）：m[1]=重复词 x1、m[2]=填充 fill
+const EMPHATIC_REPETITION_RULE = () => /那种([^，。！？\n]{1,6}?)[，,]([^。！？\n]{0,12}?)的\1/g;
 
 /**
  * 把「那种X，<修饰>的X」重复强调句式合并为「那种<修饰>的X」
@@ -238,7 +246,7 @@ export function simplifyEmphaticRepetition(text: string): [string, Array<[string
 	let m: RegExpExecArray | null;
 	while ((m = re.exec(text)) !== null) {
 		parts.push(text.slice(pos, m.index));
-		const newS = `那种${m.groups?.fill ?? ""}的${m.groups?.x1 ?? ""}`;
+		const newS = `那种${m[2] ?? ""}的${m[1] ?? ""}`; // m[1]=重复词、m[2]=填充（编号捕获组）
 		parts.push(newS);
 		pairs.push([m[0].trim(), newS]);
 		pos = m.index + m[0].length;

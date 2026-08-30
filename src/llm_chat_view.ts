@@ -64,7 +64,9 @@ export class LlmChatView extends ItemView {
 	}
 
 	getEmptyStateElement(): HTMLElement {
-		return document.createElement("div"); // UI 实际由 onOpen 建进 contentEl；此处仅占位
+		const el = this.app.workspace.containerEl.createDiv(); // UI 实际由 onOpen 建进 contentEl；此处经 Obsidian helper 创建后立刻脱离文档，仅作占位返回
+		el.remove();
+		return el;
 	}
 
 	async onOpen(): Promise<void> {
@@ -96,8 +98,7 @@ export class LlmChatView extends ItemView {
 		this.spLabelEl.setText("提示词：加载中…");
 
 		this.bodyEl = root.createDiv({ cls: "aw-chat-body" });
-		this.statusEl = root.createDiv({ cls: "aw-dim aw-chat-status" }); // 仅动态状态（回复中/错误）时显示，空闲隐藏——操作提示已移入输入框占位文字
-		this.statusEl.style.display = "none";
+		this.statusEl = root.createDiv({ cls: "aw-dim aw-chat-status is-hidden" }); // 仅动态状态（回复中/错误）时显示，空闲隐藏——操作提示已移入输入框占位文字
 
 		const inputBox = root.createDiv({ cls: "aw-chat-input" });
 		this.inputEl = inputBox.createEl("textarea") as HTMLTextAreaElement;
@@ -202,8 +203,8 @@ export class LlmChatView extends ItemView {
 
 	private setStatus(text: string, isError = false): void {
 		this.statusEl.setText(text);
-		this.statusEl.style.color = isError ? "var(--text-error)" : "";
-		this.statusEl.style.display = text ? "" : "none"; // 空文本=回到空闲态（提示由输入框占位文字承担）
+		this.statusEl.classList.toggle("is-error", isError);
+		this.statusEl.classList.toggle("is-hidden", !text); // 空文本=回到空闲态（提示由输入框占位文字承担）；显隐/配色走 .aw-chat-status 修饰类
 	}
 
 	private setBusy(b: boolean): void {
@@ -217,7 +218,7 @@ export class LlmChatView extends ItemView {
 	/** 面板可见时才抢焦点，避免停靠在其他区域时打断当前编辑 */
 	private focusInputIfVisible(): void {
 		try {
-			if (this.inputEl && this.containerEl.offsetParent !== null) this.inputEl.focus({ preventScroll: true } as FocusOptions);
+			if (this.inputEl && this.containerEl.offsetParent !== null) this.inputEl.focus({ preventScroll: true });
 		} catch {
 			/* ignore */
 		}
@@ -328,7 +329,7 @@ export class LlmChatView extends ItemView {
 			const item = this.refPopupEl.createDiv({ text: this.refPaths[i], cls: "aw-ref-item" + (i === this.refIdx ? " is-selected" : "") });
 			item.addEventListener("click", () => this.insertRef(this.refPaths[i]));
 		}
-		this.refPopupEl.style.display = "block";
+		this.refPopupEl.classList.add("is-open"); // .aw-ref-popup 默认 display:none，.is-open 打开
 	}
 
 	/** 把光标前 @查询段替换为 @[[路径]]（纯字符串拼接，不依赖 execCommand——失焦时其选区行为不可靠会插出重复 @），光标停在 token 后便于续输 :行号 */
@@ -350,7 +351,7 @@ export class LlmChatView extends ItemView {
 		this.refOpen = false;
 		this.refPaths = [];
 		this.refIdx = 0;
-		this.refPopupEl.style.display = "none";
+		this.refPopupEl.classList.remove("is-open");
 	}
 
 	private buildMessages(): Message[] {

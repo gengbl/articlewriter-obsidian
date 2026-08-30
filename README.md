@@ -1,5 +1,13 @@
 # ArticleWriter for Obsidian
 
+## Overview (English)
+
+ArticleWriter turns your vault into an AI-assisted novel workshop. It organizes each story as a folder of plain Markdown files (state doc, outline, world-building, characters, scenes, foreshadowing notes and one folder per chapter) and adds LLM-powered writing commands on top: write / continue / rewrite / polish chapters, strip AI-sounding phrasing, review from a global perspective, plus a dockable chat panel that can quote any vault file via @references. All data stays local; no external services are required beyond the OpenAI-compatible model endpoint you configure yourself.
+
+See the Chinese sections below for full command reference and data layout.
+
+---
+
 AI 小说创作工具 `articlewriter`（Python CLI）的 Obsidian 插件版。不依赖任何外部服务，全部使用 Obsidian 内置能力（Vault / Workspace API）操作 vault 内的 Markdown 文档，**未移植同步功能**。
 
 ## 数据约定（与 Python 版一致）

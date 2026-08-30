@@ -7,3 +7,5 @@
 - 2026-08-30：更新时间显示改为本地时间——存储恒为 UTC ISO（`nowIso()`），原显示层直接字符串切片展示成 UTC；新增 `story_types.formatLocalDateTime(iso, full?)`，状态面板与 `/status` 命令均经其换算本地时间。
 - 2026-08-30：「小说状态」书名行改版——更新时间从信息行移到书名同一行右对齐（`.aw-st-status-title` flex space-between），并改用含年份的本地格式 `YYYY-MM-DD HH:mm`；第三行只留章数·当前章·总字数。
 - 2026-08-30：打包纳入写作指南——esbuild.config.mjs 把根目录 `WRITING_GUIDE.md` 一并拷入 `release/`，发布 zip 与部署均改为四个文件；AGENTS.md「运行环境与构建部署」新增打包条目。
+- 2026-08-30：新增 RELEASE.md（代码提交 / 版本打包 / Gitea Release 发布的完整流程脚本 + 实测坑位），AGENTS.md Git 节增加引用；修正 v0.0.4 Gitea 附件漏 WRITING_GUIDE.md（重打 release/ 全量包并重建 Release）。
+- 2026-08-30：v0.0.5 插件目录审核修复——banned_words.ts/prompts.ts 移除全部 lookbehind 断言（iOS Safari <16.4 会抛 SyntaxError；改「(?:^|[^X])」前缀组 + $N 回补模式，2万条随机语料对照旧规则零差异验证），正则统一编号捕获组；modals/llm_chat_view/main.ts 的 JS 内联样式赋值迁入 styles.css 静态类（`.aw-action-list`、`.aw-prompt-textarea`、`.aw-stream-*`、`.aw-chat-status.is-hidden/is-error` 等）；getEmptyStateElement 不再用 document.createElement 返回游离节点；revealLeaf→setActiveLeaf；TFolder 断言改 instanceof 收窄；删除未使用变量/常量（reason、CHAPTER_INFO_KEYS）、catch(_e) 空块；manifest 描述加英文+author=fosky，新增 MIT LICENSE，README 增加英文概览节。

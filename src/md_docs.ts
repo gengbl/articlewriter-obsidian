@@ -313,7 +313,6 @@ const FORESHADOW_BLOCK_RE = /\[伏\]([\s\S]*?)\[\/?(?:伏)?\]/g;
 export function parseForeshadowText(text: string, defaultChapter: number): ForeshadowItem {
 	let chapter = defaultChapter;
 	let character = "";
-	let reason = "";
 	const mChap = /章节\s*[:：=]\s*(\d+)/.exec(text);
 	if (mChap) chapter = parseInt(mChap[1], 10);
 	const mChar = /人物\s*[:：=]\s*([^；;，,\n]*?)(?=\s*事由\s*[:：=]|[；;，,\n]|$)/.exec(text);
@@ -485,8 +484,6 @@ export function formatWorld(title: string, ws: WorldSettingDoc): string {
 }
 
 // ---------- 章节信息（章节信息.md）----------
-
-const CHAPTER_INFO_KEYS = ["卷", "标签", "备注", "创建时间", "更新时间"] as const;
 
 /** 解析章节信息文档；保留无法识别的行由调用方处理 */
 export function parseChapterInfo(text: string): ChapterInfoDoc & { preservedLines: string[] } {

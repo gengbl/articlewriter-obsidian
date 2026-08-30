@@ -229,9 +229,7 @@ export class ActionMenuModal extends Modal {
 
 	onOpen(): void {
 		this.contentEl.createEl("h3", { text: this.title });
-		const list = this.contentEl.createDiv({ cls: "aw-action-list" });
-		list.style.maxHeight = "60vh";
-		list.style.overflowY = "auto";
+		const list = this.contentEl.createDiv({ cls: "aw-action-list" }); // max-height/overflow-y 走 styles.css .aw-action-list
 		this.renderList(list);
 		new Setting(this.contentEl).addButton((btn) =>
 			btn.setButtonText("确认").setCta().onClick(() => this.choose())
@@ -261,8 +259,7 @@ export class ActionMenuModal extends Modal {
 	private renderList(list: HTMLElement): void {
 		list.empty();
 		this.items.forEach((item, i) => {
-			const row = list.createDiv({ cls: `aw-action-row${i === this.selected ? " aw-selected" : ""}` });
-			row.style.cursor = item.disabled ? "default" : "pointer";
+			const row = list.createDiv({ cls: `aw-action-row${i === this.selected ? " aw-selected" : ""}${item.disabled ? " aw-disabled" : ""}` }); // cursor pointer/default 走类名
 			if (item.marker) row.createSpan({ text: `${item.marker} `, cls: "aw-accent" });
 			row.createSpan({ text: item.label });
 			if (item.sub) row.createSpan({ text: `　${item.sub}`, cls: "aw-dim" });
@@ -314,11 +311,9 @@ export class TextAreaPrompt extends Modal {
 	onOpen(): void {
 		this.contentEl.createEl("h3", { text: this.title });
 		let value = this.initialValue ?? "";
-		const ta = this.contentEl.createEl("textarea") as HTMLTextAreaElement;
+		const ta = this.contentEl.createEl("textarea", { cls: "aw-prompt-textarea" }) as HTMLTextAreaElement; // width/min-height 走类名
 		ta.placeholder = this.placeholderText;
 		ta.value = this.initialValue ?? "";
-		ta.style.width = "100%";
-		ta.style.minHeight = "240px";
 		ta.focus();
 		new Setting(this.contentEl).addButton((btn) =>
 			btn.setButtonText(this.submitLabel || "保存").setCta().onClick(async () => {
@@ -352,20 +347,18 @@ export class TextPanelModal extends Modal {
 
 	onOpen(): void {
 		this.contentEl.createEl("h3", { text: this.title });
-		const body = this.contentEl.createDiv();
-		body.style.maxHeight = "65vh";
-		body.style.overflowY = "auto";
+		const body = this.contentEl.createDiv({ cls: "aw-panel-body" }); // max-height/overflow-y 走 styles.css .aw-panel-body
 		for (const line of this.lines) {
 			const item: PanelLine = typeof line === "string" ? { text: line } : line;
 			if (!item.text.trim()) {
 				body.append("\n");
 				continue;
 			}
-			const el = body.createEl(item.bold ? "p" : "div", { cls: item.cls });
+			const cls = [item.cls, item.bold ? "aw-bold" : ""].filter(Boolean).join(" ");
+			const el = body.createEl(item.bold ? "p" : "div", { cls: cls || undefined });
 			el.setText(item.text);
-			if (item.bold) el.style.fontWeight = "bold";
 		}
-		this.contentEl.createDiv({ text: "（Esc 或点击关闭）", cls: "aw-dim" }).style.marginTop = "8px";
+		this.contentEl.createDiv({ text: "（Esc 或点击关闭）", cls: "aw-dim aw-hint-gap" }); // margin-top 走类名
 	}
 
 	override onClose(): void {
@@ -488,14 +481,11 @@ export class StreamingPreviewModal extends Modal {
 	}
 
 	onOpen(): void {
-		this.modalEl.style.width = "min(720px, 90vw)";
+		this.modalEl.classList.add("aw-stream-modal"); // width min(720px,90vw) 走 styles.css .modal（见下）
 		this.contentEl.createEl("h3", { text: this.title });
-		const body = this.contentEl.createDiv({ cls: "aw-stream-body" });
-		body.style.maxHeight = "65vh";
-		body.style.overflowY = "auto";
+		const body = this.contentEl.createDiv({ cls: "aw-stream-body" }); // max-height/overflow-y 走类名
 		this.bodyEl = body;
-		this.preEl = body.createEl("div");
-		this.preEl.style.whiteSpace = "pre-wrap";
+		this.preEl = body.createDiv({ cls: "aw-stream-pre" }); // white-space:pre-wrap 走类名
 		this.statusEl = this.contentEl.createDiv({ cls: "aw-dim" });
 		this.footerEl = this.contentEl.createDiv({ cls: "aw-stream-footer" });
 		new Setting(this.footerEl).addButton((btn) => btn.setButtonText("停止生成").onClick(() => this.abort()));
@@ -582,15 +572,21 @@ export class MarkdownViewerModal extends Modal {
 		super(app);
 	}
 
+	private mdComp?: Component; // 本地 dts 中 Modal 非 Component，用独立组件承载渲染生命周期（关闭时 unload）
+
 	onOpen(): void {
 		const { contentEl } = this;
 		contentEl.empty();
 		contentEl.createEl("h3", { text: this.title });
 		const body = contentEl.createDiv({ cls: "aw-md-viewer" });
-		void MarkdownRenderer.render(this.app, this.markdown, body, "", new Component()); // 本地 dts 中 Modal 非 Component，用独立组件承载渲染清理
+		this.mdComp = new Component();
+		this.mdComp.load();
+		void MarkdownRenderer.render(this.app, this.markdown, body, "", this.mdComp);
 	}
 
-	onClose(): void {
+	override onClose(): void {
 		this.contentEl.empty();
+		this.mdComp?.unload();
+		this.mdComp = undefined;
 	}
 }
