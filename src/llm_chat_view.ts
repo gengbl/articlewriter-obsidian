@@ -235,7 +235,7 @@ export class LlmChatView extends ItemView {
 
 	/** @ 引用两种形式：①@[[相对路径]]（弹窗插入、可含空格）②@相对路径（手输，不含空白/冒号/方括号）。行范围支持 :行号 / :起-止、「空格+起-止」、紧贴 token 尾的数字「3-5」/「7」（如 ]]3-5；纯文本形式扩展名后紧跟数字同样识别）。[[ ]] 形式先定位 token 本体、再对尾部单独探测范围（parseRangeSuffix），避免单条复杂正则的可选分支问题 */
 	static readonly BRACKET_TOKEN_RE = /@\[\[([^\]]+)\]\]/g;
-	static readonly PLAIN_REF_RE = /(^|[\s])@([^\s:@\[\]]+)(?::(\d+)(?:-(\d+))?)?(?:\s+(\d+)-(\d+))?/g
+	static readonly PLAIN_REF_RE = /(^|[\s])@([^\s:@[\]]+)(?::(\d+)(?:-(\d+))?)?(?:\s+(\d+)-(\d+))?/g
 	/** 探测引用 token 尾部紧随的行范围：:N / :A-B / 空格 A-B / 紧贴数字（须以行尾或标点收尾）。返回 {a,b,len}，len=0 表示未跟范围 */
 	private static parseRangeSuffix(suf: string): { a: number | null; b: number | null; len: number } {
 		let m = suf.match(/^:(\d{1,4})(?:\s*-\s*(\d{1,4}))?\b/);
@@ -251,23 +251,27 @@ export class LlmChatView extends ItemView {
 	private async resolveRefs(text: string): Promise<{ expanded: string; count: number; missing: string[] }> {
 		interface Tok { start: number; end: number; path: string; a: number | null; b: number | null }
 		const toks: Tok[] = [];
-		for (const m of text.matchAll(LlmChatView.BRACKET_TOKEN_RE)) { // [[ ]] 形式恒为显式引用：先取 token 本体，再探测尾部范围
-			const tokEnd = m.index! + m[0].length; // ]] 之后
+		LlmChatView.BRACKET_TOKEN_RE.lastIndex = 0; // /g 静态正则：扫描前复位，防上次调用残留状态
+		let bm: RegExpExecArray | null;
+		while ((bm = LlmChatView.BRACKET_TOKEN_RE.exec(text)) !== null) { // [[ ]] 形式恒为显式引用：先取 token 本体，再探测尾部范围
+			const tokEnd = bm.index + bm[0].length; // ]] 之后
 			const rng = LlmChatView.parseRangeSuffix(text.slice(tokEnd));
-			toks.push({ start: m.index!, end: tokEnd + rng.len, path: m[1].trim(), a: rng.a, b: rng.b });
+			toks.push({ start: bm.index, end: tokEnd + rng.len, path: bm[1].trim(), a: rng.a, b: rng.b });
 		}
-		for (const m of text.matchAll(LlmChatView.PLAIN_REF_RE)) {
-			const atIdx = m.index! + m[1].length; // 跳过前置空白锚定字符
+		LlmChatView.PLAIN_REF_RE.lastIndex = 0;
+		let pm: RegExpExecArray | null;
+		while ((pm = LlmChatView.PLAIN_REF_RE.exec(text)) !== null) {
+			const atIdx = pm.index + pm[1].length; // 跳过前置空白锚定字符
 			if (toks.some((t) => atIdx < t.end && atIdx > t.start)) continue; // 与 [[ ]] 形式重叠则不重复计
-			let path = m[2];
-			let a = m[3] || m[5] ? parseInt(m[3] || m[5], 10) : null;
-			let b = m[4] || m[6] ? parseInt(m[4] || m[6], 10) : null;
+			let path = pm[2];
+			let a = pm[3] || pm[5] ? parseInt(pm[3] || pm[5], 10) : null;
+			let b = pm[4] || pm[6] ? parseInt(pm[4] || pm[6], 10) : null;
 			if (!a && !b) { // 扩展名后紧贴的数字视为行范围（@a/b.md3-5），从路径尾部拆出
 				const mm = path.match(/^(.*\.[A-Za-z0-9]{1,6})(\d{1,4}(?:-(\d{1,4}))?)$/);
 				if (mm) { const parts = mm[2].split("-"); path = mm[1]; a = parseInt(parts[0], 10); b = parts.length > 1 ? parseInt(parts[1], 10) : null; }
 			}
 			if (!path.includes("/") && !/\.[A-Za-z0-9]{1,6}$/.test(path)) continue; // 防误伤邮箱等散文：须含目录分隔符或文件扩展名
-			toks.push({ start: atIdx, end: m.index! + m[0].length, path, a, b });
+			toks.push({ start: atIdx, end: pm.index + pm[0].length, path, a, b });
 		}
 		if (!toks.length) return { expanded: text, count: 0, missing: [] };
 		toks.sort((x, y) => x.start - y.start);

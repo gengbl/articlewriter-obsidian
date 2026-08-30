@@ -337,8 +337,10 @@ export function parseForeshadowText(text: string, defaultChapter: number): Fores
 export function extractForeshadows(outline: string, defaultChapter: number): ForeshadowItem[] {
 	const items: ForeshadowItem[] = [];
 	if (!outline) return items;
-	for (const m of outline.matchAll(FORESHADOW_BLOCK_RE)) {
-		const content = m[1].trim();
+	FORESHADOW_BLOCK_RE.lastIndex = 0; // 模块级 /g 正则：扫描前复位，防上次调用残留状态
+	let fm: RegExpExecArray | null;
+	while ((fm = FORESHADOW_BLOCK_RE.exec(outline)) !== null) {
+		const content = fm[1].trim();
 		if (!content) continue;
 		const item = parseForeshadowText(content, defaultChapter);
 		if (item.reason || item.character) items.push(item);

@@ -219,7 +219,7 @@ export class StatusView extends ItemView {
 		const titleRow = parent.createDiv({ cls: "aw-st-status-title" });
 		titleRow.createSpan({ text: `${d.title}（${d.storyName}）` });
 		titleRow.createSpan({ text: d.updatedAt ? `更新 ${formatLocalDateTime(d.updatedAt, true)}` : "-", cls: "aw-dim aw-st-status-time" });
-		parent.createDiv({ text: `题材：${d.genre || "-"}　编写类型：${d.writingStyle || "-"}`, cls: "aw-dim aw-st-info-line" });
+		parent.createDiv({ text: `题材：${d.genre || "-"} 编写类型：${d.writingStyle || "-"}`, cls: "aw-dim aw-st-info-line" });
 		parent.createDiv({
 			text: `${String(d.chapters.length)}章 · ${d.currentChapter != null ? `第${d.currentChapter}章` : "无当前章"} · 总字数 ${d.totalWords.toLocaleString()}字`,
 			cls: "aw-dim aw-st-info-line",

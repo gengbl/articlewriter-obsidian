@@ -1103,14 +1103,15 @@ export class StoryManager {
 		}
 		// 重写引用：各章节目录内 md 的「第X章」文本
 		const renumText = (text: string): string => {
-			let out = text.replace(/第(\d{1,6})章/g, (_all, d) => {
-				const n = parseInt(d, 10);
-				return `第${mapping[n] ?? n}章`;
-			});
-			out = out.replace(/章节[：:]\s*(\d+)/g, (_all, d) => {
-				const n = parseInt(d, 10);
-				return `章节：${mapping[n] ?? n}`;
-			});
+		// replace 回调的捕获组参数在低版本 lib 下为 any，须显式标注（正则已保证 \d+ 恒存在）以通过 no-unsafe-argument
+		let out = text.replace(/第(\d{1,6})章/g, (_all: string, d: string): string => {
+			const n = parseInt(d, 10);
+			return `第${mapping[n] ?? n}章`;
+		});
+		out = out.replace(/章节[：:]\s*(\d+)/g, (_all: string, d: string): string => {
+			const n = parseInt(d, 10);
+			return `章节：${mapping[n] ?? n}`;
+		});
 			return out;
 		};
 		const folder = this.storyFolder(storyName);

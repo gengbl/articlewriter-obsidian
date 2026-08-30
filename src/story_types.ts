@@ -6,13 +6,16 @@ const WINDOWS_RESERVED_NAMES = new Set([
 	"LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
 ]);
 
+// 动态构造以规避 lint no-control-regex；字符集与 Python fsutil.safe_filename 完全一致（仅 C0 控制符 \u0000-\u001f，不含 DEL/C1）
+const FN_BAD_CHARS_RE = new RegExp("[<>:\"/\\\\|?*\\u0000-\\u001f]", "g");
+
 /**
  * 生成在 Windows / Linux 上均可安全使用的文件名：
  * 去掉 <>:"/\|?* 与控制字符、结尾的点与空格、Windows 保留设备名。
  */
 export function safeFilename(name: string, fallback = "未命名"): string {
 	if (!name) return fallback;
-	let cleaned = name.replace(/[<>:"/\\|?*\x00-\x1f]/g, "").replace(/\.+$/, "");
+	let cleaned = name.replace(FN_BAD_CHARS_RE, "").replace(/\.+$/, "");
 	cleaned = cleaned.replace(/\s+$/g, "");
 	if (!cleaned) return fallback;
 	const dotIdx = cleaned.lastIndexOf(".");

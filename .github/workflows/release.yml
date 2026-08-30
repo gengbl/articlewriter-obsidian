@@ -38,14 +38,7 @@ jobs:
           echo "version=$V" >> "$GITHUB_OUTPUT"
           (cd release && rm -f "../articlewriter-v$V.zip" && zip -q "../articlewriter-v$V.zip" *)
 
-      - name: Attest build provenance
-        uses: actions/attest-build-provenance@v4
-        with:
-          subject-path: |
-            release/main.js
-            release/styles.css
-            release/manifest.json
-
+      # 注意顺序：先发布 Release 再做 attest——persist（create-storage-record）在对应 Release 尚不存在时会报 "Failed to persist attestation"；Rekor/Fulcio 透明日志条目独立生成，不受此影响
       - name: Publish GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -69,3 +62,11 @@ jobs:
           else
             gh release create "$TARGET" "${ASSETS[@]}" --title "v$TARGET" --notes "$NOTES"
           fi
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: |
+            release/main.js
+            release/styles.css
+            release/manifest.json

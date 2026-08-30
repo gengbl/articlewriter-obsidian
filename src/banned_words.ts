@@ -317,7 +317,7 @@ export function findAiSentences(text: string): AiSentence[] {
 	const results: AiSentence[] = [];
 	let lineStart = 0;
 	for (const line of text.split("\n")) {
-		if (line.trimStart().startsWith("#")) {
+		if (/^\s*#/.test(line)) {
 			lineStart += line.length + 1;
 			continue;
 		}

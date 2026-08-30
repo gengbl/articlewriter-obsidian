@@ -974,7 +974,12 @@ export function appendOutlineInstruction(outline: string, label: string, instruc
 /** 检查正文是否已覆盖大纲全部要点；返回 [allCovered, 未覆盖要点列表]。无 bullet 时按非空行整体判断 */
 export function checkOutlineCoverage(content: string, outline: string): { allCovered: boolean; uncovered: string[] } {
 	if (!content || !outline) return { allCovered: false, uncovered: [] };
-	const bulletsRaw = [...String(outline).matchAll(/^[-*•]\s+(.+)$/gm)].map((m) => m[1].trim());
+	const BULLET_LINE_RE = /^[-*•]\s+(.+)$/gm; // 函数内局部正则：每次调用全新实例，无 lastIndex 残留
+	const bulletsRaw: string[] = [];
+	let bl: RegExpExecArray | null;
+	while ((bl = BULLET_LINE_RE.exec(String(outline))) !== null) { // exec 循环替代 matchAll(ES2020)，/m 行语义与旧版逐位一致
+		bulletsRaw.push(bl[1].trim());
+	}
 	const bullets = bulletsRaw.length ? bulletsRaw : String(outline).split("\n").map((l) => l.trim()).filter(Boolean);
 	if (!bullets.length) return { allCovered: false, uncovered: [] };
 	const checkBullet = (bullet: string, text: string): boolean => {

@@ -1,6 +1,6 @@
 import esbuild from "esbuild";
 import process from "process";
-import builtins from "builtin-modules";
+import { builtinModules } from "node:module";
 import fs from "node:fs";
 
 const banner = `/*
@@ -30,7 +30,7 @@ let options = {
 		"@lezer/common",
 		"@lezer/highlight",
 		"@lezer/lr",
-		...builtins,
+		...builtinModules,
 	],
 	format: "cjs",
 	target: "es2018",
@@ -50,5 +50,7 @@ if (watch) {
 	await ctx.watch();
 } else {
 	await esbuild.build(options);
+	fs.mkdirSync("dist", { recursive: true }); // 社区目录校验器在仓库根/dist/build/out 查找构建产物 main.js，这里同步一份（同样 gitignore）
+	fs.copyFileSync("release/main.js", "dist/main.js");
 	process.exit(0);
 }

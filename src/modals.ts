@@ -117,7 +117,7 @@ export class ChapterListModal extends SuggestModal<ChapterItem> {
 
 	renderSuggestion(item: ChapterItem, el: HTMLElement): void {
 		el.createSpan({ text: `第${String(item.num).padStart(2, "0")}章 ${item.title}` });
-		if (item.isCurrent) el.createSpan({ text: "　（当前）", cls: "aw-dim" });
+		if (item.isCurrent) el.createSpan({ text: " （当前）", cls: "aw-dim" });
 	}
 
 	onChooseSuggestion(item: ChapterItem): void {
@@ -262,7 +262,7 @@ export class ActionMenuModal extends Modal {
 			const row = list.createDiv({ cls: `aw-action-row${i === this.selected ? " aw-selected" : ""}${item.disabled ? " aw-disabled" : ""}` }); // cursor pointer/default 走类名
 			if (item.marker) row.createSpan({ text: `${item.marker} `, cls: "aw-accent" });
 			row.createSpan({ text: item.label });
-			if (item.sub) row.createSpan({ text: `　${item.sub}`, cls: "aw-dim" });
+			if (item.sub) row.createSpan({ text: ` ${item.sub}`, cls: "aw-dim" });
 			if (!item.disabled) {
 				row.addEventListener("click", () => {
 					this.selected = i;

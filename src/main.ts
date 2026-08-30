@@ -1,4 +1,4 @@
-import { App, Modal, Notice, Plugin, PluginSettingTab, Setting, TAbstractFile, TFile, TFolder, type SettingDefinitionItem, type SettingDefinitionPage } from "obsidian";
+import { App, Modal, Notice, Plugin, PluginSettingTab, TAbstractFile, TFile, TFolder, type SettingDefinitionItem, type SettingDefinitionPage } from "obsidian";
 import { ActionItem, ActionMenuModal, ChapterListModal, ConfirmModal, FolderPickerModal, MarkdownViewerModal, MultiFieldModal, NewStoryInput, NewStoryModal, PanelLine, StoryPickerModal, StreamingPreviewModal, TextAreaPrompt, TextPanelModal, TextInputModal } from "./modals";
 import { LlmChatView } from "./llm_chat_view";
 import { StatusView, type StatusAction, type StatusChapterEntry, type StatusDetail, type StatusSnapshot, type StatusStoryEntry } from "./status_view";
@@ -197,7 +197,7 @@ export default class ArticleWriterPlugin extends Plugin {
 				const state = await this.manager.loadState(s);
 				const chCount = Object.keys(state?.chapters ?? {}).length;
 				sub = `${chCount} 章`;
-				if (state && state.current_chapter != null) sub += `　当前第${String(state.current_chapter).padStart(2, "0")}章`;
+				if (state && state.current_chapter != null) sub += ` 当前第${String(state.current_chapter).padStart(2, "0")}章`;
 			} catch {
 				sub = "（状态读取失败）";
 			}
@@ -392,7 +392,7 @@ export default class ArticleWriterPlugin extends Plugin {
 		for (const r of rows) total += r.words;
 		new StatusModal(this.app, [
 			"各章字数（只计纯文字字符）：",
-			...rows.map((r) => `  第${String(r.num).padStart(2, "0")}章 ${r.title}　${r.words} 字`),
+			...rows.map((r) => `  第${String(r.num).padStart(2, "0")}章 ${r.title} ${r.words} 字`),
 			`合计：${total} 字`,
 		]).open();
 	}
@@ -423,7 +423,7 @@ export default class ArticleWriterPlugin extends Plugin {
 		}
 		const lines: string[] = [
 			`书名：${state.title}`,
-			`题材：${state.genre || "-"}　编写类型：${state.writing_style || "-"}`,
+			`题材：${state.genre || "-"} 编写类型：${state.writing_style || "-"}`,
 			`当前章节：${state.current_chapter != null ? `第${String(state.current_chapter).padStart(2, "0")}章` : "无"}`,
 		];
 		let volName = "";
@@ -435,9 +435,9 @@ export default class ArticleWriterPlugin extends Plugin {
 		} catch {
 			volName = state.current_volume || "";
 		}
-		lines.push(`当前卷：${volName || "-"}　当前场景：${state.current_scene || "-"}`);
-		lines.push(`章节数：${chapters.length}　总字数（纯文字）：${total}`);
-		lines.push(`创建：${formatLocalDateTime(state.created_at, true)}　更新：${formatLocalDateTime(state.updated_at, true)}`);
+		lines.push(`当前卷：${volName || "-"} 当前场景：${state.current_scene || "-"}`);
+		lines.push(`章节数：${chapters.length} 总字数（纯文字）：${total}`);
+		lines.push(`创建：${formatLocalDateTime(state.created_at, true)} 更新：${formatLocalDateTime(state.updated_at, true)}`);
 		new StatusModal(this.app, lines).open();
 	}
 
@@ -494,12 +494,12 @@ export default class ArticleWriterPlugin extends Plugin {
 			const lines: Array<string | PanelLine> = [];
 			for (const v of vols) {
 				lines.push({ text: `${state.current_volume === v.id ? "◀ " : ""}${v.name}`, bold: true });
-				if (v.description) lines.push(`　　描述：${v.description}`);
+				if (v.description) lines.push(`  描述：${v.description}`);
 				const assigned = Object.entries(state.chapters)
 					.filter(([, m]) => m.volume === v.id)
 					.map(([k]) => parseInt(k, 10))
 					.sort((a, b) => a - b);
-				lines.push(assigned.length ? `　　归属章节：${assigned.map((n) => this.chapterLabel(n)).join("、")}` : "　　暂无归属章节");
+				lines.push(assigned.length ? `  归属章节：${assigned.map((n) => this.chapterLabel(n)).join("、")}` : "  暂无归属章节");
 			}
 			lines.push("");
 			lines.push(`当前卷：${state.current_volume || "无"}（共 ${vols.length} 卷）`);
@@ -646,7 +646,7 @@ export default class ArticleWriterPlugin extends Plugin {
 			for (const s of scenes) {
 				lines.push({ text: `${state.current_scene === s.scene_id ? "◀ " : ""}${s.scene_id}`, bold: true });
 				const bits = [s.chapter_num === 0 ? "全局" : this.chapterLabel(s.chapter_num), s.characters?.length ? `角色：${s.characters.join("、")}` : "", s.description || ""].filter(Boolean);
-				if (bits.length) lines.push(`　　${bits.join("　")}`);
+				if (bits.length) lines.push(`  ${bits.join(" ")}`);
 			}
 			lines.push("");
 			lines.push(`当前场景：${state.current_scene || "无"}（共 ${scenes.length} 个）`);
@@ -815,7 +815,7 @@ export default class ArticleWriterPlugin extends Plugin {
 			for (const c of chars) {
 				lines.push({ text: c.name, bold: true });
 				const bits = [c.chapter === 0 ? "全局" : this.chapterLabel(c.chapter), c.identity || "", c.gender ? `性别：${c.gender}` : ""].filter(Boolean);
-				if (bits.length) lines.push(`　　${bits.join("　")}`);
+				if (bits.length) lines.push(`  ${bits.join(" ")}`);
 			}
 			lines.push("");
 			lines.push(`共 ${chars.length} 人`);
@@ -984,7 +984,7 @@ export default class ArticleWriterPlugin extends Plugin {
 			items.forEach((it, i) => {
 				lines.push({ text: `${it.done ? "✔" : "○"} ${this.chapterLabel(it.chapter)} #${(it.index ?? i) + 1}`, bold: !it.done });
 				const bits = [it.character ? `人物：${it.character}` : "", it.reason || ""].filter(Boolean);
-				if (bits.length) lines.push(`　　${bits.join("　")}`);
+				if (bits.length) lines.push(`  ${bits.join(" ")}`);
 			});
 			lines.push("");
 			lines.push(`共 ${items.length} 条，其中已完成 ${items.filter((i) => i.done).length} 条`);
@@ -1026,7 +1026,7 @@ export default class ArticleWriterPlugin extends Plugin {
 			}
 			const idx = await this.pickAction(
 				"选择要管理的伏笔",
-				items.map((it, i) => ({ label: `${it.done ? "✔" : "○"} ${this.chapterLabel(it.chapter)} #${(it.index ?? i) + 1}`, sub: [it.character, it.reason].filter(Boolean).join("　") }))
+				items.map((it, i) => ({ label: `${it.done ? "✔" : "○"} ${this.chapterLabel(it.chapter)} #${(it.index ?? i) + 1}`, sub: [it.character, it.reason].filter(Boolean).join(" ") }))
 			);
 			if (idx == null) return;
 			const item = items[idx];
@@ -1040,7 +1040,7 @@ export default class ArticleWriterPlugin extends Plugin {
 				const ok = await this.manager.setForeshadowDone(story, item.chapter, pos, !item.done);
 				new Notice(ok ? `已${!item.done ? "标记完成" : "取消完成"}` : "操作失败：未找到该条伏笔（可能已被其他操作改动，请重新打开列表）");
 			} else {
-				const confirmOk = await this.confirmBox("删除伏笔？", `[${[item.character, item.reason].filter(Boolean).join("　") || "无内容"}]`, "删除");
+				const confirmOk = await this.confirmBox("删除伏笔？", `[${[item.character, item.reason].filter(Boolean).join(" ") || "无内容"}]`, "删除");
 				if (!confirmOk) return;
 				const ok = await this.manager.deleteForeshadow(story, item.chapter, pos);
 				new Notice(ok ? "已删除该条伏笔" : "删除失败：未找到该条伏笔");
@@ -1261,9 +1261,9 @@ export default class ArticleWriterPlugin extends Plugin {
 
 	private guideLayers(story: string): Array<{ label: string; path?: string }> {
 		return [
-			{ label: `小说级　${this.manager.bookGuidePath(story)}`, path: this.manager.bookGuidePath(story) },
-			{ label: `用户级　${this.manager.userGuidePath()}`, path: this.manager.userGuidePath() },
-			{ label: `系统级　${this.getSystemGuidePath() || "插件设置 (data.json)"}` },
+			{ label: `小说级 ${this.manager.bookGuidePath(story)}`, path: this.manager.bookGuidePath(story) },
+			{ label: `用户级 ${this.manager.userGuidePath()}`, path: this.manager.userGuidePath() },
+			{ label: `系统级 ${this.getSystemGuidePath() || "插件设置 (data.json)"}` },
 		];
 	}
 
@@ -1555,7 +1555,7 @@ export default class ArticleWriterPlugin extends Plugin {
 		const chapters: StatusChapterEntry[] = chs.map((c) => ({
 			num: c.num,
 			title: c.title,
-			words: chWords ? (chWords[c.num] ?? 0) : ((state?.chapters[String(c.num)]?.words as number | undefined) ?? 0),
+			words: chWords ? (chWords[c.num] ?? 0) : (state?.chapters[String(c.num)]?.words ?? 0),
 			active: c.num === state?.current_chapter,
 			files: c.dir.children.filter((f): f is TFile => f instanceof TFile).map((f) => ({ path: f.path, name: f.name })).sort((a, b) => a.name.localeCompare(b.name, "zh")),
 		}));
@@ -1570,7 +1570,7 @@ export default class ArticleWriterPlugin extends Plugin {
 			genre: state?.genre || "",
 			writingStyle: state?.writing_style || "",
 			currentChapter: state?.current_chapter ?? null,
-			totalWords: chWords ? Object.values(chWords).reduce((s, w) => s + w, 0) : ((state?.total_words as number | undefined) ?? 0),
+			totalWords: chWords ? Object.values(chWords).reduce((s, w) => s + w, 0) : (state?.total_words ?? 0),
 			updatedAt: state?.updated_at || "",
 			chapters,
 			globalFiles,
@@ -1697,7 +1697,7 @@ export default class ArticleWriterPlugin extends Plugin {
 	/** 状态面板章节行右键调用 LLM 写作命令：先把目标书/章设为当前（与点章节名激活同语义），再复用对应命令的既有交互流程（创作要点输入、流式预览确认等全部保留） */
 	private async statusRunWriting(kind: "llm-write" | "llm-continue" | "llm-polish", story: string, num: number): Promise<void> {
 		if (!(await this.ensureWorkDir())) return;
-		if (((this.settings.lastStory || "") as string).trim() !== story) {
+		if ((this.settings.lastStory || "").trim() !== story) {
 			this.settings.lastStory = story;
 			await this.saveSettings(); // 切到目标书：持久化并广播刷新 LLM 面板上下文行
 		}
@@ -1757,19 +1757,19 @@ export default class ArticleWriterPlugin extends Plugin {
 		let text = assembleSystemPrompt(CHAT_ASSISTANT_PROMPT, guideText); // 与 CLI _apply_agents 同一拼接规则/措辞
 		if (hasStory) {
 			try {
-				const state = await this.manager.loadState(lastStory!);
+				const state = await this.manager.loadState(lastStory);
 				if (state?.title) {
 					const chapterNum = Math.max(1, Number(state.current_chapter) || 1);
 					const parts: string[] = [];
 					try {
-						const data = await this.manager.loadWritingData(lastStory!, chapterNum, { includeCurrentSummary: false });
+						const data = await this.manager.loadWritingData(lastStory, chapterNum, { includeCurrentSummary: false });
 						const ctx = buildWritingContext(data);
 						if (ctx) parts.push(ctx);
 					} catch {
 						/* 写作上下文构建失败不影响当前章节部分 */
 					}
 					try {
-						const content0 = await this.manager.readChapterContent(lastStory!, chapterNum);
+						const content0 = await this.manager.readChapterContent(lastStory, chapterNum);
 						if (content0 && content0.trim()) {
 							let content = content0;
 							if (content.length > 6000) content = content.slice(0, 6000) + "\n[...内容省略...]";
@@ -2542,15 +2542,13 @@ class StatusModal extends Modal {
 
 class ArticleWriterSettingTab extends PluginSettingTab {
 	plugin: ArticleWriterPlugin;
-	private llmSelName = "";
 
 	constructor(plugin: ArticleWriterPlugin) {
 		super(plugin.app, plugin);
 		this.plugin = plugin;
 	}
 
-	// ===== 声明式设置（唯一生效实现：manifest minAppVersion=1.13.0 要求 Obsidian ≥1.13，框架恒调 getSettingDefinitions、不调已废弃的 display()）=====
-	// 下方 display()/renderLlm 保留作 pre-1.13 回落代码，当前 manifest 下不可达；若未来降低 minAppVersion 须恢复其与声明式的字段一致性。
+	// ===== 声明式设置（唯一实现：minAppVersion=1.13.0 保证框架恒调 getSettingDefinitions；pre-1.13 的已废弃 display()/renderLlm 旧渲染路径已删除——目录校验器禁 deprecated API）=====
 
 	private conf(): PluginConfig {
 		return this.plugin.settings.llm ?? (this.plugin.settings.llm = buildDefaultLlmConf());
@@ -2562,11 +2560,12 @@ class ArticleWriterSettingTab extends PluginSettingTab {
 		const defs: SettingDefinitionItem[] = [];
 
 		defs.push({ name: "工作目录（work_dir）", desc: "写小说的文件夹（vault 内已有文件夹）。首次使用任何命令时会自动弹出选择器让你选定；以后建书/建章/打开文档等全部在该目录下操作。每个小说是其下一个子文件夹：故事状态.md、大纲.md、第NN章-标题/章节.md 等", control: { key: "workDir", type: "text", placeholder: "首次使用时自动选择" } });
-		defs.push({ name: "重新选择工作目录…", desc: "弹出文件夹选择器切换 work_dir（同「选择工作目录」命令）", action: () => this.plugin.pickWorkDir(false) });
+		defs.push({ name: "重新选择工作目录…", desc: "弹出文件夹选择器切换 work_dir（同「选择工作目录」命令）", action: () => void this.plugin.pickWorkDir(false) });
 		defs.push({ name: "创建后自动打开文档", desc: "新建小说/章节后立即在标签页中打开对应正文或大纲", control: { key: "autoOpenOnCreate", type: "toggle" } });
 
+		const llmNameMap = cfgs.reduce<Record<string, string>>((m, c) => { m[c.name] = c.name; return m; }, {}); // ES2019 同名 API 的低版本等价写法：构造 name→name 恒等映射
 		defs.push({ type: "group", heading: "LLM 全局设置", items: [
-			{ name: "当前激活配置（active_llm）", desc: "连接测试与写作命令使用该配置", control: { key: "llm.active_llm", type: "dropdown", options: Object.fromEntries(cfgs.map((c) => [c.name, c.name])), defaultValue: "" } },
+			{ name: "当前激活配置（active_llm）", desc: "连接测试与写作命令使用该配置", control: { key: "llm.active_llm", type: "dropdown", options: llmNameMap, defaultValue: "" } },
 			{ name: "写作系统提示词 system_prompt", desc: "全局基础系统提示词：无编写类型格式块时使用；留空=内置默认。对齐 CLI config.json 的 system_prompt", control: { key: "llm.system_prompt", type: "textarea", rows: 5, placeholder: "留空使用内置默认" } },
 			{ name: "描述方式 desc_style", desc: "normal / complete（对齐 CLI）", control: { key: "llm.desc_style", type: "dropdown", options: { normal: "normal", complete: "complete" }, defaultValue: "normal" } },
 			{ name: "系统级指南路径 system_guide_path", desc: "设置后优先从该 vault 内文件读取/保存系统级写作指南（相对路径，如 Notes/系统写作指南.md），覆盖 data.json 内嵌内容；留空=用内嵌内容。读不到时自动回落并提示", control: { key: "llm.system_guide_path", type: "text", placeholder: "留空使用内置内容" } },
@@ -2592,7 +2591,7 @@ class ArticleWriterSettingTab extends PluginSettingTab {
 		items.push({ name: "测试连接", desc: "对该配置执行 GET /models 连通性测试并弹通知（列出可用模型）", action: () => void this.plugin.runLlmTest(cfg) });
 		for (const [k, label] of numFields) items.push({ name: label, control: { key: `cfg.${i}.${String(k)}`, type: "text", placeholder: String(k) } });
 		for (const [k, label, ph] of strFields) items.push({ name: label, desc: ph, control: { key: `cfg.${i}.${String(k)}`, type: "text", placeholder: ph } });
-		return { type: "page", name: `${cfg.name}${active ? "　◀ 当前" : ""}`, desc: cfg.base_url || "（未填服务地址）", displayValue: () => [cfg.model_name && `模型 ${cfg.model_name}`, cfg.base_url].filter(Boolean).join(" · "), status: cfg.base_url ? null : ("warning" as const), items };
+		return { type: "page", name: `${cfg.name}${active ? " ◀ 当前" : ""}`, desc: cfg.base_url || "（未填服务地址）", displayValue: () => [cfg.model_name && `模型 ${cfg.model_name}`, cfg.base_url].filter(Boolean).join(" · "), status: cfg.base_url ? null : ("warning" as const), items };
 	}
 
 	getControlValue(key: string): unknown {
@@ -2688,110 +2687,5 @@ class ArticleWriterSettingTab extends PluginSettingTab {
 			await this.plugin.saveSettings();
 			this.update();
 		})();
-	}
-
-	display(): void {
-		const { containerEl } = this;
-		containerEl.empty();
-
-		new Setting(containerEl)
-			.setName("工作目录（work_dir）")
-			.setDesc(
-				"写小说的文件夹（vault 内已有文件夹）。首次使用任何命令时会自动弹出选择器让你选定；以后建书/建章/打开文档等全部在该目录下操作。也可在此手动修改路径或点「选择工作目录」命令切换。每个小说是其下一个子文件夹：故事状态.md（YAML 属性存运行态）、大纲.md、第NN章-标题/章节.md 等"
-			)
-			.addText((text) => {
-				text.setValue(this.plugin.settings.workDir).setPlaceholder("首次使用时自动选择").onChange(async (v) => {
-					this.plugin.settings.workDir = v.trim().replace(/^\/+|\/+$/g, "");
-					this.plugin.settings.lastStory = "";
-					await this.plugin.saveSettings();
-				});
-			})
-			.addButton((btn) => btn.setButtonText("重新选择…").onClick(() => this.plugin.pickWorkDir(false)));
-
-		new Setting(containerEl)
-			.setName("创建后自动打开文档")
-			.setDesc("新建小说/章节后立即在标签页中打开对应正文或大纲")
-			.addToggle((toggle) =>
-				toggle.setValue(this.plugin.settings.autoOpenOnCreate).onChange(async (v) => {
-					this.plugin.settings.autoOpenOnCreate = v;
-					await this.plugin.saveSettings();
-				})
-			);
-
-		new Setting(containerEl)
-			.setName("LLM 模型配置")
-			.setDesc("多组 OpenAI 兼容配置（base_url/model_name/api_key/采样参数）+ active_llm + 全局系统提示词，存于插件数据目录 data.json（首次运行已预置 local/deepseek/qwen-dashscope 模板）。api_key 明文存放——同步/分享 vault 时注意不要泄露配置文件");
-		const llmHolder = containerEl.createDiv();
-		this.renderLlm(llmHolder);
-
-		new Setting(containerEl)
-			.setName("关于")
-			.setDesc(
-				"ArticleWriter Obsidian 版：建书/建章、打开文档、保存、字数统计；数据全部为 vault 内 MD 文档，运行态存于各书的「故事状态.md」YAML 文件属性（version 2，旧版 story_state.json 自动迁移备份）。LLM 走 OpenAI 兼容接口（openai SDK），可接 DeepSeek / DashScope / Ollama / LM Studio / llama.cpp 等。",
-			);
-	}
-
-	/** LLM 配置编辑区（读写插件数据目录 data.json） */
-	private renderLlm(holder: HTMLElement): void {
-		holder.empty();
-		const conf = this.plugin.settings.llm ?? (this.plugin.settings.llm = buildDefaultLlmConf());
-		const cfgs = conf.llm_configs ?? [];
-		if (!cfgs.length) {
-			holder.createEl("div", { text: "没有模型配置。" });
-			return;
-		}
-		if (!cfgs.some((c) => c.name === this.llmSelName)) {
-			this.llmSelName = conf.active_llm && cfgs.some((c) => c.name === conf.active_llm) ? conf.active_llm : cfgs[0].name;
-		}
-		const cfg = cfgs.find((c) => c.name === this.llmSelName)!;
-
-		new Setting(holder).setName("编辑的配置").addDropdown((d) => d.addOptions(Object.fromEntries(cfgs.map((c) => [c.name, c.name]))).setValue(this.llmSelName).onChange((v) => { this.llmSelName = v; this.renderLlm(holder); }));
-		new Setting(holder)
-			.setName("设为激活（active_llm）")
-			.setDesc(conf.active_llm === cfg.name ? "当前激活中" : "保存后，连接测试与写作命令将使用该配置")
-			.addToggle((t) => t.setValue(conf.active_llm === cfg.name).onChange((on) => { if (on) conf.active_llm = cfg.name; }));
-
-		const numFields: Array<[keyof LlmConfigDoc, string]> = [["temperature", "温度 temperature"], ["max_tokens", "最大 token max_tokens"]];
-		const strFields: Array<[keyof LlmConfigDoc, string, string]> = [
-			["base_url", "服务地址 base_url", "如 http://localhost:8509 或 https://api.deepseek.com（已含 /vN 不重复拼接）"],
-			["model_name", "模型 model_name", "本地服务可留空（用其已加载模型）"],
-			["api_key", "API Key api_key", "明文存于插件数据目录 data.json"],
-			["reasoning_effort", "推理强度 reasoning_effort", "low/medium/high（兼容端点支持时生效）"],
-		];
-		for (const [k, label] of numFields) {
-			new Setting(holder).setName(label).addText((t) => {
-				t.setValue(cfg[k] != null ? String(cfg[k]) : "").setPlaceholder(String(k)).onChange((v) => { const n = Number(v); (cfg as unknown as Record<string, unknown>)[k] = v.trim() !== "" && !Number.isNaN(n) ? n : undefined; });
-			});
-		}
-		for (const [k, label, ph] of strFields) {
-			new Setting(holder).setName(label).setDesc(ph).addText((t) => {
-				t.setValue(cfg[k] != null ? String(cfg[k]) : "").setPlaceholder(ph).onChange((v) => { (cfg as unknown as Record<string, unknown>)[k] = v.trim() || undefined; });
-			});
-		}
-
-		new Setting(holder)
-			.setName("写作系统提示词 system_prompt")
-			.setDesc("全局基础系统提示词：无编写类型格式块时使用；留空=内置默认。对齐 CLI config.json 的 system_prompt")
-			.addTextArea((t) => t.setValue(conf.system_prompt ?? "").setPlaceholder("留空使用内置默认").onChange((v) => { conf.system_prompt = v.trim() || undefined; }));
-		new Setting(holder)
-			.setName("描述方式 desc_style")
-			.setDesc("normal / complete（对齐 CLI）")
-			.addDropdown((d) => d.addOptions({ normal: "normal", complete: "complete" }).setValue(conf.desc_style || "normal").onChange((v) => { conf.desc_style = v; }));
-		new Setting(holder)
-			.setName("系统级指南路径 system_guide_path")
-			.setDesc("设置后优先从该 vault 内文件读取/保存系统级写作指南（相对路径，如 Notes/系统写作指南.md），覆盖 data.json 内嵌内容；留空=用内嵌内容。读不到时自动回落并提示")
-			.addText((t) => t.setValue(conf.system_guide_path ?? "").setPlaceholder("留空使用内置内容").onChange((v) => { conf.system_guide_path = v.trim() || undefined; }));
-
-		new Setting(holder)
-			.addButton((b) => b.setButtonText("测试连接").onClick(() => void this.plugin.runLlmTest(cfg)))
-			.addButton((b) => b.setButtonText("保存更改").setCta().onClick(async () => {
-				try {
-					await this.plugin.saveSettings();
-					new Notice("LLM 配置已保存到插件数据目录 data.json", 5000);
-				} catch (e) {
-					new Notice(`保存失败：${e instanceof Error ? e.message : String(e)}`, 10000);
-				}
-			}))
-			.addButton((b) => b.setButtonText("重新加载").onClick(() => this.renderLlm(holder)));
 	}
 }
