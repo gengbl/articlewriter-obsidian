@@ -39,7 +39,7 @@ jobs:
           echo "version=$V" >> "$GITHUB_OUTPUT"
           (cd release && rm -f "../articlewriter-v$V.zip" && zip -q "../articlewriter-v$V.zip" *)
 
-      # 注意顺序：先发布 Release 再做 attest——persist（create-storage-record）在对应 Release 尚不存在时会报 "Failed to persist attestation"；Rekor/Fulcio 透明日志条目独立生成，不受此影响
+      # 保持「先发 Release、再 attest」顺序。「Failed to persist attestation」的真正根因是 workflow permissions 缺 `attestations: write`（persist/create-storage-record 走 REST create-an-attestation 落库所需），v0.0.9 补齐后经推 tag 验证通过；Rekor/Fulcio 透明日志条目独立生成，不受该权限影响
       - name: Publish GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
