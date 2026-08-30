@@ -1,4 +1,4 @@
-import { dump, load } from "js-yaml";
+import { parse, stringify } from "yaml";
 
 // ===== 运行态（对齐 Python 版 story_state.json version 2，只存运行态不存文档内容）=====
 // 存储载体改为 Obsidian「文件属性」风格的 MD 文档：<书名>/故事状态.md
@@ -67,7 +67,7 @@ export function parseStateDoc(
 	if (!m) return { state: null, body: clean };
 	let data: unknown;
 	try {
-		data = load(m[1]);
+		data = parse(m[1]);
 	} catch {
 		return { state: null, body: raw };
 	}
@@ -139,7 +139,7 @@ export function formatStateDoc(
 	}
 	if (Object.keys(chapters).length) o["chapters"] = chapters;
 	if (opts?.extra) Object.assign(o, opts.extra);
-	const yamlText = dump(o, { lineWidth: -1 });
+	const yamlText = stringify(o, { lineWidth: Infinity });
 	let text = `---\n${yamlText}---\n${(opts?.body ?? STATE_DOC_BODY).replace(/\n+$/, "")}`;
 	if (!text.endsWith("\n")) text += "\n";
 	return text;
