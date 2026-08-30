@@ -8,6 +8,7 @@ on:
 permissions:
   contents: write # 创建/更新 GitHub Release、上传资产
   id-token: write # artifact attestation（Sigstore 签名）所需
+  attestations: write # 持久化 attestation 记录到仓库（REST create-an-attestation）所需
 
 jobs:
   release:
