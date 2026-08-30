@@ -20,5 +20,5 @@
 ## 全局硬规则（任何改动都适用）
 
 - **代码改动后必须跑通 `npm run build`（tsc 零错误）**；可再 `node --check release/main.js` 兜底。
-- 「打包发布」类任务先读 [RELEASE.md](./RELEASE.md)（版本号规则、Gitea/GitHub Release 脚本与坑位）。
+- 「打包发布」类任务先读 [RELEASE.md](./RELEASE.md)（版本号规则、GitHub 镜像 tag + CI 自动上架流程与坑位；**自 v0.0.10 起不再在 Gitea 创建 Release**）。
 - 变更历史见 **[CHANGELOG.md](./CHANGELOG.md)**（每次任务收尾向其末尾追加一行，了解历史先读它）。

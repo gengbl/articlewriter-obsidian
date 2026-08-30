@@ -25,8 +25,8 @@
 1. bump `manifest.json` version
 2. `npm run build` 重建（esbuild 自动拷入新版 manifest.json、styles.css、WRITING_GUIDE.md）
 3. **整体压缩 `release/` 全部文件**：`cd release && zip ../articlewriter-v<版本>.zip *`——必须含 WRITING_GUIDE.md，不要手工枚举文件名漏掉
-4. 提交打标签：`git add manifest.json …` → commit → `git push origin main` → `git tag v<版本> && git push origin v<版本>`
-5. 创建 Gitea Release：**REST API 会忽略上传的文件，只能走 Web 会话表单流**（脚本如下；凭据用上面提到的 user/pass）：
+4. 提交打标签：`git add manifest.json …` → commit → `git push origin main` → `git tag v<版本> && git push origin v<版本>`；随后按 build-deploy「GitHub 镜像同步（强制）」把该 commit 同消息同步到镜像并推**无 v 前缀** tag `<版本>`——CI 自动重建、签名并创建 GitHub Release，发布即完成
+5. ~~创建 Gitea Release~~ **自 v0.0.10 起停用，不再执行**（社区插件目录审核只认 GitHub Release）。以下 Web 会话表单流仅留作历史记录与极端情况手动参考：**REST API 会忽略上传的文件，只能走 Web 会话表单流**（脚本如下；凭据用上面提到的 user/pass）：
 
 ```bash
 B=http://192.168.0.3:3000; CJ=/tmp/opencode/cj.txt

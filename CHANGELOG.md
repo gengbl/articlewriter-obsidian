@@ -21,3 +21,4 @@
 - 2026-08-30：YAML 依赖由 js-yaml 换为 `yaml`（eemeli/yaml，自带 TS 类型、无安全通告）以过社区目录校验器依赖检查；state_doc.ts 改 parse/stringify（lineWidth: Infinity 不折行），库级+函数级往返测试全通过（含旧格式文件兼容读取、extra 透传、正文保留）。
 - 2026-08-30：README.md 顶部新增英文 Disclosures & Security Statement（社区审核披露）——网络请求仅为用户自配端点的 LLM chat completions、无遥测/作者服务器；atob/btoa 全部来自打包的 yaml/openai SDK 标准数据处理，插件源码零 base64 调用。
 - 2026-08-30：以上三项（no-control-regex 控制字符修复 / js-yaml→yaml 换库 / README 中英审核披露声明）随 manifest bump 打包发布 **v0.0.10**（`articlewriter-v0.0.10.zip`）。
+- 2026-08-30：发布约定变更——自 v0.0.10 起不再在 Gitea 创建 Release / 走 Web 会话上传流（社区目录审核只认 GitHub Release）；发布 = Gitea tag vX.Y.Z + 镜像无 v 前缀 tag 触发 CI 自动上架。RELEASE.md 第 5–7 步标停用，AGENTS.md 路由行与 build-deploy 同步修订。
