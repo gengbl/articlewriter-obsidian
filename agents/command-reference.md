@@ -1,0 +1,39 @@
+# 已移植命令速查（插件 → CLI 对照）
+
+| 插件命令 id | 对应 CLI | 说明 |
+| --- | --- | --- |
+| `set-work-dir` | `--work_dir` | 选择工作目录；0 本书提示先建书、唯一一本直接加载、多本提示用切换命令 |
+| `switch-story` | `/dir <work_dir>/<书名>` | 列出全部小说（含各章数/当前章、◀ 当前标记），选中设为当前并弹出该书状态 |
+| `new-story` | `/new` | 标题+题材+编写类型三问，建书与全套模板文档 |
+| `new-chapter` / `list-chapters` | `/chapter add` / `/chapter list`、`/open` | 建章后自动激活；列表选择打开正文并切当前章 |
+| `next-chapter` / `prev-chapter` | `/chapter next` / `prev` | 无当前章时 next→第一章、prev→最后一章；到边界提示不切 |
+| `count-current` / `count-all` | `/count [号\|范围\|all]` | 纯文字字数统计（逐章 + 合计） |
+| `save-current` | `/save` | 聚焦编辑器内容强制落盘 |
+| `status` | `/status` | 标题/题材/编写类型/当前卷场景章节/章节数总字数/时间 |
+| `volume-list` / `volume-add` / `volume-manage` | `/volume ...` | 列表（含当前标记）、新建（自动激活+可选建章）、启用/改名/改描述/分配章节/删除 |
+| `scene-list` / `scene-add` / `scene-manage` | `/scene ...` | 全部章节+全局未归属；新增 ID/简介/角色/正文/归属；切换/查看/编辑/**移动**/删除 |
+| `character-list` / `character-add` / `character-manage` | `/character ...` | 同上结构；能力字段为分词数组（`splitList`）；改名=预览命中后全小说替换并备份 `_backup/` |
+| `foreshadow-list` / `foreshadow-add` / `foreshadow-manage` | `/foreshadow list/add/done/delete` | 全书 `伏笔.md`，按「章节+序号」操作 |
+| `world-show` / `world-set` | `/world show/set` | 世界/类型/规则/势力/地点/历史/力量体系 |
+| `outline-append-current` | `/outline chapter N [内容]` | 追加当前章大纲：去重合并 + `[伏]...[/]` 标记解析入库伏笔记录 |
+| `open-chapter-outline` | —（配合 `/open 号 大纲`） | 打开当前章 `章节大纲.md`（缺失先建模板） |
+| `chapter-delete` / `chapter-rename` / `chapter-renumber` | `/chapter delete`、目录改名、编号重排 | 删除=回收站+清理元数据与归属引用；重命名同步目录名与文档内引用；renumber 连续化并改写交叉引用 |
+| `pack-chapters` | `/pack [选择][路径]` | 正文打包单 MD：中文章节号标题 + `---` 分隔；支持范围/列表/all（表达式解析在 `md_docs.parseChapterSelection`）；默认输出 `<书名>-第X-Y章-合集.md` |
+| `rescan-story` | `/scan` | 从现有 MD 重建故事状态.md（只初始化，不切小说不改 work_dir） |
+| `set-style` | `/style` | 切换编写类型 writing_style（预设或自定义），持久化到 state |
+| `agents-view` / `agents-edit` | `/agents view` / `/agents edit` | 三层创作规范：小说级 `<书名>/WRITING_GUIDE.md` > 用户级 `<work_dir>/WRITING_GUIDE.md` > 系统级（默认 data.json 内嵌 CLI 内置内容，可用设置页 system_guide_path 指向 vault 文件覆盖）；view 文件层直开、系统级弹只读面板，单层直开/多层选择器/无则提示；edit 选层后多行文本框全量保存 |
+| （无对应命令） | （替代 `~/.articlewriter/config.json`） | LLM 配置改存插件数据目录 data.json（首次运行预置三组标准模板）；旧的「打开插件设置文档 open-config-doc」命令已移除，不再读写 work_dir MD 文件、不做迁移 |
+| `llm-test` | `/llm test` | 对激活 LLM 配置执行 GET /models 连通性测试并弹通知（列出可用模型）；设置页内每份配置也可单独测连 |
+| `write-chapter` | `/write [要点]` | 创作章节：目标章解析（当前→场景归属→下一章）；**无正文且有大纲时直接按大纲自动开写不弹任何输入框[对齐 CLI /write]，仅无正文且无大纲才询问要点**、大纲覆盖率检查、追加/覆盖选择、编写类型格式校验重试×3（最多6次LLM调用）、自动去AI味、预览保存后写盘+同步当前场景正文 |
+| `continue-writing` | `/continue [要点]` | 续写当前章（已有末尾1000字衔接，无格式校验仅空结果重试×3）；本章无正文时回落到 /write；大纲要点全覆盖且未给新指令时警告跳过；剥离重复标题+去AI味后追加 |
+| `rewrite-chapter` | `/rewrite [号] [要求]` | 重写整章（单次生成不带格式校验），含前后章大纲桥接与旧文参考，去AI味后全量覆盖保存 |
+| `polish-text` | `/polish [风格]` | 润色当前章（原文截断4500字入 prompt，仅改表达不改情节），全量覆盖保存 |
+| `deai-clean` | `/deai [号]` | 检测 AI 常用词 → 逐句打回 LLM 重写（基础系统提示词，非编写类型块）→ 原位替换两轮 → 预览确认后覆盖保存 |
+| `review-chapter` | `/review [号] [重点]` | 全局视角审阅报告（非流式 chatCompletion，thinking=on 语义，空结果重试×3），可另存为章节目录内 `审阅笔记.md` |
+| （设置页 LLM 区） | `/llm [名字]` | Obsidian 插件设置 → ArticleWriter：多组 OpenAI 兼容配置的查看/编辑/切换 active_llm/保存回写 MD 文档（正文与自定义属性透传保留） |
+| `llm-chat` | —（插件新增，无 CLI 对应） | **常驻可停靠** LLM 对话面板（自定义 ItemView `LlmChatView`，见代码结构表；ribbon 图标同入口）：多轮流式聊天，Enter 发送/Shift+Enter 换行（含中文输入法合成态保护），支持 @ 引用 vault 任意文件（弹窗选择或手输路径；范围可写 :行号 / :起-止 / 紧跟如 ]]3-5），Enter 发送时引用被原位替换为对应行的实际内容再发给模型，顶部下拉切换任意已保存模型配置（对后续轮次生效），「停止生成」只中断当前一轮、会话保留；已有面板时命令直接激活之，否则底部新建分割区；每轮前置对话专用系统提示词（对齐 CLI `_chat_reply`，见代码结构表）；顶部首行显示当前小说·章节；不落盘（重启清空历史）、关闭面板中断进行中请求 |
+| `status-page` | —（插件新增，无 CLI 对应） | **常驻可停靠**工作状态面板（自定义 ItemView `StatusView`，见代码结构表；ribbon「book-open」图标同入口）：工作目录+「书籍列表」分组（标题行右侧下拉框占满剩余空间，选择即激活对应小说；组内只展示该书的「全局文档」「章节」小节，不枚举书名树）、当前小说的题材/编写类型/总字数/更新时间、全局文档与各章文件（点击打开编辑器）、章节列表（树状：点行展开/折叠本章文件；勾选行尾右对齐的 Radio 才激活该章并同步所属卷）；已有面板时命令直接激活之，否则**不分割新面板**：直接复用左栏现有叶子 `getLeftLeaf(false)` 替换其内容显示状态面板[与文件列表同一位置，点侧栏文件图标切回]（左栏为空才 `getLeftLeaf(true)`，再不行退回主区域 `getLeaf("split")`）|
+
+## 移动语义陷阱（updateScene / updateCharacter）
+
+两者都是「**改章节 = 移动文件，早退**」：patch 里带新章节时只做跨章节目录的文件搬移并立即返回，**不再应用其它字段补丁**。因此编辑流程必须先保存字段修改，再单独以 `{ chapter_num }`（场景）或 `{ chapter }`（角色）调用一次完成移动。新增类似方法必须沿用该约定并在 JSDoc 注明。
