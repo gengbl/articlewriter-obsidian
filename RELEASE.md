@@ -25,8 +25,8 @@
 1. bump `manifest.json` version
 2. `npm run build` 重建（esbuild 自动拷入新版 manifest.json、styles.css、WRITING_GUIDE.md）
 3. **整体压缩 `release/` 全部文件**：`cd release && zip ../articlewriter-v<版本>.zip *`——必须含 WRITING_GUIDE.md，不要手工枚举文件名漏掉
-4. 提交打标签：`git add manifest.json …` → commit → `git push origin main` → `git tag v<版本> && git push origin v<版本>`；随后按 build-deploy「GitHub 镜像同步（强制）」把该 commit 同消息同步到镜像并推**无 v 前缀** tag `<版本>`——CI 自动重建、签名并创建 GitHub Release，发布即完成
-5. ~~创建 Gitea Release~~ **自 v0.0.10 起停用，不再执行**（社区插件目录审核只认 GitHub Release）。以下 Web 会话表单流仅留作历史记录与极端情况手动参考：**REST API 会忽略上传的文件，只能走 Web 会话表单流**（脚本如下；凭据用上面提到的 user/pass）：
+4. 提交打标签：`git add manifest.json …` → commit → `git push origin main` → `git tag v<版本> && git push origin v<版本>`；随后按 build-deploy「GitHub 镜像同步（强制）」把该 commit 同消息同步到镜像并推**无 v 前缀** tag `<版本>`——CI 自动重建、签名并创建 GitHub Release，再回到第 5 步补 Gitea Release
+5. 创建 Gitea Release（**必须维护**：每个发布版本都要有对应 Release + zip 附件；但**不需要在 Gitea 侧搭建或拉起任何自动化工作流**，手动执行下述脚本即可）：**REST API 会忽略上传的文件，只能走 Web 会话表单流**（脚本如下；凭据用上面提到的 user/pass）：
 
 ```bash
 B=http://192.168.0.3:3000; CJ=/tmp/opencode/cj.txt
@@ -54,7 +54,7 @@ curl -s -b $CJ --referer "$PAGE" -X POST $PAGE -F "_csrf=$CSRF" -F "tag_name=v<�
 
 ## GitHub 镜像 Release 要求（社区插件目录校验）
 
-- GitHub 镜像仓库 `gengbl/articlewriter-obsidian`（标签**无 v 前缀**，如 `0.0.7`；历史为工作树拷贝式独立提交，非 clone），其 tag 对应的 Release **必须把 `main.js`、`manifest.json`、`styles.css` 作为独立资产直接上传**——校验器只认 Release assets 里的散文件，zip 内的不算；`articlewriter-v<版本>.zip` 可并存作额外资产（多余文件仅 recommendation 级提示，不阻塞）。
+- GitHub 镜像仓库 `gengbl/articlewriter-obsidian`（标签**无 v 前缀**，如 `0.0.7`；历史为工作树拷贝式独立提交，非 clone），其 tag 对应的 Release **必须把 `main.js`、`manifest.json`、`styles.css` 作为独立资产直接上传**——校验器只认 Release assets 里的散文件，zip 内的不算；**不要把 `articlewriter-v<版本>.zip` 传进 GitHub Release**（自 v0.0.10 起 CI 不再打包/上传 zip；zip 附件只在 Gitea Release 维护）。
 - **现已自动化**：`.github/workflows/release.yml` 在新 tag 推送时触发（也可 Actions → Run workflow 手动跑）：checkout → npm ci → npm run build（官方未 patch 的 obsidian d.ts 下 tsc 零错误已验证）→ 打 zip → gh release create/update（已存在的 release 走 --clobber 覆盖同名资产，不会删除旧版残留的其他文件）→ `actions/attest-build-provenance` 对 main.js/styles.css/manifest.json 签名（消除目录校验「Missing artifact attestations」建议项）。workflow `permissions:` 必须同时声明 `contents: write` + `id-token: write` + **`attestations: write`**——缺最后一项时 attest 步骤报「Failed to persist attestation: Resource not accessible by integration」（persist/create-storage-record 经 REST create-an-attestation 落库所需；Rekor/Fulcio 透明日志条目不受影响、照常生成），v0.0.9 补齐后推 tag 验证通过。注意 tag 触发的运行取的是**打 tag 那一刻**的 workflow 文件，修完 CI 须推新 tag 或走 workflow_dispatch 才生效。tag 与 manifest version 不一致立即失败；无 tag 手动运行时以 HEAD 的 manifest version 为目标。
 - CI 不可用时的手动回落：Web UI `https://github.com/gengbl/articlewriter-obsidian/releases/new?tag=<版本>&target=main`，上传本地 `release/` 三个散文件 + zip，发布说明用下方模板。
 - manifest minAppVersion 必须覆盖代码用到的全部 API 的 @since 版本（当前 =1.13.0：声明式设置 getSettingDefinitions 等 @since 1.13.0、fileManager.trashFile @since 1.6.6），否则 `obsidianmd/no-unsupported-api` 报错。

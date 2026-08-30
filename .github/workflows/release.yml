@@ -30,14 +30,12 @@ jobs:
           npm run build
           node --check release/main.js
 
-      - name: Package zip
+      - name: Read manifest version
         id: pkg
         run: |
           set -euo pipefail
-          if ! command -v zip >/dev/null; then sudo apt-get update -qq && sudo apt-get install -y -qq zip; fi
           V=$(node -p "require('./manifest.json').version")
           echo "version=$V" >> "$GITHUB_OUTPUT"
-          (cd release && rm -f "../articlewriter-v$V.zip" && zip -q "../articlewriter-v$V.zip" *)
 
       # 保持「先发 Release、再 attest」顺序。「Failed to persist attestation」的真正根因是 workflow permissions 缺 `attestations: write`（persist/create-storage-record 走 REST create-an-attestation 落库所需），v0.0.9 补齐后经推 tag 验证通过；Rekor/Fulcio 透明日志条目独立生成，不受该权限影响
       - name: Publish GitHub Release
@@ -56,7 +54,8 @@ jobs:
             TARGET="$V"
           fi
           NOTES=$(printf '**v%s**\n\nBuilt automatically from source commit %s.' "$TARGET" "$GITHUB_SHA")
-          ASSETS=(release/main.js release/manifest.json release/styles.css "articlewriter-v$TARGET.zip")
+          # 约定：GitHub Release 资产只传三个散文件，不上传 zip（zip 附件只在 Gitea Release 维护）
+          ASSETS=(release/main.js release/manifest.json release/styles.css)
           if gh release view "$TARGET" >/dev/null 2>&1; then
             echo "Release $TARGET 已存在 → 用 --clobber 覆盖同名资产（旧版本残留的其他文件不会被删除）"
             gh release upload "$TARGET" "${ASSETS[@]}" --clobber
