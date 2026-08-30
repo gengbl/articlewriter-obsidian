@@ -8,9 +8,10 @@
 
 ## 运行环境与构建部署
 
-- 构建：`npm run build` = `tsc -noEmit -skipLibCheck && node esbuild.config.mjs --production` → 产出完整可分发目录 **`release/`**（esbuild 打包出 `main.js`，并自动把手写的 `manifest.json`、`styles.css` 一并拷入；目录已自动创建）
+- 构建：`npm run build` = `tsc -noEmit -skipLibCheck && node esbuild.config.mjs --production` → 产出完整可分发目录 **`release/`**（esbuild 打包出 `main.js`，并自动把手写的 `manifest.json`、`styles.css`、写作指南 `WRITING_GUIDE.md` 一并拷入；目录已自动创建）
+- 打包：生成发布 zip（`articlewriter-v<版本号>.zip`）时把 `release/` 下全部文件整体压缩；**打包时，把写作指南也放进去**（`WRITING_GUIDE.md` 已由 esbuild.config.mjs 自动拷入 `release/`）
 - **任何代码改动后必须跑通 `npm run build`（tsc 零错误）**；可再 `node --check release/main.js` 做语法兜底
-- 部署：把 `release/` 下三个文件整体覆盖复制到 `/home/fosky/workspace/geng_bl/.obsidian/plugins/articlewriter/`，在 Obsidian 中重载插件生效
+- 部署：把 `release/` 下四个文件整体覆盖复制到 `/home/fosky/workspace/geng_bl/.obsidian/plugins/articlewriter/`，在 Obsidian 中重载插件生效
 - Git：仓库远端为 Gitea `http://192.168.0.3:3000/geng_bl/articlewritter-obsidian.git`（分支 main）；`.gitignore` 排除 `node_modules/` 与 `/release/`——上传时只提交源码，不含依赖与编译产物
 - esbuild 配置注意：非 watch 模式直接 `esbuild.build(options)` + `process.exit(0)`；banner 必须是对象 `{ js: "..." }` 不能是字符串
 - **本地 `node_modules/obsidian`（1.13.1）是被 patch 过的 d.ts**（有 `undo.patch`），与官方类型不同，已知差异：

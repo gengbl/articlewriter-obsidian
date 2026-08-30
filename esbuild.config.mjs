@@ -42,8 +42,8 @@ let options = {
 };
 
 fs.mkdirSync("release", { recursive: true }); // 编译产物统一放 release/（该目录已 gitignore，不入库）
-// release/ 即完整可分发目录：把非编译但插件必需的文件一并拷入
-for (const f of ["manifest.json", "styles.css"]) fs.copyFileSync(f, `release/${f}`);
+// release/ 即完整可分发目录：把非编译但插件必需的文件一并拷入（含写作指南 WRITING_GUIDE.md）
+for (const f of ["manifest.json", "styles.css", "WRITING_GUIDE.md"]) fs.copyFileSync(f, `release/${f}`);
 
 if (watch) {
 	const ctx = await esbuild.context(options);
