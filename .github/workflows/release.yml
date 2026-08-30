@@ -1,0 +1,70 @@
+name: Release
+
+on:
+  push:
+    tags: ["*"]
+  workflow_dispatch: {}
+
+permissions:
+  contents: write # 创建/更新 GitHub Release、上传资产
+  id-token: write # artifact attestation（Sigstore 签名）所需
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # tag→commit 解析需要完整历史
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Build
+        run: |
+          set -euo pipefail
+          npm ci
+          npm run build
+          node --check release/main.js
+
+      - name: Package zip
+        id: pkg
+        run: |
+          set -euo pipefail
+          V=$(node -p "require('./manifest.json').version")
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+          (cd release && rm -f "../articlewriter-v$V.zip" && zip -q "../articlewriter-v$V.zip" *)
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: |
+            release/main.js
+            release/styles.css
+            release/manifest.json
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          V="$(steps.pkg.outputs.version)"
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            TARGET="${GITHUB_REF_NAME#v}"
+            if [ "$TARGET" != "$V" ]; then
+              echo "::error::推送的 tag $TARGET 与 manifest version $V 不一致，终止发布"
+              exit 1
+            fi
+          else
+            TARGET="$V"
+          fi
+          NOTES=$(printf '**v%s**\n\nBuilt automatically from source commit %s.' "$TARGET" "$GITHUB_SHA")
+          ASSETS=(release/main.js release/manifest.json release/styles.css "articlewriter-v$TARGET.zip")
+          if gh release view "$TARGET" >/dev/null 2>&1; then
+            echo "Release $TARGET 已存在 → 用 --clobber 覆盖同名资产（旧版本残留的其他文件不会被删除）"
+            gh release upload "$TARGET" "${ASSETS[@]}" --clobber
+          else
+            gh release create "$TARGET" "${ASSETS[@]}" --title "v$TARGET" --notes "$NOTES"
+          fi

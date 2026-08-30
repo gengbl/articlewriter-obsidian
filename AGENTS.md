@@ -14,6 +14,7 @@
 - 部署：把 `release/` 下四个文件整体覆盖复制到 `/home/fosky/workspace/geng_bl/.obsidian/plugins/articlewriter/`，在 Obsidian 中重载插件生效
 - Git：仓库远端为 Gitea `http://192.168.0.3:3000/geng_bl/articlewritter-obsidian.git`（分支 main）；`.gitignore` 排除 `node_modules/` 与 `/release/`——上传时只提交源码，不含依赖与编译产物
 - **代码提交、版本打包与 Gitea Release 发布的完整流程见 [RELEASE.md](./RELEASE.md)**（含版本号规则、发布脚本与实测坑位），执行"打包发布"类任务前先读该文件
+- GitHub 镜像 Release 自动化：向 `gengbl/articlewriter-obsidian` 推送新标签即触发 `.github/workflows/release.yml`（CI 从源码重建 + attestation 签名 + 自动创建/更新 Release，无需手动传附件）；细节与手动回落方案见 RELEASE.md「GitHub 镜像 Release」节
 - esbuild 配置注意：非 watch 模式直接 `esbuild.build(options)` + `process.exit(0)`；banner 必须是对象 `{ js: "..." }` 不能是字符串
 - **正则语法兼容性**：Obsidian 移动端 iOS（Safari <16.4）不支持 lookbehind 断言 `(?<=…)` / `(?<!…>`，运行时直接抛 SyntaxError——src 内所有动态 RegExp 禁用该语法；需排除匹配起点前的特定字符时统一用「(?:^|[^X])」前缀捕获组 + 替换串 `$N` 回补被消耗的前缀字符（范例见 banned_words.ts simplifyNegationContrast；改动此类规则须做新旧输出等价性对照验证）
 - **本地 `node_modules/obsidian`（1.13.1）是被 patch 过的 d.ts**（有 `undo.patch`），与官方类型不同，已知差异：

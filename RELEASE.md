@@ -54,8 +54,9 @@ curl -s -b $CJ --referer "$PAGE" -X POST $PAGE -F "_csrf=$CSRF" -F "tag_name=v<�
 
 ## GitHub 镜像 Release 要求（社区插件目录校验）
 
-- GitHub 镜像仓库 `gengbl/articlewriter-obsidian`（标签**无 v 前缀**，如 `0.0.6`；历史为工作树拷贝式独立提交，非 clone），其 tag 对应的 Release **必须把 `main.js`、`manifest.json`、`styles.css` 作为独立资产直接上传**——校验器只认 Release assets 里的散文件，zip 内的不算；`articlewriter-v<版本>.zip` 可并存作额外资产（多余文件仅 recommendation 级提示，不阻塞）。
-- 本机无 gh CLI / PAT，走 Web UI 手动创建：`https://github.com/gengbl/articlewriter-obsidian/releases/new?tag=<版本>&target=main`，发布说明用下方模板。
+- GitHub 镜像仓库 `gengbl/articlewriter-obsidian`（标签**无 v 前缀**，如 `0.0.7`；历史为工作树拷贝式独立提交，非 clone），其 tag 对应的 Release **必须把 `main.js`、`manifest.json`、`styles.css` 作为独立资产直接上传**——校验器只认 Release assets 里的散文件，zip 内的不算；`articlewriter-v<版本>.zip` 可并存作额外资产（多余文件仅 recommendation 级提示，不阻塞）。
+- **现已自动化**：`.github/workflows/release.yml` 在新 tag 推送时触发（也可 Actions → Run workflow 手动跑）：checkout → npm ci → npm run build（官方未 patch 的 obsidian d.ts 下 tsc 零错误已验证）→ 打 zip → `actions/attest-build-provenance` 对 main.js/styles.css/manifest.json 签名（消除目录校验「Missing artifact attestations」建议项）→ gh release create/upload（已存在的 release 走 --clobber 覆盖同名资产，不会删除旧版残留的其他文件）。tag 与 manifest version 不一致立即失败；无 tag 手动运行时以 HEAD 的 manifest version 为目标。
+- CI 不可用时的手动回落：Web UI `https://github.com/gengbl/articlewriter-obsidian/releases/new?tag=<版本>&target=main`，上传本地 `release/` 三个散文件 + zip，发布说明用下方模板。
 - manifest minAppVersion 必须覆盖代码用到的全部 API 的 @since 版本（当前 =1.13.0：声明式设置 getSettingDefinitions 等 @since 1.13.0、fileManager.trashFile @since 1.6.6），否则 `obsidianmd/no-unsupported-api` 报错。
 
 ## 发布说明模板
