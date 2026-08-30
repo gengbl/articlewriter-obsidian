@@ -1,0 +1,5 @@
+node_modules/
+/release/
+
+# 发布打包产物
+/articlewriter-*.zip

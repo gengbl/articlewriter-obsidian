@@ -1,0 +1,403 @@
+.aw-dim {
+	color: var(--text-muted);
+	margin-left: 0.5em;
+}
+
+/* LLM 对话窗口 */
+.aw-chat-body {
+	max-height: 58vh;
+	overflow-y: auto;
+	padding: 4px 2px;
+	border-top: 1px solid var(--background-modifier-border);
+	border-bottom: 1px solid var(--background-modifier-border);
+	margin: 8px 0;
+}
+
+.aw-chat-msg {
+	margin: 6px 0;
+	padding: 6px 10px;
+	border-radius: 8px;
+	max-width: 94%;
+}
+
+.aw-chat-msg.user {
+	background: var(--background-secondary-alt);
+	margin-left: auto;
+	width: fit-content;
+	max-width: 85%;
+}
+
+.aw-chat-msg.assistant {
+	background: var(--background-modifier-hover);
+}
+
+.aw-chat-role {
+	display: block;
+	font-size: 0.72em;
+	color: var(--text-muted);
+	margin-bottom: 2px;
+}
+
+.aw-chat-text {
+	white-space: pre-wrap;
+	word-break: break-word;
+	user-select: text;
+	cursor: text;
+	-webkit-user-modify: read-only;
+}
+
+.aw-chat-status {
+	min-height: 1.2em;
+	margin: 4px 0;
+}
+
+.aw-chat-input textarea {
+	width: 100%;
+	resize: vertical;
+}
+
+/* 常驻对话面板（ItemView 停靠版）：flex 纵向布局，消息区随面板高度伸缩 */
+.aw-chat-view {
+	display: flex;
+	flex-direction: column;
+	height: 100%;
+	box-sizing: border-box;
+	gap: 6px;
+}
+
+.view-content .aw-chat-view .aw-chat-body {
+	max-height: none;
+	flex: 1 1 auto;
+	margin-top: 0;
+	min-height: 6em;
+}
+
+.aw-chat-view .aw-chat-head select {
+	vertical-align: middle;
+}
+
+.aw-chat-view .aw-chat-sp,
+.aw-chat-view .aw-chat-ctx {
+	font-size: 0.85em;
+	margin-left: 0;
+}
+
+.aw-chat-view .aw-chat-input textarea {
+	min-height: 3.4em;
+}
+
+/* @ 引用候选弹窗：锚定在输入框上方，↑↓/Enter/Esc 或点击选择 */
+.aw-chat-view .aw-chat-input {
+	position: relative;
+}
+.aw-ref-popup {
+	display: none;
+	position: absolute;
+	left: 0;
+	right: 0;
+	bottom: calc(100% + 4px);
+	max-height: 260px;
+	overflow-y: auto;
+	z-index: 30;
+	background: var(--background-secondary);
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 6px;
+	box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
+	padding: 4px;
+}
+.aw-ref-item {
+	padding: 4px 8px;
+	border-radius: 4px;
+	cursor: pointer;
+	font-size: 0.9em;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+.aw-ref-item.is-selected {
+	background: var(--interactive-accent);
+	color: var(--text-on-accent);
+}
+
+/* 工作状态面板（无顶部工具条；「刷新」按钮内嵌在工作目录行右侧）。纵向 flex：头部固定不滚、仅树主体区内部滚动 */
+.aw-status-view {
+	padding-top: 4px;
+	display: flex;
+	flex-direction: column;
+	height: 100%;
+	min-height: 0;
+	/* 字号与文字色对齐侧栏文件列表（.tree-item-self 用 --nav-item-size / --nav-item-color，比正文小一号且为弱化灰） */
+	font-size: var(--nav-item-size);
+	color: var(--nav-item-color);
+}
+
+/* 固定头部：工作目录行 + 小说状态 + 「书籍列表」标题行（含下拉框），高度随内容自适应、不参与滚动 */
+.aw-st-top {
+	flex-shrink: 0;
+}
+
+/* 可滚动树主体：全局文档 / 章节小节，仅此区域出现滚动条 */
+.aw-st-tree {
+	flex: 1 1 auto;
+	min-height: 0;
+	overflow-y: auto;
+}
+
+.aw-st-workdir {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	margin: 4px 0;
+	padding-bottom: 4px;
+	border-bottom: 1px solid var(--background-modifier-border); /* 工作目录行下横线分隔 */
+}
+
+.aw-st-wd-label {
+	font-weight: 600;
+	flex-shrink: 0;
+}
+
+.aw-st-wd-path {
+	word-break: break-all;
+	min-width: 0;
+}
+
+.aw-st-actions {
+	margin-left: auto;
+	flex-shrink: 0;
+}
+
+.aw-st-section {
+	font-weight: 600;
+	margin: 8px 0 3px;
+	border-bottom: 1px solid var(--background-modifier-border);
+	padding-bottom: 2px;
+}
+
+/* 「全局文档」「章节」小节标题：正常字重（不加粗） */
+.aw-st-subsection {
+	font-weight: 400;
+	margin: 6px 0 2px;
+}
+
+.aw-st-row,
+.aw-st-chap {
+	padding: 5px 8px;
+	border-radius: 6px;
+	cursor: pointer;
+	display: flex;
+	flex-wrap: wrap;
+	align-items: baseline;
+	gap: 4px;
+}
+
+/* 行悬停用中性半透明灰（主题 hover 变量在部分主题下接近白色、对比差） */
+.aw-st-row:hover,
+.aw-st-chap:hover {
+	background: rgba(128, 128, 128, 0.16);
+}
+
+.aw-st-row.is-active,
+.aw-st-chap.is-active {
+	background: var(--background-secondary-alt);
+}
+
+/* 章节行尾右对齐的激活 Radio（appearance:none 自绘小圆环）：选中才写回 current_chapter；点它不触发行的树状开合。各状态几何完全一致，仅颜色随状态变化。重要根因：Obsidian app.css 对 input[type="radio"] 有全局规则——基础规则把 width/height 设为 --checkbox-size(18px)，且 :checked 时元素被填实色、并额外叠加一个 ::after（top:-1px/inset-inline-start:-1px、18px 尺寸的对勾 SVG 背景图），这就是"激活后两个圆分离"的来源。故此处用 .view-content .aw-status-view 双重作用域把优先级压到核心 (0,2,1) 之上，并显式清零核心的 checked 伪元素与填充 */
+.view-content .aw-status-view input.aw-st-radio {
+	-webkit-appearance: none;
+	appearance: none;
+	flex-shrink: 0;
+	align-self: center;
+	margin-left: auto;
+	box-sizing: border-box;
+	min-width: 0;
+	min-height: 0;
+	width: 10px;
+	height: 10px;
+	border-radius: 50%;
+	border: 1px solid var(--text-faint);
+	background: transparent;
+	position: relative;
+	cursor: pointer;
+	outline: none;
+	transition: border-color .15s ease, box-shadow .15s ease;
+}
+/* 键盘聚焦时的焦点环也清零，避免点击后多出一圈描边 */
+.view-content .aw-status-view input.aw-st-radio:focus,
+.view-content .aw-status-view input.aw-st-radio:focus-visible { box-shadow: none; }
+.view-content .aw-status-view input.aw-st-radio::after {
+	content: "";
+	position: absolute;
+	inset: 1px; /* 8px 控件含 1px 描边、内容区 6px：内点四周留 1px 均匀间隙（直径 4px） */
+	top: 1px; left: 1px; right: 1px; bottom: 1px; /* 核心 checked 伪元素把 top/inset-inline-start 设为 -1px，此处显式覆盖四边 */
+	width: auto;   /* 核心给 ::after 设 width/height = --checkbox-size(18px)，必须重置为 auto 由 inset 定尺寸 */
+	height: auto;
+	margin: 0;
+	padding: 0;
+	border-radius: 50%;
+	background: transparent;
+	background-image: none; /* 清除核心的对勾 SVG 背景图 */
+	transform: scale(0);
+	transition: transform .18s cubic-bezier(.34, 1.56, .64, 1); /* 轻微回弹的弹出动画 */
+}
+/* 悬停（未选中）：圆心红点 + 柔光晕 */
+.view-content .aw-status-view input.aw-st-radio:not(:checked):hover {
+	border-color: var(--interactive-accent);
+	box-shadow: 0 0 0 3px color-mix(in srgb, var(--interactive-accent) 15%, transparent);
+}
+.view-content .aw-status-view input.aw-st-radio:not(:checked):hover::after { background: var(--color-red, #ef4444); transform: scale(0.8); }
+/* 已选中：几何与悬停态完全相同，仅颜色不同——外环主题色、内点主题色；显式清零核心给 checked 元素填的背景/描边 */
+.view-content .aw-status-view input.aw-st-radio:checked {
+	background: transparent;
+	background-image: none;
+	border-color: var(--interactive-accent);
+}
+.view-content .aw-status-view input.aw-st-radio:checked::after { background: var(--interactive-accent); transform: scale(1); }
+/* 已选中 + 悬停：内点转深红并放大（scale 1.5，直径 4px→6px），仅此一态变大 */
+.view-content .aw-status-view input.aw-st-radio:checked:hover::after { background: #f50202; transform: scale(2); }
+
+/* 「小说状态」区：位于工作目录横线之下、小说列表之上，底部再一条横线隔开 */
+.aw-st-status {
+	padding-bottom: 6px;
+	margin-bottom: 6px;
+	border-bottom: 1px solid var(--background-modifier-border);
+	line-height: 1.6; /* 「小说状态」信息区行距加大，比侧栏默认 1.3 更宽松 */
+}
+
+/* 书名行：名称左对齐，更新时间右对齐（flex space-between） */
+.aw-st-status-title {
+	font-weight: 600;
+	margin-top: 2px;
+	display: flex;
+	align-items: baseline;
+	justify-content: space-between;
+	gap: 8px;
+}
+.aw-st-status-time {
+	flex-shrink: 0;
+	font-weight: 400;
+}
+
+.aw-st-info-line {
+	margin-left: 0;
+	margin-top: 2px;
+}
+
+/* 文件行与主面板正文同色（不用链接蓝），仅悬停时加背景块提示可点 */
+.aw-st-file {
+	cursor: pointer;
+	padding: 2px 8px;
+	border-radius: 4px;
+}
+
+.aw-st-file:hover {
+	background: var(--background-modifier-hover);
+}
+
+.aw-st-chap-block + .aw-st-chap-block {
+	margin-top: 2px;
+}
+
+/* 「全局文档」组与章节展开后的文件列表容器：缩进 + 左侧指示线表示从属层级；文件名相对再深一级 */
+.aw-st-kids {
+	margin: 2px 0 6px 7px;
+	padding-left: 9px;
+	border-left: 2px solid var(--background-modifier-border);
+}
+.aw-st-kids .aw-st-file {
+	padding-left: 20px;
+}
+
+.aw-st-hint {
+	margin: 4px 0;
+}
+
+.aw-st-error {
+	color: var(--text-error);
+	margin: 4px 0;
+}
+
+.aw-st-row,
+.aw-st-chap {
+	padding-top: 3px;
+	padding-bottom: 3px;
+}
+
+.aw-st-file {
+	padding-top: 1px;
+	padding-bottom: 1px;
+}
+
+/* 状态页可折叠小节（flex：标题行右侧可挂「书籍列表」激活下拉框） */
+.aw-st-section-head {
+	cursor: pointer;
+	user-select: none;
+	display: flex;
+	align-items: center;
+	gap: 2px;
+}
+
+/* 「书籍列表」分组标题行右侧的小说激活下拉框：占满标题行剩余空间 */
+.aw-st-select {
+	flex: 1 1 auto;
+	min-width: 0;
+	padding: 1px 4px;
+	background: var(--background-secondary);
+	color: var(--text-normal);
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 4px;
+}
+
+.aw-st-section:hover,
+.aw-st-subsection:hover {
+	background: var(--background-modifier-hover);
+	border-radius: 4px;
+}
+
+.aw-st-caret {
+	display: inline-block;
+	width: 1em;
+	margin-right: 0.35em;
+	color: var(--text-muted);
+	cursor: pointer;
+	flex-shrink: 0;
+}
+
+/* 无可展开详情的行，其常显指示图置灰且不显示手型 */
+.aw-st-caret.is-off {
+	opacity: 0.45;
+	cursor: default;
+}
+
+/* 状态页右键快捷菜单 */
+.aw-st-menu {
+	position: fixed;
+	z-index: 300;
+	min-width: 160px;
+	background: var(--background-secondary);
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 6px;
+	box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
+	padding: 4px 0;
+}
+
+.aw-st-menu-item {
+	padding: 5px 14px;
+	cursor: pointer;
+	white-space: nowrap;
+}
+
+.aw-st-menu-item:hover {
+	background: var(--background-modifier-hover);
+}
+
+.aw-st-menu-item.is-danger {
+	color: var(--text-error);
+}
+
+/* 菜单内不同级别项之间的横线分隔 */
+.aw-st-menu-sep {
+	height: 1px;
+	margin: 4px 8px;
+	background: var(--background-modifier-border);
+}
