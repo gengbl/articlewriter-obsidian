@@ -2549,8 +2549,8 @@ class ArticleWriterSettingTab extends PluginSettingTab {
 		this.plugin = plugin;
 	}
 
-	// ===== 声明式设置（Obsidian ≥1.13：框架调用 getSettingDefinitions，不再走 display()）=====
-	// <1.13 仍回落到下方 display()/renderLlm。两者字段集保持一致；新增 LLM 字段时两处都要补。
+	// ===== 声明式设置（唯一生效实现：manifest minAppVersion=1.13.0 要求 Obsidian ≥1.13，框架恒调 getSettingDefinitions、不调已废弃的 display()）=====
+	// 下方 display()/renderLlm 保留作 pre-1.13 回落代码，当前 manifest 下不可达；若未来降低 minAppVersion 须恢复其与声明式的字段一致性。
 
 	private conf(): PluginConfig {
 		return this.plugin.settings.llm ?? (this.plugin.settings.llm = buildDefaultLlmConf());

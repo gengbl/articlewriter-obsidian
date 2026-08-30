@@ -52,6 +52,12 @@ curl -s -b $CJ --referer "$PAGE" -X POST $PAGE -F "_csrf=$CSRF" -F "tag_name=v<�
 6. **验证**：`GET $B/api/v1/repos/geng_bl/articlewritter-obsidian/releases` 确认该 tag 的 asset 字节数与本地 zip `stat -c %s` 一致
 7. 需要修正已发布的附件时：API `DELETE .../releases/{id}` 删掉整个 release → 重做 ②–⑥（没有单独增删资产的端点）
 
+## GitHub 镜像 Release 要求（社区插件目录校验）
+
+- GitHub 镜像仓库 `gengbl/articlewriter-obsidian`（标签**无 v 前缀**，如 `0.0.6`；历史为工作树拷贝式独立提交，非 clone），其 tag 对应的 Release **必须把 `main.js`、`manifest.json`、`styles.css` 作为独立资产直接上传**——校验器只认 Release assets 里的散文件，zip 内的不算；`articlewriter-v<版本>.zip` 可并存作额外资产（多余文件仅 recommendation 级提示，不阻塞）。
+- 本机无 gh CLI / PAT，走 Web UI 手动创建：`https://github.com/gengbl/articlewriter-obsidian/releases/new?tag=<版本>&target=main`，发布说明用下方模板。
+- manifest minAppVersion 必须覆盖代码用到的全部 API 的 @since 版本（当前 =1.13.0：声明式设置 getSettingDefinitions 等 @since 1.13.0、fileManager.trashFile @since 1.6.6），否则 `obsidianmd/no-unsupported-api` 报错。
+
 ## 发布说明模板
 
 ```
