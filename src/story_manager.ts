@@ -458,7 +458,7 @@ export class StoryManager {
 	private removeDocIfExists(path: string): Promise<boolean> {
 		const f = this.vault.getAbstractFileByPath(path);
 		if (!(f instanceof TFile)) return Promise.resolve(false);
-		return this.vault.trash(f, false).then(() => true);
+		return this.app.fileManager.trashFile(f).then(() => true);
 	}
 
 	async volumeList(storyName: string): Promise<doc.VolumeInfo[]> {
@@ -1024,7 +1024,7 @@ export class StoryManager {
 	async deleteChapter(storyName: string, num: number): Promise<{ title: string }> {
 		const ch = await this.chapterDirOf(storyName, num);
 		if (!ch) throw new Error(`第${num}章不存在`);
-		await this.vault.trash(ch.dir, false);
+		await this.app.fileManager.trashFile(ch.dir);
 		const state = (await this.loadState(storyName)) ?? this.emptyState(storyName);
 		const removed = state.chapters[String(num)];
 		delete state.chapters[String(num)];

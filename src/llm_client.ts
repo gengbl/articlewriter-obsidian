@@ -30,8 +30,19 @@ export function createClient(cfg: LlmConfigDoc, timeoutMs = 60000): OpenAI {
 	});
 }
 
-function buildParams(cfg: LlmConfigDoc, messages: Message[], stream: boolean, extra?: Record<string, unknown>) {
-	const body: Record<string, unknown> = {
+/** chat completions 请求体（兼容端点透传任意附加字段；model 为空时序列化自动省略） */
+interface LlmChatBody {
+	messages: Message[];
+	model?: string;
+	stream: boolean;
+	temperature?: number;
+	max_tokens?: number;
+	top_p?: number;
+	[k: string]: unknown;
+}
+
+function buildParams(cfg: LlmConfigDoc, messages: Message[], stream: boolean, extra?: Record<string, unknown>): LlmChatBody {
+	const body: LlmChatBody = {
 		model: cfg.model_name || undefined, // 本地服务常忽略/自取已加载模型；空则省略该字段
 		messages,
 		stream,
@@ -40,7 +51,7 @@ function buildParams(cfg: LlmConfigDoc, messages: Message[], stream: boolean, ex
 	if (cfg.max_tokens != null) body.max_tokens = cfg.max_tokens;
 	if (cfg.top_p != null) body.top_p = cfg.top_p;
 	if (extra) Object.assign(body, extra);
-	return body as any;
+	return body;
 }
 
 /** 采样等参数透传（如 reasoning_effort / enable_thinking——OpenAI 官方无此字段，兼容端点接受） */

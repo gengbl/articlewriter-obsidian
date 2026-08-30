@@ -19,13 +19,13 @@ export class TextInputModal extends Modal {
 		new Setting(this.contentEl).addText((text) => {
 			text.setPlaceholder(this.placeholderText);
 			text.inputEl.focus();
-			text.inputEl.addEventListener("keydown", async (e) => {
+			text.inputEl.addEventListener("keydown", (e) => {
 				if (e.key === "Enter") {
 					e.preventDefault();
 					const value = text.inputEl.value.trim();
 					this.submitted = true;
 					this.close();
-					await this.onSubmit(value);
+					void this.onSubmit(value);
 				} else if (e.key === "Escape") {
 					this.close(); // onClose 触发 onCancel
 				}
@@ -120,8 +120,8 @@ export class ChapterListModal extends SuggestModal<ChapterItem> {
 		if (item.isCurrent) el.createSpan({ text: "　（当前）", cls: "aw-dim" });
 	}
 
-	async onChooseSuggestion(item: ChapterItem): Promise<void> {
-		await this.onOpenBody(item);
+	onChooseSuggestion(item: ChapterItem): void {
+		void this.onOpenBody(item);
 	}
 }
 
@@ -167,10 +167,10 @@ export class FolderPickerModal extends SuggestModal<string> {
 		if (!this.submitted && this.onCancel) this.onCancel();
 	}
 
-	async onChooseSuggestion(path: string): Promise<void> {
+	onChooseSuggestion(path: string): void {
 		this.submitted = true;
 		this.close();
-		await this.onPick(path);
+		void this.onPick(path);
 	}
 }
 
@@ -196,10 +196,10 @@ export class StoryPickerModal extends SuggestModal<string> {
 		if (!this.submitted && this.onCancel) this.onCancel();
 	}
 
-	async onChooseSuggestion(name: string): Promise<void> {
+	onChooseSuggestion(name: string): void {
 		this.submitted = true;
 		this.close();
-		await this.onPick(name);
+		void this.onPick(name);
 	}
 }
 
@@ -234,7 +234,7 @@ export class ActionMenuModal extends Modal {
 		new Setting(this.contentEl).addButton((btn) =>
 			btn.setButtonText("确认").setCta().onClick(() => this.choose())
 		);
-		this.contentEl.addEventListener("keydown", async (e) => {
+		this.contentEl.addEventListener("keydown", (e) => {
 			if (e.key === "ArrowDown") {
 				e.preventDefault();
 				this.selected = Math.min(this.selected + 1, this.enabledCount() - 1);
@@ -245,7 +245,7 @@ export class ActionMenuModal extends Modal {
 				this.refreshHighlight();
 			} else if (e.key === "Enter") {
 				e.preventDefault();
-				await this.choose();
+				void this.choose();
 			} else if (e.key === "Escape") {
 				this.close();
 			}
@@ -264,9 +264,9 @@ export class ActionMenuModal extends Modal {
 			row.createSpan({ text: item.label });
 			if (item.sub) row.createSpan({ text: `　${item.sub}`, cls: "aw-dim" });
 			if (!item.disabled) {
-				row.addEventListener("click", async () => {
+				row.addEventListener("click", () => {
 					this.selected = i;
-					await this.choose();
+					void this.choose();
 				});
 			}
 		});
@@ -311,7 +311,7 @@ export class TextAreaPrompt extends Modal {
 	onOpen(): void {
 		this.contentEl.createEl("h3", { text: this.title });
 		let value = this.initialValue ?? "";
-		const ta = this.contentEl.createEl("textarea", { cls: "aw-prompt-textarea" }) as HTMLTextAreaElement; // width/min-height 走类名
+		const ta = this.contentEl.createEl("textarea", { cls: "aw-prompt-textarea" }); // width/min-height 走类名
 		ta.placeholder = this.placeholderText;
 		ta.value = this.initialValue ?? "";
 		ta.focus();

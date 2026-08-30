@@ -1,4 +1,4 @@
-import { App, Modal, Notice, Plugin, PluginSettingTab, Setting, TAbstractFile, TFile, TFolder } from "obsidian";
+import { App, Modal, Notice, Plugin, PluginSettingTab, Setting, TAbstractFile, TFile, TFolder, type SettingDefinitionItem, type SettingDefinitionPage } from "obsidian";
 import { ActionItem, ActionMenuModal, ChapterListModal, ConfirmModal, FolderPickerModal, MarkdownViewerModal, MultiFieldModal, NewStoryInput, NewStoryModal, PanelLine, StoryPickerModal, StreamingPreviewModal, TextAreaPrompt, TextPanelModal, TextInputModal } from "./modals";
 import { LlmChatView } from "./llm_chat_view";
 import { StatusView, type StatusAction, type StatusChapterEntry, type StatusDetail, type StatusSnapshot, type StatusStoryEntry } from "./status_view";
@@ -1617,7 +1617,7 @@ export default class ArticleWriterPlugin extends Plugin {
 				if (!(folder instanceof TFolder)) throw new Error("小说目录不存在或已被移动");
 				const ok = await this.confirmBox(`删除小说「${a.name}」？`, "整本书的文件夹（含全部章节与文档）将移入 Obsidian 回收站，可从中找回。", "删除");
 				if (!ok) return;
-				await this.app.vault.trash(folder, false);
+				await this.app.fileManager.trashFile(folder);
 				if ((this.settings.lastStory || "") === a.name) {
 					this.settings.lastStory = "";
 					await this.saveSettings(); // 同时触发 LLM 面板上下文行刷新
@@ -1681,7 +1681,7 @@ export default class ArticleWriterPlugin extends Plugin {
 				if (f.name === "故事状态.md") throw new Error("不能删除小说状态文档（需要重置请用「重建小说状态」命令）");
 				const ok = await this.confirmBox(`删除文件 ${f.path}？`, "将移入 Obsidian 回收站，可从中找回。", "删除");
 				if (!ok) return;
-				await this.app.vault.trash(f, false);
+				await this.app.fileManager.trashFile(f);
 				new Notice(`${f.name} 已删除（可在回收站找回）`);
 				return;
 			}
@@ -2547,6 +2547,147 @@ class ArticleWriterSettingTab extends PluginSettingTab {
 	constructor(plugin: ArticleWriterPlugin) {
 		super(plugin.app, plugin);
 		this.plugin = plugin;
+	}
+
+	// ===== 声明式设置（Obsidian ≥1.13：框架调用 getSettingDefinitions，不再走 display()）=====
+	// <1.13 仍回落到下方 display()/renderLlm。两者字段集保持一致；新增 LLM 字段时两处都要补。
+
+	private conf(): PluginConfig {
+		return this.plugin.settings.llm ?? (this.plugin.settings.llm = buildDefaultLlmConf());
+	}
+
+	getSettingDefinitions(): SettingDefinitionItem[] {
+		const s = this.plugin.settings;
+		const cfgs = this.conf().llm_configs ?? [];
+		const defs: SettingDefinitionItem[] = [];
+
+		defs.push({ name: "工作目录（work_dir）", desc: "写小说的文件夹（vault 内已有文件夹）。首次使用任何命令时会自动弹出选择器让你选定；以后建书/建章/打开文档等全部在该目录下操作。每个小说是其下一个子文件夹：故事状态.md、大纲.md、第NN章-标题/章节.md 等", control: { key: "workDir", type: "text", placeholder: "首次使用时自动选择" } });
+		defs.push({ name: "重新选择工作目录…", desc: "弹出文件夹选择器切换 work_dir（同「选择工作目录」命令）", action: () => this.plugin.pickWorkDir(false) });
+		defs.push({ name: "创建后自动打开文档", desc: "新建小说/章节后立即在标签页中打开对应正文或大纲", control: { key: "autoOpenOnCreate", type: "toggle" } });
+
+		defs.push({ type: "group", heading: "LLM 全局设置", items: [
+			{ name: "当前激活配置（active_llm）", desc: "连接测试与写作命令使用该配置", control: { key: "llm.active_llm", type: "dropdown", options: Object.fromEntries(cfgs.map((c) => [c.name, c.name])), defaultValue: "" } },
+			{ name: "写作系统提示词 system_prompt", desc: "全局基础系统提示词：无编写类型格式块时使用；留空=内置默认。对齐 CLI config.json 的 system_prompt", control: { key: "llm.system_prompt", type: "textarea", rows: 5, placeholder: "留空使用内置默认" } },
+			{ name: "描述方式 desc_style", desc: "normal / complete（对齐 CLI）", control: { key: "llm.desc_style", type: "dropdown", options: { normal: "normal", complete: "complete" }, defaultValue: "normal" } },
+			{ name: "系统级指南路径 system_guide_path", desc: "设置后优先从该 vault 内文件读取/保存系统级写作指南（相对路径，如 Notes/系统写作指南.md），覆盖 data.json 内嵌内容；留空=用内嵌内容。读不到时自动回落并提示", control: { key: "llm.system_guide_path", type: "text", placeholder: "留空使用内置内容" } },
+		] });
+
+		defs.push({ type: "list", heading: "模型配置（llm_configs，存于插件数据目录 data.json）", emptyState: "没有模型配置。", addItem: { name: "新建配置", action: () => void this.addLlmConfig() }, onDelete: (i) => void this.removeLlmConfig(i), onReorder: (o, n) => void this.reorderLlmConfigs(o, n), items: cfgs.map((cfg, i) => this.configPage(cfg, i)) });
+
+		defs.push({ name: "关于", desc: "ArticleWriter Obsidian 版：建书/建章、打开文档、保存、字数统计；数据全部为 vault 内 MD 文档，运行态存于各书的「故事状态.md」YAML 文件属性（version 2）。LLM 走 OpenAI 兼容接口（openai SDK），可接 DeepSeek / DashScope / Ollama / LM Studio / llama.cpp 等。api_key 明文存放——同步/分享 vault 时注意不要泄露配置文件。" });
+		return defs;
+	}
+
+	private configPage(cfg: LlmConfigDoc, i: number): SettingDefinitionPage<string> {
+		const active = this.conf().active_llm === cfg.name;
+		const strFields: Array<[keyof LlmConfigDoc, string, string]> = [
+			["base_url", "服务地址 base_url", "如 http://localhost:8509 或 https://api.deepseek.com（已含 /vN 不重复拼接）"],
+			["model_name", "模型 model_name", "本地服务可留空（用其已加载模型）"],
+			["api_key", "API Key api_key", "明文存于插件数据目录 data.json"],
+			["reasoning_effort", "推理强度 reasoning_effort", "low/medium/high（兼容端点支持时生效）"],
+		];
+		const numFields: Array<[keyof LlmConfigDoc, string]> = [["temperature", "温度 temperature"], ["max_tokens", "最大 token max_tokens"]];
+		const items: SettingDefinitionItem[] = [];
+		items.push({ name: "设为激活（active_llm）", desc: active ? "当前激活中" : "保存后，连接测试与写作命令将使用该配置", disabled: active || undefined, action: () => void this.setActiveLlm(cfg.name) });
+		items.push({ name: "测试连接", desc: "对该配置执行 GET /models 连通性测试并弹通知（列出可用模型）", action: () => void this.plugin.runLlmTest(cfg) });
+		for (const [k, label] of numFields) items.push({ name: label, control: { key: `cfg.${i}.${String(k)}`, type: "text", placeholder: String(k) } });
+		for (const [k, label, ph] of strFields) items.push({ name: label, desc: ph, control: { key: `cfg.${i}.${String(k)}`, type: "text", placeholder: ph } });
+		return { type: "page", name: `${cfg.name}${active ? "　◀ 当前" : ""}`, desc: cfg.base_url || "（未填服务地址）", displayValue: () => [cfg.model_name && `模型 ${cfg.model_name}`, cfg.base_url].filter(Boolean).join(" · "), status: cfg.base_url ? null : ("warning" as const), items };
+	}
+
+	getControlValue(key: string): unknown {
+		const s = this.plugin.settings;
+		if (key === "workDir") return s.workDir ?? "";
+		if (key === "autoOpenOnCreate") return !!s.autoOpenOnCreate;
+		const c = this.conf();
+		if (key === "llm.active_llm") {
+			const names = (c.llm_configs ?? []).map((x) => x.name);
+			return c.active_llm && names.includes(c.active_llm) ? c.active_llm : (names[0] ?? "");
+		}
+		if (key === "llm.system_prompt") return c.system_prompt ?? "";
+		if (key === "llm.desc_style") return c.desc_style || "normal";
+		if (key === "llm.system_guide_path") return c.system_guide_path ?? "";
+		if (key.startsWith("cfg.")) {
+			const parts = key.split(".");
+			const field = parts.slice(2).join(".") as keyof LlmConfigDoc;
+			const v = (c.llm_configs ?? [])[Number(parts[1])]?.[field];
+			return v == null ? "" : String(v);
+		}
+		return undefined;
+	}
+
+	async setControlValue(key: string, value: unknown): Promise<void> {
+		const s = this.plugin.settings;
+		const str = typeof value === "string" ? value : "";
+		if (key === "workDir") {
+			s.workDir = str.trim().replace(/^\/+|\/+$/g, "");
+			s.lastStory = "";
+			await this.plugin.saveSettings();
+			return;
+		}
+		if (key === "autoOpenOnCreate") {
+			s.autoOpenOnCreate = value === true;
+			await this.plugin.saveSettings();
+			return;
+		}
+		const c = this.conf();
+		if (key === "llm.active_llm") c.active_llm = str || undefined;
+		else if (key === "llm.system_prompt") c.system_prompt = str.trim() || undefined;
+		else if (key === "llm.desc_style") c.desc_style = str || "normal";
+		else if (key === "llm.system_guide_path") c.system_guide_path = str.trim() || undefined;
+		else if (key.startsWith("cfg.")) {
+			const parts = key.split(".");
+			const field = parts.slice(2).join(".") as keyof LlmConfigDoc;
+			const cfg = (c.llm_configs ?? [])[Number(parts[1])];
+			if (!cfg) return;
+			const rec = cfg as unknown as Record<string, unknown>;
+			if (field === "temperature" || field === "max_tokens") { const n = Number(str); rec[field] = str.trim() !== "" && !Number.isNaN(n) ? n : undefined; }
+			else rec[field] = str.trim() || undefined;
+		} else return; // 未知键忽略
+		await this.plugin.saveSettings();
+		this.update();
+	}
+
+	private async addLlmConfig(): Promise<void> {
+		const conf = this.conf();
+		const cfgs = (conf.llm_configs ??= []);
+		let i = cfgs.length + 1;
+		let name = `config-${i}`;
+		while (cfgs.some((x) => x.name === name)) { i++; name = `config-${i}`; }
+		cfgs.push({ name, provider: "openai", api_key: "", base_url: "", model_name: "", temperature: 0.8, max_tokens: 65535, top_p: 0.9, repeat_penalty: 1.1, thinking: "", reasoning_effort: "high", openai_extras: [], api_style: "" });
+		if (!conf.active_llm) conf.active_llm = name;
+		await this.plugin.saveSettings();
+		this.update();
+		new Notice("已新建模型配置，请填写服务地址/模型/API Key");
+	}
+
+	private removeLlmConfig(i: number): void {
+		void (async () => {
+			const conf = this.conf();
+			const cfgs = conf.llm_configs ?? [];
+			const removed = cfgs.splice(i, 1)[0];
+			if (removed && conf.active_llm === removed.name) conf.active_llm = cfgs[0]?.name; // 删激活项则回落到第一个（可能为 undefined=空列表）
+			await this.plugin.saveSettings();
+			this.update();
+		})();
+	}
+
+	private reorderLlmConfigs(oldIndex: number, newIndex: number): void {
+		void (async () => {
+			const cfgs = this.conf().llm_configs ?? [];
+			const [moved] = cfgs.splice(oldIndex, 1);
+			cfgs.splice(newIndex, 0, moved);
+			await this.plugin.saveSettings();
+			this.update();
+		})();
+	}
+
+	private setActiveLlm(name: string): void {
+		void (async () => {
+			this.conf().active_llm = name;
+			await this.plugin.saveSettings();
+			this.update();
+		})();
 	}
 
 	display(): void {

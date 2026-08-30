@@ -272,7 +272,7 @@ export class StatusView extends ItemView {
 		row.appendText(`第${String(c.num).padStart(2, "0")}章 ${c.title}`); // 激活态仅用灰底+选中Radio标识
 		row.createSpan({ text: `${c.words.toLocaleString()}字`, cls: "aw-dim" });
 		// RadioButton 放在行尾右对齐：选中它才激活该章（写回 current_chapter）；点它不触发行的树状开合
-		const radio = row.createEl("input", { type: "radio", cls: "aw-st-radio" }) as HTMLInputElement;
+		const radio = row.createEl("input", { type: "radio", cls: "aw-st-radio" });
 		radio.name = `aw-chap-${storyName}`; // 同名互斥：一本书内只有一个当前章
 		radio.checked = c.active && isActiveStory;
 		radio.addEventListener("click", (e) => e.stopPropagation());

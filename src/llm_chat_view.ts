@@ -88,7 +88,7 @@ export class LlmChatView extends ItemView {
 		this.ctxLineEl.setText("当前小说：加载中…");
 		const head = root.createDiv({ cls: "aw-chat-head" });
 		head.appendText("模型：");
-		this.selectEl = head.createEl("select") as HTMLSelectElement;
+		this.selectEl = head.createEl("select");
 		this.modelLabelEl = head.createSpan({ cls: "aw-dim" });
 		this.selectEl.addEventListener("change", () => {
 			this.activeIdx = parseInt(this.selectEl.value, 10) || 0;
@@ -101,7 +101,7 @@ export class LlmChatView extends ItemView {
 		this.statusEl = root.createDiv({ cls: "aw-dim aw-chat-status is-hidden" }); // 仅动态状态（回复中/错误）时显示，空闲隐藏——操作提示已移入输入框占位文字
 
 		const inputBox = root.createDiv({ cls: "aw-chat-input" });
-		this.inputEl = inputBox.createEl("textarea") as HTMLTextAreaElement;
+		this.inputEl = inputBox.createEl("textarea");
 		this.inputEl.rows = 3;
 		this.inputEl.placeholder = "Enter 发送 · Shift+Enter 换行；@引用vault文件（弹窗选择或手输路径），范围可写 :12 / :3-10 或直接紧跟如 @[[x.md]]3-5——发送时替换为对应行的实际内容；每轮自动携带助手身份+创作规范+当前小说上下文；历史不落盘"; // 空时显示的提示在框内，输入即消失
 		// @ 引用候选弹窗：锚定在输入框上方，键入 @ 触发、随后续字符过滤
@@ -135,13 +135,13 @@ export class LlmChatView extends ItemView {
 		});
 
 		const btns = root.createDiv();
-		this.sendBtn = btns.createEl("button", { text: "发送" }) as HTMLButtonElement;
+		this.sendBtn = btns.createEl("button", { text: "发送" });
 		this.sendBtn.classList.add("mod-cta");
 		this.sendBtn.addEventListener("click", () => void this.send());
-		this.stopBtn = btns.createEl("button", { text: "停止生成" }) as HTMLButtonElement;
+		this.stopBtn = btns.createEl("button", { text: "停止生成" });
 		this.stopBtn.disabled = true;
 		this.stopBtn.addEventListener("click", () => this.abort());
-		this.clearBtn = btns.createEl("button", { text: "清空对话" }) as HTMLButtonElement;
+		this.clearBtn = btns.createEl("button", { text: "清空对话" });
 		this.clearBtn.addEventListener("click", () => this.clearChat());
 
 		this.refreshModels();
