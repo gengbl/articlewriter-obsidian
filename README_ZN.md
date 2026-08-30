@@ -8,6 +8,12 @@
 
 **Base64 用法（`atob` / `btoa`）。** 插件自身源码中**零** base64 编解码调用。发布产物中出现的所有实例均来自 esbuild 打包进来的第三方库：`yaml` 解析器（其处理 YAML `!!binary` 标签的标准代码）和 openai SDK（通用的 base64 ↔ 二进制缓冲转换辅助函数），只做常规数据格式转换，**未用于混淆 API Key、隐藏 URL 或掩盖任何代码载荷**。构建产物未经压缩混淆，完整可读源码已发布于[仓库](https://github.com/gengbl/articlewriter-obsidian)，如有疑虑请直接审计。
 
+### 3. Vault 遍历披露（Vault Enumeration Disclosure）
+本插件通过 Obsidian 标准 `app.vault` API 查看 vault 内的文件结构，范围严格分为两类：
+* **用途——全库级「路径」列举（两个小的 UI 选择器）**：(a) 首次使用 / 切换工作目录（`work_dir`）时弹出的文件夹选择器会列出已有文件夹供模糊搜索；该遍历从 vault 根开始但刻意设限——**最深只下探 3 层、最多收集 500 个条目、跳过 `.obsidian/` 等隐藏目录**；(b) 可停靠聊天面板的 @引用候选列表在渲染时调用一次 `vault.getFiles()`，让你能用一个快捷键把 vault 里任意文档引用进 LLM 提示词。两者都只列文件**路径**，当时不读取任何内容。只有你实际操作后才会加载文本：选定文件夹只是为后续本地操作定界；引用某文件则会把其内容并入你自己发起的、发往你所配置模型端点的请求（见上文 §1）。
+* **用途——限定工作目录的操作**：其余全部功能（构建小说状态树、列卷/列章、统计每章/全书字数、把大纲 / 世界观 / 人物 / 场景等文档载入写作提示词）都只在**你首次使用时自选的工作文件夹**（`work_dir`）内进行，该目录之外的文件从不被这些功能打开或扫描。
+* **隐私保证**：所有遍历完全在你本机本地内存中进行。文件路径与内容仅在设备内处理，**绝不**上传、远程索引、泄露或共享给任何外部服务器——唯一例外是你自己主动触发的、上文 §1 已披露的 LLM 请求。
+
 ## Overview (English)
 
 ArticleWriter turns your vault into an AI-assisted novel workshop. It organizes each story as a folder of plain Markdown files (state doc, outline, world-building, characters, scenes, foreshadowing notes and one folder per chapter) and adds LLM-powered writing commands on top: write / continue / rewrite / polish chapters, strip AI-sounding phrasing, review from a global perspective, plus a dockable chat panel that can quote any vault file via @references. All data stays local; no external services are required beyond the OpenAI-compatible model endpoint you configure yourself.

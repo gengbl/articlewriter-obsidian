@@ -23,3 +23,4 @@
 - 2026-08-30：以上三项（no-control-regex 控制字符修复 / js-yaml→yaml 换库 / README 中英审核披露声明）随 manifest bump 打包发布 **v0.0.10**（`articlewriter-v0.0.10.zip`）。
 - 2026-08-30：发布约定变更——自 v0.0.10 起不再在 Gitea 创建 Release / 走 Web 会话上传流（社区目录审核只认 GitHub Release）；发布 = Gitea tag vX.Y.Z + 镜像无 v 前缀 tag 触发 CI 自动上架。RELEASE.md 第 5–7 步标停用，AGENTS.md 路由行与 build-deploy 同步修订。
 - 2026-08-30：发布约定再澄清——Gitea 侧不建/不拉起任何自动化工作流（Release 仍按 RELEASE.md 5–7 步手动维护）；GitHub CI 不再打包/上传 zip，release.yml「Package zip」步骤改为仅读取 manifest version、Release 资产只含 main.js/manifest.json/styles.css 三散文件（zip 附件只在 Gitea Release）。
+- 2026-08-30：README 审核披露声明追加「§3 Vault Enumeration Disclosure」（中英双版）——如实说明两类 vault 遍历：全库级仅路径列举两处（work_dir 文件夹选择器 collectFolders 从根递归但限深 3 层/上限 500 条/跳过隐藏目录；聊天面板 @引用候选 getFiles()），其余功能全部限定用户自选 work_dir 内，内容仅在用户实际操作后本地读取、绝不外传。同步修正 AGENTS.md 路由行残留的旧发布约定措辞（Gitea Release 手动维护不建工作流）。
