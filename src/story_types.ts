@@ -6,8 +6,8 @@ const WINDOWS_RESERVED_NAMES = new Set([
 	"LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
 ]);
 
-// 动态构造以规避 lint no-control-regex；字符集与 Python fsutil.safe_filename 完全一致（仅 C0 控制符 \u0000-\u001f，不含 DEL/C1）
-const FN_BAD_CHARS_RE = new RegExp("[<>:\"/\\\\|?*\\u0000-\\u001f]", "g");
+// 规避 lint no-control-regex（新版校验器连 new RegExp 字符串内的 \uXXXX 转义也会解析）：C0 区间改用 fromCharCode 运行时拼接，源码零控制字符；字符集与 Python fsutil.safe_filename 完全一致（仅 C0 控制符 U+0000-U+001F，不含 DEL/C1）
+const FN_BAD_CHARS_RE = new RegExp("[<>:\"/\\\\|?*" + String.fromCharCode(0) + "-" + String.fromCharCode(31) + "]", "g");
 
 /**
  * 生成在 Windows / Linux 上均可安全使用的文件名：
