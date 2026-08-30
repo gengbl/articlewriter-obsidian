@@ -2,6 +2,12 @@
 
 > 英文版见 [README.md](./README.md)
 
+## ⚠️ 信息披露与安全声明（Disclosures & Security Statement）
+
+**网络请求。** 本插件除 LLM 对话外不进行任何联网活动。所有出站流量仅通过官方 `openai` SDK 发往**你在设置中自行配置的** OpenAI 兼容端点（本地服务如 Ollama / LM Studio / llama.cpp，或 DeepSeek、通义千问 DashScope 等服务商 API）。运行时只会触发两种请求——非流式与流式 chat completions；扫描器标记出的其余请求相关调用点属于打包进 bundle 的 SDK 通用 HTTP 层，本插件不会在其他地方使用它们。**没有任何遥测、统计上报、更新检查，也不连接任何作者自建的服务器。** API Key 由你本人在设置面板输入，随其他插件配置一起保存在你的 vault 本地，只作为认证头发送给你所选的端点；留空时（本地服务的常见情况）不发送任何凭证。
+
+**Base64 用法（`atob` / `btoa`）。** 插件自身源码中**零** base64 编解码调用。发布产物中出现的所有实例均来自 esbuild 打包进来的第三方库：`yaml` 解析器（其处理 YAML `!!binary` 标签的标准代码）和 openai SDK（通用的 base64 ↔ 二进制缓冲转换辅助函数），只做常规数据格式转换，**未用于混淆 API Key、隐藏 URL 或掩盖任何代码载荷**。构建产物未经压缩混淆，完整可读源码已发布于[仓库](https://github.com/gengbl/articlewriter-obsidian)，如有疑虑请直接审计。
+
 ## Overview (English)
 
 ArticleWriter turns your vault into an AI-assisted novel workshop. It organizes each story as a folder of plain Markdown files (state doc, outline, world-building, characters, scenes, foreshadowing notes and one folder per chapter) and adds LLM-powered writing commands on top: write / continue / rewrite / polish chapters, strip AI-sounding phrasing, review from a global perspective, plus a dockable chat panel that can quote any vault file via @references. All data stays local; no external services are required beyond the OpenAI-compatible model endpoint you configure yourself.

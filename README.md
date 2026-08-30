@@ -2,6 +2,12 @@
 
 > Chinese version: [README_ZN.md](./README_ZN.md)
 
+## ⚠️ Disclosures & Security Statement
+
+**Network requests.** This plugin performs no network activity except LLM chat. All outbound traffic goes exclusively through the official `openai` SDK to the OpenAI-compatible endpoint **that you configure yourself in settings** (a local server such as Ollama / LM Studio / llama.cpp, or a provider API like DeepSeek or Qwen DashScope). At runtime only two kinds of requests are ever triggered — non-streaming and streaming chat completions; any additional request-related call sites flagged by scanners belong to the bundled SDK's generic HTTP layer and are not used elsewhere by this plugin. There is **no telemetry, no analytics, no update checking, and no connection to any author-operated server**. Your API key is entered by you in the settings panel, stored locally inside your vault with the rest of the plugin settings, and transmitted only as an authentication header to the endpoint you chose; when left empty (the normal case for local servers), no credential is sent at all.
+
+**Base64 usage (`atob` / `btoa`).** The plugin's own source code contains **zero** base64 encode/decode calls. Every occurrence present in the shipped bundle originates from third-party libraries that esbuild bundles: the `yaml` parser (its standard handler for YAML `!!binary` tags) and the `openai` SDK (generic base64 ↔ binary-buffer conversion helpers). They perform ordinary data-format conversions and are **not** used to obfuscate API keys, hide URLs, or mask code payloads. Nothing in the build is minified or obfuscated — the complete human-readable source is published in [the repository](https://github.com/gengbl/articlewriter-obsidian); please audit it directly if you have concerns.
+
 ## Overview
 
 ArticleWriter turns your vault into an AI-assisted novel workshop. It organizes each story as a folder of plain Markdown files (state doc, outline, world-building, characters, scenes, foreshadowing notes and one folder per chapter) and adds LLM-powered writing commands on top: write / continue / rewrite / polish chapters, strip AI-sounding phrasing, review from a global perspective, plus a dockable chat panel that can quote any vault file via @references. All data stays local; no external services are required beyond the OpenAI-compatible model endpoint you configure yourself.
