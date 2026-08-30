@@ -44,7 +44,7 @@
 3. 文件操作 → `story_manager.ts` 加 async 方法（只在这层碰 vault；写操作用后即时落盘，不缓存内容到内存字段）
 4. 交互 → 复用 `modals.ts` 现有 Modal；确实不够再加新 Modal
 5. `main.ts`：`this.addCommand({ id, name: "中文说明（对齐 CLI /xxx）", callback: ... })` + 实现 `cmdXxx()`；handler 开头统一走 `ensureWorkDir()` / `requireStory()` 守卫，异常用 `notifyError(前缀, e)`
-6. 同步更新 `README.md` 的命令表与本文档的「已移植命令速查」
+6. 同步更新 `README.md`（英文）与 `README_ZN.md`（中文）两份的命令表与本文档的「已移植命令速查」（两版内容保持对齐，改一必改二）
 7. `npm run build` → 复制部署 → Obsidian 内冒烟验证
 
 ### main.ts 通用辅助方法（handler 一律复用，不要重复造轮子）

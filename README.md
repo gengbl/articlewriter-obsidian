@@ -1,76 +1,74 @@
 # ArticleWriter for Obsidian
 
-> 英文版见 [README_EN.md](./README_EN.md) / Full English version: [README_EN.md](./README_EN.md)
+> Chinese version: [README_ZN.md](./README_ZN.md)
 
-## Overview (English)
+## Overview
 
 ArticleWriter turns your vault into an AI-assisted novel workshop. It organizes each story as a folder of plain Markdown files (state doc, outline, world-building, characters, scenes, foreshadowing notes and one folder per chapter) and adds LLM-powered writing commands on top: write / continue / rewrite / polish chapters, strip AI-sounding phrasing, review from a global perspective, plus a dockable chat panel that can quote any vault file via @references. All data stays local; no external services are required beyond the OpenAI-compatible model endpoint you configure yourself.
 
-See the Chinese sections below for full command reference and data layout.
+It is the Obsidian port of the `articlewriter` Python CLI. Nothing depends on external services — every operation works on the Markdown documents inside your vault through Obsidian's built-in Vault / Workspace APIs. **The sync feature was not ported.**
 
----
-
-AI 小说创作工具 `articlewriter`（Python CLI）的 Obsidian 插件版。不依赖任何外部服务，全部使用 Obsidian 内置能力（Vault / Workspace API）操作 vault 内的 Markdown 文档，**未移植同步功能**。
-
-## 数据约定（与 Python 版一致）
+## Data Layout (identical to the Python version)
 
 ```
-<小说根目录>/<书名>/
-├── 故事状态.md              # Obsidian「文件属性」风格：YAML frontmatter 存 version 2 运行态（标题/类型/当前卷场景章节/各章元数据），正文可自由写笔记；旧版 story_state.json 首次保存时自动迁移备份到 _backup/
-├── WRITING_GUIDE.md         # 用户级创作规范（原 ~/.articlewriter/ 移入此处）
-├── 大纲.md               # 总大纲
-├── 世界观.md             # 世界观模板
-├── 卷.md                 # 卷（分组容器）
-├── 伏笔.md               # 伏笔记录
-├── 笔记.md
-└── 第NN章-<标题>/        # 每章一个文件夹
-    ├── 章节.md           # 正文
-    ├── 章节大纲.md
-    ├── 人物.md
-    ├── 人物关系.md
-    ├── 场景.md
-    └── 章节信息.md
+<novel root>/<book title>/
+├── 故事状态.md              # Obsidian "file properties" style: YAML frontmatter holds the version-2 runtime state (title/genre/current volume·scene·chapter/per-chapter metadata); body is free-form notes; legacy story_state.json is auto-migrated with a backup in _backup/ on first save
+├── WRITING_GUIDE.md         # User-level writing guide (moved here from ~/.articlewriter/)
+├── 大纲.md                  # Master outline
+├── 世界观.md                # World-building template
+├── 卷.md                    # Volumes (grouping container)
+├── 伏笔.md                  # Foreshadowing log
+├── 笔记.md                  # Notes
+└── 第NN章-<标题>/           # One folder per chapter
+    ├── 章节.md              # Chapter body
+    ├── 章节大纲.md          # Chapter outline
+    ├── 人物.md              # Characters
+    ├── 人物关系.md          # Character relations
+    ├── 场景.md              # Scenes
+    └── 章节信息.md          # Chapter info
 ```
 
-新建时缺失文档自动创建为「HTML 注释示例」模板；已存在则跳过、不覆盖用户内容。文件名统一经 `safeFilename()` 清理（对齐 `fsutil.safe_filename`）。
+Missing documents are auto-created as "HTML comment example" templates when creating a new book/chapter; existing files are skipped and never overwrite user content. All file names are normalized through `safeFilename()` (mirrors `fsutil.safe_filename`).
 
-## 命令（命令面板搜索 "ArticleWriter" 或中文说明）
+## Commands
 
-| 命令 | 对应 CLI | 实现方式 |
+Search the command palette for "ArticleWriter" or the Chinese description.
+
+| Command | CLI equivalent | Implementation notes |
 | --- | --- | --- |
-| 创建新小说 | `/new` | `vault.createFolder` + `vault.create` 建书与模板文档，写 `story_state.json` |
-| 新建章节 | `/chapter add` | 建 `第NN章-标题/` 目录及 6 份文档，更新当前章节 |
-| 章节列表 | `/chapter list` / `/open` | 扫描章节目录，选择后 `workspace.getLeaf("tab").openFile` 打开正文并切换当前章节 |
-| 打开总大纲 / 世界观 / 伏笔 / 笔记 | `/outline show` 等 | 不存在先按模板创建再打开 |
-| 下一章 / 上一章 | `/chapter next` / `prev` | 无当前章节时 next→第一章、prev→最后一章；到边界提示不再切换 |
-| 统计当前章节字数 / 全书字数 | `/count` | 只计纯文字字符（移植 `count_pure_words`：不含标点/符号/空白） |
-| 保存当前章节 | `/save` | 读取聚焦编辑器内容经 `vault.modify` 强制落盘 |
-| 小说状态 | `/status` | 展示标题/类型/当前章节/章节数/总字数 |
-| 查看 / 编辑创作规范 | `/agents view` / `edit` | 三层：小说级 `<书名>/WRITING_GUIDE.md` > 用户级 work_dir 下同名文件 > 系统级（默认存插件设置 data.json、预置 CLI 内置内容；设置页可配 system_guide_path 指向 vault 内自己的指南文件覆盖）；多层弹选择器，view 系统级为只读面板，edit 选层后全量保存 |
-| LLM 连接测试 | `/llm test` | 用 openai SDK 走任意 OpenAI 兼容端点（DeepSeek/DashScope/Ollama/LM Studio/llama.cpp…），GET /models 验证激活配置 |
-| LLM 对话窗口 | —（插件新增） | **常驻可停靠面板**（自定义视图，拖到任意区域、重载后位置保留，侧边栏有消息图标快捷入口）：多轮流式聊天，Enter 发送 / Shift+Enter 换行、顶部下拉切换已保存模型、「停止生成」只中断当前轮；每轮自动携带对话专用提示词（友好助手身份+创作规范+当前小说上下文快照，与 CLI /llm 问答行为一致），顶部显示当前小说·章节，历史不落盘 |
-| 工作状态面板 | —（插件新增） | **常驻可停靠面板**（侧边栏书本图标快捷入口）：工作目录、全部小说列表（点击切换当前书）、当前小说的题材/编写类型/总字数/更新时间、章节列表（点击激活该章并同步所属卷）、全局文档与各章文件（点击在编辑器打开），小说/章节/文件列表均支持像文件夹一样展开折叠（点标题行或章节前的箭头）；**右键**小说/章节/文件行有快捷菜单：新建或删除小说、新建或删除章节、在书根目录或章节目录下新建文章 .md / 删除文件（危险操作均有二次确认，删除进 Obsidian 回收站可找回），右上「刷新」手动重载数据 |
-| LLM 模型配置 | （替代 `~/.articlewriter/config.json`） | Obsidian 设置 → ArticleWriter，存于插件数据目录 `.obsidian/plugins/articlewriter/data.json`（首次运行预置 local/deepseek/qwen-dashscope 三组标准模板待填 api_key/模型名） |
+| Create new story | `/new` | `vault.createFolder` + `vault.create` build the book folder and all template docs, then write the state doc |
+| New chapter | `/chapter add` | Creates the `第NN章-title/` directory with its 6 documents and updates the current chapter |
+| Chapter list | `/chapter list` / `/open` | Scans chapter folders; picking one opens its body via `workspace.getLeaf("tab").openFile` and sets it as the current chapter |
+| Open outline / world-building / foreshadowing / notes | `/outline show`, etc. | Created from template first if missing, then opened |
+| Next / previous chapter | `/chapter next` / `prev` | With no current chapter: next → first, prev → last; at a boundary a notice is shown without switching |
+| Word count of current chapter / whole book | `/count` | Counts pure text characters only (ported `count_pure_words`: excludes punctuation/symbols/whitespace) |
+| Save current chapter | `/save` | Reads the focused editor's content and force-flushes it to disk via `vault.modify` |
+| Story status | `/status` | Shows title / genre / current chapter / chapter count / total word count |
+| View / edit writing guide | `/agents view` / `edit` | Three tiers: story-level `<book>/WRITING_GUIDE.md` > user-level file of the same name under work_dir > system level (by default stored in plugin settings data.json with the CLI built-in content preset; the Settings page can point `system_guide_path` at your own guide file inside the vault to override). Multiple tiers open a picker; viewing the system tier shows a read-only panel; editing saves the full text for the chosen tier |
+| LLM connection test | `/llm test` | Uses the openai SDK against any OpenAI-compatible endpoint (DeepSeek/DashScope/Ollama/LM Studio/llama.cpp…); verifies the active config via GET /models |
+| LLM chat window | — (plugin addition) | **Persistent dockable panel** (custom view, draggable into any workspace area, position survives reloads; message icon in the sidebar as quick entry): multi-turn streaming chat, Enter sends / Shift+Enter newline, dropdown on top switches saved model configs, "Stop generating" only interrupts the current turn; every turn automatically carries a chat-specific prompt (friendly-assistant identity + writing guide + snapshot of the current story context, consistent with the CLI's `/llm` Q&A behavior), the current story·chapter is shown on top, history is not persisted |
+| Work status panel | — (plugin addition) | **Persistent dockable panel** (book icon in the sidebar as quick entry): work directory, list of all stories (click to switch the current book), genre / writing type / total word count / update time of the current story, chapter list (activating a chapter also syncs its volume), global docs and per-chapter files (click opens them in the editor); story/chapter/file lists all support folder-like expand/collapse (title row or the arrow before a chapter); **right-clicking** a story/chapter/file row shows a shortcut menu: create/delete story, create/delete chapter, create an article .md at the book root or inside a chapter dir / delete file (all destructive actions require a second confirmation; deletions go to the Obsidian trash so they are recoverable); manual reload via "Refresh" at the top right |
+| LLM model configuration | (replaces `~/.articlewriter/config.json`) | Obsidian Settings → ArticleWriter, stored in the plugin data directory `.obsidian/plugins/articlewriter/data.json` (first run presets three standard templates local/deepseek/qwen-dashscope awaiting api_key/model name) |
 
-## 工作流程（work_dir）
+## Workflow (work_dir)
 
-1. **首次使用**任何 ArticleWriter 命令时，会自动弹出**工作目录选择器**——从 vault 内已有文件夹中选定写小说的文件夹，作为 `work_dir`（对齐 CLI 的 `--work_dir` / `/dir`）。
-2. 以后**创建小说、创建章节、打开文档、切换章节、字数统计等全部在 work_dir 下操作**；每个小说是 work_dir 下的一个子文件夹。
-3. 需要换目录时用「选择工作目录」命令或设置页的「重新选择…」按钮（切换后清空旧小说记忆，同 CLI `/dir` 行为）。
-4. 多本书时各命令会弹小说选择器并记住上次选择。
+1. The first time you use any ArticleWriter command, a **work directory picker** pops up automatically — choose an existing vault folder as your `work_dir` for novel writing (mirrors the CLI's `--work_dir` / `/dir`).
+2. From then on, **creating stories, creating chapters, opening documents, switching chapters, word counts — everything operates under work_dir**; each story is one subfolder of work_dir.
+3. To change directories, use the "Select work directory" command or the "Re-select…" button on the settings page (switching clears the remembered last story, same behavior as CLI `/dir`).
+4. With multiple books, commands show a story picker and remember your last choice.
 
-## 设置
+## Settings
 
-- **工作目录（work_dir）**：写小说的文件夹，首次使用时自动弹出选择器初始化，也可手动修改/重选。
-- **创建后自动打开文档**：建书打开 `大纲.md`、建章打开 `章节.md`。
+- **Work directory (work_dir)**: the folder where novels live; initialized by the automatic picker on first use, can be changed/re-selected manually.
+- **Auto-open document after creation**: opens `大纲.md` when a book is created, `章节.md` when a chapter is created.
 
-## 构建与安装
+## Build & Install
 
 ```bash
 npm install
-npm run build        # 产物 main.js + manifest.json + styles.css
+npm run build        # outputs main.js + manifest.json + styles.css (+ WRITING_GUIDE.md) into release/
 ```
 
-开发模式（watch）：`npm run dev`。
+Development mode (watch): `npm run dev`.
 
-手动安装：把 `main.js`、`manifest.json`、`styles.css` 复制到 `<你的vault>/.obsidian/plugins/articlewriter/`，在 Obsidian「设置 → 第三方插件」中启用。
+Manual install: copy `main.js`, `manifest.json`, `styles.css` and `WRITING_GUIDE.md` from `release/` to `<your vault>/.obsidian/plugins/articlewriter/`, then enable the plugin in Obsidian under "Settings → Community plugins".
