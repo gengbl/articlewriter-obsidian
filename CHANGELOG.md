@@ -26,3 +26,5 @@
 - 2026-08-30：README 审核披露声明追加「§3 Vault Enumeration Disclosure」（中英双版）——如实说明两类 vault 遍历：全库级仅路径列举两处（work_dir 文件夹选择器 collectFolders 从根递归但限深 3 层/上限 500 条/跳过隐藏目录；聊天面板 @引用候选 getFiles()），其余功能全部限定用户自选 work_dir 内，内容仅在用户实际操作后本地读取、绝不外传。同步修正 AGENTS.md 路由行残留的旧发布约定措辞（Gitea Release 手动维护不建工作流）。
 - 2026-08-30：README.md 披露声明 §3 末尾追加「Summary for reviewers」一句（供社区审核对话直接引用）——全库列举仅两个 UI 选择器且只暴露路径，其余文件访问限定用户自选工作目录、全程本地内存处理。
 - 2026-08-30：纯文档/披露发布 **v0.0.11**（插件代码无变化）——README 审核声明追加 §3 Vault Enumeration Disclosure（中英双版，含 Summary for reviewers）、GitHub CI 不再打包/上传 zip、Gitea Release 手动维护不建自动化工作流的约定落进 RELEASE.md/build-deploy/AGENTS。
+- 2026-09-02：主窗口改名后状态面板不同步修复——根因 main.ts 只订阅 vault `modify/create/delete` 未订阅 `rename`，文件列表右键改名/拖拽移动 .md 不会触发已打开状态面板刷新；补 `rename` 订阅（触发时 file.path 已是新路径，须同时看 oldPath 判断是否涉及 workDir[覆盖跨边界移入/移出]），复用同一防抖 800ms refresh 链路，tsc+esbuild 构建通过并部署至 geng_bl vault。
+- 2026-09-02：以上修复随 **v0.0.12** 打包发布（Gitea tag v0.0.12 + GitHub 镜像无 v 前缀 tag 触发 CI）；GitHub Release 资产由三个散文件扩为四个——release.yml 新增上传写作指南 `WRITING_GUIDE.md`（与 Gitea zip 内容对齐、attestation 一并覆盖）；AGENTS.md 新增「推送指南」节（改动同步到 articlewriter-obsidian-git 克隆目录后在该目录内提交推送），RELEASE.md/build-deploy 同步修订。

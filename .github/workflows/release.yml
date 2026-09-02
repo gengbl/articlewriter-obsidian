@@ -54,8 +54,8 @@ jobs:
             TARGET="$V"
           fi
           NOTES=$(printf '**v%s**\n\nBuilt automatically from source commit %s.' "$TARGET" "$GITHUB_SHA")
-          # 约定：GitHub Release 资产只传三个散文件，不上传 zip（zip 附件只在 Gitea Release 维护）
-          ASSETS=(release/main.js release/manifest.json release/styles.css)
+          # 约定：GitHub Release 资产只传四个散文件（含写作指南 WRITING_GUIDE.md），不上传 zip（zip 附件只在 Gitea Release 维护）
+          ASSETS=(release/main.js release/manifest.json release/styles.css release/WRITING_GUIDE.md)
           if gh release view "$TARGET" >/dev/null 2>&1; then
             echo "Release $TARGET 已存在 → 用 --clobber 覆盖同名资产（旧版本残留的其他文件不会被删除）"
             gh release upload "$TARGET" "${ASSETS[@]}" --clobber
@@ -70,3 +70,4 @@ jobs:
             release/main.js
             release/styles.css
             release/manifest.json
+            release/WRITING_GUIDE.md

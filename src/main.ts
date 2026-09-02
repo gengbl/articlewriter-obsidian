@@ -108,6 +108,12 @@ export default class ArticleWriterPlugin extends Plugin {
 		this.registerEvent(this.app.vault.on("modify", watchFile));
 		this.registerEvent(this.app.vault.on("create", watchFile));
 		this.registerEvent(this.app.vault.on("delete", watchFile));
+		// 主窗口重命名/移动（文件列表右键改名、拖拽）：触发时 file.path 已是新路径，须同时看 oldPath 判断是否涉及工作目录（覆盖跨边界移入/移出 workDir），任一侧为 .md 即可能改变面板枚举
+		const watchRename = (file: TAbstractFile, oldPath: string) => {
+			if (!(file instanceof TFile)) return;
+			if ((this.pathUnderWorkDir(file.path) || this.pathUnderWorkDir(oldPath)) && (file.path.endsWith(".md") || oldPath.endsWith(".md"))) this.scheduleStatusPanelRefresh();
+		};
+		this.registerEvent(this.app.vault.on("rename", watchRename));
 	}
 
 	async loadSettings(): Promise<void> {

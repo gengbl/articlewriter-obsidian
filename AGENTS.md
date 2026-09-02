@@ -17,6 +17,16 @@
 | work_dir 初始化 / 切换小说相关逻辑 | [agents/workdir-behavior.md](./agents/workdir-behavior.md) | `/pwd`、`/dir` 等价语义，lastStory 记忆规则 |
 | 任务收尾（写回 + 验证） | [agents/process-rules.md](./agents/process-rules.md) | 工作更新写回约定、验证要求、CHANGELOG 引用 |
 
+## 推送指南（主仓 → GitHub 镜像，强制）
+
+主仓（Gitea `geng_bl/articlewritter-obsidian`）每次提交并推送代码/文档后，**立即**把改动同步到 GitHub 镜像并在该目录内推送：
+
+1. 把本次改动的文件逐一拷入 `/home/fosky/workspace/articlewriter-obsidian-git/`（GitHub 镜像 `gengbl/articlewriter-obsidian` 的本地克隆；历史为工作树拷贝式独立提交、非主仓 clone，不能直接 push 同一对象）。
+2. **所有 git 操作都在 `/home/fosky/workspace/articlewriter-obsidian-git` 里执行**：`git add <显式列出>` + **与主仓同消息** commit + `git push origin main`（SSH remote `git@github.com:gengbl/articlewriter-obsidian.git`）。
+3. 发布日另在两个仓库分别打标签并推送：Gitea 带 v 前缀（`v0.0.12`）、GitHub 镜像**无 v 前缀**（`0.0.12`）。向镜像推新 tag 即触发 `.github/workflows/release.yml`——CI 从源码重建、attestation 签名并自动创建/更新 GitHub Release（资产 = 含写作指南 `WRITING_GUIDE.md` 的四个散文件，不上传 zip）。tag 触发的运行取**打 tag 那一刻**的 workflow 文件，改过 CI 须确保改动已包含在被 tag 的 commit 中。
+
+凭据提取陷阱、手动回落方案等细节见 [agents/build-deploy.md](./agents/build-deploy.md)「GitHub 镜像同步（强制）」与 [RELEASE.md](./RELEASE.md)。
+
 ## 全局硬规则（任何改动都适用）
 
 - **代码改动后必须跑通 `npm run build`（tsc 零错误）**；可再 `node --check release/main.js` 兜底。
