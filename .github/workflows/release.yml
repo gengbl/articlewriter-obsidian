@@ -13,7 +13,22 @@ permissions:
 jobs:
   release:
     runs-on: ubuntu-latest
+    # job 级平台门：仅在 github.com 上执行整个 job；自托管 Gitea 直接 skipped（不再靠 exit 0 假跳过导致后续步骤照跑）
+    if: ${{ contains(github.server_url, 'github.com') }}
     steps:
+      - name: Guard（仅 GitHub 镜像运行，避免与 Gitea 侧流程混用）
+        run: |
+          set -euo pipefail
+          SERVER="${GITHUB_SERVER_URL:-}"
+          SKIP=0
+          case "$SERVER" in *github.com*) : ;; *) [ -n "$SERVER" ] && SKIP=1 ;; esac
+          command -v gh >/dev/null 2>&1 || SKIP=1
+          if [ "$SKIP" = "1" ]; then
+            echo "::notice::release.yml 仅面向 GitHub 镜像；当前环境 server_url=${SERVER:-<空>}、gh=$(command -v gh || echo none)，不适用，跳过。Gitea 侧请走独立流程。"
+            exit 0
+          fi
+          echo "OK：在 ${SERVER:-github.com} 上继续发布"
+
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0 # tag→commit 解析需要完整历史
