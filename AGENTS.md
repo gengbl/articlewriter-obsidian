@@ -30,6 +30,6 @@
 ## 全局硬规则（任何改动都适用）
 
 - **代码改动后必须跑通 `npm run build`（tsc 零错误）**；可再 `node --check release/main.js` 兜底。
-- 「打包发布」类任务先读 [RELEASE.md](./RELEASE.md)（版本号规则、GitHub 镜像 tag + CI 自动上架流程与坑位；Gitea 侧存在 tag 触发的 release.yml Actions 工作流会自动创建带 zip 的 Release（依赖实例上有可用 Actions runner，无则运行卡 queued），GitHub CI 不上传 zip）。
-- **发布后必核对 Gitea Release（含缺失手动补全）**：每个已打 tag 的版本都要在 Gitea 有对应 Release + `articlewriter-v<版本>.zip` 附件。收尾用 REST API `GET …/releases/tags/v<版本>` 校验其存在且该附件字节数 == 本地同名 zip（`stat -c %s`）；**正常由 Gitea 的 `release.yml`（tag push 触发）自动创建，但其执行依赖实例上有可用 Actions runner**——若运行卡 `queued`（无 runner），先起一台 runner 或用删远端 tag→重推的方式重新入队；确需立刻补齐时走浏览器上传或真实账号密码表单流。坑位：git-credentials 存的是 token——REST API Basic 鉴权可通、Web 会话登录不可（返回 200 非 303）、纯 API 无法带附件。详见 [agents/build-deploy.md](./agents/build-deploy.md)。
+- 「打包发布」类任务先读 [RELEASE.md](./RELEASE.md)（版本号规则、GitHub 镜像 tag + CI 自动上架流程与坑位；**Gitea 侧无任何自动化工作流——Release + `articlewriter-v<版本>.zip` 附件按 RELEASE.md §step5 Web 会话表单流手动维护**，GitHub CI 只上四个散文件、不传 zip）。
+- **发布后必核对 Gitea Release（手动维护）**：每个已打 tag 的版本都要在 Gitea 有对应 Release + `articlewriter-v<版本>.zip` 附件。收尾用 REST API `GET …/releases/tags/v<版本>` 校验其存在且该附件字节数 == 本地同名 zip（`stat -c %s`）；缺失则按 RELEASE.md §step5 走 Web 会话表单流手动补建（纯 API 无法带附件）。实测坑位见 build-deploy.md「Gitea Release」条（临时上传字段名 file / 隐藏域 files=<uuid> / 上传 part 不写显式 ;type= / tag_target 必须为命名 ref 如 main，填 SHA 或留空会触发 invalid-input-type 假报错而静默失败）。凭据坑位：`~/.git-credentials` gitea 行存的是 token——REST Basic 鉴权可通、Web 登录需真实账号密码（token 返回 200 非 303）。详见 [agents/build-deploy.md](./agents/build-deploy.md)。
 - 变更历史见 **[CHANGELOG.md](./CHANGELOG.md)**（每次任务收尾向其末尾追加一行，了解历史先读它）。

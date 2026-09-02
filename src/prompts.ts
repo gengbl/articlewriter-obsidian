@@ -1014,3 +1014,76 @@ export function checkOutlineCoverage(content: string, outline: string): { allCov
 	for (const b of bullets) if (!checkBullet(b, content)) uncovered.push(b);
 	return { allCovered: uncovered.length === 0, uncovered };
 }
+
+// ---------- 三层创作规范：空模板生成 + 汇总文件序列化（纯函数）----------
+
+/**
+ * 由既有指南文本抽出「骨架」作为新建空模板：保留顶部多行说明注释块、结构性标记
+ * （字数配置 / 写作指南分类±close / 编写类型±close）与全部 ##/### 段名，正文与各条
+ * 备注一律清空。三级指南共用同一格式，故以系统级默认文本为唯一来源。
+ */
+export function buildEmptyGuideTemplate(src: string): string {
+	const MARK = /^(?:字数配置|写作指南分类|\/写作指南分类|编写类型|\/编写类型)/; // CJK 非 \w，勿加 \b
+	const isMarker = (c: string): boolean => {
+		if (!/^<!--[^]*-->/.test(c.trim())) return false;
+		const inner = c.replace(/^<!--\s*/, "").replace(/\s*-->\s*$/, "");
+		return MARK.test(inner.trim());
+	};
+	const out: string[] = [];
+	let inComment = false;
+	for (const line of String(src || "").split("\n")) {
+		const t = line.trim();
+		if (!inComment) {
+			if (t.startsWith("<!--")) {
+				if (t.endsWith("-->") && t.length > 4) {
+					if (isMarker(line)) out.push(line);
+				} else {
+					inComment = true;
+					out.push(line);
+				}
+			} else if (/^#{1,6}\s/.test(t)) {
+				out.push(line);
+			}
+		} else {
+			out.push(line);
+			if (t.includes("-->")) inComment = false;
+		}
+	}
+	return out.join("\n").replace(/\s+$/, "") + "\n";
+}
+
+/** 汇总文件标题（书籍目录下《写作指南汇总.md》首行） */
+export const AGG_TITLE = "# 写作指南汇总";
+
+/**
+ * 把 mergeGuideCategories 的合并结果序列化为可再次解析的 MD：通用内容裸放，其余分类用
+ * 「<!-- 写作指南分类:X -->…<!-- /写作指南分类 -->」包裹——与三层原格式一致，喂回
+ * extractGuideCategories/mergeGuideCategories 即幂等。空分类不输出对应块。
+ */
+export function serializeAggregateGuide(m: Record<string, string>): string {
+	const parts: string[] = [];
+	const general = String(m["通用"] || "").trim();
+	if (general) parts.push(general);
+	for (const name of ["故事风格", "个人特色"]) {
+		const v = String(m[name] || "").trim();
+		if (v) parts.push(`<!-- 写作指南分类:${name} -->\n${v}\n<!-- /写作指南分类 -->`);
+	}
+	const banned = String(m["禁用词"] || "").trim();
+	if (banned) parts.push(`<!-- 写作指南分类:禁用词 -->\n${banned}\n<!-- /写作指南分类 -->`);
+	return AGG_TITLE + "\n\n" + parts.join("\n\n") + "\n";
+}
+
+/** 变更检测头（HTML 注释，注入前会被 stripComments 剥掉）：记录三层原文 md5 */
+export interface AggHashes { b: string; u: string; s: string }
+export function aggHashLine(h: AggHashes): string {
+	return `<!-- agg-hash: b=${h.b} u=${h.u} s=${h.s} -->`;
+}
+export function embedAggHash(body: string, h: AggHashes): string {
+	return aggHashLine(h) + "\n" + body;
+}
+const AGG_HASH_RE = /^<!--\s*agg-hash:\s*b=([0-9a-f]+)\s+u=([0-9a-f]+)\s+s=([0-9a-f]+)\s*-->/m;
+export function parseAggHash(text: string): AggHashes | null {
+	const m = AGG_HASH_RE.exec(String(text || ""));
+	if (!m) return null;
+	return { b: m[1], u: m[2], s: m[3] };
+}

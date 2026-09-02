@@ -2,7 +2,7 @@ import { App, Modal, Notice, Plugin, PluginSettingTab, TAbstractFile, TFile, TFo
 import { ActionItem, ActionMenuModal, ChapterListModal, ConfirmModal, FolderPickerModal, MarkdownViewerModal, MultiFieldModal, NewStoryInput, NewStoryModal, PanelLine, StoryPickerModal, StreamingPreviewModal, TextAreaPrompt, TextPanelModal, TextInputModal } from "./modals";
 import { LlmChatView } from "./llm_chat_view";
 import { StatusView, type StatusAction, type StatusChapterEntry, type StatusDetail, type StatusSnapshot, type StatusStoryEntry } from "./status_view";
-import { chapterOutlineTemplate, countPureWords, FORESHADOW_TEMPLATE, formatLocalDateTime, NOTES_TEMPLATE, outlineTemplate, WORLD_TEMPLATE } from "./story_types";
+import { chapterOutlineTemplate, countPureWords, FORESHADOW_TEMPLATE, formatLocalDateTime, md5, NOTES_TEMPLATE, outlineTemplate, WORLD_TEMPLATE } from "./story_types";
 import { safeFilename } from "./story_types";
 import { StoryManager } from "./story_manager";
 import { buildDefaultLlmConf } from "./plugin_config";
@@ -11,8 +11,8 @@ import { DEFAULT_SYSTEM_GUIDE } from "./system_guide_default";
 import { assembleSystemPrompt, chatCompletion, chatStream, normalizeBaseURL, testConnection } from "./llm_client";
 import type { Message } from "./llm_client";
 import { findAiWordHits, mergeGuideCategories } from "./banned_words";
-import { appendOutlineInstruction, buildChapterPrompt, buildContinuePrompt, buildPolishPrompt, buildReviewPrompt, buildRewritePrompt, buildStoryTypeSystemPrompt, buildWritingContext, checkOutlineCoverage, cleanAiText, formatRetryNote, stripHeading, validateStoryTypeFormat, wordRangeFromGuides } from "./prompts";
-import { splitList } from "./md_docs";
+import { appendOutlineInstruction, buildChapterPrompt, buildContinuePrompt, buildEmptyGuideTemplate, buildPolishPrompt, buildReviewPrompt, buildRewritePrompt, buildStoryTypeSystemPrompt, buildWritingContext, checkOutlineCoverage, cleanAiText, embedAggHash, formatRetryNote, parseAggHash, serializeAggregateGuide, stripHeading, validateStoryTypeFormat, wordRangeFromGuides } from "./prompts";
+import { splitList, stripComments } from "./md_docs";
 
 interface ArticleWriterSettings {
 	workDir: string; // 写小说的文件夹（对齐 CLI --work_dir / /dir）；空=未初始化，首次用命令时弹选择器
@@ -35,6 +35,7 @@ export default class ArticleWriterPlugin extends Plugin {
 	async onload(): Promise<void> {
 		await this.loadSettings();
 		this.manager = new StoryManager({ app: this.app, getStoryRoot: () => this.settings.workDir, onStateChanged: () => this.notifyContextChanged() });
+		await this.ensureSystemGuideFile(); // 首次运行把系统级写作指南从 data.json/内置默认播种到插件数据目录文件
 
 		this.addCommand({ id: "set-work-dir", name: "选择工作目录（work_dir，对齐 CLI --work_dir）", callback: () => this.pickWorkDir(false) });
 		this.addCommand({ id: "switch-story", name: "切换当前小说（/dir：选书并加载其状态）", callback: () => this.cmdSwitchStory() });
@@ -84,6 +85,8 @@ export default class ArticleWriterPlugin extends Plugin {
 		this.addCommand({ id: "set-style", name: "设置编写类型（网文小说/剧本/普通小说/散文随笔…）", callback: () => this.cmdSetStyle() });
 		this.addCommand({ id: "agents-view", name: "查看创作规范 WRITING_GUIDE.md（对齐 CLI /agents view：小说级/用户级/系统级三层）", callback: () => this.cmdAgentsView() });
 		this.addCommand({ id: "agents-edit", name: "编辑创作规范 WRITING_GUIDE.md（对齐 CLI /agents edit：小说级/用户级/系统级三层）", callback: () => this.cmdAgentsEdit() });
+		this.addCommand({ id: "generate-writing-guide", name: "生成写作指南（在用户级 work_dir 与当前书目录各建一份同格式空模板；已存在非空则跳过并提示）", callback: () => this.cmdGenerateWritingGuide() });
+		this.addCommand({ id: "regenerate-system-guide", name: "重新生成系统写作指南（按代码内置默认覆盖插件数据目录中的系统级 WRITING_GUIDE.md，需确认）", callback: () => this.cmdRegenerateSystemGuide() });
 		this.addCommand({ id: "llm-test", name: "LLM 连接测试（/llm test：GET /models 验证当前激活配置）", callback: () => this.cmdLlmTest() });
 
 		this.addCommand({ id: "write-chapter", name: "创作章节（/write：按大纲+指令 LLM 流式生成，自动去AI味后保存）", callback: () => this.cmdWrite() });
@@ -1251,56 +1254,85 @@ export default class ArticleWriterPlugin extends Plugin {
 
 	// ---------- 创作规范 WRITING_GUIDE.md（三层：小说级 <书名>/ > 用户级 <work_dir>/ > 系统级插件设置 data.json，对齐 CLI /agents view/edit） ----------
 
-	// 指南层（三层）：文件层带 path；系统级无 path、内容默认存 settings.llm.system_guide，可被 system_guide_path 指向的 vault 文件覆盖
-	private getSystemGuidePath(): string {
-		return (this.settings.llm?.system_guide_path ?? "").trim();
+	/** 系统级指南文件路径：插件数据目录 .obsidian/plugins/<id>/WRITING_GUIDE.md（不被元数据索引收录，走 DataAdapter 读写） */
+	private systemGuidePath(): string {
+		return `${this.app.vault.configDir}/plugins/${this.manifest.id}/WRITING_GUIDE.md`;
 	}
 
-	/** 解析系统级生效文本：设置了路径且可读→用该文件；否则回落 data.json 内嵌内容（pathMissing=配置了但读不到） */
-	private async resolveSystemGuide(): Promise<{ text: string; pathMissing: boolean }> {
-		const p = this.getSystemGuidePath();
-		if (!p) return { text: this.settings.llm?.system_guide ?? "", pathMissing: false };
-		const t = await this.manager.readGuideAt(p);
-		if (t != null && t.trim()) return { text: t, pathMissing: false };
-		return { text: this.settings.llm?.system_guide ?? "", pathMissing: true };
+	/** 首次运行确保系统级文件存在：缺失则用 data.json 内嵌内容（旧版迁移）或内置默认播种；失败不阻断启动 */
+	private async ensureSystemGuideFile(): Promise<void> {
+		try {
+			const p = this.systemGuidePath();
+			if (!(await this.manager.pluginFileExists(p))) {
+				const sg = this.settings.llm?.system_guide; // 旧版内嵌内容作一次性迁移种子
+				const seed = sg && sg.trim() ? sg : DEFAULT_SYSTEM_GUIDE;
+				await this.manager.writePluginFile(p, seed);
+			}
+		} catch (e) {
+			console.warn("[ArticleWriter] 初始化系统级写作指南失败", e);
+		}
+	}
+
+	/** 读取系统级生效文本；读不到/为空回落内置默认（提示词永不缺底层规范） */
+	private async readSystemGuideText(): Promise<string> {
+		const t = await this.manager.readPluginFile(this.systemGuidePath());
+		return t && t.trim() ? t : DEFAULT_SYSTEM_GUIDE;
 	}
 
 	private guideLayers(story: string): Array<{ label: string; path?: string }> {
 		return [
 			{ label: `小说级 ${this.manager.bookGuidePath(story)}`, path: this.manager.bookGuidePath(story) },
 			{ label: `用户级 ${this.manager.userGuidePath()}`, path: this.manager.userGuidePath() },
-			{ label: `系统级 ${this.getSystemGuidePath() || "插件设置 (data.json)"}` },
+			{ label: `系统级 ${this.systemGuidePath()}` }, // 无 path→走插件数据目录文件（只读面板查看、全量保存覆盖）
 		];
 	}
 
 	private async readGuideLayer(l: { label: string; path?: string }): Promise<string> {
 		if (l.path) return (await this.manager.readGuideAt(l.path)) ?? "";
-		return (await this.resolveSystemGuide()).text;
+		return await this.readSystemGuideText();
 	}
 
 	private async writeGuideLayer(l: { label: string; path?: string }, text: string): Promise<void> {
 		if (l.path) await this.manager.writeGuideAt(l.path, text);
-		else if (this.getSystemGuidePath()) await this.manager.writeGuideAt(this.getSystemGuidePath(), text); // 配置了路径→直接写该文件（自动建目录）
-		else {
-			const conf = this.settings.llm ?? buildDefaultLlmConf();
-			conf.system_guide = text;
-			this.settings.llm = conf;
-			await this.saveSettings();
-		}
+		else await this.manager.writePluginFile(this.systemGuidePath(), text);
 	}
 
-	private async warnIfSystemGuidePathMissing(): Promise<void> {
-		const p = this.getSystemGuidePath();
-		if (!p) return;
-		const r = await this.resolveSystemGuide();
-		if (r.pathMissing) new Notice(`系统级指南路径「${p}」不存在或不可读\n已回落 data.json 内嵌内容`, 8000);
+	// ---------- 三层创作规范 → 书籍目录下《写作指南汇总.md》（变更检测：头部记录三层原文 md5，任一层变化即重算落盘；提示词仅注入该汇总正文）----------
+
+	private aggregatePath(story: string): string {
+		return `${this.manager.storyPath(story)}/写作指南汇总.md`;
+	}
+
+	/** 合并三层→序列化为可再解析的 MD；按需把带 hash 头的汇总文件写入书目录；返回注入用正文（去 HTML 注释）与合并结果 */
+	private async persistAggregatedGuide(story: string, bookText: string, userText: string, systemText: string): Promise<{ guideText: string; merged: Record<string, string> }> {
+		const layers = [bookText, userText, systemText].filter((t) => t.trim()); // 顺序=优先级：小说级 > 用户级 > 系统级
+		const merged = mergeGuideCategories(layers);
+		const body = serializeAggregateGuide(merged);
+		const h = { b: md5(bookText), u: md5(userText), s: md5(systemText) };
+		try {
+			const p = this.aggregatePath(story);
+			const existing = await this.manager.readGuideAt(p); // null=尚未生成
+			const prev = existing ? parseAggHash(existing) : null;
+			if (existing == null || !prev || prev.b !== h.b || prev.u !== h.u || prev.s !== h.s) {
+				await this.manager.writeGuideAt(p, embedAggHash(body, h));
+			}
+		} catch { /* 汇总落盘失败不影响提示词构建 */ }
+		return { guideText: stripComments(body).trim(), merged };
+	}
+
+	/** 读三层→合并→落盘汇总文件，返回注入正文与禁用词类目文本（写作命令/对话面板共用） */
+	private async rebuildAggregatedGuide(story: string): Promise<{ guideText: string; bannedGuideText: string }> {
+		const bookText = (await this.manager.readGuideAt(this.manager.bookGuidePath(story))) ?? "";
+		const userText = (await this.manager.readGuideAt(this.manager.userGuidePath())) ?? "";
+		const systemText = await this.readSystemGuideText();
+		const r = await this.persistAggregatedGuide(story, bookText, userText, systemText);
+		return { guideText: r.guideText, bannedGuideText: r.merged["禁用词"] || "" };
 	}
 
 	async cmdAgentsView(): Promise<void> {
 		if (!(await this.ensureWorkDir())) return;
 		const story = await this.requireStory();
 		if (!story) return;
-		await this.warnIfSystemGuidePathMissing();
 		try {
 			const layers = this.guideLayers(story);
 			const existing: Array<{ label: string; path?: string }> = [];
@@ -1326,7 +1358,6 @@ export default class ArticleWriterPlugin extends Plugin {
 		if (!(await this.ensureWorkDir())) return;
 		const story = await this.requireStory();
 		if (!story) return;
-		await this.warnIfSystemGuidePathMissing();
 		try {
 			const layers = this.guideLayers(story);
 			const items: ActionItem[] = [];
@@ -1347,10 +1378,51 @@ export default class ArticleWriterPlugin extends Plugin {
 				return;
 			}
 			await this.writeGuideLayer(target, value.trim());
-			const dest = target.path ?? (this.getSystemGuidePath() ? `文件 ${this.getSystemGuidePath()}` : "插件设置 data.json");
-			new Notice(`创作规范已保存到 ${dest}`, 6000);
+			const dest = target.path ?? this.systemGuidePath();
+			try { await this.rebuildAggregatedGuide(story); } catch { /* 汇总刷新失败不阻断保存提示 */ } // 任一层变更→重算《写作指南汇总》（提示词仅注入该文件）
+			new Notice(`创作规范已保存到 ${dest}\n已同步刷新本书《写作指南汇总》`, 8000);
 		} catch (e) {
 			this.notifyError("保存失败", e);
+		}
+	}
+
+	async cmdGenerateWritingGuide(): Promise<void> {
+		if (!(await this.ensureWorkDir())) return;
+		const story = await this.requireStory();
+		if (!story) return;
+		try {
+			const tpl = buildEmptyGuideTemplate(DEFAULT_SYSTEM_GUIDE); // 三级同格式：取系统级默认抽骨架，段名保留、正文清空
+			const created: string[] = [];
+			const skipped: string[] = [];
+			for (const [label, path] of [["用户级", this.manager.userGuidePath()], ["小说级", this.manager.bookGuidePath(story)]] as Array<[string, string]>) {
+				const ex = await this.manager.readGuideAt(path);
+				if (ex != null && ex.trim()) skipped.push(`${label} ${path}`);
+				else { await this.manager.writeGuideAt(path, tpl); created.push(`${label} ${path}`); }
+			}
+			let msg = "";
+			if (created.length) msg += `已创建空模板（仅段名）：\n${created.join("\n")}\n`;
+			if (skipped.length) msg += `已跳过（目标非空）：\n${skipped.join("\n")}\n`;
+			msg += "系统级请用「重新生成系统写作指南」命令维护。";
+			new Notice(msg.trim(), 10000);
+			try { await this.rebuildAggregatedGuide(story); } catch { /* ignore */ }
+		} catch (e) {
+			this.notifyError("生成写作指南失败", e);
+		}
+	}
+
+	async cmdRegenerateSystemGuide(): Promise<void> {
+		try {
+			const ok = await this.confirmBox("重新生成系统写作指南？", "将用代码内置默认内容覆盖插件数据目录中的系统级 WRITING_GUIDE.md。\n你此前对系统级的修改会丢失。", "覆盖");
+			if (!ok) return;
+			await this.manager.writePluginFile(this.systemGuidePath(), DEFAULT_SYSTEM_GUIDE);
+			let note = `系统级写作指南已重置为内置默认\n${this.systemGuidePath()}`;
+			const cur = this.settings.lastStory?.trim();
+			if (cur && (await this.manager.listStories()).includes(cur)) {
+				try { await this.rebuildAggregatedGuide(cur); note += "\n已刷新该书的《写作指南汇总》"; } catch { /* ignore */ }
+			}
+			new Notice(note, 8000);
+		} catch (e) {
+			this.notifyError("重新生成系统写作指南失败", e);
 		}
 	}
 
@@ -1462,14 +1534,13 @@ export default class ArticleWriterPlugin extends Plugin {
 		return setup;
 	}
 
-	/** 三层创作规范（小说级 > 用户级 > 系统级 data.json，顺序即优先级），含合并后的禁用词类目文本 */
+	/** 三层创作规范（小说级 > 用户级 > 系统级插件文件，顺序即优先级）：合并并落盘《写作指南汇总》，guideText=该汇总去注释正文（提示词仅注入它），bannedGuideText=合并后禁用词类目 */
 	private async loadWriterGuides(storyName: string): Promise<{ bookText: string; userText: string; systemText: string; guideText: string; bannedGuideText: string }> {
 		const bookText = (await this.manager.readGuideAt(this.manager.bookGuidePath(storyName))) ?? "";
 		const userText = (await this.manager.readGuideAt(this.manager.userGuidePath())) ?? "";
-		const systemText = (await this.resolveSystemGuide()).text; // 路径配置优先，静默回落内嵌内容（写作命令不打扰）
-		const layers = [bookText, userText, systemText].filter((t) => t.trim());
-		const merged = mergeGuideCategories(layers);
-		return { bookText, userText, systemText, guideText: layers.join("\n\n"), bannedGuideText: merged["禁用词"] || "" };
+		const systemText = await this.readSystemGuideText(); // 读不到回落内置默认（写作命令不打扰）
+		const r = await this.persistAggregatedGuide(storyName, bookText, userText, systemText);
+		return { bookText, userText, systemText, guideText: r.guideText, bannedGuideText: r.merged["禁用词"] || "" };
 	}
 
 	/** 组装正文生成系统提示词：编写类型格式块+禁用词 → config.system_prompt → 内置默认；末尾附【创作规范】原文 */
@@ -1753,9 +1824,11 @@ export default class ArticleWriterPlugin extends Plugin {
 				hasStory = true;
 				guideText = (await this.loadWriterGuides(lastStory)).guideText;
 			} else {
+				// 无当前小说：仅用户级+系统级两层，按同一汇总格式合并（不落盘——书目录不存在）
 				const userText = (await this.manager.readGuideAt(this.manager.userGuidePath())) ?? "";
-				const systemText = (await this.resolveSystemGuide()).text;
-				guideText = [userText, systemText].filter((t) => t.trim()).join("\n\n");
+				const systemText = await this.readSystemGuideText();
+				const merged = mergeGuideCategories([userText, systemText].filter((t) => t.trim()));
+				guideText = stripComments(serializeAggregateGuide(merged)).trim();
 			}
 		} catch {
 			/* 指南读取失败则不带【创作规范】，不阻断对话 */
@@ -2574,7 +2647,6 @@ class ArticleWriterSettingTab extends PluginSettingTab {
 			{ name: "当前激活配置（active_llm）", desc: "连接测试与写作命令使用该配置", control: { key: "llm.active_llm", type: "dropdown", options: llmNameMap, defaultValue: "" } },
 			{ name: "写作系统提示词 system_prompt", desc: "全局基础系统提示词：无编写类型格式块时使用；留空=内置默认。对齐 CLI config.json 的 system_prompt", control: { key: "llm.system_prompt", type: "textarea", rows: 5, placeholder: "留空使用内置默认" } },
 			{ name: "描述方式 desc_style", desc: "normal / complete（对齐 CLI）", control: { key: "llm.desc_style", type: "dropdown", options: { normal: "normal", complete: "complete" }, defaultValue: "normal" } },
-			{ name: "系统级指南路径 system_guide_path", desc: "设置后优先从该 vault 内文件读取/保存系统级写作指南（相对路径，如 Notes/系统写作指南.md），覆盖 data.json 内嵌内容；留空=用内嵌内容。读不到时自动回落并提示", control: { key: "llm.system_guide_path", type: "text", placeholder: "留空使用内置内容" } },
 		] });
 
 		defs.push({ type: "list", heading: "模型配置（llm_configs，存于插件数据目录 data.json）", emptyState: "没有模型配置。", addItem: { name: "新建配置", action: () => void this.addLlmConfig() }, onDelete: (i) => void this.removeLlmConfig(i), onReorder: (o, n) => void this.reorderLlmConfigs(o, n), items: cfgs.map((cfg, i) => this.configPage(cfg, i)) });
@@ -2611,7 +2683,6 @@ class ArticleWriterSettingTab extends PluginSettingTab {
 		}
 		if (key === "llm.system_prompt") return c.system_prompt ?? "";
 		if (key === "llm.desc_style") return c.desc_style || "normal";
-		if (key === "llm.system_guide_path") return c.system_guide_path ?? "";
 		if (key.startsWith("cfg.")) {
 			const parts = key.split(".");
 			const field = parts.slice(2).join(".") as keyof LlmConfigDoc;
@@ -2639,7 +2710,6 @@ class ArticleWriterSettingTab extends PluginSettingTab {
 		if (key === "llm.active_llm") c.active_llm = str || undefined;
 		else if (key === "llm.system_prompt") c.system_prompt = str.trim() || undefined;
 		else if (key === "llm.desc_style") c.desc_style = str || "normal";
-		else if (key === "llm.system_guide_path") c.system_guide_path = str.trim() || undefined;
 		else if (key.startsWith("cfg.")) {
 			const parts = key.split(".");
 			const field = parts.slice(2).join(".") as keyof LlmConfigDoc;

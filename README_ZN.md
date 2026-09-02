@@ -29,7 +29,8 @@ AI 小说创作工具 `articlewriter`（Python CLI）的 Obsidian 插件版。�
 ```
 <小说根目录>/<书名>/
 ├── 故事状态.md              # Obsidian「文件属性」风格：YAML frontmatter 存 version 2 运行态（标题/类型/当前卷场景章节/各章元数据），正文可自由写笔记；旧版 story_state.json 首次保存时自动迁移备份到 _backup/
-├── WRITING_GUIDE.md         # 用户级创作规范（原 ~/.articlewriter/ 移入此处）
+├── WRITING_GUIDE.md         # 小说级创作规范（同名的用户级在 work_dir 下）
+├── 写作指南汇总.md           # 每书合并落盘（自动生成+哈希变更检测），注入 LLM 提示词的唯一来源
 ├── 大纲.md               # 总大纲
 ├── 世界观.md             # 世界观模板
 ├── 卷.md                 # 卷（分组容器）
@@ -58,7 +59,9 @@ AI 小说创作工具 `articlewriter`（Python CLI）的 Obsidian 插件版。�
 | 统计当前章节字数 / 全书字数 | `/count` | 只计纯文字字符（移植 `count_pure_words`：不含标点/符号/空白） |
 | 保存当前章节 | `/save` | 读取聚焦编辑器内容经 `vault.modify` 强制落盘 |
 | 小说状态 | `/status` | 展示标题/类型/当前章节/章节数/总字数 |
-| 查看 / 编辑创作规范 | `/agents view` / `edit` | 三层：小说级 `<书名>/WRITING_GUIDE.md` > 用户级 work_dir 下同名文件 > 系统级（默认存插件设置 data.json、预置 CLI 内置内容；设置页可配 system_guide_path 指向 vault 内自己的指南文件覆盖）；多层弹选择器，view 系统级为只读面板，edit 选层后全量保存 |
+| 查看 / 编辑创作规范 | `/agents view` / `edit` | 三层：小说级 `<书名>/WRITING_GUIDE.md` > 用户级 work_dir 下同名文件 > **系统级 = 固定的插件数据目录文件** `.obsidian/plugins/articlewriter/WRITING_GUIDE.md`（首启由内置默认播种；不再用户可配——原 `system_guide_path` 设置已移除）。各层直接打开对应文件，多层弹选择器；edit 选层后全量保存并刷新该书《写作指南汇总》 |
+| 生成空写作指南模板 | —（插件新增） | 对用户级 `work_dir/WRITING_GUIDE.md` 与当前书 `WRITING_GUIDE.md` 各建一份同格式骨架（保留段名、清空正文），目标已有非空内容则跳过并提示；不触碰系统级 |
+| 重新生成系统写作指南 | —（插件新增） | 二次确认后把内置默认覆盖写回系统级 `.obsidian/plugins/articlewriter/WRITING_GUIDE.md`，再尽力刷新当前书《写作指南汇总》 |
 | LLM 连接测试 | `/llm test` | 用 openai SDK 走任意 OpenAI 兼容端点（DeepSeek/DashScope/Ollama/LM Studio/llama.cpp…），GET /models 验证激活配置 |
 | LLM 对话窗口 | —（插件新增） | **常驻可停靠面板**（自定义视图，拖到任意区域、重载后位置保留，侧边栏有消息图标快捷入口）：多轮流式聊天，Enter 发送 / Shift+Enter 换行、顶部下拉切换已保存模型、「停止生成」只中断当前轮；每轮自动携带对话专用提示词（友好助手身份+创作规范+当前小说上下文快照，与 CLI /llm 问答行为一致），顶部显示当前小说·章节，历史不落盘 |
 | 工作状态面板 | —（插件新增） | **常驻可停靠面板**（侧边栏书本图标快捷入口）：工作目录、全部小说列表（点击切换当前书）、当前小说的题材/编写类型/总字数/更新时间、章节列表（点击激活该章并同步所属卷）、全局文档与各章文件（点击在编辑器打开），小说/章节/文件列表均支持像文件夹一样展开折叠（点标题行或章节前的箭头）；**右键**小说/章节/文件行有快捷菜单：新建或删除小说、新建或删除章节、在书根目录或章节目录下新建文章 .md / 删除文件（危险操作均有二次确认，删除进 Obsidian 回收站可找回），右上「刷新」手动重载数据 |

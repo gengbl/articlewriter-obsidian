@@ -377,6 +377,27 @@ export class StoryManager {
 		await this.writeDoc(path, text.endsWith("\n") ? text : text + "\n");
 	}
 
+	// ---------- 系统级指南：插件数据目录 .obsidian/plugins/<id>/WRITING_GUIDE.md ----------
+	// 该文件在 Obsidian 配置目录下、不被元数据索引收录，getAbstractFileByPath 恒返回 null；
+	// 故走 DataAdapter 按文件系统相对路径读写（vault 根下任意路径均可），不依赖 TFile。
+
+	async pluginFileExists(path: string): Promise<boolean> {
+		try { return await this.app.vault.adapter.exists(path); } catch { return false; }
+	}
+	/** 读取插件目录内文件原文；不存在或失败返回 null */
+	async readPluginFile(path: string): Promise<string | null> {
+		const f = this.vault.getAbstractFileByPath(path);
+		if (f instanceof TFile) return await this.vault.read(f);
+		try {
+			if (await this.app.vault.adapter.exists(path)) return await this.app.vault.adapter.read(path);
+		} catch { /* ignore */ }
+		return null;
+	}
+	/** 写入/覆盖插件目录内文件（缺失自动建父目录） */
+	async writePluginFile(path: string, text: string): Promise<void> {
+		await this.app.vault.adapter.write(path, text.endsWith("\n") ? text : text + "\n");
+	}
+
 	// ---------- 通用文档工具 ----------
 
 	private async readDoc(path: string): Promise<string> {
