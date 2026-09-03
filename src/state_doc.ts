@@ -8,8 +8,6 @@ export interface ChapterMeta {
 	title: string;
 	words: number;
 	volume?: string;
-	tags?: string[];
-	note?: string;
 }
 
 export interface StoryState {
@@ -50,9 +48,7 @@ function normalizeChapter(raw: unknown): ChapterMeta | null {
 		title: asStr(o.title),
 		words: Number.isFinite(words) ? words : 0,
 		volume: asStr(o.volume) || undefined,
-		tags: Array.isArray(o.tags) ? (o.tags as unknown[]).map((t) => asStr(t)).filter(Boolean) : undefined,
-		note: asStr(o.note) || undefined,
-	};
+	}; // tags/note 已精简：无消费方，标签/备注只属于《章节信息.md》（旧文档里残留的这两个键解析时忽略、下次保存自然消失）
 }
 
 /**
@@ -133,8 +129,6 @@ export function formatStateDoc(
 		if (!meta) continue;
 		const c: Record<string, unknown> = { title: meta.title, words: meta.words };
 		if (meta.volume) c["volume"] = meta.volume;
-		if (meta.tags && meta.tags.length) c["tags"] = [...meta.tags];
-		if (meta.note) c["note"] = meta.note;
 		chapters[String(num)] = c;
 	}
 	if (Object.keys(chapters).length) o["chapters"] = chapters;

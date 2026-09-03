@@ -229,7 +229,10 @@ export class StoryManager {
 		for (const child of folder.children) {
 			if (!(child instanceof TFolder)) continue;
 			const m = CHAPTER_DIR_RE.exec(child.name);
-			if (m) result.push({ num: parseInt(m[1], 10), title: m[2], dir: child });
+			if (!m) continue;
+			if (!(await this.vault.adapter.exists(child.path))) continue; // 过滤元数据索引陈旧条目（目录已被改名/删除而索引未更新），防止其被当作存活章节再次迁移出重复目录
+			if (!(await this.vault.adapter.exists(`${child.path}/章节.md`))) continue; // 空心残留目录（无章节.md，多为外部插件如 make-md 在迁移窗口期写入 .space 的残骸）：一律不当作章节——面板不显示、不参与任何迁移；由 quarantineHollowChapters 自动隔离进 _backup
+			result.push({ num: parseInt(m[1], 10), title: m[2], dir: child });
 		}
 		return result.sort((a, b) => a.num - b.num);
 	}
@@ -1041,11 +1044,15 @@ export class StoryManager {
 
 	// ---------- 章节删除 / 改名 / 重编号（对齐 chapters.py）----------
 
-	/** 删除章节：移入回收站、清理元数据；当前章节回退到最后一章 */
-	async deleteChapter(storyName: string, num: number): Promise<{ title: string }> {
+	/** 删除章节：移入回收站、清理元数据；当前章节回退到最后一章。**被删号之后仍有章节时自动补洞**——复用 renumberChapters 把后续各章整体 -1（两阶段迁移+文档/伏笔引用重写），保持 1..N 连续 */
+	async deleteChapter(storyName: string, num: number): Promise<{ title: string; resequenced: boolean }> {
+		await this.quarantineHollowChapters(storyName); // 先隔离空心残留，防止后续自动重排把它们迁移成新幽灵章节
 		const ch = await this.chapterDirOf(storyName, num);
 		if (!ch) throw new Error(`第${num}章不存在`);
 		await this.app.fileManager.trashFile(ch.dir);
+		if (!(await this.settleTree([{ path: ch.dir.path, expect: false }]))) {
+			throw new Error("回收站操作未生效（章节目录仍可见），已中止以防重排时把它当作存活章节再迁移出重复目录");
+		}
 		const state = (await this.loadState(storyName)) ?? this.emptyState(storyName);
 		const removed = state.chapters[String(num)];
 		delete state.chapters[String(num)];
@@ -1056,7 +1063,13 @@ export class StoryManager {
 		if (state.current_scene) delete state.current_scene; // 场景随章节目录一并删除，清理悬空引用
 		await this.recomputeTotalWords(storyName, state);
 		await this.saveState(storyName, state);
-		return { title: removed?.title || ch.title };
+		let resequenced = false;
+		if (Object.keys(state.chapters).some((k) => parseInt(k, 10) > num)) {
+			resequenced = (await this.renumberChapters(storyName)).ok; // ok=false 仅「已连续/无章节」，此处必有洞故预期 true
+		} else {
+			void this.quarantineHollowChapters(storyName); // 未触发重排时也要清扫删除窗口期可能产生的空心残骸
+		}
+		return { title: removed?.title || ch.title, resequenced };
 	}
 
 	/** 改章节标题：重命名目录并同步各文档中的旧标题（对齐 /chapter rename） */
@@ -1088,11 +1101,89 @@ export class StoryManager {
 		return newTitle;
 	}
 
+	/**
+	 * 等待真实文件系统达到期望状态——用 adapter.exists 直接查磁盘，不走 Obsidian 元数据索引。
+	 * 连续快速重命名时索引会滞后：按索引校验会把「实际已完成」的重命名误判为未生效而中途抛错中止，
+	 * 留下半套临时目录残留，后续操作再把它们当章节迁移，最终产生大号幽灵章节。超时返回 false。
+	 */
+	private async settleTree(checks: Array<{ path: string; expect: boolean }>, timeoutMs = 5000): Promise<boolean> {
+		const probe = async (): Promise<boolean> => {
+			for (const c of checks) if ((await this.vault.adapter.exists(c.path)) !== c.expect) return false;
+			return true;
+		};
+		if (await probe()) return true;
+		const start = Date.now();
+		while (Date.now() - start < timeoutMs) {
+			await new Promise((r) => setTimeout(r, 100));
+			if (await probe()) return true;
+		}
+		return probe();
+	}
+
+	/** 按号定位章节目录：先走元数据索引（正常路径），索引对刚改名的目录滞后时用真实文件系统目录名兜底 */
+	private async resolveChapterDir(storyName: string, num: number): Promise<{ path: string; title: string } | null> {
+		const root = this.storyPath(storyName);
+		const viaIndex = (await this.listChapters(storyName)).find((c) => c.num === num);
+		if (viaIndex && (await this.vault.adapter.exists(viaIndex.dir.path))) return { path: viaIndex.dir.path, title: viaIndex.title };
+		try {
+			const listed = await this.vault.adapter.list(root);
+			const want = String(num).padStart(2, "0");
+			const name = (listed.folders ?? []).map((p) => p.split("/").pop() as string).find((f) => CHAPTER_DIR_RE.exec(f)?.[1] === want);
+			if (name) return { path: `${root}/${name}`, title: CHAPTER_DIR_RE.exec(name)![2] };
+		} catch { /* 书目录不存在等——视为未找到 */ }
+		return null;
+	}
+
+	/**
+	 * 空心章节目录＝连「章节.md」都没有（中断操作/外部插件干扰留下的损坏残留，通常只剩 .space/context.mdb）。
+	 * 迁移类操作前把它们隔离到 <书>/_backup/，防止其参与两阶段迁移、把大号编号一路拖成幽灵章节。返回隔离数量。
+	 */
+	private async quarantineHollowChapters(storyName: string): Promise<number> {
+		const root = this.storyPath(storyName);
+		let names: string[] = [];
+		try {
+			names = ((await this.vault.adapter.list(root)).folders ?? [])
+				.map((p) => p.split("/").pop() as string)
+				.filter((f) => CHAPTER_DIR_RE.test(f)); // 直接扫真实文件系统——listChapters 已隐藏空心目录，这里必须独立枚举才能找到它们
+		} catch {
+			return 0; // 书目录不存在等——无需隔离
+		}
+		let n = 0;
+		for (const name of names) {
+			const dirPath = `${root}/${name}`;
+			try {
+				if (!(await this.vault.adapter.exists(dirPath))) continue; // 索引陈旧条目，磁盘上已无此目录
+				if (await this.vault.adapter.exists(`${dirPath}/章节.md`)) continue; // 正常章节
+				const stamp = new Date().toISOString().replace(/[-:]/g, "").slice(0, 15);
+				const bakDir = `${root}/_backup/空心残留_${stamp}`;
+				if (!(await this.vault.adapter.exists(bakDir))) await this.vault.createFolder(bakDir);
+				await this.vault.adapter.rename(dirPath, `${bakDir}/${name}${n ? `_${n}` : ""}`);
+				n++;
+			} catch (e) {
+				console.warn(`[ArticleWriter] 隔离空心章节目录失败 ${dirPath}:`, e);
+			}
+		}
+		return n;
+	}
+
+	/** 中断残留可能造成同号双目录——两阶段迁移遇到会错移，直接拒绝并提示手动清理 */
+	private assertUniqueNums(nums: number[]): void {
+		const seen = new Set<number>();
+		for (const n of nums) {
+			if (seen.has(n)) throw new Error(`检测到重复章节号目录：第${String(n).padStart(2, "0")}章（可能是上次操作中断的残留），请手动清理后重试`);
+			seen.add(n);
+		}
+	}
+
 	private async moveChapterDir(storyName: string, fromNum: number, toNum: number): Promise<void> {
-		const ch = await this.chapterDirOf(storyName, fromNum);
-		if (!ch) throw new Error(`章节目录不存在：第${fromNum}章`);
-		const newPath = `${this.storyPath(storyName)}/第${String(toNum).padStart(2, "0")}章-${safeFilename(ch.title || `第${toNum}章`)}`;
-		await this.vault.rename(ch.dir, newPath);
+		const src = await this.resolveChapterDir(storyName, fromNum);
+		if (!src) throw new Error(`章节目录不存在：第${fromNum}章`);
+		const oldPath = src.path;
+		const newPath = `${this.storyPath(storyName)}/第${String(toNum).padStart(2, "0")}章-${safeFilename(src.title || `第${toNum}章`)}`;
+		await this.vault.adapter.rename(oldPath, newPath); // 真实文件系统层整树改名（含 .space 等隐藏项），索引经 adapter 事件同步
+		if (!(await this.settleTree([{ path: oldPath, expect: false }, { path: newPath, expect: true }]))) {
+			throw new Error(`重命名未生效（旧目录仍在或新目录缺失），已中止以防产生重复章节：${oldPath} → ${newPath}`);
+		}
 		const state = (await this.loadState(storyName)) ?? this.emptyState(storyName);
 		if (state.chapters[String(fromNum)]) {
 			state.chapters[String(toNum)] = state.chapters[String(fromNum)];
@@ -1107,20 +1198,23 @@ export class StoryManager {
 	 * 同时重写各章节目录内 md 中的「第X章」引用与 伏笔.md 的章节号。
 	 */
 	async renumberChapters(storyName: string): Promise<{ ok: boolean; msg: string }> {
+		await this.quarantineHollowChapters(storyName); // 先隔离空心残留，防止其参与两阶段迁移
 		const chapters = await this.listChapters(storyName);
 		if (chapters.length === 0) return { ok: false, msg: "没有章节" };
 		const nums = chapters.map((c) => c.num).sort((a, b) => a - b);
+		this.assertUniqueNums(nums); // 中断残留的重复号会令两阶段迁移错移，直接拒绝
 		let contiguous = true;
 		for (let i = 0; i < nums.length; i++) if (nums[i] !== i + 1) (contiguous = false);
 		if (contiguous) return { ok: false, msg: `章节号已连续（1~${nums.length}），无需调整` };
 		const mapping: Record<number, number> = {};
 		for (let i = 0; i < nums.length; i++) mapping[nums[i]] = i + 1;
+		const moving = nums.filter((n, i) => n !== i + 1); // 只移动真正变号的章——减少重命名次数即减少出错面
 		const tmpBase = Math.max(...nums) + nums.length + 1;
-		for (let i = 0; i < nums.length; i++) {
-			await this.moveChapterDir(storyName, nums[i], tmpBase + i); // 旧 → 临时
+		for (let i = 0; i < moving.length; i++) {
+			await this.moveChapterDir(storyName, moving[i], tmpBase + i); // 旧 → 临时（每步校验生效）
 		}
-		for (let i = 0; i < nums.length; i++) {
-			await this.moveChapterDir(storyName, tmpBase + i, i + 1); // 临时 → 新
+		for (let i = 0; i < moving.length; i++) {
+			await this.moveChapterDir(storyName, tmpBase + i, mapping[moving[i]]); // 临时 → 新
 		}
 		// 重写引用：各章节目录内 md 的「第X章」文本
 		const renumText = (text: string): string => {
@@ -1151,7 +1245,59 @@ export class StoryManager {
 			await this.saveForeshadowsFile(storyName, items);
 			void changed;
 		}
-		return { ok: true, msg: `已重编号为连续 1~${nums.length} 章` };
+		const quarantined = await this.quarantineHollowChapters(storyName); // 收尾清扫：外部插件（如 make-md）可能在迁移窗口期往临时目录写 .space 留下残骸，立即隔离出书目录
+		return { ok: true, msg: quarantined > 0 ? `已重编号为连续 1~${nums.length} 章（另隔离 ${quarantined} 个空心残留至 _backup）` : `已重编号为连续 1~${nums.length} 章` };
+	}
+
+	/**
+	 * 在 refNum 之前/之后插入新空章节：newNum 位被占时，所有号 ≥ newNum 的章整体 +1（两阶段临时迁移防目录冲突），
+	 * 并同步重写各章文档内「第N章」/「章节：N」引用与伏笔.md；newNum 为空位（如插到断档处）则直接落位不挪动他人。
+	 * createChapter 会把 current_chapter 设为新章——插入后自然聚焦到新章。返回新章号与其正文路径。
+	 */
+	async insertChapter(storyName: string, refNum: number, pos: "before" | "after", title: string): Promise<{ newNum: number; path: string }> {
+		await this.quarantineHollowChapters(storyName); // 先隔离空心残留，防止其参与两阶段迁移
+		const chapters = await this.listChapters(storyName);
+		if (!chapters.some((c) => c.num === refNum)) throw new Error(`第${refNum}章不存在`);
+		const nums = chapters.map((c) => c.num).sort((a, b) => a - b);
+		this.assertUniqueNums(nums);
+		const newNum = pos === "before" ? refNum : refNum + 1;
+		if (!nums.includes(newNum)) {
+			return { newNum, path: await this.createChapter(storyName, newNum, title) }; // 空位直插，无需顺延
+		}
+		const affected = nums.filter((n) => n >= newNum); // 这些章都要 +1
+		const tmpBase = Math.max(...nums) + nums.length + 1;
+		for (let i = 0; i < affected.length; i++) await this.moveChapterDir(storyName, affected[i], tmpBase + i); // 旧 → 临时
+		const path = await this.createChapter(storyName, newNum, title);
+		for (let i = 0; i < affected.length; i++) await this.moveChapterDir(storyName, tmpBase + i, affected[i] + 1); // 临时 → 新号（每步落盘可恢复）
+		// 引用重写：仅被挪动的章参与映射；新建章自身目录跳过（其文档里的「第N章」是自指，不能改）
+		const mapping: Record<number, number> = {};
+		for (const n of affected) mapping[n] = n + 1;
+		const renumText = (text: string): string => {
+			let out = text.replace(/第(\d{1,6})章/g, (_all: string, d: string): string => {
+				const n = parseInt(d, 10);
+				return `第${mapping[n] ?? n}章`;
+			});
+			out = out.replace(/章节[：:]\s*(\d+)/g, (_all: string, d: string): string => {
+				const n = parseInt(d, 10);
+				return `章节：${mapping[n] ?? n}`;
+			});
+			return out;
+		};
+		if (this.storyFolder(storyName)) {
+			for (const ch of await this.listChapters(storyName)) {
+				if (ch.num === newNum) continue;
+				for (const f of await this.listMarkdownFiles(ch.dir)) {
+					const text = await this.vault.read(f);
+					const next = renumText(text);
+					if (next !== text) await this.vault.modify(f, next);
+				}
+			}
+			const items = await this.loadForeshadows(storyName);
+			for (const item of items) if (mapping[item.chapter]) item.chapter = mapping[item.chapter];
+			await this.saveForeshadowsFile(storyName, items);
+		}
+		void this.quarantineHollowChapters(storyName); // 收尾清扫迁移窗口期可能产生的空心残骸（不阻塞返回）
+		return { newNum, path };
 	}
 
 	// ---------- 打包导出（/pack）----------
@@ -1237,9 +1383,7 @@ export class StoryManager {
 			state.chapters[String(ch.num)] = {
 				title: ch.title,
 				words,
-				volume: info.volume || undefined,
-				tags: info.tags.length ? info.tags : undefined,
-				note: info.notes || undefined,
+				volume: info.volume || undefined, // 标签/备注不再镜像进状态文档（无消费方），仍以《章节信息.md》为准
 			};
 		}
 		for (const key of Object.keys(state.chapters)) {

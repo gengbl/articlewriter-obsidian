@@ -34,6 +34,8 @@ let options = {
 	],
 	format: "cjs",
 	target: "es2018",
+	// docs/使用说明.md 以纯文本内联进包：生成《使用说明.md》时从代码中恢复（独立文档维护，见 src/usage_guide_default.ts）
+	loader: { ".md": "text" },
 	logLevel: "info",
 	sourcemap: prod ? false : "inline",
 	treeShaking: true,

@@ -35,7 +35,7 @@ export interface StatusStoryEntry {
 export interface StatusSnapshot {
 	workDir: string;
 	stories: StatusStoryEntry[];
-	/** 每本书的详情（章节/文件树），供任意小说行展开时渲染；构建失败的书缺省 */
+	/** 当前激活书的详情（章节/文件树）——视图只渲染激活书小节，故快照仅含该书；切书后重新拉取。缺失=加载失败或未设工作目录 */
 	details: Record<string, StatusDetail>;
 }
 
@@ -48,10 +48,11 @@ export type StatusAction =
 	| { kind: "delete-chapter"; story: string; num: number }
 	| { kind: "new-file"; story: string; num: number | null } // num=null → 书根目录；否则该章节目录
 	| { kind: "delete-file"; path: string }
+	| { kind: "insert-chapter"; story: string; num: number; pos: "before" | "after" } // 章节行右键在其之前/之后插入新空章（后续号自动顺延）
 	| { kind: "llm-write" | "llm-continue" | "llm-polish"; story: string; num: number }; // 章节行右键调用 LLM 写作命令（先激活该书/章，再走对应命令交互流程）
 
 /**
- * 工作状态面板（自定义 ItemView，可停靠任意区域、重载保留位置）：
+ * 写字台面板（自定义 ItemView，可停靠任意区域、重载保留位置）：
  * 显示工作目录、全部小说列表（点击切换当前小说）、当前小说的运行状态（题材/编写类型/总字数/更新时间），
  * 章节列表（点击激活该章并同步所属卷）与各文件（点击在编辑器中打开）。
  * 数据经构造注入的 getter 实时读取；写操作（切书/切章）由 main.ts 回盘后刷新本视图。
@@ -73,6 +74,8 @@ export class StatusView extends ItemView {
 	/** 折叠状态（会话内保持，不落盘；各书小节/章节键均带书名前缀互不连动）：collapsed 键="stories"/"gdocs:<书名>"/"chapters:<书名>"（分组标题收起态），expanded 键="c:<书名>:<章号>"（章节文件列表，默认折叠）。小说切换只走「书籍列表」标题行下拉框，组内仅渲染当前激活小说的小节 */
 	private collapsed = new Set<string>();
 	private expanded = new Set<string>();
+	/** 最近一次成功拉取的快照：开合是纯展示态，优先用它本地重渲染、不再读盘（getData 要逐章统计字数，手机上明显卡顿） */
+	private lastSnap: StatusSnapshot | null = null;
 	private menuEl: HTMLElement | null = null;
 	private docMouseHandler = (e: Event): void => {
 		if (this.menuEl && !this.menuEl.contains(e.target as Node)) this.closeMenu();
@@ -94,7 +97,7 @@ export class StatusView extends ItemView {
 	}
 
 	getDisplayText(): string {
-		return "工作状态";
+		return "写字台";
 	}
 
 	getIcon(): string {
@@ -137,14 +140,22 @@ export class StatusView extends ItemView {
 		this.busy = true;
 		try {
 			const snap = await this.getData();
+			this.lastSnap = snap; // 缓存供开合时本地重渲染（免读盘）
 			this.render(snap);
 		} catch (e) {
+			this.lastSnap = null; // 失败清缓存：避免后续开合拿旧数据覆盖错误提示 UI，回落到完整刷新重试
 			this.topEl.empty();
 			this.treeEl.empty();
 			this.topEl.createDiv({ text: `加载失败：${e instanceof Error ? e.message : String(e)}`, cls: "aw-st-error" });
 		} finally {
 			this.busy = false;
 		}
+	}
+
+	/** 展开/折叠只改展示态不产生数据变更：用最近快照立即本地重渲染（省掉 getData 的全库字数扫描 IO），无缓存才走完整 refresh */
+	private rerenderLocal(): void {
+		if (this.built && this.lastSnap) this.render(this.lastSnap);
+		else void this.refresh();
 	}
 
 	private render(snap: StatusSnapshot): void {
@@ -293,6 +304,9 @@ export class StatusView extends ItemView {
 					{ label: "续写本章…", run: () => this.runStatusAction({ kind: "llm-continue", story: storyName, num: c.num }) }, // /continue
 					{ label: "润色本章…", run: () => this.runStatusAction({ kind: "llm-polish", story: storyName, num: c.num }) }, // /polish
 					{ sep: true },
+					{ label: `在本章前插入章节…（成为第${String(c.num)}章）`, run: () => this.runStatusAction({ kind: "insert-chapter", story: storyName, num: c.num, pos: "before" }) }, // ≥本号的各章 +1、引用同步
+					{ label: `在本章后插入章节…（成为第${String(c.num + 1)}章）`, run: () => this.runStatusAction({ kind: "insert-chapter", story: storyName, num: c.num, pos: "after" }) },
+					{ sep: true },
 					{ label: "重命名本章…", run: () => this.runStatusAction({ kind: "rename-chapter", story: storyName, num: c.num }) }, // /chapter rename：改写章名，同步目录与文档引用
 					{ label: `删除本章（第${String(c.num)}章）`, danger: true, run: () => this.runStatusAction({ kind: "delete-chapter", story: storyName, num: c.num }) }, // 删除只作用于被点中的这一章
 				]);
@@ -303,11 +317,11 @@ export class StatusView extends ItemView {
 		}
 	}
 
-	/** 章节文件列表开合（点行与点箭头共用）：expanded 记手动展开态，无文件的章不可展开 */
+	/** 章节文件列表开合（点行与点箭头共用）：expanded 记手动展开态，无文件的章不可展开；重渲染走缓存不走读盘 */
 	private toggleChapFiles(key: string, open: boolean, hasFiles: boolean): void {
 		if (open) this.expanded.delete(key);
 		else if (hasFiles) this.expanded.add(key); // 收起且无文件时点了也不变
-		void this.refresh();
+		this.rerenderLocal();
 	}
 
 	/** 可折叠小节标题行：点击整行切换展开/折叠；onContext 提供时为标题行挂右键菜单（stopPropagation 不落到面板兜底菜单）；返回子项容器（已折叠时返回 null，调用方跳过构建） */
@@ -318,7 +332,7 @@ export class StatusView extends ItemView {
 		if (afterLabel) afterLabel(head);
 		head.addEventListener("click", () => {
 			this.toggleCollapse(key);
-			void this.refresh();
+			this.rerenderLocal(); // 分组折叠同为纯展示态：本地重渲染不读盘
 		});
 		if (onContext) {
 			head.addEventListener("contextmenu", (e) => {

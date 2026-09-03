@@ -8,10 +8,12 @@ import { StoryManager } from "./story_manager";
 import { buildDefaultLlmConf } from "./plugin_config";
 import type { LlmConfigDoc, PluginConfig } from "./plugin_config";
 import { DEFAULT_SYSTEM_GUIDE } from "./system_guide_default";
+import { EMPTY_GUIDE_TEMPLATE } from "./guide_template_default";
+import { DEFAULT_USAGE_GUIDE } from "./usage_guide_default";
 import { assembleSystemPrompt, chatCompletion, chatStream, normalizeBaseURL, testConnection } from "./llm_client";
 import type { Message } from "./llm_client";
 import { findAiWordHits, mergeGuideCategories } from "./banned_words";
-import { appendOutlineInstruction, buildChapterPrompt, buildContinuePrompt, buildEmptyGuideTemplate, buildPolishPrompt, buildReviewPrompt, buildRewritePrompt, buildStoryTypeSystemPrompt, buildWritingContext, checkOutlineCoverage, cleanAiText, embedAggHash, formatRetryNote, parseAggHash, serializeAggregateGuide, stripHeading, validateStoryTypeFormat, wordRangeFromGuides } from "./prompts";
+import { appendOutlineInstruction, buildChapterPrompt, buildContinuePrompt, buildPolishPrompt, buildReviewPrompt, buildRewritePrompt, buildStoryTypeSystemPrompt, buildWritingContext, checkOutlineCoverage, cleanAiText, embedAggHash, formatRetryNote, parseAggHash, serializeAggregateGuide, stripHeading, validateStoryTypeFormat, wordRangeFromGuides } from "./prompts";
 import { splitList, stripComments } from "./md_docs";
 
 interface ArticleWriterSettings {
@@ -36,12 +38,14 @@ export default class ArticleWriterPlugin extends Plugin {
 		await this.loadSettings();
 		this.manager = new StoryManager({ app: this.app, getStoryRoot: () => this.settings.workDir, onStateChanged: () => this.notifyContextChanged() });
 		await this.ensureSystemGuideFile(); // 首次运行把系统级写作指南从 data.json/内置默认播种到插件数据目录文件
+		void this.ensureUsageDocOnStartup(); // 工作目录已设且《使用说明.md》缺失时：自动生成并打开（首跑引导）；真·首启无工作目录则等 pickWorkDir 投放
 
 		this.addCommand({ id: "set-work-dir", name: "选择工作目录（work_dir，对齐 CLI --work_dir）", callback: () => this.pickWorkDir(false) });
 		this.addCommand({ id: "switch-story", name: "切换当前小说（/dir：选书并加载其状态）", callback: () => this.cmdSwitchStory() });
 
 		this.addCommand({ id: "new-story", name: "创建新小说（建书：小说文件夹+模板文档）", callback: () => this.cmdNewStory() });
 		this.addCommand({ id: "new-chapter", name: "新建章节（章节目录+正文/大纲等文档）", callback: () => this.cmdNewChapter() });
+		this.addCommand({ id: "insert-chapter", name: "插入章节（在选中章之前/之后新建，后续章节号自动顺延）", callback: () => void this.cmdInsertChapter() });
 		this.addCommand({ id: "list-chapters", name: "章节列表（选择打开正文）", callback: () => this.cmdListChapters() });
 		this.addCommand({ id: "open-outline", name: "打开总大纲 大纲.md", callback: () => this.cmdOpenOutline() });
 		this.addCommand({ id: "open-worldview", name: "打开世界观 世界观.md", callback: () => this.cmdOpenDoc("世界观.md", WORLD_TEMPLATE) });
@@ -87,6 +91,7 @@ export default class ArticleWriterPlugin extends Plugin {
 		this.addCommand({ id: "agents-edit", name: "编辑创作规范 WRITING_GUIDE.md（对齐 CLI /agents edit：小说级/用户级/系统级三层）", callback: () => this.cmdAgentsEdit() });
 		this.addCommand({ id: "generate-writing-guide", name: "生成写作指南（在用户级 work_dir 与当前书目录各建一份同格式空模板；已存在非空则跳过并提示）", callback: () => this.cmdGenerateWritingGuide() });
 		this.addCommand({ id: "regenerate-system-guide", name: "重新生成系统写作指南（按代码内置默认覆盖插件数据目录中的系统级 WRITING_GUIDE.md，需确认）", callback: () => this.cmdRegenerateSystemGuide() });
+		this.addCommand({ id: "generate-usage-doc", name: "生成使用说明（在 work_dir 根建「使用说明.md」；已存在非空则跳过并提示）", callback: () => this.cmdGenerateUsageDoc() });
 		this.addCommand({ id: "llm-test", name: "LLM 连接测试（/llm test：GET /models 验证当前激活配置）", callback: () => this.cmdLlmTest() });
 
 		this.addCommand({ id: "write-chapter", name: "创作章节（/write：按大纲+指令 LLM 流式生成，自动去AI味后保存）", callback: () => this.cmdWrite() });
@@ -96,12 +101,12 @@ export default class ArticleWriterPlugin extends Plugin {
 		this.addCommand({ id: "deai-clean", name: "去AI味（/deai：含 AI 常用词的句子打回 LLM 重写并原位替换）", callback: () => this.cmdDeaiClean() });
 		this.addCommand({ id: "review-chapter", name: "审阅本章（/review：全局视角查逻辑/连贯性问题出报告）", callback: () => this.cmdReviewChapter() });
 		this.addCommand({ id: "llm-chat", name: "打开 LLM 对话窗口（常驻面板：多轮流式聊天，可停靠任意区域、切换已保存的模型配置）", callback: () => void this.openLlmPanel() });
-		this.addCommand({ id: "status-page", name: "打开工作状态面板（当前书/章节/文件一览，点击小说或章节可切换激活）", callback: () => void this.openStatusPanel() });
+		this.addCommand({ id: "status-page", name: "打开写字台（当前书/章节/文件一览，点击小说或章节可切换激活）", callback: () => void this.openStatusPanel() });
 
 		this.registerView(LlmChatView.VIEW_TYPE, (leaf) => new LlmChatView(leaf, () => this.settings.llm, () => this.getChatSystemPrompt(), () => this.getActiveStoryInfo()));
 		this.registerView(StatusView.VIEW_TYPE, (leaf) => new StatusView(leaf, () => this.getStatusSnapshot(), (name) => this.statusSwitchStory(name), (story, num) => this.statusActivateChapter(story, num), (a) => this.handleStatusAction(a)));
 		this.addRibbonIcon("message-square", "打开 LLM 对话窗口（常驻面板）", () => void this.openLlmPanel());
-		this.addRibbonIcon("book-open", "打开工作状态面板（当前书/章节/文件）", () => void this.openStatusPanel());
+		this.addRibbonIcon("book-open", "打开写字台（当前书/章节/文件）", () => void this.openStatusPanel());
 		this.addSettingTab(new ArticleWriterSettingTab(this));
 
 		// 工作目录内文件变更（编辑器写作自动落盘等）→ 防抖刷新所有已打开状态面板，让章节字数实时跟进写作进度
@@ -162,6 +167,7 @@ export default class ArticleWriterPlugin extends Plugin {
 					this.settings.lastStory = ""; // 切换工作目录后清空旧小说记忆（对齐 CLI /dir）
 					await this.saveSettings();
 					let msg = firstUse ? `已初始化工作目录：${path || "vault 根"}` : `已切换工作目录：${path || "vault 根"}`;
+					if (await this.seedUsageDoc()) msg += "；已在该目录创建《使用说明.md》"; // 设置/切换后把使用说明投放到 work_dir（已有非空则跳过）
 					try {
 						const stories = await this.manager.listStories();
 						if (stories.length === 0) {
@@ -314,6 +320,44 @@ export default class ArticleWriterPlugin extends Plugin {
 			if (this.settings.autoOpenOnCreate) await this.manager.openMarkdown(bodyPath);
 		} catch (e) {
 			new Notice(`创建失败：${(e as Error).message}`);
+		}
+	}
+
+	/** 在当前激活章（无则先选）之前/之后插入新空章节：≥插入位的各章整体 +1、引用同步重写（manager.insertChapter），完成后聚焦新章 */
+	async cmdInsertChapter(): Promise<void> {
+		if (!(await this.ensureWorkDir())) return;
+		const story = await this.requireStory();
+		if (!story) return;
+		try {
+			const chapters = await this.manager.listChapters(story);
+			if (!chapters.length) {
+				new Notice("还没有章节，先用「新建章节」创建第一章");
+				return;
+			}
+			const cur = (await this.manager.loadState(story))?.current_chapter ?? null;
+			let refNum: number | null = cur != null && chapters.some((c) => c.num === cur) ? cur : null;
+			if (refNum == null) {
+				const idx = await this.pickAction(
+					"选择参照章节（在其之前/之后插入）",
+					chapters.map((c) => ({ label: this.chapterLabel(c.num, c.title), marker: cur === c.num ? "◀ 当前" : undefined }))
+				);
+				if (idx == null) return;
+				refNum = chapters[idx].num;
+			}
+			const posIdx = await this.pickAction(`相对 ${this.chapterLabel(refNum)} 的插入位置`, [
+				{ label: `之前 → 新章成为第${String(refNum)}章，原该章及后续各 +1` },
+				{ label: `之后 → 新章成为第${String(refNum + 1)}章，其后的章各 +1` },
+			]);
+			if (posIdx == null) return;
+			const newNum = posIdx === 0 ? refNum : refNum + 1;
+			const t = await this.prompt(`新建第${newNum}章`, "章节标题");
+			if (t == null) return;
+			const title = t.trim() || String(newNum); // 留空沿用建章惯例：以编号作标题
+			const r = await this.manager.insertChapter(story, refNum, posIdx === 0 ? "before" : "after", title);
+			new Notice(`${this.chapterLabel(r.newNum, title)} 已插入；后续章节号与文档引用已顺延更新`);
+			if (this.settings.autoOpenOnCreate) await this.manager.openMarkdown(r.path);
+		} catch (e) {
+			this.notifyError("插入章节失败", e);
 		}
 	}
 
@@ -1161,10 +1205,10 @@ export default class ArticleWriterPlugin extends Plugin {
 		const picked = await this.pickChapterAction("选择要删除的章节");
 		if (!picked) return;
 		try {
-			const ok = await this.confirmBox(`删除${this.chapterLabel(picked.num, picked.title)}？`, "章节目录将移入 Obsidian 回收站，元数据与卷归属一并清理；若为当前章节则回退到最后一章。", "删除");
+			const ok = await this.confirmBox(`删除${this.chapterLabel(picked.num, picked.title)}？`, "章节目录将移入 Obsidian 回收站，元数据与卷归属一并清理；若为当前章节则回退到最后一章。其后的各章会自动重新排号、保持连续编号。", "删除");
 			if (!ok) return;
-			await this.manager.deleteChapter(this.settings.lastStory || (await this.requireStory())!, picked.num);
-			new Notice(`${this.chapterLabel(picked.num, picked.title)} 已删除（可在回收站找回）`);
+			const r = await this.manager.deleteChapter(this.settings.lastStory || (await this.requireStory())!, picked.num);
+			new Notice(`${this.chapterLabel(picked.num, picked.title)} 已删除（可在回收站找回）${r.resequenced ? "；后续章节已自动重新排号为连续" : ""}`);
 		} catch (e) {
 			this.notifyError("删除失败", e);
 		}
@@ -1391,7 +1435,7 @@ export default class ArticleWriterPlugin extends Plugin {
 		const story = await this.requireStory();
 		if (!story) return;
 		try {
-			const tpl = buildEmptyGuideTemplate(DEFAULT_SYSTEM_GUIDE); // 三级同格式：取系统级默认抽骨架，段名保留、正文清空
+			const tpl = EMPTY_GUIDE_TEMPLATE; // 空模板（仅段名+结构标记）由 docs/WRITING_GUIDE_template.md 打包内联，与系统级同格式
 			const created: string[] = [];
 			const skipped: string[] = [];
 			for (const [label, path] of [["用户级", this.manager.userGuidePath()], ["小说级", this.manager.bookGuidePath(story)]] as Array<[string, string]>) {
@@ -1407,6 +1451,77 @@ export default class ArticleWriterPlugin extends Plugin {
 			try { await this.rebuildAggregatedGuide(story); } catch { /* ignore */ }
 		} catch (e) {
 			this.notifyError("生成写作指南失败", e);
+		}
+	}
+
+	/** 启动自检：工作目录有效但《使用说明.md》缺失/为空 → 用内置默认创建并在布局就绪后打开（覆盖首装升级、文档被删两种场景）；已存在一律不动 */
+	private async ensureUsageDocOnStartup(): Promise<void> {
+		try {
+			const dir = this.settings.workDir.replace(/\/+$/, "");
+			if (!dir) return;
+			if (!(this.app.vault.getAbstractFileByPath(dir) instanceof TFolder)) return;
+			const p = this.usageDocPath();
+			const ex = await this.manager.readGuideAt(p);
+			if (ex != null && ex.trim()) return;
+			await this.manager.writeGuideAt(p, DEFAULT_USAGE_GUIDE);
+			new Notice("已在工作目录创建《使用说明.md》", 8000);
+			this.openWhenLayoutReady(p);
+		} catch (e) {
+			console.warn("[ArticleWriter] 启动生成《使用说明.md》失败", e);
+		}
+	}
+
+	/** 等 workspace 布局就绪再开文件（onload 阶段 getLeaf 可能不可用）；本仓库 dts 版本的 workspace.on 无 layout-ready 事件，改用短轮询、registerInterval 托管卸载清理 */
+	private openWhenLayoutReady(path: string): void {
+		const run = () => { void this.manager.openMarkdown(path).catch((e) => console.warn(`[ArticleWriter] 打开 ${path} 失败`, e)); };
+		if (this.app.workspace.layoutReady) {
+			run();
+			return;
+		}
+		const timer = window.setInterval(() => {
+			if (!this.app.workspace.layoutReady) return;
+			window.clearInterval(timer);
+			run();
+		}, 250);
+		this.registerInterval(timer);
+	}
+
+	/** 《使用说明.md》路径：work_dir 根（vault 根=顶层文件） */
+	private usageDocPath(): string {
+		const dir = this.settings.workDir.replace(/\/+$/, "");
+		return dir ? `${dir}/使用说明.md` : "使用说明.md";
+	}
+
+	/** 设置/切换工作目录后把《使用说明.md》投放到其根：仅缺失或为空时写入内置默认，绝不覆盖用户内容。返回是否新建 */
+	private async seedUsageDoc(): Promise<boolean> {
+		try {
+			const p = this.usageDocPath(); // 调用时 settings.workDir 已更新（pickWorkDir 回调内先赋值）
+			const ex = await this.manager.readGuideAt(p);
+			if (ex != null && ex.trim()) return false;
+			await this.manager.writeGuideAt(p, DEFAULT_USAGE_GUIDE);
+			try { await this.manager.openMarkdown(p); } catch { /* 打开失败不影响投放结果（用户交互期 workspace 已就绪，理论上不会到这里） */ }
+			return true;
+		} catch (e) {
+			console.warn("[ArticleWriter] 生成《使用说明.md》失败", e);
+			return false;
+		}
+	}
+
+	/** 手动重新生成使用说明（与自动投放同源；目标非空则跳过并提示） */
+	async cmdGenerateUsageDoc(): Promise<void> {
+		if (!(await this.ensureWorkDir())) return;
+		try {
+			const p = this.usageDocPath();
+			const ex = await this.manager.readGuideAt(p);
+			if (ex != null && ex.trim()) {
+				new Notice(`已存在非空文件，未改动：${p}\n如需更新请手动编辑该文档`, 8000);
+				return;
+			}
+			await this.manager.writeGuideAt(p, DEFAULT_USAGE_GUIDE);
+			new Notice(`已创建使用说明：${p}`, 8000);
+			await this.manager.openMarkdown(p);
+		} catch (e) {
+			this.notifyError("生成使用说明失败", e);
 		}
 	}
 
@@ -1496,7 +1611,7 @@ export default class ArticleWriterPlugin extends Plugin {
 			const leaf = this.app.workspace.getLeftLeaf(false) ?? this.app.workspace.getLeftLeaf(true) ?? this.app.workspace.getLeaf("split");
 			await leaf.setViewState({ type: StatusView.VIEW_TYPE, active: true });
 		} catch (e) {
-			this.notifyError("打开状态面板失败", e);
+			this.notifyError("打开写字台失败", e);
 		}
 	}
 
@@ -1556,7 +1671,7 @@ export default class ArticleWriterPlugin extends Plugin {
 	}
 
 	/** 对话面板系统提示词（与写作命令同一套规则）：编写类型块+禁用词 → settings.system_prompt → 内置默认，末尾附【创作规范】；非交互取 lastStory（不弹选择器），无当前小说时仅用户级/系统级两层 */
-	// ---------- 工作状态面板（StatusView）数据与动作 ----------
+	// ---------- 写字台（StatusView）数据与动作 ----------
 
 	/** 路径是否落在当前工作目录内（含根本身）；未设置工作目录时一律不匹配 */
 	private pathUnderWorkDir(p: string): boolean {
@@ -1584,15 +1699,15 @@ export default class ArticleWriterPlugin extends Plugin {
 		const names = await this.manager.listStories();
 		const last = this.settings.lastStory?.trim() ?? "";
 		const stories: StatusStoryEntry[] = [];
-		/** 逐书实时统计的章节字数（num→words）：状态文档里的 words/total_words 可能是过期值（旧数据、CLI 写入或建章后未同步），展示一律以磁盘 MD 为准（同 /count 口径） */
-		const liveWordsByStory = new Map<string, Record<number, number>>();
+		/** 逐书实时统计的章节字数（num→words）：状态文档里的 words/total_words 可能是过期值（旧数据、CLI 写入或建章后未同步），展示一律以磁盘 MD 为准（同 /count 口径）。**只为当前激活书做全量 countWords**——视图只渲染激活书的章节小节，非激活书仅用 state 值兜底（下拉框只显示书名），省掉多本书逐章读盘的 IO（手机上刷新明显卡顿的主因之一） */
+		let activeLiveWords: Record<number, number> | undefined;
 		for (const name of names) {
 			let title = name;
 			let chapterCount = 0;
 			let currentChapter: number | null = null;
 			let words = 0;
 			try {
-				const st = await this.manager.loadState(name);
+				const st = await this.manager.loadState(name); // 单文件读取，成本低，全部保留（切书提示也要用）
 				if (st) {
 					title = st.title || name;
 					chapterCount = Object.keys(st.chapters).length;
@@ -1602,24 +1717,26 @@ export default class ArticleWriterPlugin extends Plugin {
 			} catch {
 				/* 单本状态读取失败不影响列表其余项 */
 			}
-			try {
-				const rows = await this.manager.countWords(name); // 读各章 章节.md 纯文字计数
-				const map: Record<number, number> = {};
-				for (const r of rows) map[r.num] = r.words;
-				liveWordsByStory.set(name, map);
-				words = rows.reduce((s, r) => s + r.words, 0); // 实时值优先，覆盖可能过期的 state 值
-			} catch {
-				/* 字数统计失败时保留 state 里的旧值兜底 */
+			if (name === last) {
+				try {
+					const rows = await this.manager.countWords(name); // 读各章 章节.md 纯文字计数
+					const map: Record<number, number> = {};
+					for (const r of rows) map[r.num] = r.words;
+					activeLiveWords = map;
+					words = rows.reduce((s, r) => s + r.words, 0); // 实时值优先，覆盖可能过期的 state 值
+				} catch {
+					/* 字数统计失败时保留 state 里的旧值兜底 */
+				}
 			}
 			stories.push({ name, title, chapterCount, currentChapter, words, active: name === last });
 		}
-		// 每本书都预构建详情子树（章节/文件），状态页任意小说行都可展开查看；单本失败不影响其余
+		// 只为当前激活书构建详情子树（视图仅渲染其「全局文档/章节」小节；切书必走完整 refresh 重新拉取）；失败则该节显示加载提示
 		const details: Record<string, StatusDetail> = {};
-		for (const name of names) {
+		if (last && names.includes(last)) {
 			try {
-				details[name] = await this.buildStoryDetail(name, liveWordsByStory.get(name));
+				details[last] = await this.buildStoryDetail(last, activeLiveWords);
 			} catch {
-				/* 该书详情缺失时其行首箭头置灰不可展开 */
+				/* 详情缺失时视图显示「未能加载状态」提示 */
 			}
 		}
 		return { workDir: root, stories, details };
@@ -1724,13 +1841,24 @@ export default class ArticleWriterPlugin extends Plugin {
 				new Notice(`已改名为 ${this.chapterLabel(a.num, newTitle)}，目录与文档引用已同步`, 6000);
 				return;
 			}
+			case "insert-chapter": {
+				// 右键所在章节即参照章、方向已定：只问标题（留空以编号作标题），复用 manager.insertChapter 的顺延+引用重写
+				const newNum = a.pos === "before" ? a.num : a.num + 1;
+				const t = await this.prompt(`新建第${newNum}章`, `插入到 ${this.chapterLabel(a.num)} ${a.pos === "before" ? "之前" : "之后"}的章节标题`);
+				if (t == null) return;
+				const title = t.trim() || String(newNum);
+				const r = await this.manager.insertChapter(a.story, a.num, a.pos, title);
+				new Notice(`${this.chapterLabel(r.newNum, title)} 已插入；后续章节号与文档引用已顺延更新`, 6000);
+				if (this.settings.autoOpenOnCreate) await this.manager.openMarkdown(r.path);
+				return;
+			}
 			case "delete-chapter": {
 				const st = await this.manager.loadState(a.story);
 				const meta = st?.chapters[String(a.num)];
-				const ok = await this.confirmBox(`删除第${String(a.num).padStart(2, "0")}章${meta?.title ? " " + meta.title : ""}？`, "章节目录将移入 Obsidian 回收站，元数据与卷归属一并清理；若为当前章节则回退到最后一章。", "删除");
+				const ok = await this.confirmBox(`删除第${String(a.num).padStart(2, "0")}章${meta?.title ? " " + meta.title : ""}？`, "章节目录将移入 Obsidian 回收站，元数据与卷归属一并清理；若为当前章节则回退到最后一章。其后的各章会自动重新排号、保持连续编号。", "删除");
 				if (!ok) return;
-				await this.manager.deleteChapter(a.story, a.num);
-				new Notice("章节已删除（可在回收站找回）");
+				const r = await this.manager.deleteChapter(a.story, a.num);
+				new Notice(`章节已删除（可在回收站找回）${r.resequenced ? "；后续章节已自动重新排号为连续" : ""}`);
 				return;
 			}
 			case "new-file": {

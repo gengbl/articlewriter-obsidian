@@ -119,7 +119,7 @@
 	color: var(--text-on-accent);
 }
 
-/* 工作状态面板（无顶部工具条；「刷新」按钮内嵌在工作目录行右侧）。纵向 flex：头部固定不滚、仅树主体区内部滚动 */
+/* 写字台（无顶部工具条；「刷新」按钮内嵌在工作目录行右侧）。纵向 flex：头部固定不滚、仅树主体区内部滚动 */
 .aw-status-view {
 	padding-top: 4px;
 	display: flex;
