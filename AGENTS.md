@@ -23,7 +23,7 @@
 
 1. 把本次改动的文件逐一拷入 `/home/fosky/workspace/articlewriter-obsidian-git/`（GitHub 镜像 `gengbl/articlewriter-obsidian` 的本地克隆；历史为工作树拷贝式独立提交、非主仓 clone，不能直接 push 同一对象）。
 2. **所有 git 操作都在 `/home/fosky/workspace/articlewriter-obsidian-git` 里执行**：`git add <显式列出>` + **与主仓同消息** commit + `git push origin main`（SSH remote `git@github.com:gengbl/articlewriter-obsidian.git`）。
-3. 发布日另在两个仓库分别打标签并推送：Gitea 带 v 前缀（`v0.0.12`）、GitHub 镜像**无 v 前缀**（`0.0.12`）。向镜像推新 tag 即触发 `.github/workflows/release.yml`——CI 从源码重建、attestation 签名并自动创建/更新 GitHub Release（资产 = 含写作指南 `WRITING_GUIDE.md` 的四个散文件，不上传 zip）。tag 触发的运行取**打 tag 那一刻**的 workflow 文件，改过 CI 须确保改动已包含在被 tag 的 commit 中。
+3. 发布日另在两个仓库分别打标签并推送：Gitea 带 v 前缀（`v0.0.12`）、GitHub 镜像**无 v 前缀**（`0.0.12`）。向镜像推新 tag 即触发 `.github/workflows/release.yml`——CI 从源码重建、attestation 签名并自动创建/更新 GitHub Release（资产 = `main.js` / `manifest.json` / `styles.css` 三个散文件；写作指南 `WRITING_GUIDE.md` 自 v0.0.14 后不再上 GitHub Release、仅随 Gitea zip 分发；不上传 zip）。tag 触发的运行取**打 tag 那一刻**的 workflow 文件，改过 CI 须确保改动已包含在被 tag 的 commit 中。
 
 凭据提取陷阱、手动回落方案等细节见 [agents/build-deploy.md](./agents/build-deploy.md)「GitHub 镜像同步（强制）」与 [RELEASE.md](./RELEASE.md)。
 
