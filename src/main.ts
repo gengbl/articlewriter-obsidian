@@ -222,7 +222,7 @@ export default class ArticleWriterPlugin extends Plugin {
 			} catch {
 				sub = "（状态读取失败）";
 			}
-			items.push({ label: s, sub, marker: s === this.settings.lastStory ? "◀ 当前" : undefined });
+			items.push({ label: s, sub, marker: s === this.settings.lastStory ? "▶ 当前" : undefined });
 		}
 		const idx = await this.pickAction("切换当前小说（/dir）", items);
 		if (idx == null) return;
@@ -349,7 +349,7 @@ export default class ArticleWriterPlugin extends Plugin {
 			if (!enabled && volCount > 0) { // 破坏性：拍平并删除全部卷 → 必须二次确认
 				const ok = await this.confirmBox(
 					`把《${story}》的全部 ${volCount} 个卷拍平回书根？`,
-					`${chInVols} 章将从各卷目录移回书根并在书内重新连续编号；${volCount} 个卷实体目录（含其卷级设定文档）将移入回收站、卷.md 元数据清除。此操作不可撤销（可去 Obsidian 回收站找回）。`,
+					`${chInVols} 章将从各卷目录移回书根并在书内重新连续编号；各卷残留的直属文档（如卷大纲/人物等设定四件套）也将挪出到书根，跨卷同名者前面加「<卷名>-」前缀以免覆盖；随后 ${volCount} 个卷实体目录与卷.md 元数据清除进回收站。此操作不可撤销（可去 Obsidian 回收站找回）。`,
 					"确认切换为无卷"
 				);
 				if (!ok) return;
@@ -360,7 +360,7 @@ export default class ArticleWriterPlugin extends Plugin {
 				enabled
 					? `已启用「有卷模式」：现在可用「新建卷」「管理卷」「按卷整理目录」。`
 					: r.flattened
-						? `已切换为「无卷模式」：拍平 ${r.movedKeys.length} 章回书根、移除 ${r.deletedVolumes} 个卷，保持纯 书籍→章节 结构。`
+						? `已切换为「无卷模式」：拍平 ${r.movedKeys.length} 章${r.movedDocs ? `、挪出 ${r.movedDocs} 份卷内文档` : ""}回书根、移除 ${r.deletedVolumes} 个卷，保持纯 书籍→章节 结构。`
 						: `已切换为「无卷模式」（本就无卷，仅锁定扁平结构）。`,
 				10000
 			);
@@ -579,7 +579,7 @@ export default class ArticleWriterPlugin extends Plugin {
 			if (refIdx < 0) {
 				refIdx = await this.pickAction(
 					"选择参照章节（在其之前/之后插入）",
-					chapters.map((c) => ({ label: this.keyLabel(c.key, volNames, c.title), marker: cur === c.key ? "◀ 当前" : undefined }))
+					chapters.map((c) => ({ label: this.keyLabel(c.key, volNames, c.title), marker: cur === c.key ? "▶ 当前" : undefined }))
 				);
 				if (refIdx == null) return;
 			}
@@ -880,7 +880,7 @@ export default class ArticleWriterPlugin extends Plugin {
 			const state = await this.manager.validatedState(story);
 			const idx = await this.pickAction(
 				"选择要管理的卷",
-				vols.map((v) => ({ label: v.name, sub: v.description || v.id, marker: state.current_volume === v.id ? "◀ 当前" : undefined }))
+				vols.map((v) => ({ label: v.name, sub: v.description || v.id, marker: state.current_volume === v.id ? "▶ 当前" : undefined }))
 			);
 			if (idx == null) return;
 			const vol = vols[idx];
@@ -1098,7 +1098,7 @@ export default class ArticleWriterPlugin extends Plugin {
 			const volNames = await this.volNameMap(story); // v0.0.15：归属展示带卷前缀（s.vol 为加载时打标的运行态容器）
 			const idx = await this.pickAction(
 				"选择要管理的场景",
-				scenes.map((s) => ({ label: s.scene_id, sub: `${this.refLabel(s.chapter_num, s.vol, volNames)} · ${s.description || ""}`.trim(), marker: state.current_scene === s.scene_id ? "◀ 当前" : undefined }))
+				scenes.map((s) => ({ label: s.scene_id, sub: `${this.refLabel(s.chapter_num, s.vol, volNames)} · ${s.description || ""}`.trim(), marker: state.current_scene === s.scene_id ? "▶ 当前" : undefined }))
 			);
 			if (idx == null) return;
 			const scene = scenes[idx];
@@ -1529,7 +1529,7 @@ export default class ArticleWriterPlugin extends Plugin {
 		const volNames = await this.volNameMap(story); // v0.0.15：展示带卷前缀、按复合键比对当前章
 		const idx = await this.pickAction(
 			title,
-			chapters.map((c) => ({ label: this.keyLabel(c.key, volNames, c.title), marker: state?.current_chapter === c.key ? "◀ 当前" : undefined }))
+			chapters.map((c) => ({ label: this.keyLabel(c.key, volNames, c.title), marker: state?.current_chapter === c.key ? "▶ 当前" : undefined }))
 		);
 		if (idx == null) return null;
 		return { key: chapters[idx].key, num: chapters[idx].num, title: chapters[idx].title };
@@ -1621,7 +1621,7 @@ export default class ArticleWriterPlugin extends Plugin {
 			const chs = await this.manager.listChapters(story);
 			const idx = await this.pickAction(
 				"选择要导出的卷",
-				vols.map((v) => ({ label: v.name, sub: `${chs.filter((c) => c.vol === v.id).length} 章${v.description ? ` · ${v.description}` : ""}`, marker: state.current_volume === v.id ? "◀ 当前" : undefined }))
+				vols.map((v) => ({ label: v.name, sub: `${chs.filter((c) => c.vol === v.id).length} 章${v.description ? ` · ${v.description}` : ""}`, marker: state.current_volume === v.id ? "▶ 当前" : undefined }))
 			);
 			if (idx == null) return;
 			const vol = vols[idx];
@@ -2135,6 +2135,7 @@ export default class ArticleWriterPlugin extends Plugin {
 			storyDir instanceof TFolder
 				? storyDir.children.filter((f): f is TFile => f instanceof TFile).map((f) => ({ path: f.path, name: f.name })).sort((a, b) => a.name.localeCompare(b.name, "zh"))
 				: [];
+		const volDocs = await this.manager.listVolumeDocsByVol(storyName); // v0.1.3+：各卷实体目录直属 md（非章节目录），供写字台「文档」子节点展示
 		return {
 			storyName,
 			title: state?.title || storyName,
@@ -2144,7 +2145,7 @@ export default class ArticleWriterPlugin extends Plugin {
 			currentVolume: curVolId,
 			totalWords: chWords ? Object.values(chWords).reduce((s, w) => s + w, 0) : (state?.total_words ?? 0),
 			updatedAt: state?.updated_at || "",
-			volumes: vols.map((v) => ({ id: v.id, name: v.name, order: v.order, active: v.id === curVolId })),
+			volumes: vols.map((v) => ({ id: v.id, name: v.name, order: v.order, active: v.id === curVolId, docs: volDocs[v.id] ?? [] })),
 			chapters,
 			globalFiles,
 			useVolumes: state?.use_volumes ?? true, // v0.0.16+：无卷模式时写字台隐藏全部「新建卷」入口；状态缺失按有卷兜底不擅藏功能
@@ -2345,6 +2346,22 @@ export default class ArticleWriterPlugin extends Plugin {
 				if (!ok) return;
 				await this.app.fileManager.trashFile(f);
 				new Notice(`${f.name} 已删除（可在回收站找回）`);
+				return;
+			}
+			case "new-volume-doc": {
+				const vols = await this.manager.loadVolumes(a.story);
+				const vol = this.manager.findVolumeIn(vols, a.volId); // 按 id/名解析目标卷
+				if (!vol) throw new Error(`卷 ${a.volId} 不存在或已被删除`);
+				const folder = `${this.manager.storyPath(a.story)}/${this.manager.volumeFolderName(vol)}`;
+				if (!(this.app.vault.getAbstractFileByPath(folder) instanceof TFolder)) throw new Error("该卷实体目录缺失，请先执行「按卷整理目录」");
+				const name = await this.prompt("新建文档", `在卷「${vol.name}」下创建 .md 文件名（留扩展名可自定义）`);
+				if (name == null || !name.trim()) return;
+				let base = safeFilename(name.trim());
+				if (!base.toLowerCase().endsWith(".md")) base += ".md";
+				const path = `${folder}/${base}`;
+				if (this.app.vault.getAbstractFileByPath(path)) throw new Error(`同名文件已存在：${path}`);
+				await this.app.vault.create(path, "");
+				new Notice(`已在卷「${vol.name}」创建 ${base}`);
 				return;
 			}
 			case "llm-write":

@@ -332,6 +332,23 @@ export class StoryManager {
 		});
 	}
 
+	/** v0.1.3+：各卷实体目录下的直属 md 文件（非章节目录，含建卷播种的设定四件套/卷摘要等），按卷 ID 归组；供写字台在卷节点下以「文档」子节点展示。无《卷.md》或某卷目录缺失则跳过该卷 */
+	async listVolumeDocsByVol(storyName: string): Promise<Record<string, Array<{ path: string; name: string }>>> {
+		const out: Record<string, Array<{ path: string; name: string }>> = {};
+		let vmap: Record<string, doc.VolumeInfo> = {};
+		try {
+			vmap = await this.loadVolumes(storyName);
+		} catch {
+			return out; // 未建过卷 → 空映射
+		}
+		for (const v of Object.values(vmap)) {
+			const f = this.vault.getAbstractFileByPath(`${this.storyPath(storyName)}/${this.volumeFolderName(v)}`);
+			if (!(f instanceof TFolder)) continue;
+			out[v.id] = f.children.filter((x): x is TFile => x instanceof TFile).map((x) => ({ path: x.path, name: x.name })).sort((a, b) => a.name.localeCompare(b.name, "zh"));
+		}
+		return out;
+	}
+
 	async chapterBodyFile(storyName: string, key: string): Promise<TFile | null> {
 		const chapters = await this.listChapters(storyName);
 		const ch = chapters.find((c) => c.key === key);
@@ -960,9 +977,9 @@ export class StoryManager {
 	 * 顺序=listChapters 的全局阅读序（书根在前、各卷按 order 依次、组内本地号升序），保证结果确定可复现。
 	 * 幂等可续跑：已回移到书根的章变为根域键，下次过滤 vol!=null 后不再处理；中断后可重跑 /volume off 补齐。
 	 */
-	async flattenToRoot(storyName: string): Promise<{ movedKeys: string[]; deletedVolumes: number }> {
+	async flattenToRoot(storyName: string): Promise<{ movedKeys: string[]; deletedVolumes: number; movedDocs: number }> {
 		const vols = await this.loadVolumes(storyName);
-		if (!Object.keys(vols).length) return { movedKeys: [], deletedVolumes: 0 }; // 本就无卷 → 无需迁移
+		if (!Object.keys(vols).length) return { movedKeys: [], deletedVolumes: 0, movedDocs: 0 }; // 本就无卷 → 无需迁移
 		const base = this.storyPath(storyName);
 		const ordered = (await this.listChapters(storyName)).filter((c) => c.vol != null); // listChapters 已按全局阅读序排好
 		const movedKeys: string[] = [];
@@ -970,7 +987,9 @@ export class StoryManager {
 			const r = await this.relocateChapterContainer(storyName, ch.key, null); // 位置即归属：物理回移+键重映射一次完成
 			movedKeys.push(r.newKey);
 		}
-		// 清空各卷实体目录（连同其残留的卷级设定四件套）进回收站，再移除 卷.md 元数据
+		// v0.1.3+：拍平前先 salvaging 各卷残留的直属文件（设定四件套/卷摘要等）回书根保留；跨卷同名者加「<卷名>-」前缀避免覆盖，而非随目录一起进回收站
+		const movedDocs = await this.salvageVolumeDocsToRoot(storyName, vols);
+		// 清空各卷实体目录（连同其残留内容）进回收站，再移除 卷.md 元数据
 		let deletedVolumes = 0;
 		for (const v of Object.values(vols)) {
 			const volDir = `${base}/${this.volumeFolderName(v)}`;
@@ -984,15 +1003,37 @@ export class StoryManager {
 		delete st.current_volume;
 		for (const k of Object.keys(st.chapters)) if (!parseChKey(k).vol && st.chapters[k].volume) delete st.chapters[k].volume;
 		await this.saveState(storyName, st);
-		return { movedKeys, deletedVolumes };
+		return { movedKeys, deletedVolumes, movedDocs };
+	}
+
+	/** v0.1.3+：拍平迁移前把各卷实体目录里剩余的直属文件（非章节目录，如建卷播种的设定四件套/卷摘要等）回移到书根保留；跨卷或书根已存在同名者加「<卷名>-」前缀避免覆盖。返回成功迁移的文件数 */
+	private async salvageVolumeDocsToRoot(storyName: string, vols: Record<string, doc.VolumeInfo>): Promise<number> {
+		const base = this.storyPath(storyName);
+		let moved = 0;
+		for (const v of Object.values(vols)) {
+			const folder = this.vault.getAbstractFileByPath(`${base}/${this.volumeFolderName(v)}`);
+			if (!(folder instanceof TFolder)) continue; // 章节已先行回移，此处只剩卷内直属文件
+			const files = folder.children.filter((x): x is TFile => x instanceof TFile);
+			for (const file of files) {
+				let target = `${base}/${file.name}`;
+				if (await this.vault.adapter.exists(target)) {
+					target = `${base}/${safeFilename(v.name)}-${file.name}`; // 跨卷/书根同名 → 前面增加卷名后再挪出
+					if (await this.vault.adapter.exists(target)) throw new Error(`拍平冲突：书根已存在 ${target}，无法迁移 ${file.path}`);
+				}
+				await this.vault.rename(file, target);
+				await this.settleTree([{ path: file.path, expect: false }, { path: target, expect: true }]); // 等虚拟文件系统同步再处理下一个/后续删目录
+				moved++;
+			}
+		}
+		return moved;
 	}
 
 	/**
 	 * v0.0.16+：切换该书工作模式。enabled=false=无卷（若仍有卷则先拍平迁移，破坏性、由调用方二次确认）；
 	 * enabled=true=有卷（仅置位，书仍保持扁平直到用户 /volume add）。恒显式写回 use_volumes 使行为确定。
 	 */
-	async setVolumeMode(storyName: string, enabled: boolean): Promise<{ flattened: boolean; movedKeys: string[]; deletedVolumes: number }> {
-		let result = { flattened: false, movedKeys: [] as string[], deletedVolumes: 0 };
+	async setVolumeMode(storyName: string, enabled: boolean): Promise<{ flattened: boolean; movedKeys: string[]; deletedVolumes: number; movedDocs: number }> {
+		let result = { flattened: false, movedKeys: [] as string[], deletedVolumes: 0, movedDocs: 0 };
 		if (!enabled) {
 			const vols = await this.loadVolumes(storyName);
 			if (Object.keys(vols).length) {
@@ -1000,6 +1041,7 @@ export class StoryManager {
 				result.flattened = true;
 				result.movedKeys = r.movedKeys;
 				result.deletedVolumes = r.deletedVolumes;
+				result.movedDocs = r.movedDocs;
 			}
 		}
 		const st = (await this.loadState(storyName)) ?? this.emptyState(storyName);
@@ -2244,7 +2286,10 @@ export class StoryManager {
 			localNum: ch.num,
 			volumeName,
 			volOutlineText,
-			chapterRanks: Object.fromEntries(ordered.map((c, i) => [c.key, i + 1] as [string, number])),
+			chapterRanks: ordered.reduce<Record<string, number>>((acc, c, i) => {
+				acc[c.key] = i + 1;
+				return acc;
+			}, {}),
 			volumeNames: volNames,
 			title: (state.title || "").trim() || storyName,
 			genre: state.genre,

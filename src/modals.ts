@@ -328,7 +328,7 @@ export class StoryPickerModal extends SuggestModal<string> {
 export interface ActionItem {
 	label: string;
 	sub?: string;
-	marker?: string; // 如 "◀ 当前"
+	marker?: string; // 如 "▶ 当前"（当前书/章/卷/场景的数据侧标记）
 	disabled?: boolean;
 }
 
@@ -358,7 +358,7 @@ export class ActionMenuModal extends Modal {
 		this.onKeydown = (e) => {
 			if (e.key === "ArrowDown" || e.key === "ArrowUp") {
 				e.preventDefault();
-				this.moveSelection(e.key === "ArrowDown" ? 1 : -1); // ↑↓移动选中标记 ▶（跳过 disabled），不执行
+				this.moveSelection(e.key === "ArrowDown" ? 1 : -1); // ↑↓移动选中标记 ●（跳过 disabled），不执行
 			} else if (e.key === "Enter") {
 				e.preventDefault();
 				void this.choose();
@@ -383,14 +383,15 @@ export class ActionMenuModal extends Modal {
 		list.empty();
 		this.items.forEach((item, i) => {
 			const row = list.createDiv({ cls: `aw-action-row${i === this.selected ? " aw-selected" : ""}${item.disabled ? " aw-disabled" : ""}` }); // cursor pointer/default 走类名
-			if (item.marker) row.createSpan({ text: `${item.marker} `, cls: "aw-accent" });
-			row.createSpan({ text: item.label });
-			if (item.sub) row.createSpan({ text: ` ${item.sub}`, cls: "aw-dim" });
+			row.createSpan({ cls: "aw-sel" }); // 选中标记列：圆点 ● 由 CSS ::before 按 .aw-selected 态显示（随类切换，无需重渲染）
+			row.createSpan({ text: item.marker ?? "", cls: "aw-cur aw-accent" }); // 当前项标记列：固定宽度占位（无 marker 留空），保证各行文字对齐
+			row.createSpan({ text: item.label, cls: "aw-lab" });
+			if (item.sub) row.createSpan({ text: item.sub, cls: "aw-dim aw-sub" });
 			if (!item.disabled) {
 				row.addEventListener("click", () => {
 					if (this.selected === i) return; // 已选中，无需重复
 					this.selected = i;
-					this.refreshHighlight(); // 仅移动选中标记 ▶，不执行——等用户点「确认」或按回车
+					this.refreshHighlight(); // 仅移动选中标记 ●，不执行——等用户点「确认」或按回车
 				});
 			}
 		});

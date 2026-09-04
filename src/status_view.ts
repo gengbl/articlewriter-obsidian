@@ -20,6 +20,7 @@ export interface StatusVolumeEntry {
 	name: string;
 	order: number;
 	active: boolean; // 是否为当前卷（current_volume）
+	docs?: StatusFileEntry[]; // v0.1.3+：该卷实体目录下的直属 md 文件（非章节目录，含建卷时播种的设定四件套等），供写字台在卷节点下以「文档」子节点展示；缺失/空=无
 }
 export interface StatusDetail {
 	storyName: string;
@@ -64,6 +65,7 @@ export type StatusAction =
 	| { kind: "delete-chapter"; story: string; key: string }
 	| { kind: "new-file"; story: string; key: string | null } // key=null → 书根目录；否则该章节目录
 	| { kind: "delete-file"; path: string }
+	| { kind: "new-volume-doc"; story: string; volId: string } // 卷节点 / 卷内「文档」分组右键：在该卷实体目录下新建 .md（语义同 new-file，落点为卷目录而非章节目录）
 	| { kind: "insert-chapter"; story: string; key: string; pos: "before" | "after" } // 章节行右键在其之前/之后插入新空章（本容器内后续号自动顺延）
 	| { kind: "llm-write" | "llm-continue" | "llm-polish"; story: string; key: string }; // 章节行右键调用 LLM 写作命令（先激活该书/章，再走对应命令交互流程）
 
@@ -322,6 +324,8 @@ export class StatusView extends ItemView {
 	private renderVolume(parent: HTMLElement, d: StatusDetail, v: StatusVolumeEntry, seq: number, chs: StatusChapterEntry[], isActiveStory: boolean): void {
 		const key = `vol:${d.storyName}:${v.id}`; // 含书名+卷ID：不同书/卷互不连动；不在 collapsed 中=展开
 		const open = !this.collapsed.has(key);
+		const docs = v.docs ?? []; // v0.1.3+：该卷实体目录直属 md（非章节目录）
+		const hasContent = chs.length > 0 || docs.length > 0; // 有章或有文档才可展开
 		const volItems = (): Array<{ label: string; danger?: boolean; run: () => void } | { sep: true }> => [
 			{ label: `在本卷新建章节…`, run: () => this.runStatusAction({ kind: "new-chapter", story: d.storyName, volId: v.id }) },
 			{ label: "新建卷…", run: () => this.runStatusAction({ kind: "create-volume", story: d.storyName }) },
@@ -337,8 +341,8 @@ export class StatusView extends ItemView {
 		});
 		const row = block.createDiv({ cls: "aw-st-vol" + (v.active && isActiveStory ? " is-active" : "") });
 		row.createSpan({ text: open ? "▾" : "▸", cls: "aw-st-caret" }).addEventListener("click", (e) => {
-			e.stopPropagation(); // 点箭头只折叠/展开本章列表，不激活卷
-			if (!chs.length) return; // 无章的卷无可展开内容
+			e.stopPropagation(); // 点箭头只折叠/展开本卷内容（章节与文档），不激活卷
+			if (!hasContent) return; // 既无章又无文档的卷无可展开内容
 			this.toggleCollapse(key);
 			this.rerenderLocal();
 		});
@@ -354,12 +358,13 @@ export class StatusView extends ItemView {
 			});
 		}
 		row.addEventListener("click", () => {
-			if (!chs.length) return; // 树状结构：点行只折叠/展开本卷章节列表，激活一律走行尾 Radio
+			if (!hasContent) return; // 树状结构：点行只折叠/展开本卷内容（章节+文档），激活一律走行尾 Radio
 			this.toggleCollapse(key);
 			this.rerenderLocal();
 		});
-		if (open && chs.length) {
-			const kids = block.createDiv({ cls: "aw-st-kids" }); // 缩进 + 左侧指示线表示从属层级
+		if (open && hasContent) {
+			const kids = block.createDiv({ cls: "aw-st-kids" }); // 缩进 + 左侧指示线表示从属层级（文档在前、章节在后）
+			if (docs.length) this.renderVolumeDocs(kids, d.storyName, v.id, docs); // v0.1.3+：卷内「文档」子节点固定置顶，章节目录排在其后
 			for (const c of chs) {
 				const cb = kids.createDiv({ cls: "aw-st-chap-block" }); // 卷内章节同样带「该目录新建项」块菜单
 				cb.addEventListener("contextmenu", (e) => {
@@ -368,6 +373,41 @@ export class StatusView extends ItemView {
 				});
 				this.renderChapter(cb, d.storyName, c, isActiveStory);
 			}
+		}
+	}
+
+	/** 卷内「文档」子节点（v0.1.3+）：一个带名字且**可独立折叠**的子节点，列出该卷实体目录下的直属 md（非章节目录，含建卷播种的设定四件套等）。命名头左有 ▾/▸ 箭头点它或整行切换开合（键 voldocs:<书>:<卷ID>，默认展开），文件行仅在展开时渲染；命名头右键=在本卷新建文档…，文件行点击在编辑器打开、右键可新建/删除。缩进由外层 .aw-st-kids 提供 */
+	private renderVolumeDocs(parent: HTMLElement, storyName: string, volId: string, docs: StatusFileEntry[]): void {
+		const key = `voldocs:${storyName}:${volId}`; // v0.1.3+：与章节/卷各自互不连动；不在 collapsed 中=展开（默认展开）
+		const open = !this.collapsed.has(key);
+		const head = parent.createDiv({ cls: "aw-st-vol-dochead" }); // 命名头（整行可点击开合；仅排版样式，不另造缩进）
+		head.createSpan({ text: open ? "▾" : "▸", cls: "aw-st-caret" }); // 纯视觉指示符，状态随 open 切换
+		head.appendText(`文档（${String(docs.length)}）`); // v0.1.3+：与前导 caret(自带 margin-right:0.35em)后紧跟文本，写法同章节名行(.aw-st-chap)，保证标签左缘与其完全一致
+		head.addEventListener("click", () => { // v0.1.3+：鼠标点整行即展开/收起本组文档列表（与所在卷的开合互不影响）
+			this.toggleCollapse(key);
+			this.rerenderLocal();
+		});
+		head.addEventListener("contextmenu", (e) => {
+			e.stopPropagation(); // 不透传到所在卷块菜单
+			this.showContextMenu(e, [{ label: "在本卷新建文档…", run: () => this.runStatusAction({ kind: "new-volume-doc", story: storyName, volId }) }]);
+		});
+		if (!open) return; // 收起时只显示命名头，文件列表容器与文件行均不渲染
+		const list = parent.createDiv({ cls: "aw-st-kids" }); // v0.1.3+：再嵌一层 .aw-st-kids，让文档行的对齐/缩进与「章节名下的文档」完全一致
+		for (const f of docs) {
+			const el = list.createDiv({ cls: "aw-st-file" });
+			el.setText(f.name);
+			el.addEventListener("click", (e) => {
+				e.stopPropagation(); // 点文件不触发所在卷行的开合
+				void this.openFile(f.path);
+			});
+			el.addEventListener("contextmenu", (e) => {
+				e.stopPropagation(); // 不透传到所在分组/卷块的菜单
+				this.showContextMenu(e, [
+					{ label: "在本卷新建文档…", run: () => this.runStatusAction({ kind: "new-volume-doc", story: storyName, volId }) },
+					{ sep: true },
+					{ label: `删除 ${f.name}`, danger: true, run: () => this.runStatusAction({ kind: "delete-file", path: f.path }) },
+				]);
+			});
 		}
 	}
 
