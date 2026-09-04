@@ -270,7 +270,7 @@ export class StoryManager {
 				if (!name || name.startsWith(".") || name === "_backup") continue;
 				let hasChapterChild = false;
 				try {
-					hasChapterChild = ((await this.vault.adapter.list(p)).folders ?? []).some((c) => CHAPTER_DIR_RE.test(c.split("/")!.pop()!));
+					hasChapterChild = ((await this.vault.adapter.list(p)).folders ?? []).some((c) => CHAPTER_DIR_RE.test(c.split("/").pop()!));
 				} catch { /* 不可读子目录忽略 */ }
 				if (known.has(name) || hasChapterChild) paths.push(p);
 			}
@@ -296,7 +296,7 @@ export class StoryManager {
 	async listChapters(storyName: string): Promise<Array<{ key: string; num: number; title: string; dir: TFolder; vol?: string; parentPath: string }>> {
 		const folder = this.vault.getAbstractFileByPath(this.storyPath(storyName));
 		if (!folder || !(folder instanceof TFolder)) return [];
-		const vols = await this.loadVolumes(storyName).catch(() => ({} as Record<string, doc.VolumeInfo>));
+		const vols = await this.loadVolumes(storyName).catch((): Record<string, doc.VolumeInfo> => ({}));
 		const byDirName = new Map<string, string>();
 		for (const v of Object.values(vols)) {
 			byDirName.set(this.volumeFolderName(v), v.id);
@@ -888,7 +888,7 @@ export class StoryManager {
 	 * 返回需要移动的复合键列表；空数组＝已是按卷目录结构（未归属章留书根属正常）。
 	 */
 	async needsVolumeOrganize(storyName: string): Promise<string[]> {
-		const vols = await this.loadVolumes(storyName).catch(() => ({} as Record<string, doc.VolumeInfo>));
+		const vols = await this.loadVolumes(storyName).catch((): Record<string, doc.VolumeInfo> => ({}));
 		if (!Object.keys(vols).length) return [];
 		const state = await this.loadState(storyName);
 		const base = this.storyPath(storyName);
@@ -913,7 +913,7 @@ export class StoryManager {
 		storyName: string
 	): Promise<{ movedKeys: string[]; unassignedAtRoot: number; unknownContainers: Array<{ folder: string; keys: string[] }> }> {
 		if (!((await this.loadState(storyName))?.use_volumes)) return { movedKeys: [], unassignedAtRoot: 0, unknownContainers: [] }; // v0.0.16+：无卷模式不做按卷整理（保持扁平）
-		const vols = await this.loadVolumes(storyName).catch(() => ({} as Record<string, doc.VolumeInfo>));
+		const vols = await this.loadVolumes(storyName).catch((): Record<string, doc.VolumeInfo> => ({}));
 		const base = this.storyPath(storyName);
 		// 卷名 → 实体目录名须一一对应，否则无法确定落点
 		const usedNames = new Map<string, string[]>();
@@ -1331,7 +1331,7 @@ export class StoryManager {
 
 	/** 卷ID→卷ID、卷名→卷ID 归一表（跨卷引用与标题前缀共用） */
 	private async buildVolIndex(storyName: string): Promise<doc.VolumeKeyIndex> {
-		const vols = await this.loadVolumes(storyName).catch(() => ({} as Record<string, doc.VolumeInfo>));
+		const vols = await this.loadVolumes(storyName).catch((): Record<string, doc.VolumeInfo> => ({}));
 		const idx: doc.VolumeKeyIndex = {};
 		for (const v of Object.values(vols)) {
 			idx[v.id] = v.id;
@@ -1352,7 +1352,7 @@ export class StoryManager {
 		}
 		const state = await this.loadState(storyName);
 		const volNames: Record<string, string> = {};
-		for (const v of Object.values(await this.loadVolumes(storyName).catch(() => ({} as Record<string, doc.VolumeInfo>)))) {
+		for (const v of Object.values(await this.loadVolumes(storyName).catch((): Record<string, doc.VolumeInfo> => ({})))) {
 			volNames[v.id] = v.name || v.id; // 卷内标题用卷名展示，缺省退回卷 ID
 		}
 		await this.writeDoc(path, doc.formatForeshadows(this.bookTitle(storyName, state), items, volNames));
@@ -1587,7 +1587,7 @@ export class StoryManager {
 		try {
 			const want = String(parsed.num).padStart(2, "0"); // 索引滞后兜底：逐容器扫真实文件系统（书根+各卷实体目录）
 			const base = this.storyPath(storyName);
-			const vols = await this.loadVolumes(storyName).catch(() => ({} as Record<string, doc.VolumeInfo>));
+			const vols = await this.loadVolumes(storyName).catch((): Record<string, doc.VolumeInfo> => ({}));
 			const volByPath = new Map<string, string>();
 			for (const v of Object.values(vols)) volByPath.set(`${base}/${this.volumeFolderName(v)}`, v.id);
 			for (const contPath of await this.containerPaths(storyName, vols)) {
@@ -1630,7 +1630,7 @@ export class StoryManager {
 	/** 某容器（书根/卷实体目录）下全部 md：容器级文档 + 各章节目录内文件——作用域引用重写的扫描范围 */
 	private async scopeMarkdownFiles(storyName: string, volId: string | null): Promise<TFile[]> {
 		const base = this.storyPath(storyName);
-		const vols = await this.loadVolumes(storyName).catch(() => ({} as Record<string, doc.VolumeInfo>));
+		const vols = await this.loadVolumes(storyName).catch((): Record<string, doc.VolumeInfo> => ({}));
 		const contPath = volId && vols[volId] ? `${base}/${this.volumeFolderName(vols[volId])}` : base;
 		const cont = this.vault.getAbstractFileByPath(contPath);
 		if (!(cont instanceof TFolder)) return [];
@@ -1741,7 +1741,7 @@ export class StoryManager {
 
 		let movedTotal = 0;
 		const scopeMaps = new Map<string | null, Record<number, number>>(); // volId → 局部号映射（仅留洞的容器参与改写）
-		const vols = await this.loadVolumes(storyName).catch(() => ({} as Record<string, doc.VolumeInfo>));
+		const vols = await this.loadVolumes(storyName).catch((): Record<string, doc.VolumeInfo> => ({}));
 		for (const s of [...scopes.values()].sort((a, b) => (a.volId ?? "").localeCompare(b.volId ?? ""))) {
 			const nums = s.list.map((c) => c.num);
 			const map: Record<number, number> = {};
@@ -1815,7 +1815,7 @@ export class StoryManager {
 		if (affectedKeys.length) {
 			const mapping: Record<number, number> = {};
 			for (const k of affectedKeys) mapping[parseChKey(k).num] = parseChKey(k).num + 1;
-			const vols = await this.loadVolumes(storyName).catch(() => ({} as Record<string, doc.VolumeInfo>));
+			const vols = await this.loadVolumes(storyName).catch((): Record<string, doc.VolumeInfo> => ({}));
 			const volNames = new Set<string>();
 			for (const v of Object.values(vols)) if (v.name) volNames.add(v.name);
 			for (const f of await this.scopeMarkdownFiles(storyName, scopeVol)) {
@@ -1864,7 +1864,7 @@ export class StoryManager {
 		let exprTokens: string[] = [];
 		if (tokens.length) {
 			const t0 = tokens[0];
-			const vols = await this.loadVolumes(storyName).catch(() => ({} as Record<string, doc.VolumeInfo>));
+			const vols = await this.loadVolumes(storyName).catch((): Record<string, doc.VolumeInfo> => ({}));
 			const exact = Object.values(vols).find((v) => v.id === t0 || v.name === t0);
 			const partial = exact ? [] : Object.values(vols).filter((v) => v.name.includes(t0));
 			if (exact) {
@@ -1881,7 +1881,7 @@ export class StoryManager {
 		}
 		if (!volId) {
 			const state = (await this.loadState(storyName)) ?? null; // 缺省依次取 current_volume
-			const vols = await this.loadVolumes(storyName).catch(() => ({} as Record<string, doc.VolumeInfo>));
+			const vols = await this.loadVolumes(storyName).catch((): Record<string, doc.VolumeInfo> => ({}));
 			if (state?.current_volume && vols[state.current_volume]) volId = state.current_volume;
 		}
 		if (volId) {
@@ -2172,7 +2172,7 @@ export class StoryManager {
 		if (idx < 0) throw new Error(`章节不存在：${chapterKey}`);
 		const ch = ordered[idx];
 		const ordinal = idx + 1;
-		const vols = await this.loadVolumes(storyName).catch(() => ({} as Record<string, doc.VolumeInfo>));
+		const vols = await this.loadVolumes(storyName).catch((): Record<string, doc.VolumeInfo> => ({}));
 		const volNames: Record<string, string> = {};
 		for (const [id, v] of Object.entries(vols)) if (v.name) volNames[id] = v.name;
 		const labelOf = (key: string): string => {
@@ -2244,7 +2244,7 @@ export class StoryManager {
 			localNum: ch.num,
 			volumeName,
 			volOutlineText,
-			chapterRanks: Object.fromEntries(ordered.map((c, i) => [c.key, i + 1])),
+			chapterRanks: Object.fromEntries(ordered.map((c, i) => [c.key, i + 1] as [string, number])),
 			volumeNames: volNames,
 			title: (state.title || "").trim() || storyName,
 			genre: state.genre,
@@ -2328,7 +2328,7 @@ export class StoryManager {
 		const ordered = await this.listChapters(storyName); // 阅读序
 		const idx = ordered.findIndex((c) => c.key === chapterKey);
 		if (idx < 0) throw new Error(`章节不存在：${chapterKey}`);
-		const vols = await this.loadVolumes(storyName).catch(() => ({} as Record<string, doc.VolumeInfo>));
+		const vols = await this.loadVolumes(storyName).catch((): Record<string, doc.VolumeInfo> => ({}));
 		const volNames: Record<string, string> = {};
 		for (const [id, v] of Object.entries(vols)) if (v.name) volNames[id] = v.name;
 		const out: Array<{ ordinal: number; key: string; label: string; text: string }> = [];

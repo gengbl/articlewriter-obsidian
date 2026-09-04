@@ -6,7 +6,7 @@
 | `TextAreaPrompt` | 多行内容（场景正文、世界观历史、大纲追加） |
 | `VolumeBatchCreateModal` | **批量新建卷**：顶部提示已有卷名单（重名校验），输入框+「添加」逐行把新卷名加入待建列表（回车=添加），每行带 ↑/↓（调创建顺序）/删除；「确定创建」（CTA，空列表禁用点击）→ onSubmit(names[]) 由 main.ts createVolumesInOrder 按序落盘；构造 `(app, storyName, existingNames[], onSubmit, onCancel?)`。命令面板「新建卷」、写字台右键「新建卷…」、零卷书整理/切换引导三处共用 pickNewVolumeNames 包装 |
 | `MultiFieldModal` | 多字段表单；第 7 参 `initialValues` 预填——**所有"编辑已有实体"入口用它** |
-| `ActionMenuModal` | 通用动作列表：label + sub + marker（如 `◀ 当前`）+ disabled；↑↓/回车/点击选择。**一切"选一个实体再做操作"的菜单都用它**。交互约定：鼠标悬停行文字加粗提示可点；选中项前置 `▶` 标记并高亮底（`.aw-selected::before`，disabled 不显示）；**点行只移动选中、不执行**——须再点「确认」CTA 或按回车才触发 onSelect（避免误触即改状态）。样式见 styles.css `.aw-action-row*`。 |
+| `ActionMenuModal` | 通用动作列表：label + sub + marker（如 `◀ 当前`）+ disabled；↑↓/回车/点击选择。**一切"选一个实体再做操作"的菜单都用它**。交互约定：鼠标悬停行文字加粗提示可点；所有行文本显式左对齐且 `.aw-action-row` 预留固定宽度左侧标记栏（padding-left），选中的非 disabled 行在该栏内以绝对定位显示 `▶`（`.aw-selected::before`，置于文字之前）——因标记占独立栏位，↑↓移动选择时各行文本起点不随之右移/跳动；**点行只移动选中、不执行**——须再点「确认」CTA 或按回车才触发 onSelect（避免误触即改状态）。样式见 styles.css `.aw-action-row*`。 |
 | `TextPanelModal` | 只读展示面板（show 类命令），行支持 bold/dim/accent |
 | `StreamingPreviewModal` | LLM 写作命令的流式预览：append/reset/setStatus + finish(保存/放弃)/fail，done Promise 驱动写盘确认 |
 | `MarkdownViewerModal` | 只读渲染展示（系统级创作规范等无 vault 文件载体的内容），构造 `(app, title, markdown)` |

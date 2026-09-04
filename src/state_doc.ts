@@ -133,7 +133,7 @@ export function parseStateDoc(
 			use_summaries: Boolean(o.use_summaries),
 			// 缺省推断：显式布尔值优先；否则按「是否含卷数据」判定——存量有卷书判 true（防把现有有卷书误锁成无卷），新/扁平书默认 false（无卷模式）
 			use_volumes: typeof o.use_volumes === "boolean"
-				? (o.use_volumes as boolean)
+				? o.use_volumes
 				: Object.keys(chapters).some((k) => parseChKey(k).vol != null) || !!asStr(o.current_volume),
 			chapters,
 			created_at: asStr(o.created_at),

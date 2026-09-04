@@ -438,8 +438,10 @@
 
 .aw-action-row {
 	cursor: pointer;
-	padding: 2px 4px;
+	position: relative; /* 为前置选中标记提供定位基准 */
+	padding: 2px 4px 2px 22px; /* 左侧留固定标记栏：各行文本起点一致、始终左对齐 */
 	border-radius: 4px;
+	text-align: left; /* 显式左对齐，不依赖继承上下文 */
 }
 
 /* 鼠标经过列表项：文字加粗提示可点 */
@@ -448,9 +450,13 @@
 	font-weight: 700;
 }
 
-/* 选中的列表项：前面加选中标记 ▶，等待用户点「确认」才执行 */
+/* 选中的列表项：在左侧标记栏内显示选中标记 ▶（置于文字之前），等待用户点「确认」才执行 */
 .aw-action-list .aw-action-row.aw-selected:not(.aw-disabled)::before {
-	content: "▶ ";
+	content: "▶";
+	position: absolute;
+	left: 7px;
+	top: 50%;
+	transform: translateY(-50%);
 	color: var(--interactive-accent);
 }
 

@@ -1031,7 +1031,7 @@ export default class ArticleWriterPlugin extends Plugin {
 		const state = await this.manager.loadState(story);
 		const defKey = state?.current_chapter ?? null; // v0.0.15：复合键 "volId:N" / "N"
 		const volNames = await this.volNameMap(story);
-		const curRef = defKey != null ? (() => { const p = parseChKey(defKey); return { num: p.num, vol: (p.vol ?? undefined) as string | undefined }; })() : null;
+		const curRef = defKey != null ? (() => { const p = parseChKey(defKey); return { num: p.num, vol: p.vol ?? undefined }; })() : null;
 		const vals = await new Promise<Record<string, string> | null>((resolve) => {
 			new MultiFieldModal(
 				this.app,
@@ -1205,7 +1205,7 @@ export default class ArticleWriterPlugin extends Plugin {
 		const state = await this.manager.loadState(story);
 		const defKey = state?.current_chapter ?? null; // v0.0.15：复合键 "volId:N" / "N"
 		const volNames = await this.volNameMap(story);
-		const curRef = defKey != null ? (() => { const p = parseChKey(defKey); return { num: p.num, vol: (p.vol ?? undefined) as string | undefined }; })() : null;
+		const curRef = defKey != null ? (() => { const p = parseChKey(defKey); return { num: p.num, vol: p.vol ?? undefined }; })() : null;
 		const vals = await new Promise<Record<string, string> | null>((resolve) => {
 			new MultiFieldModal(
 				this.app,
@@ -2167,7 +2167,7 @@ export default class ArticleWriterPlugin extends Plugin {
 		return key;
 	}
 
-	/** 广播刷新所有已打开的 LLM 对话面板顶部「当前小说 · 章节」行（切书/切章/建章等任何状态或设置变更路径都会经 saveSettings 或 manager.saveState 触发到这里） */
+	/** 广播刷新所有已打开的 LLM 对话面板顶部「当前小说 · 章节」行（切书/切章/建章等任何状态或设置变更路径都会经 saveSettings 或 manager.saveState 触发到这里），并防抖刷新所有已打开的写字台（切书/切章后跨分栏同步） */
 	notifyContextChanged(): void {
 		for (const leaf of this.app.workspace.getLeavesOfType(LlmChatView.VIEW_TYPE)) {
 			if (leaf.view instanceof LlmChatView) {
@@ -2175,6 +2175,8 @@ export default class ArticleWriterPlugin extends Plugin {
 				void leaf.view.updateSpLabel(); // 「提示词」标签（是否含小说上下文、约字数）
 			}
 		}
+		// lastStory/current_chapter 等元数据变更时同步刷新所有已打开的写字台：切书/切章后其它面板不再停留在旧书；scheduleStatusPanelRefresh 自带防抖合并突发
+		this.scheduleStatusPanelRefresh(200);
 	}
 
 	/** 状态页右键快捷菜单动作执行器（语义与对应命令一致，但直接针对右键所在的小说/章节/目录，不再弹选择器） */
@@ -2657,7 +2659,7 @@ export default class ArticleWriterPlugin extends Plugin {
 				targetKey = chKey(scopeVol, inScope.length ? Math.max(...inScope.map((c) => c.num)) + 1 : 1);
 			}
 
-			const volNames = await this.volNameMap(story).catch(() => ({} as Record<string, string>));
+			const volNames = await this.volNameMap(story).catch(() => ({}));
 			const tLabel = this.keyLabel(targetKey, volNames); // 展示名（含卷前缀），交互提示统一用它
 			const targetVol = parseChKey(targetKey).vol ?? ""; // 新建章节的容器（""=书根）
 			const chEntry = chapters.find((c) => c.key === targetKey) ?? null;
@@ -2814,7 +2816,7 @@ export default class ArticleWriterPlugin extends Plugin {
 				structureReady = true;
 			}
 			const words = await this.manager.setChapterBody(story, targetKey, content);
-			this.refreshVolumeSummary(setup.cfg, story, targetKey); // v0.0.15+ 卷摘要增量更新（非阻塞，失败仅警告）
+			void this.refreshVolumeSummary(setup.cfg, story, targetKey); // v0.0.15+ 卷摘要增量更新（非阻塞，失败仅警告）
 			if (wasNew) {
 				let finalOutline = outlineForGen;
 				if (instruction) finalOutline = appendOutlineInstruction(finalOutline, "创作要点", instruction);
@@ -2853,7 +2855,7 @@ export default class ArticleWriterPlugin extends Plugin {
 				return;
 			}
 			const chapters = await this.manager.listChapters(story);
-			const volNames = await this.volNameMap(story).catch(() => ({} as Record<string, string>));
+			const volNames = await this.volNameMap(story).catch(() => ({}));
 			const curLabel = this.keyLabel(currentKey, volNames);
 			const chEntry = chapters.find((c) => c.key === currentKey) ?? null;
 			const meta = state.chapters[currentKey] ?? null;
@@ -2954,7 +2956,7 @@ export default class ArticleWriterPlugin extends Plugin {
 				return;
 			}
 			const words = await this.manager.setChapterBody(story, currentKey, newContent);
-			this.refreshVolumeSummary(setup.cfg, story, currentKey); // v0.0.15+ 卷摘要增量更新（非阻塞，失败仅警告）
+			void this.refreshVolumeSummary(setup.cfg, story, currentKey); // v0.0.15+ 卷摘要增量更新（非阻塞，失败仅警告）
 			try {
 				const f = await this.manager.chapterBodyFile(story, currentKey);
 				if (f instanceof TFile) await this.manager.openMarkdown(f.path);
@@ -2974,7 +2976,7 @@ export default class ArticleWriterPlugin extends Plugin {
 		try {
 			const num = await this.targetChapterKey(story, "重写"); // v0.0.15：复合键
 			if (num == null) return;
-			const volNames = await this.volNameMap(story).catch(() => ({} as Record<string, string>));
+			const volNames = await this.volNameMap(story).catch(() => ({}));
 			const chLabel = this.keyLabel(num, volNames);
 			const bodyOnDisk = await this.manager.readChapterContent(story, num);
 			if (!bodyOnDisk.trim()) {
@@ -3044,7 +3046,7 @@ export default class ArticleWriterPlugin extends Plugin {
 				return;
 			}
 			const words = await this.manager.setChapterBody(story, num, content); // 全量覆盖
-			this.refreshVolumeSummary(setup.cfg, story, num); // v0.0.15+ 卷摘要增量更新（非阻塞，失败仅警告）
+			void this.refreshVolumeSummary(setup.cfg, story, num); // v0.0.15+ 卷摘要增量更新（非阻塞，失败仅警告）
 			try {
 				const f = await this.manager.chapterBodyFile(story, num);
 				if (f instanceof TFile) await this.manager.openMarkdown(f.path);
@@ -3068,7 +3070,7 @@ export default class ArticleWriterPlugin extends Plugin {
 				new Notice("还没有章节，请先使用「创作章节 (/write)」创建");
 				return;
 			}
-			const volNames = await this.volNameMap(story).catch(() => ({} as Record<string, string>));
+			const volNames = await this.volNameMap(story).catch(() => ({}));
 			const curLabel = this.keyLabel(currentKey, volNames);
 			const bodyOnDisk = await this.manager.readChapterContent(story, currentKey);
 			if (!bodyOnDisk.trim()) {
@@ -3114,7 +3116,7 @@ export default class ArticleWriterPlugin extends Plugin {
 				return;
 			}
 			const words = await this.manager.setChapterBody(story, currentKey, content); // 全量覆盖原章节
-			this.refreshVolumeSummary(setup.cfg, story, currentKey); // v0.0.15+ 卷摘要增量更新（非阻塞，失败仅警告）
+			void this.refreshVolumeSummary(setup.cfg, story, currentKey); // v0.0.15+ 卷摘要增量更新（非阻塞，失败仅警告）
 			try {
 				const f = await this.manager.chapterBodyFile(story, currentKey);
 				if (f instanceof TFile) await this.manager.openMarkdown(f.path);
@@ -3134,7 +3136,7 @@ export default class ArticleWriterPlugin extends Plugin {
 		try {
 			const num = await this.targetChapterKey(story, "去除 AI 常用词"); // v0.0.15：复合键
 			if (num == null) return;
-			const volNames = await this.volNameMap(story).catch(() => ({} as Record<string, string>));
+			const volNames = await this.volNameMap(story).catch(() => ({}));
 			const chLabel = this.keyLabel(num, volNames);
 			const bodyOnDisk = await this.manager.readChapterContent(story, num);
 			if (!bodyOnDisk.trim()) {
@@ -3185,7 +3187,7 @@ export default class ArticleWriterPlugin extends Plugin {
 				return;
 			}
 			const words = await this.manager.setChapterBody(story, num, cleaned); // 全量覆盖
-			this.refreshVolumeSummary(setup.cfg, story, num); // v0.0.15+ 卷摘要增量更新（非阻塞，失败仅警告）
+			void this.refreshVolumeSummary(setup.cfg, story, num); // v0.0.15+ 卷摘要增量更新（非阻塞，失败仅警告）
 			try {
 				const f = await this.manager.chapterBodyFile(story, num);
 				if (f instanceof TFile) await this.manager.openMarkdown(f.path);
@@ -3207,7 +3209,7 @@ export default class ArticleWriterPlugin extends Plugin {
 			void state;
 			const num = await this.targetChapterKey(story, "审阅"); // v0.0.15：复合键
 			if (num == null) return;
-			const volNames = await this.volNameMap(story).catch(() => ({} as Record<string, string>));
+			const volNames = await this.volNameMap(story).catch(() => ({}));
 			const chLabel = this.keyLabel(num, volNames);
 			const bodyOnDisk = await this.manager.readChapterContent(story, num);
 			if (!bodyOnDisk.trim()) {
