@@ -6,12 +6,14 @@
 | `switch-story` | `/dir <work_dir>/<书名>` | 列出全部小说（含各章数/当前章、◀ 当前标记），选中设为当前并弹出该书状态 |
 | `new-story` | `/new` | 标题+题材+编写类型三问，建书与全套模板文档 |
 | `new-chapter` / `list-chapters` | `/chapter add` / `/chapter list`、`/open` | 建章后自动激活；列表选择打开正文并切当前章 |
-| `insert-chapter` | —（插件新增，无 CLI 对应） | 在当前激活章（无则先选参照章）之前/之后插入新空章节：≥插入位的各章整体 +1（两阶段临时迁移防目录冲突；**全部改名走真实文件系统层 adapter.rename+adapter.exists 逐步强校验（不走会滞后的元数据索引），源目录按号定位带原始 FS 兜底，检测到重复号残留目录立即中止**——防连续快速重命名下索引滞后误判产生大号幽灵章节；操作前/后自动隔离空心残骸），同步重写各章文档「第N章」/「章节：N」引用与伏笔.md；插入位是断档空位时直接落位不挪动他人；完成后 current_chapter 指向新章（manager.insertChapter）。注：listChapters 一律忽略无「章节.md」的空心目录（外部插件如 make-md 会在迁移窗口期往新建目录写 .space/*.mdb 造成残骸），故面板永不显示此类幽灵章 |
+| `insert-chapter` | —（插件新增，无 CLI 对应） | 在当前激活章（无则先选参照章）之前/之后插入新空章节：**v0.0.15 起编号在容器内**——仅参照章所在容器（卷/书根）中 ≥插入位的各章整体 +1（两阶段临时迁移防目录冲突；**全部改名走真实文件系统层 adapter.rename+adapter.exists 逐步强校验（不走会滞后的元数据索引），源目录按复合键定位带原始 FS 兜底，检测到重复号残留目录立即中止**——防连续快速重命名下索引滞后误判产生大号幽灵章节；操作前/后自动隔离空心残骸），同步重写各章文档「第N章」/「章节：N」引用与伏笔.md（引用为复合键语义、跨卷同号不再歧义）；插入位是断档空位时直接落位不挪动他人；完成后 current_chapter 指向新章（manager.insertChapter）。注：listChapters 一律忽略无「章节.md」的空心目录（外部插件如 make-md 会在迁移窗口期往新建目录写 .space/*.mdb 造成残骸），故面板永不显示此类幽灵章 |
 | `next-chapter` / `prev-chapter` | `/chapter next` / `prev` | 无当前章时 next→第一章、prev→最后一章；到边界提示不切 |
 | `count-current` / `count-all` | `/count [号\|范围\|all]` | 纯文字字数统计（逐章 + 合计） |
 | `save-current` | `/save` | 聚焦编辑器内容强制落盘 |
 | `status` | `/status` | 标题/题材/编写类型/当前卷场景章节/章节数总字数/时间 |
-| `volume-list` / `volume-add` / `volume-manage` | `/volume ...` | 列表（含当前标记）、新建（自动激活+可选建章）、启用/改名/改描述/分配章节/删除 |
+| `volume-list` / `volume-add` / `volume-manage` | `/volume ...` | 列表（含当前标记）、新建（**批量建卷页 VolumeBatchCreateModal：手动把卷名逐行加入列表〔上移/下移调创建顺序、删除〕，确定后按列表顺序依次 addVolume，单个重名失败不中断其余、末尾汇总 Notice；最后成功的卷 activateVolume 设当前 + 可选顺带建章归属该卷**，直接落卷实体目录）、启用/改名（同步移动实体目录）/改描述/分配章节（**支持 all/全部、区间如 3-7〔或三至七〕、列表如 1，4，5——复用 md_docs.parseChapterSelection 打包合集同款解析；多于一章时二次确认列出清单；单章失败不中断其余**；章节目录物理移入卷目录）/**导出此卷合集**（manager.packVolume：该卷实体目录下全部章节正文合一 MD，按位置判归属，与 /pack 共用 buildPackParts/writePackFile 装配落盘）/删除（章节先移回书根再清元数据） |
+| `volume-mode-off` / `volume-mode-on` | `/volume off` / `/volume on`（插件新增 v0.0.16+：工作模式开关） | **off=设为无卷模式**——纯「书籍→章节」扁平结构，不建卷/不归卷/不按卷整理；若该书仍有卷则先二次确认再破坏性拍平（flattenToRoot：各卷章节 relocateChapterContainer(key,null) 回书根连续重编号、各卷实体目录 trashFile 入回收站、清 卷.md 元数据与 current_volume），完成后写字台隐藏全部「新建卷」入口。**on=启用有卷模式**——仅置位不改盘，恢复可用「新建卷/管理卷/按卷整理目录」。新书默认即无卷（use_volumes=false）。两命令均走 cmdVolumeMode(enabled)，已处目标态时提示无需切换 |
+| `organize-volumes` | —（插件新增：平面结构迁移） | 把书根下已归属各卷的章节目录移入对应 `<书名>/<卷名>/` 实体目录；幂等可重复执行。**该书无任何卷时先弹出同一个批量建卷页**（promptCreateVolumesIfEmpty→pickNewVolumeNames，手动加名单；取消/空列表 = 跳过继续；新建与既有章节目录同名的卷 → 其中章节立即自动归属）。切换书籍检测到平面残留时强制自动执行（不可跳过、不弹逐章分配框）；**但触发条件含两种：①有卷且 needsVolumeOrganize>0 ②零卷却存在未识别章节目录（listChapters parentPath≠书根 且 !vol）**——后者因 needsVolumeOrganize 对零卷书恒返回 []，须单独探测；两路径在迁移前均先过 promptCreateVolumesIfEmpty（全书无卷→弹批量建卷页，取消 = 跳过）。失败锁定该书结构操作直至手动成功；各结构命令入口另有确认框门禁（取消=阻断本次操作）。未归属章节留书根属正常布局、不触发整理；**手动执行收尾时对仍留书根的无归属章节逐个 pickAction 选卷归位**（仅一卷→一次 confirmBox 整体移动；选项含「留在书根」「停止分配」，Esc=停止本轮） |
 | `scene-list` / `scene-add` / `scene-manage` | `/scene ...` | 全部章节+全局未归属；新增 ID/简介/角色/正文/归属；切换/查看/编辑/**移动**/删除 |
 | `character-list` / `character-add` / `character-manage` | `/character ...` | 同上结构；能力字段为分词数组（`splitList`）；改名=预览命中后全小说替换并备份 `_backup/` |
 | `foreshadow-list` / `foreshadow-add` / `foreshadow-manage` | `/foreshadow list/add/done/delete` | 全书 `伏笔.md`，按「章节+序号」操作 |
@@ -19,7 +21,8 @@
 | `outline-append-current` | `/outline chapter N [内容]` | 追加当前章大纲：去重合并 + `[伏]...[/]` 标记解析入库伏笔记录 |
 | `open-chapter-outline` | —（配合 `/open 号 大纲`） | 打开当前章 `章节大纲.md`（缺失先建模板） |
 | `chapter-delete` / `chapter-rename` / `chapter-renumber` | `/chapter delete`、目录改名、编号重排 | 删除=回收站+清理元数据与归属引用，**被删号之后仍有章节时自动补洞重新排号**（复用 renumberChapters：后续各章 -1、文档/伏笔引用重写，保持 1..N 连续；返回 resequenced 供提示）；重命名同步目录名与文档内引用；renumber 手动连续化并改写交叉引用。三者迁移路径共用防幽灵章机制：真实 FS 层 adapter.rename+exists 逐步强校验、重复号残留即中止、操作前 quarantineHollowChapters 预隔离 + 成功后收尾清扫（空心＝无「章节.md」的章节目录，多为 make-md 等外部插件在迁移窗口期写入 .space/*.mdb 的残骸，统一移入 <书>/_backup/空心残留_<时间戳>/ 可恢复）；listChapters 本身已过滤空心目录与索引陈旧条目 |
-| `pack-chapters` | `/pack [选择][路径]` | 正文打包单 MD：中文章节号标题 + `---` 分隔；支持范围/列表/all（表达式解析在 `md_docs.parseChapterSelection`）；默认输出 `<书名>-第X-Y章-合集.md` |
+| `pack-chapters` | `/pack [选择][路径]` | 正文打包单 MD：中文章节号标题 + `---` 分隔；支持范围/列表/all（表达式解析在 `md_docs.parseChapterSelection`）；默认输出 `<书名>-第X-Y章-合集.md`。与导出卷共用私有装配 buildPackParts（逐章读《章节.md》去 H1、空正文章跳过计入 skipped）+ writePackFile（outputPath 带扩展名=完整文件名、不带当目录拼 fileName）——改合辑格式只动这两处 |
+| `pack-volume` | —（插件新增：导出卷合集） | 选卷→该卷实体目录下全部章节（按位置判归属，入口先过 ensureVolumeLayout 门禁保证位置==归属）正文合一 MD；无章报错提示先「按卷整理目录」归位；默认输出 `<书名>-<卷名>-合集.md`；写字台面板卷节点右键「导出本卷合集…」同义入口（StatusAction export-volume），管理卷菜单亦有同款项 |
 | `rescan-story` | `/scan` | 从现有 MD 重建故事状态.md（只初始化，不切小说不改 work_dir） |
 | `set-style` | `/style` | 切换编写类型 writing_style（预设或自定义），持久化到 state |
 | `agents-view` / `agents-edit` | `/agents view` / `/agents edit` | 三层创作规范：小说级 `<书名>/WRITING_GUIDE.md` > 用户级 `<work_dir>/WRITING_GUIDE.md` > 系统级 **插件数据目录** `.obsidian/plugins/articlewriter/WRITING_GUIDE.md`[固定路径，非用户可配]；view 各层直接打开对应文件，单层直开/多层选择器/全无则提示用编辑创建；edit 选层后多行文本框全量保存并刷新该书《写作指南汇总》 |

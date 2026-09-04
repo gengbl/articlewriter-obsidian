@@ -12,7 +12,8 @@ export interface SceneDoc {
 	scene_id: string;
 	title?: string;
 	description?: string;
-	chapter_num: number; // 0 = 全局未归属
+	chapter_num: number; // 0 = 全局未归属；卷内本地章号（v0.0.15 起各容器独立编号）
+	vol?: string; // 运行态卷归属标签（仅加载时打标、不写盘），供跨卷展示与移动定位
 	characters: string[];
 	notes?: string;
 	created_at?: string;
@@ -22,7 +23,8 @@ export interface SceneDoc {
 
 export interface CharacterDoc {
 	name: string;
-	chapter: number; // 归属章节号（0 = 全局）
+	chapter: number; // 归属章节号（0 = 全局；卷内本地章号）
+	vol?: string; // 运行态卷归属标签（仅加载时打标、不写盘）
 	identity?: string;
 	age?: string;
 	gender?: string;
@@ -34,8 +36,8 @@ export interface CharacterDoc {
 }
 
 export interface ForeshadowItem {
-	chapter: number;
-	index?: number; // 章内序号（0 起，保存时按顺序重编号；解析自标题「第N章 伏笔K」）
+	chapter: string; // v0.0.15：复合键「N」（书根）或「卷id:N」；章号按容器独立编号，裸号只在本容器内有效
+	index?: number; // 章内序号（0 起，保存时按顺序重编号；解析自标题「第N章 伏笔K」/「<卷名>·第N章 伏笔K」）
 	character?: string;
 	reason?: string;
 	done: boolean;
@@ -305,22 +307,45 @@ export function formatCharacterBlock(char: CharacterDoc): string {
 	return lines.join("\n");
 }
 
-// ---------- 伏笔（伏笔.md + [伏]...[/] 标记解析，对齐 story/foreshadow.py）----------
+// ---------- 伏笔（伏笔.md + [伏]...[/] 标记解析，对齐 story/foreshadow.py；v0.0.15 起章节号为复合键「N」/「卷id:N」）----------
 
 const FORESHADOW_BLOCK_RE = /\[伏\]([\s\S]*?)\[\/?(?:伏)?\]/g;
 
-/** 解析单条伏笔文本（章节/人物/事由字段任意顺序；无字段时按「人物：事由」再退回整段为事由） */
-export function parseForeshadowText(text: string, defaultChapter: number): ForeshadowItem {
-	let chapter = defaultChapter;
+/** 卷名/卷ID → 卷ID 的解析表（跨卷引用与标题前缀共用） */
+export type VolumeKeyIndex = Record<string, string>;
+
+/** 把「卷前缀+本地章号」拼成复合键：无前缀=书根裸号 */
+function scopeChapterKey(volId: string | null | undefined, num: number): string {
+	return volId ? `${volId}:${num}` : String(num);
+}
+
+/** 拆复合键为 {vol,num}（无冒号=书根） */
+export function splitChKey(key: string): { vol: string | null; num: number } {
+	const i = key.indexOf(":");
+	if (i < 0) return { vol: null, num: parseInt(key, 10) };
+	return { vol: key.slice(0, i), num: parseInt(key.slice(i + 1), 10) };
+}
+
+/**
+ * 解析单条伏笔文本（章节/人物/事由字段任意顺序；无字段时按「人物：事由」再退回整段为事由）。
+ * 「章节：N」继承 defaultScope 所在容器；「章节：<卷名>第N章」（或 <卷ID>:N）显式跨卷。
+ */
+export function parseForeshadowText(text: string, defaultScope: string, volIndex?: VolumeKeyIndex): ForeshadowItem {
+	const defVol = splitChKey(defaultScope).vol;
+	let chapter = defaultScope;
+	const mChap = /章节\s*[:：=]\s*(?:(\S+?)\s*第)?(\d+)/.exec(text);
+	if (mChap) {
+		const prefix = mChap[1] ?? "";
+		const n = parseInt(mChap[2], 10);
+		chapter = prefix ? scopeChapterKey(volIndex?.[prefix] ?? prefix, n) : scopeChapterKey(defVol, n);
+	}
 	let character = "";
-	const mChap = /章节\s*[:：=]\s*(\d+)/.exec(text);
-	if (mChap) chapter = parseInt(mChap[1], 10);
 	const mChar = /人物\s*[:：=]\s*([^；;，,\n]*?)(?=\s*事由\s*[:：=]|[；;，,\n]|$)/.exec(text);
 	if (mChar) character = mChar[1].trim();
 	const mReason = /事由\s*[:：=]\s*([\s\S]+)/.exec(text);
 	if (mReason) return { chapter, character, reason: mReason[1].trim(), done: false };
 	// 无显式事由：去掉已识别的 章节/人物 字段后看剩余
-	let rest = text.replace(/章节\s*[:：=]\s*\d+\s*/g, "");
+	let rest = text.replace(/章节\s*[:：=]\s*(?:\S+\s*第)?\d+\s*/g, "");
 	rest = rest.replace(/人物\s*[:：=]\s*[^；;，,\n]*?(?=\s*事由\s*[:：=]|[；;，,\n]|$)/g, "");
 	rest = rest.trim().replace(/^[\s \t，,；;。:：\-–—|、()（）]+|[\s \t，,；;。:：\-–—|、()（）]+$/g, "");
 	if (!rest) return { chapter, character, reason: character || "", done: false };
@@ -334,7 +359,7 @@ export function parseForeshadowText(text: string, defaultChapter: number): Fores
 }
 
 /** 解析大纲中的 [伏]...[/]（或 [/伏]）标记 */
-export function extractForeshadows(outline: string, defaultChapter: number): ForeshadowItem[] {
+export function extractForeshadows(outline: string, defaultScope: string, volIndex?: VolumeKeyIndex): ForeshadowItem[] {
 	const items: ForeshadowItem[] = [];
 	if (!outline) return items;
 	FORESHADOW_BLOCK_RE.lastIndex = 0; // 模块级 /g 正则：扫描前复位，防上次调用残留状态
@@ -342,7 +367,7 @@ export function extractForeshadows(outline: string, defaultChapter: number): For
 	while ((fm = FORESHADOW_BLOCK_RE.exec(outline)) !== null) {
 		const content = fm[1].trim();
 		if (!content) continue;
-		const item = parseForeshadowText(content, defaultChapter);
+		const item = parseForeshadowText(content, defaultScope, volIndex);
 		if (item.reason || item.character) items.push(item);
 	}
 	return items;
@@ -353,16 +378,22 @@ export function stripForeshadowMarks(outline: string): string {
 	return String(outline || "").replace(/\[伏\]/g, "").replace(/\[\s*\/\s*伏\s*\]/g, "");
 }
 
-/** 读取 伏笔.md：按「章节+序号」块解析，返回按 (章节, 序号) 排序的列表 */
-export function parseForeshadows(text: string): ForeshadowItem[] {
-	const result: Array<[number, ForeshadowItem]> = [];
+/**
+ * 读取 伏笔.md：按「章节+序号」块解析，返回按 (复合键, 序号) 排序的列表。
+ * 标题兼容两种形态：书根 `## 第N章 伏笔K`（旧格式原样可读）、卷内 `## <卷名或ID>·第N章 伏笔K`（前缀经 volIndex 归一为卷 ID）。
+ */
+export function parseForeshadows(text: string, volIndex?: VolumeKeyIndex): ForeshadowItem[] {
+	const result: Array<[string, number, ForeshadowItem]> = [];
 	for (const block of h2Blocks(stripComments(text))) {
 		const lines = block.split("\n");
 		const head = lines[0].trim();
-		const m = /^第\s*(\d+)\s*章\s*伏笔\s*(\d+)\s*$/.exec(head);
+		const m = /^(?:(.+?)·)?第\s*(\d+)\s*章\s*伏笔\s*(\d+)\s*$/.exec(head);
 		if (!m) continue;
-		const idx = parseInt(m[2], 10);
-		const item: ForeshadowItem = { chapter: parseInt(m[1], 10), index: idx, done: false };
+		const idx = parseInt(m[3], 10);
+		const prefix = (m[1] ?? "").trim();
+		const num = parseInt(m[2], 10);
+		const chapter = prefix ? scopeChapterKey(volIndex?.[prefix] ?? prefix, num) : String(num);
+		const item: ForeshadowItem = { chapter, index: idx, done: false };
 		for (let i = 1; i < lines.length; i++) {
 			const s = lines[i].trim();
 			let m2 = /^-?\s*人物[：:]\s*(.+)$/.exec(s);
@@ -378,22 +409,27 @@ export function parseForeshadows(text: string): ForeshadowItem[] {
 			m2 = /^-?\s*状态[：:]\s*(.+)$/.exec(s);
 			if (m2) item.done = m2[1].includes("已完成");
 		}
-		result.push([idx, item]);
+		result.push([chapter, idx, item]);
 	}
-	return result.sort((a, b) => a[1].chapter - b[1].chapter || a[0] - b[0]).map((x) => x[1]);
+	return result.sort((a, b) => a[0].localeCompare(b[0]) || a[1] - b[1]).map((x) => x[2]);
 }
 
-/** 写 伏笔.md（按章节分组、组内按序号重新编号，对齐 DocumentStore.write_foreshadows） */
-export function formatForeshadows(title: string, items: ForeshadowItem[]): string {
-	const byChapter = new Map<number, ForeshadowItem[]>();
+/**
+ * 写 伏笔.md（按复合键分组、组内按序号重新编号，对齐 DocumentStore.write_foreshadows）。
+ * volNames 提供卷 ID→名称 映射时卷内标题用卷名展示；缺省退回卷 ID。
+ */
+export function formatForeshadows(title: string, items: ForeshadowItem[], volNames?: Record<string, string>): string {
+	const byChapter = new Map<string, ForeshadowItem[]>();
 	for (const item of items) {
 		if (!byChapter.has(item.chapter)) byChapter.set(item.chapter, []);
 		byChapter.get(item.chapter)!.push(item);
 	}
 	const lines = [`# ${title} 伏笔`, ""];
-	for (const chap of [...byChapter.keys()].sort((a, b) => a - b)) {
+	for (const chap of [...byChapter.keys()].sort((a, b) => a.localeCompare(b))) {
+		const { vol, num } = splitChKey(chap);
+		const head = vol ? `${volNames?.[vol] ?? vol}·第${num}章` : `第${num}章`;
 		byChapter.get(chap)!.forEach((item, idx) => {
-			lines.push(`## 第${chap}章 伏笔${idx}`);
+			lines.push(`## ${head} 伏笔${idx}`);
 			if (item.character) lines.push(`- 人物：${item.character}`);
 			if (item.reason) lines.push(`- 事由：${item.reason}`);
 			lines.push(`- 状态：${item.done ? "已完成" : "未完成"}`);

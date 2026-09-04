@@ -97,12 +97,132 @@ export class NewStoryModal extends Modal {
 	}
 }
 
+/** 批量新建卷：手动把卷名逐个加入列表（可上移/下移/删除），确定后按列表顺序依次创建；不连环弹框 */
+export class VolumeBatchCreateModal extends Modal {
+	private submitted = false;
+	private pending: string[] = [];
+	private listEl: HTMLElement | null = null;
+	private inputEl: HTMLInputElement | null = null;
+	private statusEl: HTMLElement | null = null;
+
+	constructor(
+		app: App,
+		private storyName: string,
+		private existingNames: string[],
+		private onSubmit: (names: string[]) => void | Promise<void>,
+		private onCancel?: () => void
+	) {
+		super(app);
+	}
+
+	onOpen(): void {
+		this.contentEl.createEl("h3", { text: `新建卷（《${this.storyName}》）` });
+		this.contentEl.createDiv({
+			text: this.existingNames.length
+				? `已有卷：${this.existingNames.join("、")}。新卷名须唯一，不能与它们重复；要建几个就在下面加几行，确定后按列表顺序依次创建。`
+				: "该书还没有任何卷。在下方逐个添加要新建的卷名，确定后按列表顺序依次创建。",
+		});
+		new Setting(this.contentEl).setName("新卷名").addText((text) => {
+			text.setPlaceholder("输入卷名，回车或点「添加」");
+			text.inputEl.focus();
+			this.inputEl = text.inputEl;
+			text.inputEl.addEventListener("keydown", (e) => {
+				if (e.key === "Enter") {
+					e.preventDefault();
+					this.addCurrent();
+				} else if (e.key === "Escape") {
+					this.close(); // onClose 触发 onCancel
+				}
+			});
+		}).addButton((btn) => btn.setButtonText("添加").onClick(() => this.addCurrent()));
+		this.statusEl = this.contentEl.createDiv();
+		this.listEl = this.contentEl.createDiv();
+		this.renderList();
+		new Setting(this.contentEl)
+			.addButton((btn) =>
+				btn.setButtonText("确定创建").setCta().onClick(async () => {
+					if (!this.pending.length) return;
+					this.submitted = true;
+					const names = [...this.pending];
+					this.close();
+					await this.onSubmit(names);
+				})
+			)
+			.addButton((btn) => btn.setButtonText("取消").onClick(() => this.close()));
+	}
+
+	private setStatus(msg: string): void {
+		if (this.statusEl) this.statusEl.setText(msg);
+	}
+
+	private addCurrent(): void {
+		const name = this.inputEl?.value.trim() ?? "";
+		if (!name) {
+			this.setStatus("");
+			return;
+		}
+		if (this.existingNames.includes(name)) {
+			this.setStatus(`「${name}」已存在：卷名须唯一`);
+			return;
+		}
+		if (this.pending.includes(name)) {
+			this.setStatus(`「${name}」已在列表中`);
+			return;
+		}
+		this.pending.push(name);
+		if (this.inputEl) this.inputEl.value = "";
+		this.setStatus("");
+		this.renderList();
+		this.inputEl?.focus();
+	}
+
+	private renderList(): void {
+		const el = this.listEl;
+		if (!el) return;
+		el.empty();
+		this.pending.forEach((name, i) => {
+			new Setting(el)
+				.setName(`${i + 1}. ${name}`)
+				.addButton((b) =>
+					b.setIcon("arrow-up")
+						.setTooltip("上移（提前创建顺序）")
+						.setDisabled(i === 0)
+						.onClick(() => {
+							[this.pending[i - 1], this.pending[i]] = [this.pending[i], this.pending[i - 1]];
+							this.renderList();
+						})
+				)
+				.addButton((b) =>
+					b.setIcon("arrow-down")
+						.setTooltip("下移（延后创建顺序）")
+						.setDisabled(i === this.pending.length - 1)
+						.onClick(() => {
+							[this.pending[i + 1], this.pending[i]] = [this.pending[i], this.pending[i + 1]];
+							this.renderList();
+						})
+				)
+				.addButton((b) => b.setButtonText("删除").onClick(() => {
+					this.pending.splice(i, 1);
+					this.renderList();
+				}));
+		});
+		if (!this.pending.length) this.setStatus("");
+	}
+
+	override onClose(): void {
+		this.contentEl.empty();
+		if (!this.submitted && this.onCancel) this.onCancel();
+	}
+}
+
 /** 章节列表（点击打开正文，对齐 /chapter list + /open） */
 export interface ChapterItem {
 	num: number;
+	key?: string; // v0.0.15：复合键 "volId:N" / "N"；缺省时按 num 处理
 	title: string;
 	path: string; // 章节目录路径
 	isCurrent: boolean;
+	display?: string; // 展示名（含卷前缀），缺省用「第NN章 标题」
 }
 
 export class ChapterListModal extends SuggestModal<ChapterItem> {
@@ -116,7 +236,7 @@ export class ChapterListModal extends SuggestModal<ChapterItem> {
 	}
 
 	renderSuggestion(item: ChapterItem, el: HTMLElement): void {
-		el.createSpan({ text: `第${String(item.num).padStart(2, "0")}章 ${item.title}` });
+		el.createSpan({ text: item.display || `第${String(item.num).padStart(2, "0")}章 ${item.title}` });
 		if (item.isCurrent) el.createSpan({ text: " （当前）", cls: "aw-dim" });
 	}
 
@@ -130,7 +250,7 @@ export class ChapterListModal extends SuggestModal<ChapterItem> {
 function collectFolders(app: App): string[] {
 	const result: string[] = [];
 	const walk = (folder: TFolder, depth: number) => {
-		if (depth > 3 || result.length >= 500) return;
+		if (depth >= 3 || result.length >= 500) return; // v0.0.x：真正限制到 3 层深（此前 >3 会多列一层）
 		for (const child of folder.children) {
 			if (!(child instanceof TFolder)) continue;
 			if (child.name.startsWith(".")) continue; // .obsidian 等隐藏目录
@@ -216,6 +336,7 @@ export interface ActionItem {
 export class ActionMenuModal extends Modal {
 	private submitted = false;
 	private selected = 0;
+	private onKeydown?: (e: KeyboardEvent) => void; // 打开期间挂 document(捕获)，焦点不在 contentEl 内也能响应↑↓/回车/Esc
 
 	constructor(
 		app: App,
@@ -234,26 +355,28 @@ export class ActionMenuModal extends Modal {
 		new Setting(this.contentEl).addButton((btn) =>
 			btn.setButtonText("确认").setCta().onClick(() => this.choose())
 		);
-		this.contentEl.addEventListener("keydown", (e) => {
-			if (e.key === "ArrowDown") {
+		this.onKeydown = (e) => {
+			if (e.key === "ArrowDown" || e.key === "ArrowUp") {
 				e.preventDefault();
-				this.selected = Math.min(this.selected + 1, this.enabledCount() - 1);
-				this.refreshHighlight();
-			} else if (e.key === "ArrowUp") {
-				e.preventDefault();
-				this.selected = Math.max(this.selected - 1, 0);
-				this.refreshHighlight();
+				this.moveSelection(e.key === "ArrowDown" ? 1 : -1); // ↑↓移动选中标记 ▶（跳过 disabled），不执行
 			} else if (e.key === "Enter") {
 				e.preventDefault();
 				void this.choose();
 			} else if (e.key === "Escape") {
 				this.close();
 			}
-		});
+		};
+		document.addEventListener("keydown", this.onKeydown, true);
 	}
 
-	private enabledCount(): number {
-		return this.items.filter((i) => !i.disabled).length;
+	private moveSelection(delta: number): void {
+		let i = this.selected;
+		for (;;) {
+			i += delta;
+			if (i < 0 || i >= this.items.length) return; // 到头即停，不回绕、不改选中
+			if (!this.items[i].disabled) { this.selected = i; break; } // 跳过 disabled 行
+		}
+		this.refreshHighlight();
 	}
 
 	private renderList(list: HTMLElement): void {
@@ -265,8 +388,9 @@ export class ActionMenuModal extends Modal {
 			if (item.sub) row.createSpan({ text: ` ${item.sub}`, cls: "aw-dim" });
 			if (!item.disabled) {
 				row.addEventListener("click", () => {
+					if (this.selected === i) return; // 已选中，无需重复
 					this.selected = i;
-					void this.choose();
+					this.refreshHighlight(); // 仅移动选中标记 ▶，不执行——等用户点「确认」或按回车
 				});
 			}
 		});
@@ -278,6 +402,7 @@ export class ActionMenuModal extends Modal {
 	}
 
 	private async choose(): Promise<void> {
+		if (this.submitted) return; // 防重入：回车与「确认」按钮/连点只执行一次
 		const item = this.items[this.selected];
 		if (!item || item.disabled) return;
 		this.submitted = true;
@@ -286,6 +411,7 @@ export class ActionMenuModal extends Modal {
 	}
 
 	override onClose(): void {
+		if (this.onKeydown) document.removeEventListener("keydown", this.onKeydown, true);
 		this.contentEl.empty();
 		if (!this.submitted && this.onCancel) this.onCancel();
 	}
@@ -449,7 +575,7 @@ export class ConfirmModal extends Modal {
 
 	override onClose(): void {
 		this.contentEl.empty();
-		if (!this.resolved && this.onCancel) this.onCancel(); // Esc / 关闭按钮：视为取消
+		if (!this.resolved && this.onCancel) this.onCancel();
 	}
 }
 

@@ -212,8 +212,8 @@
 	box-sizing: border-box;
 	min-width: 0;
 	min-height: 0;
-	width: 10px;
-	height: 10px;
+	width: 14px; /* v0.0.15+：原 10px，整体放大 40%（卷行与章节行同款） */
+	height: 14px;
 	border-radius: 50%;
 	border: 1px solid var(--text-faint);
 	background: transparent;
@@ -228,8 +228,8 @@
 .view-content .aw-status-view input.aw-st-radio::after {
 	content: "";
 	position: absolute;
-	inset: 1px; /* 8px 控件含 1px 描边、内容区 6px：内点四周留 1px 均匀间隙（直径 4px） */
-	top: 1px; left: 1px; right: 1px; bottom: 1px; /* 核心 checked 伪元素把 top/inset-inline-start 设为 -1px，此处显式覆盖四边 */
+	inset: 2px; /* 14px 控件含 1px 描边、内容区 12px：内点四周留 2px 均匀间隙（直径 8px，随外环同步放大 40%） */
+	top: 2px; left: 2px; right: 2px; bottom: 2px; /* 核心 checked 伪元素把 top/inset-inline-start 设为 -1px，此处显式覆盖四边 */
 	width: auto;   /* 核心给 ::after 设 width/height = --checkbox-size(18px)，必须重置为 auto 由 inset 定尺寸 */
 	height: auto;
 	margin: 0;
@@ -237,6 +237,9 @@
 	border-radius: 50%;
 	background: transparent;
 	background-image: none; /* 清除核心的对勾 SVG 背景图 */
+	mask-image: none;      /* 清零核心给 radio:checked::after 叠的圆形 -webkit-mask（mask-size/position），否则内点被裁成偏移的小圆、与外环不同心；未选中态无此 mask，故只有激活+悬停才暴露 */
+	-webkit-mask-image: none;
+	transform-origin: center; /* 显式锁定缩放中心为自身几何中心，保证各 scale 态均同心 */
 	transform: scale(0);
 	transition: transform .18s cubic-bezier(.34, 1.56, .64, 1); /* 轻微回弹的弹出动画 */
 }
@@ -253,8 +256,8 @@
 	border-color: var(--interactive-accent);
 }
 .view-content .aw-status-view input.aw-st-radio:checked::after { background: var(--interactive-accent); transform: scale(1); }
-/* 已选中 + 悬停：内点转深红并放大（scale 1.5，直径 4px→6px），仅此一态变大 */
-.view-content .aw-status-view input.aw-st-radio:checked:hover::after { background: #f50202; transform: scale(2); }
+/* 已选中 + 悬停：内点转深红并放大到外圆的 90%（外环 14px → 内点≈12.6px，即 scale 1.575×8px 基值）；原 scale(2)=16px 超出外环过大 */
+.view-content .aw-status-view input.aw-st-radio:checked:hover::after { background: #f50202; transform: scale(1.575); }
 
 /* 「小说状态」区：位于工作目录横线之下、小说列表之上，底部再一条横线隔开 */
 .aw-st-status {
@@ -295,6 +298,29 @@
 }
 
 .aw-st-chap-block + .aw-st-chap-block {
+	margin-top: 2px;
+}
+
+/* 「章节」小节内的卷树节点行：比章节行加粗一级以示分组层级；交互（hover/选中底）与章节行一致 */
+.aw-st-vol {
+	padding: 5px 8px;
+	border-radius: 6px;
+	cursor: pointer;
+	display: flex;
+	flex-wrap: wrap;
+	align-items: baseline;
+	gap: 4px;
+	font-weight: 600;
+}
+.aw-st-vol:hover {
+	background: rgba(128, 128, 128, 0.16);
+}
+.aw-st-vol.is-active {
+	background: var(--background-secondary-alt);
+}
+.aw-st-vol-block + .aw-st-vol-block,
+.aw-st-vol-block + .aw-st-chap-block,
+.aw-st-chap-block + .aw-st-vol-block {
 	margin-top: 2px;
 }
 
@@ -412,10 +438,29 @@
 
 .aw-action-row {
 	cursor: pointer;
+	padding: 2px 4px;
+	border-radius: 4px;
+}
+
+/* 鼠标经过列表项：文字加粗提示可点 */
+.aw-action-row:hover:not(.aw-disabled) {
+	background: var(--background-modifier-hover);
+	font-weight: 700;
+}
+
+/* 选中的列表项：前面加选中标记 ▶，等待用户点「确认」才执行 */
+.aw-action-list .aw-action-row.aw-selected:not(.aw-disabled)::before {
+	content: "▶ ";
+	color: var(--interactive-accent);
+}
+
+.aw-action-row.aw-selected {
+	background: var(--background-secondary-alt);
 }
 
 .aw-action-row.aw-disabled {
 	cursor: default;
+	opacity: 0.55;
 }
 
 /* 多行输入框默认尺寸 */

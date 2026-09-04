@@ -7,15 +7,33 @@
 ├── WRITING_GUIDE.md                # 小说级创作规范（三层中最高优先级；用户级在 <work_dir>/WRITING_GUIDE.md）
 ├── 写作指南汇总.md                 # 三层合并落盘（自动生成+agg-hash 变更检测），LLM 注入【创作规范】的唯一来源
 ├── 大纲.md / 卷.md / 场景.md / 世界观.md / 伏笔.md / 笔记.md   # 全局文档
-└── 第NN章-<标题>/                     # 每章一个文件夹（NN=两位零填充）
-    ├── 章节.md        # 正文
-    ├── 章节大纲.md
-    ├── 人物.md        # 归属该章的角色
-    ├── 场景.md        # 本章场景
-    └── 章节信息.md    # 卷归属/标签/备注/创建更新时间
+├── 第NN章-<标题>/                     # 未归属任何卷的章节直接放书根（NN=两位零填充，卷内独立编号从 01 起）
+└── <卷名>/                             # 卷实体目录：每卷一个、以卷名命名（卷名须唯一）；归属该卷的章节存放其中
+    ├── 卷大纲.md / 人物.md / 人物关系.md / 场景.md   # 卷级设定四件套（建卷时 ensureDoc 生成模板；rescan/organize 缺失补建）
+    ├── 卷摘要.md                   # v0.0.15+：本卷滚动摘要（插件特有、CLI 无对应概念），正文写盘命令后 LLM 增量更新自动生成
+    └── 第NN章-<标题>/                  # 与书根同构（**v0.0.15 起卷内独立编号**：各容器各自从第01章起，跨卷不连续）
+        ├── 章节.md        # 正文
+        ├── 章节大纲.md
+        ├── 人物.md        # 归属该章的角色
+        ├── 场景.md        # 本章场景
+        └── 章节信息.md    # 卷归属/标签/备注/创建更新时间
 ```
 
-- **故事状态.md（frontmatter，version 2）字段**：`title`、`genre`、`writing_style`、`current_chapter`、`current_scene`、`current_volume`、`total_words`、`created_at`、`updated_at`、`use_summaries` + `chapters`（键为章节号字符串，值=**仅 标题/字数/卷** 的嵌套映射——tags/note 已精简移除：无代码读回，标签/备注只属于各章《章节信息.md》；旧文档残留这两个键解析忽略、下次保存消失）。空可选字段序列化时省略；key 顺序固定。磁盘是唯一事实来源；每个写操作后立即落盘，内存不持有文档内容。
+## 章节身份模型（v0.0.15 起：卷内独立编号 + 复合键）
+
+- **编号空间按容器重置**：书根（未归属）与各卷实体目录是独立编号空间，均从 `第01章` 起。裸章号在卷间可重复——因此一切代码内部标识一律用**复合键**：根域 `"N"`、卷域 `"volId:N"`（helper `chKey(vol,num)` / `parseChKey(key)`，state_doc.ts）。
+- **故事状态.md**：`chapters` 的键 = 复合键字符串；`current_chapter` 由 number|null 改为 string|null（复合键）。解析时自动归一化旧格式：纯数字键若 meta.volume 非空 → 重映射为 `vol:N`；纯数字 current_chapter → 按 num 唯一匹配条目取复合键（老书全局唯一故必命中），无匹配置 null。写盘恒为新格式。
+- **位置即编号事实**：listChapters 扫描各容器，目录名里的 N 就是该容器内的本地章号；返回项带 `key`（复合键）、`num`（本地号）、`vol?`。**阅读序（ordinal）**= 根域章节（按 num）在前 + 各卷按《卷.md》order 依次展开卷内 num 升序，序号 1..M——所有「前后 N 章/相邻大纲/角色已登场」等顺序逻辑一律基于 ordinal，不再对裸章号做算术。
+- **引用改写作用域规则**：文档正文中裸 `第N章` 引用只指向**同容器**章节；跨卷引用须显式写明卷名（如「第二卷·第5章」），代码不识别、不改写。renumber/insert/delete 的文本重写 `/第(\d{1,6})章/g` 只在受影响容器内的文件里按其局部映射执行；伏笔条目按复合键结构化重映射。
+- **冲突策略**：setChapterVolume / deleteVolumeCascade 解绑移入目标容器时若同号已占用 → 自动取目标容器 max+1（不做引用修复，与既有行为对齐，属已知限制）。
+- **建章自动编号**：createChapter 不再接受章号参数，落点容器的 next free = max(num)+1（空容器=01）。/write 无参默认在 current_chapter 所属容器（否则 current_volume、再否则书根）续建新章。nextOrPrev 只在当前章节所在容器内导航。
+- **「重排章号」命令语义变更**：现对每个容器独立压缩为连续 01..N（即旧书的卷内迁移入口——老书 vol2 的 31..50 跑一次变 1..20）；执行前把全书 md 备份到 `_backup/卷内重排_<时间戳>/`（角色改名同款 file-level copy），再做两阶段目录迁移 + 作用域内引用重写 + 伏笔重映射。
+- **打包表达式** `/pack [卷] [范围]`：可选首 token = 卷 id 或卷名（精确/包含匹配）；缺省依次取 current_volume / 无卷则整本；有卷未激活且多容器 → pickAction 选容器。范围内数字按所选容器的本地号解析。
+- **场景/人物归属字段**（SceneDoc.chapter_num / CharacterDoc.chapter）保持 number = **所在容器的本地章号**（0=全局，文件位置才是最终事实）；loadAll* 合并时由 manager 附加运行时 `vol?` 标签供跨卷展示与移动定位，不落盘新格式。
+- **卷摘要 `<volDir>/卷摘要.md`（v0.0.15+，插件特有、CLI 无对应概念）**：本卷滚动级情节摘要，格式对齐《章节摘要.md》——H1 标题 + `<!-- 内容哈希：<md5> -->` 校验头 + 纯文本正文。**哈希语义**：本卷全部有正文成员章按阅读序拼 `"key|md5(正文)"` 再取 md5（`computeVolumeHash`），任一成员正文变化即视为过期。**生成方式**：非用户手填——写盘命令（/write /continue /rewrite /polish /deai）保存正文后 main.ts `refreshVolumeSummary` 尽力而为地增量更新：取该卷最新章节的 AI 章节摘要（缺失则正文尾部 1500 字符节选）+ 现有卷摘要 → LLM 合并为新的滚动摘要落盘（prompts.ts `buildVolumeSummaryPrompt`，目标 400~600 字）。全程非阻塞、失败仅 Notice 警告不阻断写作；书根章节（无卷归属）不触发；`use_summaries: false` 时跳过。读取侧 loadWritingData 仅在卷内且摘要新鲜时注入【卷摘要】块。
+- **三层写作上下文结构（v0.0.15+）**：buildWritingContext 输出分三节——`== 故事情况 · 书籍级 ==`（全书大纲/书籍角色设定/书籍场景/【人物关系·书】）、`== 故事情况 · 卷级（<卷名>） ==`（本卷大纲/卷摘要/本卷人物关系/本卷角色设定/本卷场景，仅当前章在卷内出现）、`== 故事情况 · 章级（…第N章） ==`（本章目录文档原文 folderDocs + 【本章人物关系】），末尾伏笔提示。**去重规则**：①结构化角色/场景列表按「所属容器」分层（c.vol===activeVolId→卷层，否则书层），并排除归属当前章的条目（excludeCharNames/excludeSceneIds，其完整信息已由章层 folderDocs 原文承载）；②人物关系三份清洗文本逐行跨层去重（dedupeLinesAgainst，优先级 章 > 卷 > 书，normalizeRelLine 归一化前缀符号与空白后比较）。folderDocs 已剔除《人物关系.md》改经 chapterRelationships 单独传入。
+
+- **故事状态.md（frontmatter，version 2）字段**：`title`、`genre`、`writing_style`、`current_chapter`（复合键字符串）、`current_scene`、`current_volume`、`total_words`、`created_at`、`updated_at`、`use_summaries`、**`use_volumes`（v0.0.16+，无卷模式开关，见「卷 / 当前状态激活语义」）** + `chapters`（键为**复合键字符串** `"N"` / `"volId:N"`，见「章节身份模型」；值=**仅 标题/字数/卷** 的嵌套映射——tags/note 已精简移除：无代码读回，标签/备注只属于各章《章节信息.md》；旧文档残留这两个键解析忽略、下次保存消失）。空可选字段序列化时省略；key 顺序固定。磁盘是唯一事实来源；每个写操作后立即落盘，内存不持有文档内容。
 - **状态文档保存语义（saveState）**：先读旧文档 → 只重写 frontmatter，**正文原样保留**（可自由写笔记）；用户在 Obsidian 属性面板加的自定义顶层属性会收进 `extra` 并透传回写（不被覆盖丢失）。新建书时用模板注释作初始正文。
 - **创作规范三层结构**（对齐 CLI `/agents` 三层，优先级降序）：①小说级 `<书名>/WRITING_GUIDE.md` > ②用户级 `<work_dir>/WRITING_GUIDE.md`（替代 `~/.articlewriter/WRITING_GUIDE.md`）> ③系统级 **插件数据目录文件** `.obsidian/plugins/articlewriter/WRITING_GUIDE.md`（首启由 data.json 内嵌值或内置默认播种，见 `src/system_guide_default.ts`；读不到回落内置默认）。系统级路径**固定、非用户可配**——原 `llm.system_guide_path`（vault 相对路径覆盖）设置项已移除，data.json 的 `system_guide` 仅作一次性迁移种子。view：各层直接打开对应文件，仅一层直开 / 多层弹选择器 / 全无则提示「用编辑创建」；edit 选层后全量保存（缺失新建 / 存在覆盖），任一层变更后刷新该书《写作指南汇总》。**每书聚合文件 `<书名>/写作指南汇总.md`** = 三层按类目合并落盘（serializeAggregateGuide + agg-hash md5 变更检测头），是 LLM 写作命令与对话注入【创作规范】的**唯一来源**（stripComments 去注释正文）；仅当三层任一 md5 变化才重算。
 - **LLM 配置存插件数据目录 `data.json`**（`.obsidian/plugins/articlewriter/data.json`，经 saveData/loadData，替代 `~/.articlewriter/config.json`）：`settings.llm` = `PluginConfig`（`active_llm` + `llm_configs[]` 全字段对齐 Python 用户配置文件 + `system_prompt` + `desc_style` + `system_guide`/`system_guide_path`[历史遗留字段：系统级已迁插件数据目录文件、运行时不再读取，仅作首启播种种子]，见「创作规范三层结构」），类型与默认模板在 `src/plugin_config.ts`。首次运行（data.json 无 llm 段）由 `buildDefaultLlmConf()` 预置 local/deepseek/qwen-dashscope 三组标准模板并弹通知提示填写 api_key/model_name；**不读取也不迁移旧的 work_dir MD 设置文档**（该方案已废弃）。**api_key 明文存于 data.json——勿将 .obsidian 同步/共享到不可信位置**。所有 LLM 命令读配置一律走 `getLlmSetup()`（激活项+全局字段），不再依赖 work_dir。
@@ -23,12 +41,17 @@
 - 新建书/章时缺失的设定文档自动创建为「HTML 注释示例」模板（`ensureDoc`：已存在则跳过、绝不覆盖用户内容）；所有读取器在解析前过滤 HTML 注释，示例不会污染状态。**大纲类文档模板与 CLI `documents.py` 逐字对齐**：`outlineTemplate(书名)` → `# <书名> 大纲` + 全书主线/卷划分/结局示例注释；`chapterOutlineTemplate(num,标题)` → `# 第N章 <标题> 大纲` + 本章目标/情节要点/结尾示例注释；两者末尾均经 `appendOutlineMarkerHelp()` 附「大纲详略标记使用帮助」（[详][扩][补][略][跳]/[伏] + `<角色：>`/`<场景：>` 用法）。写盘路径同样恒带尾注：`setChapterOutline` / `appendChapterOutline`（对齐 `write_chapter_outline`）；建书/重扫描/open-outline/open-chapter-outline 均按书名或章节号动态生成模板标题行。
 - 多行内容（场景正文、世界观历史/力量体系等）用 ```` ```text ```` 围栏包裹，解析按围栏进行（见 `md_docs.ts`）。
 - **字段命名陷阱（继承自 Python，勿单方面"修正"）**：角色文档 `CharacterDoc` 的章节归属字段叫 **`chapter`**，而场景文档 `SceneDoc` 叫 **`chapter_num`**。两边都要改才允许统一。
-- 伏笔（`ForeshadowItem`）：字段=章节/人物/事由/是否完成；`index` 是**章内序号（0 起）**，由 `parseForeshadows` 从 `## 第N章 伏笔K` 标题推导、保存时按位置重排（`saveOutlineForeshadows` 先做 per-chapter 归一化再写盘）。定位一律「章节+序号」、不带序号默认 0。
+- 伏笔（`ForeshadowItem`）：字段=章节/**复合键字符串**（v0.0.15 起，如 `"3"` / `"v02:5"`；旧纯数字解析为根域）/人物/事由/是否完成；`index` 是**章内序号（0 起）**，由 `parseForeshadows` 从标题推导、保存时按位置重排（`saveOutlineForeshadows` 先做 per-chapter 归一化再写盘）。标题格式：根域 `## 第N章 伏笔K`（不变）、卷域 `## <卷名>·第N章 伏笔K`。[伏]…[/] 提取的「章节」字段支持两式：`章节：N`（默认归属当前写作章所在容器）与显式跨卷 `章节：<卷名>第N章`（saveOutlineForeshadows 用已知卷名解析，无法解析则丢弃并计数告警）。定位一律「复合键+序号」、不带序号默认 0。
 - 文件名/目录名统一经 `safeFilename()` 清理，禁止手工拼接未清洗的用户输入。
 - 删除一律走回收站：`app.fileManager.trashFile(file)`（跟随用户「删除方式」设置，默认 vault `.trash/`），不用 `delete()` 硬删、也不再调旧 API `vault.trash(file,false)`；角色改名会把被改动文件备份到 `_backup/` 后再全小说替换。
 
-## 卷 / 当前状态激活语义（对齐 CLI `/volume`、`/chapter switch`）
+## 卷 / 当前状态激活语义（对齐 CLI `/volume`、`/chapter switch`；v0.0.15 起含实体目录）
 
-- 卷只是分组容器：数据存根目录 `卷.md`，章节通过 `章节信息.md` 的「卷」字段标记归属；卷不改变全局连续编号；删卷只清空其下章节标记并返回受影响章节号列表。
-- `current_volume` + `current_chapter` 持久化在故事状态.md 的文件属性中；建卷自动激活并可顺带建该卷第一章；切换卷自动激活该卷最后一章；章节已归卷时切章同步补激活所属卷。
+- 卷是分组容器：元数据存根目录 `卷.md`，同时**每卷在书根下有同名实体目录 `<书名>/<卷名>/`**——归属该卷的章节目录物理存放其中，未归属章节留书根。**位置即归属**：`listChapters` 扫描「书根 + 各卷实体目录」（`containerPaths`），返回项带 `vol?`（所在卷 id）与 `parentPath`；《章节信息》「卷」字段与位置冲突时以位置为准并就地回填（rescanStory）。编号规则见上节「章节身份模型」（v0.0.15 起卷内独立编号、复合键标识）。
+- **卷名唯一且作为目录名**：addVolume/updateVolume 重名直接抛错；改卷名 = 同步 rename 实体目录（失败回滚元数据）；`deleteVolume`=解绑语义（章节先移回书根、仅清归属标记）。另有 `deleteVolumeCascade`（写字台面板右键「删除本卷」专用，弹确认框列明受影响章节后执行）=级联语义：其全部归属章节目录整体 trashFile 入回收站 → 一次清理 state（当前章悬空则回退最后一章）→ 末尾单次 renumberChapters 补洞 → 删卷元数据 + rmdir 空卷目录 + 清 current_volume。两种删卷入口不可混用语义。
+- 建章自动编号：createChapter(storyName, title, volId?) 不接受章号——落点容器 next free = max+1；insertChapter 继承参照章所在容器并在其局部空间插位（同容器 ≥插入号的章顺延 +1）；rename/move/renumber 均保留父容器（`chapterDirOf` 返回 parentPath）。
+- **平面结构迁移**：旧布局（已归属章节散在书根）由命令「按卷整理目录 /organize-volumes」（`manager.organizeByVolumes`，幂等）一次性归位；`needsVolumeOrganize` 检测残留。**切换书籍（/dir 或状态页点选）检测到平面残留 → 强制自动整理、不可跳过**，失败则置 `flatBlocked` 锁定该书全部章节/卷结构操作直至手动整理成功；各结构命令入口另经 `ensureVolumeLayout` 门禁（弹确认框引导立即整理，取消=阻断本次操作）。纯未归属留书根的书不算平面残留。
+- **无卷模式（默认，v0.0.16+）**：`use_volumes=false`=纯「书籍→章节」扁平结构——不建卷/不归卷/不按卷整理。**新书 createStory 恒置 false**。**向后兼容推断**：parseStateDoc 对旧文档（缺该字段）按磁盘事实回填——存在任一 vol 域复合键或 current_volume → true，否则 false；首次保存后恒显式写回使行为确定。切换命令 `/volume off|on`（main.ts `cmdVolumeMode(enabled)`，两命令 volume-mode-off/on）：**off=破坏性拍平**——若仍有卷则 `flattenToRoot` 逐章 `relocateChapterContainer(key,null)` 回移书根并连续重编号、各卷实体目录（含残留卷级设定四件套）trashFile 入回收站、清 `卷.md` 元数据与 current_volume（幂等可续跑），执行前二次确认；on=仅置位不改盘。**门控面**：addVolume/setChapterVolume/organizeByVolumes 在 no-vol 下抛 `NO_VOL_MODE_MSG`；cmdOrganizeVolumes/cmdVolumeAdd/cmdVolumeManage/cmdPackVolume 入口 Notice 拦截（先于任何弹框）；enforceVolumeLayoutOnSwitch 直接放行（no-vol 书跳过强制按卷整理）；createChapter 忽略 volId 落书根；写字台 StatusDetail.useVolumes=false 时隐藏全部「新建卷」右键入口且空态文案不提建卷。
+- `current_volume` + `current_chapter` 持久化在故事状态.md 的文件属性中；建卷自动激活并可顺带建该卷第一章（直接落卷目录）；切换卷自动激活该卷最后一章；章节已归卷时切章同步补激活所属卷。
 - 加载时校验：激活卷不存在→清空；激活章节不存在→回退最后一章（见 `validatedState`）。
+- **激活写入自洽（防"有时激活不生效"）**：switchChapter/statusActivateChapter/activateVolume 写 current_chapter 前一律先过 manager.ensureChapterEntry——chapters 映射缺该复合键时按磁盘 listChapters 回填 {title,words:0,volume}，否则解析侧「current_chapter 须存在于 chapters」校验会把它丢弃、radio 永不点亮。current_volume 同步以**键内容器为准**（parseChKey(key).vol），不信任可能过期的 meta.volume；activateVolume 的末章号取 state 与磁盘两源 max。已知诱因：卷实体目录被外部改名后不再匹配 volumeFolderName/id → 其下章节在面板里变裸数字根域键（八仙剧本「除妖记」↔卷名「除妖记」即此）；此类书用「管理卷→分配章节 all」或切换书籍时的强制整理把章移回卷目录即可对齐。

@@ -164,7 +164,7 @@ function findOutlineMatches(line: string, src: string): Array<{ s: number; e: nu
 	return out;
 }
 
-/** 截取全局大纲中「目标章节之前」的部分 */
+/** 截取全局大纲中「目标章节之前」的部分。v0.0.15：chapterNum 传阅读序位置；多卷书本地章号跨卷重复时锚点匹配放宽为包含式（宁多勿漏，仅影响提及名检测）。 */
 export function outlineUpToChapter(text: string, chapterNum: number): string {
 	if (!text || chapterNum <= 0) return text;
 	const lines = text.split("\n");
@@ -292,10 +292,10 @@ export interface ChapterFolderDocEntry {
 	text: string;
 }
 
-/** 组装第 N 章文件夹内各 md 的上下文块，并抽取大纲中的伏笔 */
+/** 组装章节文件夹内各 md 的上下文块，并抽取大纲中的伏笔（v0.0.15：defaultScopeKey=复合键，作为 [伏] 标记默认归属容器） */
 export function buildChapterFolderDocs(
 	entries: ChapterFolderDocEntry[],
-	chapterNum: number
+	defaultScopeKey?: string
 ): { docs: string; foreshadows: ForeshadowItem[] } {
 	let allForeshadows: ForeshadowItem[] = [];
 	const parts: string[] = [];
@@ -307,7 +307,7 @@ export function buildChapterFolderDocs(
 		let text = stripComments(lines.join("\n").trim()).trim();
 		if (!text) continue;
 		if (fname === "章节大纲.md") {
-			allForeshadows.push(...extractForeshadows(text, chapterNum));
+			if (defaultScopeKey) allForeshadows.push(...extractForeshadows(text, defaultScopeKey));
 			text = stripForeshadowMarks(text);
 		}
 		parts.push(`${CHAPTER_DOC_LABELS[fname]}\n${text}`);
@@ -315,7 +315,7 @@ export function buildChapterFolderDocs(
 	return { docs: parts.join("\n\n"), foreshadows: allForeshadows };
 }
 
-/** 清洗全局人物关系文档（去一级标题行与注释） */
+/** 清洗人物关系文档（去一级标题行与注释；书/卷/章三层通用） */
 export function cleanRelationshipsDoc(rawText: string): string {
 	const t = (rawText || "").trim();
 	if (!t) return "";
@@ -324,10 +324,33 @@ export function cleanRelationshipsDoc(rawText: string): string {
 	return stripComments(lines.join("\n").trim()).trim();
 }
 
+/** 单行人物关系文本归一化（去行首列表标记、折叠空白），供跨层逐行比对 */
+function normalizeRelLine(line: string): string {
+	return line.replace(/^\s*[-*+]\s*/, "").replace(/\s+/g, " ").trim();
+}
+
+/** v0.0.15 三层上下文·跨层去重：剔除已在更高优先级层出现过的相同行（优先级 章 > 卷 > 书，higherTexts 按高→低传） */
+export function dedupeLinesAgainst(text: string, ...higherTexts: Array<string | undefined>): string {
+	const body = (text || "").trim();
+	if (!body) return "";
+	const seen = new Set<string>();
+	for (const h of higherTexts) {
+		if (!h) continue;
+		for (const ln of h.split("\n")) {
+			const n = normalizeRelLine(ln);
+			if (n) seen.add(n);
+		}
+	}
+	if (!seen.size) return body;
+	return body.split("\n").filter((ln) => !seen.has(normalizeRelLine(ln))).join("\n").trim();
+}
+
 // ---------- 写作上下文组装（对应 story/context_builder.py get_context_for_writing） ----------
 
 export interface PrevChapterRef {
-	num: number;
+	num: number; // v0.0.15：阅读序位置（ordinal，跨卷连续），非容器内本地章号
+	key?: string; // 复合键「N」或「volId:N」
+	label?: string; // 展示标签（跨卷时含卷名，如「第二卷·第3章」）
 	title?: string;
 	content: string;
 }
@@ -340,7 +363,12 @@ export interface PlotNodeRef {
 }
 
 export interface WritingContextInput {
-	chapterNum: number;
+	chapterNum: number; // v0.0.15：阅读序位置（ordinal，跨卷连续）；本地章号仅用于落盘与容器内引用
+	localNum?: number; // 本章在所属容器的本地章号
+	volumeName?: string; // 当前卷名（空/缺省 = 书根）
+	volOutlineText?: string; // 当前卷《卷大纲》清洗后文本
+	chapterRanks?: Record<string, number>; // 复合键→阅读序位置；角色/场景可见性按容器排名判定
+	volumeNames?: Record<string, string>; // 卷id→卷名；伏笔等复合键展示用
 	title?: string;
 	genre?: string;
 	writingStyle?: string;
@@ -348,7 +376,14 @@ export interface WritingContextInput {
 	globalOutlineRaw: string;
 	chapterOutlineText: string;
 	characters: CharacterDoc[];
-	relationships: string;
+	/** v0.0.15 三层上下文：人物关系分书/卷/章三份清洗文本（跨层逐行去重在 buildWritingContext 内做，优先级 章 > 卷 > 书） */
+	bookRelationships?: string;
+	volRelationships?: string;
+	chapterRelationships?: string;
+	activeVolId?: string; // 当前章所属卷 id；空 = 书根（无卷级小节）
+	excludeCharNames?: string[]; // 本章目录《人物.md》归属角色名——folderDocs【本章人物设定】已全文渲染，结构化列表排除避免重复
+	excludeSceneIds?: string[]; // 本章目录《场景.md》归属场景 id——同上
+	volSummary?: string; // 最新卷摘要（<volDir>/卷摘要.md 内容哈希校验通过时非空）
 	prevChapters: PrevChapterRef[];
 	summaries: Record<number, string>;
 	prevN?: number;
@@ -360,37 +395,40 @@ export interface WritingContextInput {
 	includeOutline?: boolean;
 }
 
-/** 纯函数版 get_context_for_writing：所有磁盘读取由调用方完成 */
+/** 复合键「N」或「volId:N」的展示标签 */
+export function chapterKeyLabel(key: string, volumeNames?: Record<string, string>): string {
+	const i = key.indexOf(":");
+	if (i < 0) return `第${key}章`;
+	const volId = key.slice(0, i);
+	return `${volumeNames?.[volId] || volId}·第${key.slice(i + 1)}章`;
+}
+
+/**
+ * 纯函数版 get_context_for_writing：所有磁盘读取由调用方完成。
+ * v0.0.15 三层结构——故事情况分「书籍级 / 卷级 / 章级」小节渲染：
+ * - 人物/场景按归属分层（当前卷内 → 卷级；其余 → 书级），本章目录归属的条目已由 folderDocs 原文渲染、此处排除避免重复
+ * - 人物关系三层各自成块并跨层逐行去重（优先级 章 > 卷 > 书，高优先级层的行在低层级剔除）
+ */
 export function buildWritingContext(input: WritingContextInput): string {
 	const parts: string[] = [];
 	if (input.title) parts.push(`【小说标题】${input.title}`);
 	if (input.genre) parts.push(`【小说类型】${input.genre}`);
 	if (input.writingStyle) parts.push(`【编写类型】${input.writingStyle}`);
 
-	const outline = input.globalOutlineRaw || "";
-	if ((input.includeOutline !== false) && outline) {
-		parts.push(`\n【小说大纲】\n${stripForeshadowMarks(outline)}`);
-		if (/<角色\s*[：:]|<场景\s*[：:]/.test(outline)) {
-			parts.push("（大纲中 <角色：...>/<场景：...> 标记处，需在对应情节简单描写该角色与场景）");
-		}
-	}
+	const activeVolId = input.activeVolId || "";
+	const inVolume = Boolean(activeVolId);
+	const chLabel = input.localNum != null ? `第${input.localNum}章` : `第${input.chapterNum}章`;
+	const volTitle = input.volumeName || activeVolId;
 
-	const mentioned = computeMentionedNames({
-		globalOutlineRaw: outline,
-		chapterOutlineText: input.chapterOutlineText || "",
-		characters: input.characters,
-		scenes: input.scenes,
-		chapterNum: input.chapterNum,
-	});
-	let chars = [...input.characters];
-	if (mentioned.charNames.size) {
-		chars = chars.filter((c) => mentioned.charNames.has(c.name));
-	} else {
-		chars = chars.filter((c) => (c.chapter || 0) <= input.chapterNum);
-	}
-	if (chars.length) {
-		parts.push("\n【角色设定】");
-		for (const char of chars) {
+	// ---- 人物关系跨层去重（优先级 章 > 卷 > 书）----
+	const chRel = (input.chapterRelationships || "").trim();
+	const volRel = inVolume ? dedupeLinesAgainst((input.volRelationships || "").trim(), chRel) : "";
+	const bookRel = dedupeLinesAgainst((input.bookRelationships || "").trim(), chRel, volRel);
+
+	const renderCharBlock = (heading: string, list: CharacterDoc[]): void => {
+		if (!list.length) return;
+		parts.push(`\n${heading}`);
+		for (const char of list) {
 			let info = `  - ${char.name}`;
 			if (char.identity) info += `（${char.identity}）`;
 			if (char.age) info += `，年龄：${char.age}`;
@@ -402,20 +440,55 @@ export function buildWritingContext(input: WritingContextInput): string {
 			if (char.abilities && char.abilities.length) parts.push(`    能力：${char.abilities.join("；")}`);
 			if (char.notes) parts.push(`    备注：${char.notes}`);
 		}
-	}
+	};
 
-	const relDocs = input.relationships || "";
-	if (relDocs) parts.push(`\n【人物关系】\n${relDocs}`);
+	const outline = input.globalOutlineRaw || "";
+	const mentioned = computeMentionedNames({
+		globalOutlineRaw: outline,
+		chapterOutlineText: input.chapterOutlineText || "",
+		characters: input.characters,
+		scenes: input.scenes,
+		chapterNum: input.chapterNum,
+	});
+	let chars = [...input.characters];
+	if (mentioned.charNames.size) {
+		chars = chars.filter((c) => mentioned.charNames.has(c.name));
+	} else if (input.chapterRanks) {
+		// v0.0.15：角色可见性按「归属章节的阅读序位置 ≤ 当前 ordinal」判定（跨卷自然延续）
+		const ranks = input.chapterRanks;
+		chars = chars.filter((c) => {
+			if (!c.chapter || c.chapter <= 0) return true; // 全局角色恒可见
+			return (ranks[`${c.vol ? c.vol + ":" : ""}${c.chapter}`] ?? Number.POSITIVE_INFINITY) <= input.chapterNum;
+		});
+	} else {
+		chars = chars.filter((c) => (c.chapter || 0) <= input.chapterNum);
+	}
+	// 本章目录《人物.md》归属的角色已由 folderDocs【本章人物设定】原文渲染，结构化列表排除避免重复
+	const exclChars = new Set(input.excludeCharNames || []);
+	chars = chars.filter((c) => !exclChars.has(c.name));
+	const volChars = inVolume ? chars.filter((c) => c.vol === activeVolId) : [];
+	const bookChars = chars.filter((c) => !(inVolume && c.vol === activeVolId));
+
+	parts.push("\n== 故事情况 · 书籍级 ==");
+	if ((input.includeOutline !== false) && outline) {
+		parts.push(`\n【全书大纲】\n${stripForeshadowMarks(outline)}`);
+		if (/<角色\s*[：:]|<场景\s*[：:]/.test(outline)) {
+			parts.push("（大纲中 <角色：...>/<场景：...> 标记处，需在对应情节简单描写该角色与场景）");
+		}
+	}
+	renderCharBlock("【书籍角色设定】", bookChars);
+	if (bookRel) parts.push(`\n【书籍人物关系】\n${bookRel}`);
 
 	const prevN = input.prevN ?? 3;
 	if (input.chapterNum > 1 && prevN > 0) {
 		const startChap = Math.max(1, input.chapterNum - prevN);
-		parts.push(`\n【前文内容】（第${startChap}章至第${input.chapterNum - 1}章）`);
+		const labelAt = (i: number): string => input.prevChapters.find((p) => p.num === i)?.label || `第${i}章`;
+		parts.push(`\n【前文内容】（${labelAt(startChap)}至${labelAt(input.chapterNum - 1)}）`);
 		for (let i = startChap; i < input.chapterNum; i++) {
 			const prev = input.prevChapters.find((p) => p.num === i);
 			if (!prev || !prev.content) continue;
 			const summary = ((input.summaries[i] || "")).trim();
-			parts.push(`\n--- 第${i}章 ${prev.title || ""} ---`);
+			parts.push(`\n--- ${labelAt(i)} ${prev.title || ""} ---`);
 			if (summary) {
 				parts.push(`[摘要] ${summary}`);
 			} else {
@@ -439,19 +512,20 @@ export function buildWritingContext(input: WritingContextInput): string {
 	}
 
 	const allScenes = new Map(input.scenes.map((s) => [s.scene_id, s]));
+	const exclScenes = new Set(input.excludeSceneIds || []); // 本章目录《场景.md》归属者已由 folderDocs【本章场景】原文渲染
 	const sceneList: SceneDoc[] = [];
 	for (const sid of Array.from(mentioned.sceneIds).sort()) {
 		const sc = allScenes.get(sid);
-		if (sc) sceneList.push(sc);
+		if (sc && !exclScenes.has(sc.scene_id)) sceneList.push(sc);
 	}
 	if (input.currentSceneId) {
 		const cur = allScenes.get(input.currentSceneId);
-		if (cur && !sceneList.some((s) => s.scene_id === cur.scene_id)) sceneList.push(cur);
+		if (cur && !exclScenes.has(cur.scene_id) && !sceneList.some((s) => s.scene_id === cur.scene_id)) sceneList.push(cur);
 	}
-	if (sceneList.length) {
-		const multiple = sceneList.length > 1;
-		parts.push(`\n【${multiple ? "场景" : "当前场景"}】`);
-		for (const scene of sceneList) {
+	const renderSceneBlock = (heading: string, list: SceneDoc[], multiple: boolean): void => {
+		if (!list.length) return;
+		parts.push(`\n${heading}`);
+		for (const scene of list) {
 			let indent: string;
 			if (multiple) {
 				const marker = scene.scene_id === input.currentSceneId ? "（当前场景）" : "";
@@ -465,6 +539,20 @@ export function buildWritingContext(input: WritingContextInput): string {
 			if (scene.characters?.length) parts.push(`${indent}角色：${scene.characters.join("、")}`);
 			if (scene.content) parts.push(`${indent}场景正文：${scene.content.slice(0, 500)}`);
 		}
+	};
+	const multiScenes = sceneList.length > 1;
+	const volScenes = inVolume ? sceneList.filter((s) => s.vol === activeVolId) : [];
+	const bookScenes = sceneList.filter((s) => !(inVolume && s.vol === activeVolId));
+	renderSceneBlock(inVolume ? "【书籍场景】" : multiScenes ? "【场景】" : "【当前场景】", bookScenes, multiScenes);
+
+	if (inVolume) {
+		parts.push(`\n== 故事情况 · 卷级（${volTitle}） ==`);
+		if (input.volOutlineText && input.includeOutline !== false) parts.push(`\n【本卷大纲】\n${stripForeshadowMarks(input.volOutlineText)}`);
+		const vs = (input.volSummary || "").trim();
+		if (vs) parts.push(`\n【卷摘要】\n${vs}`);
+		if (volRel) parts.push(`\n【本卷人物关系】\n${volRel}`);
+		renderCharBlock("【本卷角色设定】", volChars);
+		renderSceneBlock("【本卷场景】", volScenes, multiScenes);
 	}
 
 	const undone = (input.foreshadows || []).filter((f) => !f.done);
@@ -473,14 +561,20 @@ export function buildWritingContext(input: WritingContextInput): string {
 		parts.push("\n【伏笔提示（未完成，次要内容，可暂不处理）】");
 		for (const f of undone) {
 			const who = f.character || "（未注明人物）";
-			parts.push(`  - 第${f.chapter}章 ${who}：${f.reason ?? ""}`);
+			parts.push(`  - ${chapterKeyLabel(f.chapter, input.volumeNames)} ${who}：${f.reason ?? ""}`);
 		}
 		for (const p of plots) {
 			if ((p.status ?? "") !== "completed") parts.push(`  - ${p.id}（第${p.chapter}章）：${p.description ?? ""}`);
 		}
 	}
 
-	if (input.folderDocs) parts.push(`\n${input.folderDocs}`);
+	// 章级小节：本章目录文档（调用方已从 folderDocs 剔除《人物关系.md》，改经 chapterRelationships 单独传入以参与跨层去重）
+	const chFolder = (input.folderDocs || "").trim();
+	if (chFolder || chRel) {
+		parts.push(`\n== 故事情况 · 章级（${inVolume ? `${volTitle}·` : ""}${chLabel}） ==`);
+		if (chFolder) parts.push(`\n${chFolder}`);
+		if (chRel) parts.push(`\n【本章人物关系】\n${chRel}`);
+	}
 	return parts.join("\n");
 }
 
@@ -565,62 +659,68 @@ export function descStyleGuide(descStyle?: string): string {
 
 // ---------- 大纲块辅助（对应 writer.py _chapter_outline_one_line / _prev_outlines_block / _outline_bridge_block） ----------
 
-function chapterOutlineOneLine(outlineText: string | undefined, num: number): string {
-	const stripped = stripOutlineMarkers(outlineText || "");
-	if (!stripped) return "";
-	return `- 第${num}章大纲：${stripped}`;
+/** v0.0.15：阅读序大纲条目展示引用（label=容器内展示名，如「第5章」「第二卷·第3章」） */
+export interface OutlineRef {
+	label: string;
+	text?: string;
 }
 
-export function buildPrevOutlinesBlock(chapterNum: number, outlines: Record<number, string>): string {
-	const items: string[] = [];
-	for (let n = 1; n < chapterNum; n++) {
-		const line = chapterOutlineOneLine(outlines[n], n);
-		if (line) items.push(line);
-	}
+function outlineOneLine(ref: OutlineRef | undefined): string {
+	if (!ref) return "";
+	const stripped = stripOutlineMarkers(ref.text || "");
+	if (!stripped) return "";
+	return `- ${ref.label}大纲：${stripped}`;
+}
+
+export function buildPrevOutlinesBlock(prevs: OutlineRef[]): string {
+	const items = prevs.map(outlineOneLine).filter(Boolean);
 	if (!items.length) return "";
 	return "【前提提要（前文各章大纲）】\n" + items.join("\n");
 }
 
-export function buildOutlineBridgeBlock(chapterNum: number, outlines: Record<number, string>): string {
+export function buildOutlineBridgeBlock(refs: { prev?: OutlineRef; cur?: OutlineRef; nxt?: OutlineRef }): string {
 	const parts: string[] = [];
-	const prev = chapterOutlineOneLine(outlines[chapterNum - 1], chapterNum - 1);
-	const cur = chapterOutlineOneLine(outlines[chapterNum], chapterNum);
-	const nxt = chapterOutlineOneLine(outlines[chapterNum + 1], chapterNum + 1);
-	if (prev) parts.push(`【前情提要（第${chapterNum - 1}章大纲）】\n${prev}`);
-	if (cur) parts.push(`【当前情节（第${chapterNum}章大纲）】\n${cur}`);
-	if (nxt) parts.push(`【后续发展（第${chapterNum + 1}章大纲）】\n${nxt}`);
+	const prev = outlineOneLine(refs.prev);
+	const cur = outlineOneLine(refs.cur);
+	const nxt = outlineOneLine(refs.nxt);
+	if (prev && refs.prev) parts.push(`【前情提要（${refs.prev.label}大纲）】\n${prev}`);
+	if (cur && refs.cur) parts.push(`【当前情节（${refs.cur.label}大纲）】\n${cur}`);
+	if (nxt && refs.nxt) parts.push(`【后续发展（${refs.nxt.label}大纲）】\n${nxt}`);
 	return parts.join("\n\n");
 }
 
 // ---------- /write 章节提示词（对应 writer.py _build_chapter_prompt） ----------
 
-/** 去掉伏笔标记，返回干净大纲与抽取出的伏笔 */
+/** 去掉伏笔标记，返回干净大纲与抽取出的伏笔（v0.0.15：scopeKey=复合键，未提供时不归属任何容器） */
 export function prepareOutlineForPrompt(
 	outline: string,
-	chapterNum = 0
+	scopeKey?: string
 ): { cleaned: string; foreshadows: ForeshadowItem[] } {
 	if (!outline) return { cleaned: "", foreshadows: [] };
-	const foreshadows = extractForeshadows(outline, chapterNum);
+	const foreshadows = scopeKey ? extractForeshadows(outline, scopeKey) : [];
 	return { cleaned: stripForeshadowMarks(outline), foreshadows };
 }
 
 export interface ChapterPromptInput {
-	chapterNum: number;
+	chapterNum: number; // v0.0.15：阅读序位置（ordinal）
+	chapterLabel?: string; // 目标章展示名（含卷前缀），缺省「第N章」
+	chapterKey?: string; // 复合键；[伏] 标记默认归属容器
 	chapterOutlineRaw: string;
 	userInstruction?: string;
 	context: string;
 	wordRange: [number, number];
 	descStyle?: string;
 	storyType?: string;
-	prevOutlines: Record<number, string>;
+	prevOutlines: OutlineRef[];
 }
 
 export function buildChapterPrompt(input: ChapterPromptInput): { prompt: string; foreshadows: ForeshadowItem[] } {
-	const prepared = prepareOutlineForPrompt(input.chapterOutlineRaw || "", input.chapterNum);
+	const prepared = prepareOutlineForPrompt(input.chapterOutlineRaw || "", input.chapterKey);
 	const chapterOutline = prepared.cleaned;
+	const label = (input.chapterLabel || `第${input.chapterNum}章`).trim();
 	const [wordLow, wordHigh] = input.wordRange;
 	const parts: string[] = [];
-	parts.push(`请创作第${input.chapterNum}章`);
+	parts.push(`请创作${label}`);
 	if (chapterOutline) {
 		parts.push(`章节大纲：${chapterOutline}`);
 		const markerGuide = buildOutlineMarkerGuide(chapterOutline);
@@ -634,7 +734,7 @@ export function buildChapterPrompt(input: ChapterPromptInput): { prompt: string;
 			"细节补充只能服务于大纲要点；除非用户明确要求调整，否则以大纲为准。"
 		);
 	}
-	const prevOutlines = buildPrevOutlinesBlock(input.chapterNum, input.prevOutlines || {});
+	const prevOutlines = buildPrevOutlinesBlock(input.prevOutlines || []);
 	if (prevOutlines) parts.push(prevOutlines);
 	if (input.userInstruction) parts.push(`用户要求：${input.userInstruction}`);
 	const descGuide = descStyleGuide(input.descStyle);
@@ -656,12 +756,14 @@ export function buildChapterPrompt(input: ChapterPromptInput): { prompt: string;
 // ---------- /continue 续写提示词（对应 writer.py _build_continue_prompt） ----------
 
 export interface ContinuePromptInput {
-	chapterNum: number;
+	chapterNum: number; // v0.0.15：阅读序位置（ordinal）
+	chapterLabel?: string; // 目标章展示名（含卷前缀），缺省「第N章」
+	chapterKey?: string; // 复合键；[伏] 标记默认归属容器
 	userInstruction?: string;
 	context: string;
 	globalOutlineRaw: string;
 	chapterOutlineRaw: string;
-	prevOutlines: Record<number, string>;
+	prevOutlines: OutlineRef[];
 	descStyle?: string;
 	storyType?: string;
 	currentSummary?: string;
@@ -670,28 +772,23 @@ export interface ContinuePromptInput {
 }
 
 export function buildContinuePrompt(input: ContinuePromptInput): { prompt: string; foreshadows: ForeshadowItem[] } {
-	const globalPrep = prepareOutlineForPrompt(input.globalOutlineRaw || "");
-	const chapterPrep = prepareOutlineForPrompt(input.chapterOutlineRaw || "", input.chapterNum);
-	const globalOutline = globalPrep.cleaned;
+	const globalPrep = prepareOutlineForPrompt(input.globalOutlineRaw || "", input.chapterKey);
+	const chapterPrep = prepareOutlineForPrompt(input.chapterOutlineRaw || "", input.chapterKey);
+	const label = (input.chapterLabel || `第${input.chapterNum}章`).trim();
+	// v0.0.15：全局/本章大纲全文已由写作上下文（三层结构）注入，此处不再重复；仅保留标记语义说明与伏笔抽取
 	const chapterOutline = chapterPrep.cleaned;
-	const prevBlock = buildPrevOutlinesBlock(input.chapterNum, input.prevOutlines || {});
+	const prevBlock = buildPrevOutlinesBlock(input.prevOutlines || []);
 	const descGuide = descStyleGuide(input.descStyle);
 	const confirmLine = storyTypeConfirmLine(input.storyType);
 	const tail1000 = (input.existingContent || "").slice(-1000);
 	const [wordLow, wordHigh] = input.wordRange;
 	const prompt = `
 ${confirmLine}
-以下是第${input.chapterNum}章的已有内容，请继续续写：
+以下是${label}的已有内容，请继续续写：
 
-${input.context}
+ ${input.context}
 
-【全局大纲】
-${globalOutline || "（暂无）"}
-
-【本章大纲】
-${chapterOutline || "（暂无）"}
-
-${buildOutlineMarkerGuide(chapterOutline)}
+ ${!globalPrep.cleaned && !chapterPrep.cleaned ? "【大纲提示】当前尚无全局大纲或本章大纲，请按前文脉络自然续写。\n\n" : ""}${buildOutlineMarkerGuide(chapterOutline)}
 
 ${buildRoleSceneGuide(chapterOutline)}
 
@@ -717,13 +814,41 @@ ${input.userInstruction ? `【续写要求】${input.userInstruction}` : "请按
 	return { prompt, foreshadows };
 }
 
+// ---------- 卷摘要（v0.0.15+：随章节增加自动增量提取；插件特有，CLI 无对应概念） ----------
+
+export const VOL_SUMMARY_SYSTEM_PROMPT = "你是小说创作助理，负责维护整卷的滚动卷级摘要。";
+
+export interface VolumeSummaryInput {
+	volumeName: string;
+	existingSummary?: string; // 现有卷摘要（缺失/过期时为空）
+	chapterLabel: string; // 本卷最新章节展示标签
+	chapterText: string; // 该章 AI 摘要优先，否则正文节选
+}
+
+/** 卷摘要增量更新：把现有滚动摘要与最新章节信息合并为新的卷摘要 */
+export function buildVolumeSummaryPrompt(input: VolumeSummaryInput): string {
+	return `请把「${input.volumeName}」现有的卷摘要与最新章节信息合并，更新为一份新的卷摘要。要求：
+- 保留仍然有效的既有情节脉络、人物状态变化、伏笔与悬念
+- 并入新章的关键情节、人物处境/情绪/关系变化、新增设定或线索
+- 控制在 400~600 字；只保留对后续创作有用的信息
+直接输出新的卷摘要正文，不要标题、解释或任何格式标记。
+
+【现有卷摘要】
+${(input.existingSummary || "").trim() || "（暂无）"}
+
+【本卷最新章节】${input.chapterLabel}
+---
+${input.chapterText}`;
+}
+
 // ---------- /rewrite 重写提示词（对应 writer.py rewrite_chapter 的 f-string） ----------
 
 export interface RewritePromptInput {
-	chapterNum: number;
+	chapterNum: number; // v0.0.15：阅读序位置（ordinal）
+	chapterLabel?: string; // 目标章展示名（含卷前缀），缺省「第N章」
 	userInstruction?: string;
 	context: string;
-	chapterOutlines: Record<number, string>;
+	bridge: { prev?: OutlineRef; cur?: OutlineRef; nxt?: OutlineRef };
 	oldContent: string;
 	currentSummary?: string;
 	wordRange: [number, number];
@@ -731,7 +856,8 @@ export interface RewritePromptInput {
 }
 
 export function buildRewritePrompt(input: RewritePromptInput): string {
-	const bridge = buildOutlineBridgeBlock(input.chapterNum, input.chapterOutlines || {});
+	const bridge = buildOutlineBridgeBlock(input.bridge || {});
+	const label = (input.chapterLabel || `第${input.chapterNum}章`).trim();
 	const oldContent = input.oldContent || "";
 	const summaryBlock = oldContent ? `【本章摘要】\n${input.currentSummary || "（无）"}` : "（本章暂无内容）";
 	const oldContentBlock = oldContent ? `【原章节内容（仅作为参考起点）】\n${oldContent.slice(0, 4500)}` : "";
@@ -741,7 +867,7 @@ export function buildRewritePrompt(input: RewritePromptInput): string {
 ${confirmLine}
 这是 /rewrite 命令——**重构改写**当前章节。你可以大幅调整情节走向、结构安排和叙事方式，与原内容可以完全不同。
 
-请重写第${input.chapterNum}章。
+请重写${label}。
 
 【写作上下文】
 ${input.context}
@@ -766,16 +892,18 @@ ${input.userInstruction ? `【重写要求】${input.userInstruction}` : "请严
 // ---------- /review 审阅提示词（对应 writer.py review_chapter 的 f-string） ----------
 
 export interface ReviewPromptInput {
-	chapterNum: number;
+	chapterNum: number; // v0.0.15：阅读序位置（ordinal）
+	chapterLabel?: string; // 目标章展示名（含卷前缀），缺省「第N章」
 	userInstruction?: string;
 	context: string;
-	chapterOutlines: Record<number, string>;
+	bridge: { prev?: OutlineRef; cur?: OutlineRef; nxt?: OutlineRef };
 	chapterContent: string;
 }
 
 export function buildReviewPrompt(input: ReviewPromptInput): string {
-	const bridge = buildOutlineBridgeBlock(input.chapterNum, input.chapterOutlines || {});
-	return `请以全局视角审阅小说第${input.chapterNum}章，找出其中不合逻辑之处与剧情问题。
+	const bridge = buildOutlineBridgeBlock(input.bridge || {});
+	const label = (input.chapterLabel || `第${input.chapterNum}章`).trim();
+	return `请以全局视角审阅小说${label}，找出其中不合逻辑之处与剧情问题。
 
 【写作上下文（含全局大纲、角色设定、前文摘要、世界观）】
 ${input.context}

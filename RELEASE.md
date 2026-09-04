@@ -23,8 +23,8 @@
 ## 发布打包与上线流程（用户要求"打包发布"时）
 
 1. bump `manifest.json` version
-2. `npm run build` 重建（esbuild 自动拷入新版 manifest.json、styles.css、WRITING_GUIDE.md）
-3. **整体压缩 `release/` 全部文件**：`cd release && zip ../articlewriter-v<版本>.zip *`——必须含 WRITING_GUIDE.md，不要手工枚举文件名漏掉
+2. `npm run build` 重建（esbuild 自动拷入新版 manifest.json、styles.css；写作指南 WRITING_GUIDE.md 自本次起不再拷入 release/）
+3. **整体压缩 `release/` 全部文件**：`cd release && zip ../articlewriter-v<版本>.zip *`——release/ 现仅含 main.js / manifest.json / styles.css（不含 WRITING_GUIDE.md），直接整目录打包即可
 4. 提交打标签：`git add manifest.json …` → commit → `git push origin main` → `git tag v<版本> && git push origin v<版本>`；随后按 build-deploy「GitHub 镜像同步（强制）」把该 commit 同消息同步到镜像并推**无 v 前缀** tag `<版本>`——CI 自动重建、签名并创建 GitHub Release，再回到第 5 步补 Gitea Release
 5. 创建 Gitea Release（**必须维护**：每个发布版本都要有对应 Release + zip 附件；但**不需要在 Gitea 侧搭建或拉起任何自动化工作流**，手动执行下述脚本即可）：**REST API 会忽略上传的文件，只能走 Web 会话表单流**（脚本如下；凭据用上面提到的 user/pass）：
 

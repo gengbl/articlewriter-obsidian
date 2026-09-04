@@ -10,17 +10,29 @@ export interface ChapterMeta {
 	volume?: string;
 }
 
+/** 章节复合键：根域（未归属）"N"，卷域 "volId:N"。卷 id 禁止含冒号（addVolume 校验）。 */
+export function chKey(vol: string | null | undefined, num: number): string {
+	return vol ? `${vol}:${num}` : String(num);
+}
+
+export function parseChKey(key: string): { vol: string | null; num: number } {
+	const i = key.indexOf(":");
+	if (i < 0) return { vol: null, num: parseInt(key, 10) };
+	return { vol: key.slice(0, i), num: parseInt(key.slice(i + 1), 10) };
+}
+
 export interface StoryState {
 	version: 2;
 	title: string;
 	genre: string;
 	writing_style: string;
-	current_chapter: number | null;
+	current_chapter: string | null; // v0.0.15 起为复合键字符串（旧版纯数字解析时自动归一化）
 	current_scene?: string;
 	current_volume?: string;
 	total_words: number;
 	use_summaries: boolean;
-	chapters: Record<string, ChapterMeta>;
+	use_volumes: boolean; // v0.0.16+：工作模式开关——false=无卷模式（纯 书→章 扁平结构）、true=有卷模式；缺省时按是否含卷数据推断（存量有卷书判 true 防回归，新/扁平书默认 false）
+	chapters: Record<string, ChapterMeta>; // 键=复合键（见 chKey/parseChKey）
 	created_at: string;
 	updated_at: string;
 }
@@ -74,16 +86,37 @@ export function parseStateDoc(
 	const chapters: Record<string, ChapterMeta> = {};
 	if (o.chapters && typeof o.chapters === "object" && !Array.isArray(o.chapters)) {
 		for (const [k, v] of Object.entries(o.chapters as Record<string, unknown>)) {
-			const num = Number(k);
-			if (!Number.isInteger(num) || num <= 0) continue;
 			const meta = normalizeChapter(v);
-			if (meta) chapters[String(num)] = meta;
+			if (!meta) continue;
+			let key: string;
+			if (/^\d+$/.test(k)) {
+				// 旧格式纯数字键：按卷归属字段重映射（有卷→vol:N，无卷→根域 N）
+				key = chKey(meta.volume || null, Number(k));
+			} else if (/^[^:\s]+:\d+$/.test(k)) {
+				key = k; // 新格式复合键：键优先，回填/校正 volume 字段保持同源
+				meta.volume = parseChKey(k).vol || undefined;
+			} else {
+				continue;
+			}
+			chapters[key] = meta;
 		}
 	}
-	const cur = o.current_chapter == null ? NaN : Number(o.current_chapter);
+	// current_chapter：字符串=复合键直接校验存在；纯数字=旧格式，按 num 唯一匹配归一化
+	let cur: string | null = null;
+	const rawCur = o.current_chapter;
+	if (typeof rawCur === "string" && /^[^:\s]+:\d+$/.test(rawCur)) {
+		if (chapters[rawCur]) cur = rawCur;
+	} else if (typeof rawCur === "number" && Number.isInteger(rawCur) && rawCur > 0) {
+		const hits = Object.keys(chapters).filter((k) => parseChKey(k).num === rawCur);
+		cur = hits.length === 1 ? hits[0] : null;
+	} else if (typeof rawCur === "string" && /^\d+$/.test(rawCur)) {
+		const n = parseInt(rawCur, 10);
+		const hits = Object.keys(chapters).filter((k) => parseChKey(k).num === n);
+		cur = hits.length === 1 ? hits[0] : null;
+	}
 	const extraKeys = new Set([
 		"version", "title", "genre", "writing_style", "current_chapter", "current_scene",
-		"current_volume", "total_words", "use_summaries", "chapters", "created_at", "updated_at",
+		"current_volume", "total_words", "use_summaries", "use_volumes", "chapters", "created_at", "updated_at",
 	]);
 	const extra: Record<string, unknown> = {};
 	for (const [k, v] of Object.entries(o)) if (!extraKeys.has(k)) extra[k] = v;
@@ -93,11 +126,15 @@ export function parseStateDoc(
 			title: asStr(o.title),
 			genre: asStr(o.genre),
 			writing_style: asStr(o.writing_style),
-			current_chapter: Number.isFinite(cur) && cur > 0 ? Math.trunc(cur) : null,
+			current_chapter: cur,
 			current_scene: asStr(o.current_scene) || undefined,
 			current_volume: asStr(o.current_volume) || undefined,
 			total_words: Number(o.total_words) || 0,
 			use_summaries: Boolean(o.use_summaries),
+			// 缺省推断：显式布尔值优先；否则按「是否含卷数据」判定——存量有卷书判 true（防把现有有卷书误锁成无卷），新/扁平书默认 false（无卷模式）
+			use_volumes: typeof o.use_volumes === "boolean"
+				? (o.use_volumes as boolean)
+				: Object.keys(chapters).some((k) => parseChKey(k).vol != null) || !!asStr(o.current_volume),
 			chapters,
 			created_at: asStr(o.created_at),
 			updated_at: asStr(o.updated_at),
@@ -121,15 +158,27 @@ export function formatStateDoc(
 	if (state.current_volume) o["current_volume"] = state.current_volume;
 	o["total_words"] = state.total_words;
 	o["use_summaries"] = state.use_summaries;
+	o["use_volumes"] = state.use_volumes; // 恒显式写出，保存后行为确定（不再依赖缺省推断）
 	if (state.created_at) o["created_at"] = state.created_at;
 	if (state.updated_at) o["updated_at"] = state.updated_at;
 	const chapters: Record<string, unknown> = {};
-	for (const num of Object.keys(state.chapters).map(Number).sort((a, b) => a - b)) {
-		const meta = state.chapters[String(num)];
-		if (!meta) continue;
-		const c: Record<string, unknown> = { title: meta.title, words: meta.words };
-		if (meta.volume) c["volume"] = meta.volume;
-		chapters[String(num)] = c;
+	// 确定性排序：根域（按章号）在前，其余卷组按 id、组内按章号
+	const groups = new Map<string, number[]>();
+	for (const k of Object.keys(state.chapters)) {
+		const { vol, num } = parseChKey(k);
+		if (!Number.isInteger(num)) continue; // 允许 0（序章「第0章」合法存在）：丢弃会导致其 current_chapter/条目在保存后消失、激活不生效
+		const g = vol ?? "";
+		if (!groups.has(g)) groups.set(g, []);
+		groups.get(g)!.push(num);
+	}
+	for (const [g, nums] of [...groups.entries()].sort((a, b) => (a[0] === "" ? -1 : b[0] === "" ? 1 : a[0].localeCompare(b[0])))) {
+		nums.sort((x, y) => x - y).forEach((n) => {
+			const meta = state.chapters[chKey(g || null, n)];
+			if (!meta) return;
+			const c: Record<string, unknown> = { title: meta.title, words: meta.words };
+			if (meta.volume) c["volume"] = meta.volume;
+			chapters[chKey(g || null, n)] = c;
+		});
 	}
 	if (Object.keys(chapters).length) o["chapters"] = chapters;
 	if (opts?.extra) Object.assign(o, opts.extra);

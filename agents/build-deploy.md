@@ -1,9 +1,9 @@
 # 运行环境与构建部署
 
-- 构建：`npm run build` = `tsc -noEmit -skipLibCheck && node esbuild.config.mjs --production` → 产出完整可分发目录 **`release/`**（esbuild 打包出 `main.js`，并自动把手写的 `manifest.json`、`styles.css`、写作指南 `WRITING_GUIDE.md` 一并拷入；目录已自动创建），另同步一份 `dist/main.js`——社区插件目录校验器只在仓库根 / `dist` / `build` / `out` 查找构建产物 main.js（两目录均已 gitignore，不入库）
-- 打包：生成发布 zip（`articlewriter-v<版本号>.zip`）时把 `release/` 下全部文件整体压缩；**打包时，把写作指南也放进去**（`WRITING_GUIDE.md` 已由 esbuild.config.mjs 自动拷入 `release/`）
+- 构建：`npm run build` = `tsc -noEmit -skipLibCheck && node esbuild.config.mjs --production` → 产出完整可分发目录 **`release/`**（esbuild 打包出 `main.js`，并自动把手写的 `manifest.json`、`styles.css` 一并拷入；目录已自动创建），另同步一份 `dist/main.js`——社区插件目录校验器只在仓库根 / `dist` / `build` / `out` 查找构建产物 main.js（两目录均已 gitignore，不入库）
+- 打包：生成发布 zip（`articlewriter-v<版本号>.zip`）时把 `release/` 下全部文件整体压缩。**写作指南 `WRITING_GUIDE.md` 自本次起不再随包 / Release 发布**（已从 esbuild.config.mjs 的 release/ 拷贝清单移除）——其文本由 `.md=text` loader 内联进 main.js[见 src/system_guide_default.ts]、首启运行时播种系统级文件 `.obsidian/plugins/<id>/WRITING_GUIDE.md`；移出 release/ 同时让社区校验器「无额外不支持文件」检查通过。仓库根的源文档 WRITING_GUIDE.md 仍保留并提交（它是 `.md=text` 的唯一来源与可维护正文），只是不再作为分发资产
 - **任何代码改动后必须跑通 `npm run build`（tsc 零错误）**；可再 `node --check release/main.js` 做语法兜底
-- 部署：把 `release/` 下四个文件整体覆盖复制到 `/home/fosky/workspace/geng_bl/.obsidian/plugins/articlewriter/`，在 Obsidian 中重载插件生效
+- 部署：把 `release/` 下三个文件（`main.js`、`manifest.json`、`styles.css`）整体覆盖复制到 `/home/fosky/workspace/geng_bl/.obsidian/plugins/articlewriter/`，在 Obsidian 中重载插件生效。**注意**：deploy 不再覆盖该目录下已有的系统级 `WRITING_GUIDE.md`——它由运行时播种 / 「重新生成系统写作指南」命令维护，勿再随构建产物发布
 - Git：仓库远端为 Gitea `http://192.168.0.3:3000/geng_bl/articlewritter-obsidian.git`（分支 main）；`.gitignore` 排除 `node_modules/` 与 `/release/`——上传时只提交源码，不含依赖与编译产物
 - **代码提交、版本打包与发布上架的完整流程见 [RELEASE.md](./RELEASE.md)**（含版本号规则、GitHub 镜像 tag+CI 自动 Release 细节与实测坑位），执行"打包发布"类任务前先读该文件
 - **GitHub 镜像同步（强制）**：**每次向 Gitea 提交代码后，必须立即把改动文件同步到 GitHub 镜像并提交**——本地克隆在 `/home/fosky/workspace/articlewriter-obsidian-git`（SSH remote `git@github.com:gengbl/articlewriter-obsidian.git`；历史为工作树拷贝式独立提交、非本仓库 clone，不能直接 push 同一对象）。流程：主仓 commit+push 后 → 把本次改动的文件拷入该目录 → `git add <显式列出>` + **同消息** commit → `push origin main`。标签**无 v 前缀**（如 `0.0.9`，区别于 Gitea 的 `v0.0.9`），仅发布时打并推送。向该远端推新标签即触发 `.github/workflows/release.yml`（CI 从源码重建 + attestation 签名 + 自动创建/更新 Release，无需手动传附件）；细节与手动回落方案见 RELEASE.md「GitHub 镜像 Release」节
