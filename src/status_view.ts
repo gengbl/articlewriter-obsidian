@@ -1,5 +1,6 @@
 import { ItemView, TFile, WorkspaceLeaf } from "obsidian";
 import { formatLocalDateTime } from "./story_types";
+import { PROMPT_DOCS_CHAPTER, PROMPT_DOCS_ROOT, PROMPT_DOCS_VOLUME } from "./prompts";
 
 /** 状态页数据快照（main.ts 非交互读取构建；只含展示字段与 vault 相对路径） */
 export interface StatusFileEntry {
@@ -403,6 +404,10 @@ export class StatusView extends ItemView {
 		for (const f of docs) {
 			const el = list.createDiv({ cls: "aw-st-file" });
 			el.setText(f.name);
+			if (PROMPT_DOCS_VOLUME.has(f.name)) { // 参与写作提示词的卷级模板文档加粗区分（悬停有说明）
+				el.addClass("aw-st-pdoc");
+				el.setAttribute("title", "参与写作提示词生成");
+			}
 			el.addEventListener("click", (e) => {
 				e.stopPropagation(); // 点文件不触发所在卷行的开合
 				void this.openFile(f.path);
@@ -497,6 +502,10 @@ export class StatusView extends ItemView {
 	private appendFileRow(parent: HTMLElement, f: StatusFileEntry, ctx?: { story: string; key: string | null }): void {
 		const el = parent.createDiv({ cls: "aw-st-file" });
 		el.setText(f.name);
+		if (ctx && (ctx.key == null ? PROMPT_DOCS_ROOT : PROMPT_DOCS_CHAPTER).has(f.name)) { // 书根（案头资料）/章节目录：参与写作提示词的模板文档加粗区分（悬停有说明）
+			el.addClass("aw-st-pdoc");
+			el.setAttribute("title", "参与写作提示词生成");
+		}
 		el.addEventListener("click", (e) => {
 			e.stopPropagation(); // 点文件不触发所在章节行的激活
 			void this.openFile(f.path);

@@ -342,6 +342,12 @@
 	padding-left: 20px;
 }
 
+/* 参与写作提示词生成的模板文档文件名加粗区分（悬停 title 说明由视图侧设置） */
+.aw-st-pdoc {
+	font-weight: 700;
+	color: var(--text-normal);
+}
+
 /* 卷内「文档」命名头直接复用章节名行的 .aw-st-chap 类（同一显示风格，不重复定义样式）；层级缩进沿用外层 .aw-st-kids，其文件列表再嵌一层 .aw-st-kids 与章下文档对齐 */
 
 .aw-st-hint {

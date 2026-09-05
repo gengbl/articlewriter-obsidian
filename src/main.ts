@@ -2449,6 +2449,19 @@ export default class ArticleWriterPlugin extends Plugin {
 				return;
 			}
 			case "new-file": {
+				const target = a.key == null ? {} : { chKey: a.key }; // 书根（案头资料）或章节目录
+				const stds = await this.manager.standardDocs(a.story, target); // 标准模板文档优先列出（参与提示词者），已存在禁用
+				const items: ActionItem[] = [
+					...stds.map((s) => ({ label: s.name, sub: s.exists ? "已存在，未改动" : undefined, disabled: s.exists })),
+					{ label: "自定义文件名…" },
+				];
+				const idx = await this.pickAction(`新建${a.key == null ? "资料" : "文章"}（优先标准文档）`, items);
+				if (idx == null) return;
+				if (idx < stds.length) {
+					const created = await this.manager.ensureStandardDoc(a.story, target, stds[idx].name); // 按模板创建，已存在不覆盖
+					new Notice(created ? `已创建 ${stds[idx].name}（模板）` : `${stds[idx].name} 已存在，未改动`);
+					return;
+				}
 				let folder: string;
 				if (a.key == null) {
 					folder = this.manager.storyPath(a.story);
@@ -2481,6 +2494,19 @@ export default class ArticleWriterPlugin extends Plugin {
 				const vols = await this.manager.loadVolumes(a.story);
 				const vol = this.manager.findVolumeIn(vols, a.volId); // 按 id/名解析目标卷
 				if (!vol) throw new Error(`卷 ${a.volId} 不存在或已被删除`);
+				const target = { volId: vol.id };
+				const stds = await this.manager.standardDocs(a.story, target); // 设定四件套优先列出，已存在禁用
+				const items: ActionItem[] = [
+					...stds.map((s) => ({ label: s.name, sub: s.exists ? "已存在，未改动" : undefined, disabled: s.exists })),
+					{ label: "自定义文件名…" },
+				];
+				const idx = await this.pickAction(`在卷「${vol.name}」新建文档（优先标准文档）`, items);
+				if (idx == null) return;
+				if (idx < stds.length) {
+					const created = await this.manager.ensureStandardDoc(a.story, target, stds[idx].name); // 按模板创建，已存在不覆盖
+					new Notice(created ? `已在卷「${vol.name}」创建 ${stds[idx].name}（模板）` : `${stds[idx].name} 已存在，未改动`);
+					return;
+				}
 				const folder = `${this.manager.storyPath(a.story)}/${this.manager.volumeFolderName(vol)}`;
 				if (!(this.app.vault.getAbstractFileByPath(folder) instanceof TFolder)) throw new Error("该卷实体目录缺失，请先执行「按卷整理目录」");
 				const name = await this.prompt("新建文档", `在卷「${vol.name}」下创建 .md 文件名（留扩展名可自定义）`);

@@ -381,6 +381,58 @@ export class StoryManager {
 		return created;
 	}
 
+	/** 指定节点容器的标准模板文档清单+存在性（写字台「新建…文档/文章…」优先列出参与提示词的标准文档）：chKey=章节目录、volId=卷实体目录、皆无=书根——与各级播种同一来源 */
+	async standardDocs(storyName: string, target: { volId?: string; chKey?: string }): Promise<Array<{ name: string; exists: boolean }>> {
+		const dir = await this.standardDirOf(storyName, target);
+		return (await this.standardTemplateList(storyName, target)).map(([name]) => ({
+			name,
+			exists: !!this.vault.getAbstractFileByPath(`${dir}/${name}`),
+		}));
+	}
+
+	/** 在指定节点容器按模板创建一份缺失的标准文档（已存在保留不覆盖）；返回是否本次新建。非该级标准名则报错 */
+	async ensureStandardDoc(storyName: string, target: { volId?: string; chKey?: string }, fname: string): Promise<boolean> {
+		const list = await this.standardTemplateList(storyName, target);
+		const tpl = list.find(([n]) => n === fname)?.[1];
+		if (!tpl) throw new Error(`「${fname}」不是该级别的标准文档`);
+		const dir = await this.standardDirOf(storyName, target);
+		return (await this.ensureDoc(`${dir}/${fname}`, tpl)) === "created";
+	}
+
+	private async standardTemplateList(storyName: string, target: { volId?: string; chKey?: string }): Promise<Array<[string, string]>> {
+		if (target.chKey != null) {
+			const ch = await this.chapterDirOf(storyName, target.chKey);
+			if (!ch) throw new Error("章节不存在或已被删除");
+			return this.chapterDocTemplates(ch.num, ch.title);
+		}
+		if (target.volId != null) {
+			const vols = await this.loadVolumes(storyName);
+			const vol = this.findVolumeIn(vols, target.volId); // 按 id/名解析目标卷
+			if (!vol) throw new Error(`卷 ${target.volId} 不存在或已被删除`);
+			return this.volumeDocTemplates(vol);
+		}
+		const st = await this.loadState(storyName);
+		if (!st) throw new Error(`小说 ${storyName} 的状态文档缺失`);
+		return this.rootDocTemplates(this.bookTitle(storyName, st));
+	}
+
+	private async standardDirOf(storyName: string, target: { volId?: string; chKey?: string }): Promise<string> {
+		if (target.chKey != null) {
+			const ch = await this.chapterDirOf(storyName, target.chKey);
+			if (!ch) throw new Error("章节不存在或已被删除");
+			return ch.dir.path;
+		}
+		if (target.volId != null) {
+			const vols = await this.loadVolumes(storyName);
+			const vol = this.findVolumeIn(vols, target.volId); // 按 id/名解析目标卷
+			if (!vol) throw new Error(`卷 ${target.volId} 不存在或已被删除`);
+			const p = `${this.storyPath(storyName)}/${this.volumeFolderName(vol)}`;
+			if (!(this.vault.getAbstractFileByPath(p) instanceof TFolder)) throw new Error("该卷实体目录缺失，请先执行「按卷整理目录」");
+			return p;
+		}
+		return this.storyPath(storyName);
+	}
+
 	async listChapters(storyName: string): Promise<Array<{ key: string; num: number; title: string; dir: TFolder; vol?: string; parentPath: string }>> {
 		const folder = this.vault.getAbstractFileByPath(this.storyPath(storyName));
 		if (!folder || !(folder instanceof TFolder)) return [];
@@ -458,6 +510,18 @@ export class StoryManager {
 		return this.createChapterAt(storyName, num, title, volId);
 	}
 
+	/** 章节目录六件套模板清单（建章播种 / scan 补缺 / 写字台「新建文章…」优先列表同一来源） */
+	chapterDocTemplates(num: number, title: string): Array<[string, string]> {
+		return [
+			["章节.md", CHAPTER_BODY_TEMPLATE(num, title)],
+			["章节大纲.md", chapterOutlineTemplate(num, title)],
+			["人物.md", CHAPTER_CHARACTERS_TEMPLATE],
+			["人物关系.md", CHAPTER_RELATIONSHIPS_TEMPLATE],
+			["场景.md", CHAPTER_SCENES_TEMPLATE],
+			["章节信息.md", CHAPTER_INFO_TEMPLATE(num)],
+		];
+	}
+
 	private async createChapterAt(storyName: string, num: number, rawTitle: string, volId: string): Promise<string> {
 		const safe = safeFilename(rawTitle.trim() || `第${num}章`);
 		let base = this.storyPath(storyName);
@@ -471,15 +535,7 @@ export class StoryManager {
 			throw new Error(`章节目录已存在：${dirPath}`);
 		}
 		await this.createFolderPath(dirPath);
-		const docs: Array<[string, string]> = [
-			["章节.md", CHAPTER_BODY_TEMPLATE(num, safe)],
-			["章节大纲.md", chapterOutlineTemplate(num, safe)],
-			["人物.md", CHAPTER_CHARACTERS_TEMPLATE],
-			["人物关系.md", CHAPTER_RELATIONSHIPS_TEMPLATE],
-			["场景.md", CHAPTER_SCENES_TEMPLATE],
-			["章节信息.md", CHAPTER_INFO_TEMPLATE(num)],
-		];
-		for (const [fname, tpl] of docs) {
+		for (const [fname, tpl] of this.chapterDocTemplates(num, safe)) {
 			await this.ensureDoc(`${dirPath}/${fname}`, tpl);
 		}
 		const state = (await this.loadState(storyName)) ?? this.emptyState(storyName);
@@ -2178,15 +2234,7 @@ export class StoryManager {
 		const seen = new Set<string>(diskChapters.map((c) => c.key));
 		let volumeFixed = 0;
 		for (const ch of diskChapters) {
-			const dirDocs: Array<[string, string]> = [
-				["章节.md", CHAPTER_BODY_TEMPLATE(ch.num, ch.title)],
-				["章节大纲.md", chapterOutlineTemplate(ch.num, ch.title)],
-				["人物.md", CHAPTER_CHARACTERS_TEMPLATE],
-				["人物关系.md", CHAPTER_RELATIONSHIPS_TEMPLATE],
-				["场景.md", CHAPTER_SCENES_TEMPLATE],
-				["章节信息.md", CHAPTER_INFO_TEMPLATE(ch.num)],
-			];
-			for (const [fname, tpl] of dirDocs) {
+			for (const [fname, tpl] of this.chapterDocTemplates(ch.num, ch.title)) { // 与建章播种同一清单来源
 				if ((await this.ensureDoc(`${ch.dir.path}/${fname}`, tpl)) === "created") created++;
 			}
 			const info = doc.parseChapterInfo(await this.readDoc(`${ch.dir.path}/章节信息.md`));

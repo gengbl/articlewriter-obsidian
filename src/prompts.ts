@@ -396,6 +396,11 @@ export interface WritingContextInput {
 	includeOutline?: boolean;
 }
 
+/** 写字台展示口径：各级别中会进入写作提示词的模板文档文件名（story_manager.loadWritingData 的读取面）——写字台文件行对命中者加粗显示、新建文档时优先列出 */
+export const PROMPT_DOCS_ROOT = new Set(["大纲.md", "世界观.md", "伏笔.md", "人物.md", "人物关系.md", "角色关系.md", "场景.md"]); // 《笔记.md》《卷.md》《故事状态.md》不参与
+export const PROMPT_DOCS_VOLUME = new Set(["卷大纲.md", "人物.md", "人物关系.md", "场景.md"]); // 《卷摘要.md》仅在 includeVolumeSummary 开关开启时注入，默认不算
+export const PROMPT_DOCS_CHAPTER = new Set(["章节.md", "章节大纲.md", "人物.md", "人物关系.md", "场景.md", "章节信息.md"]); // 建章播种六件全部参与
+
 /** 复合键「N」或「volId:N」的展示标签 */
 export function chapterKeyLabel(key: string, volumeNames?: Record<string, string>): string {
 	const i = key.indexOf(":");
