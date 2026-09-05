@@ -555,7 +555,7 @@ export default class ArticleWriterPlugin extends Plugin {
 
 	// ---------- 交互辅助 ----------
 
-	private prompt(title: string, placeholder: string, hint?: string): Promise<string | null> { // v0.1.6+：可选 hint 渲染在输入框上方（详细说明），placeholder 只留极短占位
+	private prompt(title: string, placeholder: string, hint?: string, initial?: string): Promise<string | null> { // v0.1.6+：可选 hint 渲染在输入框上方（详细说明），placeholder 只留极短占位；initial 预填初始值（光标置末尾）
 		return new Promise((resolve) => {
 			new TextInputModal(
 				this.app,
@@ -563,7 +563,8 @@ export default class ArticleWriterPlugin extends Plugin {
 				placeholder,
 				(value) => resolve(value),
 				() => resolve(null),
-				hint
+				hint,
+				initial
 			).open();
 		});
 	}
@@ -2380,13 +2381,19 @@ export default class ArticleWriterPlugin extends Plugin {
 				return;
 			}
 			case "export-story": {
-				const specText = await this.prompt("导出书稿", "输入范围表达式（留空=整本）", [
-					"导出所选范围内全部章节的《章节.md》正文，按阅读序拼成一个 MD 文件：",
-					"· 留空 / all / 全部 —— 整本书（书根未归卷章节 + 各卷；有卷模式每个卷组前带「第N卷 · 卷名」标题行，无卷平铺不带）",
-					"· 区间 —— 如 3-7 或 三至七（容器内本地章号，自动升序）",
-					"· 列表 —— 如 1、4、5（逗号/顿号/空格分隔均可）",
-					"· 多卷可加卷名前缀限定范围，如 「风起 3-7」（卷名精确或唯一包含匹配）；裸号在多个容器都存在时会弹框让你选所在卷",
-				].join("\n"));
+				const fromVol = a.volName; // 从卷节点触发：弹窗带卷名、范围预填该卷名（直接回车=打该卷全章）
+				const specText = await this.prompt(
+					fromVol ? `打包章节全集（卷「${fromVol}」）` : "导出书稿",
+					fromVol ? "范围表达式（已预填当前卷名，直接回车=打该卷全部章节）" : "输入范围表达式（留空=整本）",
+					[
+						fromVol ? `输入框已预填卷名「${fromVol}」——直接回车即打包该卷全部章节；清空或改写为其他表达式后：` : "导出所选范围内全部章节的《章节.md》正文，按阅读序拼成一个 MD 文件：",
+						"· 留空 / all / 全部 —— 整本书（书根未归卷章节 + 各卷；有卷模式每个卷组前带「第N卷 · 卷名」标题行，无卷平铺不带）",
+						"· 区间 —— 如 3-7 或 三至七（容器内本地章号，自动升序）",
+						"· 列表 —— 如 1、4、5（逗号/顿号/空格分隔均可）",
+						"· 多卷可加卷名前缀限定范围，如 「风起 3-7」（卷名精确或唯一包含匹配）；裸号在多个容器都存在时会弹框让你选所在卷",
+					].join("\n"),
+					fromVol
+				);
 				if (specText == null) return;
 				const outText = await this.prompt("输出路径", "输出位置（留空用默认文件名）", [
 					"· 留空 —— 存到该小说目录下 <书名>-书稿.md（再次导出会覆盖同名文件）",

@@ -62,7 +62,7 @@ export type StatusAction =
 	| { kind: "delete-volume"; story: string; id: string } // 级联删除卷：其归属章节一并移入回收站（先弹确认框列明受影响章节）
 	| { kind: "activate-volume"; story: string; id: string } // 行尾 Radio 选中：设 current_volume 并跳到该卷最后一章（对齐 /volume use）
 	| { kind: "export-volume"; story: string; id: string } // 导出本卷合集：全部章节正文合一 MD（/pack 同款格式，默认 <书名>-<卷名>-合集.md）
-	| { kind: "export-story"; story: string } // 「书稿」小节标题右键「导出书稿…」：所选范围全部章节《章节.md》正文合一 MD（留空/all=整本；有卷模式输出含「第N卷 · 卷名」标题行），默认 <书名>-书稿.md
+	| { kind: "export-story"; story: string; volName?: string } // 「书稿」小节标题右键「导出书稿…」/卷名节点右键「打包章节全集…」：所选范围全部章节《章节.md》正文合一 MD（留空/all=整本；有卷模式输出含「第N卷 · 卷名」标题行），默认 <书名>-书稿.md。volName=从哪个卷节点触发——弹窗标题带该卷名、范围输入框预填该卷名（直接回车=打该卷全章）
 	| { kind: "rename-chapter"; story: string; key: string } // 改写章名：重命名目录并同步文档引用（对齐 /chapter rename）；key=复合键
 	| { kind: "delete-chapter"; story: string; key: string }
 	| { kind: "new-file"; story: string; key: string | null } // key=null → 书根目录；否则该章节目录
@@ -333,7 +333,7 @@ export class StatusView extends ItemView {
 			{ label: "新建卷…", run: () => this.runStatusAction({ kind: "create-volume", story: d.storyName }) },
 			{ sep: true },
 			{ label: "重命名本卷…", run: () => this.runStatusAction({ kind: "rename-volume", story: d.storyName, id: v.id }) },
-			{ label: "打包章节全集…", run: () => this.runStatusAction({ kind: "export-story", story: d.storyName }) }, // 整书口径（留空=all=整本），与「书稿」小节标题的「导出书稿…」同义；置于「导出本卷合集…」之上形成 全/单卷 对照
+			{ label: "打包章节全集…", run: () => this.runStatusAction({ kind: "export-story", story: d.storyName, volName: v.name }) }, // 弹窗带该卷名并预填范围输入框（直接回车=打该卷全章，清空=all=整本）；置于「导出本卷合集…」之上形成 全/单卷 对照
 			{ label: "导出本卷合集…", run: () => this.runStatusAction({ kind: "export-volume", story: d.storyName, id: v.id }) }, // 空卷由 manager 报错提示先整理归位
 			{ label: `删除本卷「${v.name}」（级联删其 ${String(chs.length)} 章）`, danger: true, run: () => this.runStatusAction({ kind: "delete-volume", story: d.storyName, id: v.id }) },
 		];

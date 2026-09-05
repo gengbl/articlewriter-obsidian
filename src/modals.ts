@@ -1,6 +1,6 @@
 import { App, Component, MarkdownRenderer, Modal, SuggestModal, Setting, TFolder } from "obsidian";
 
-/** 单行文本输入框；提交回调收到值（空串视为取消）。可选 hint：渲染在标题与输入框之间的说明文字（支持 \n 多行，样式 .aw-prompt-hint） */
+/** 单行文本输入框；提交回调收到值（空串视为取消）。可选 hint：渲染在标题与输入框之间的说明文字（支持 \n 多行，样式 .aw-prompt-hint）；可选 initial：预填初始值（光标置于末尾） */
 export class TextInputModal extends Modal {
 	private submitted = false;
 
@@ -10,7 +10,8 @@ export class TextInputModal extends Modal {
 		private placeholderText: string,
 		private onSubmit: (value: string) => void | Promise<void>,
 		private onCancel?: () => void,
-		private hintText?: string
+		private hintText?: string,
+		private initialText?: string
 	) {
 		super(app);
 	}
@@ -20,7 +21,9 @@ export class TextInputModal extends Modal {
 		if (this.hintText) this.contentEl.createDiv({ text: this.hintText, cls: "aw-prompt-hint" }); // v0.1.6+：详细说明放输入框上方（原仅占位符提示、易被忽略）
 		new Setting(this.contentEl).addText((text) => {
 			text.setPlaceholder(this.placeholderText);
+			if (this.initialText) text.inputEl.value = this.initialText; // 预填（如卷节点「打包章节全集…」带当前卷名），回车即按预填值提交
 			text.inputEl.focus();
+			window.setTimeout(() => { const n = text.inputEl.value.length; text.inputEl.setSelectionRange(n, n); }, 0); // 光标置末尾，避免选中态误删预填内容
 			text.inputEl.addEventListener("keydown", (e) => {
 				if (e.key === "Enter") {
 					e.preventDefault();
