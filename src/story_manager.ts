@@ -2017,13 +2017,13 @@ export class StoryManager {
 		return this.writePackFile(this.storyPath(storyName), fileName, outputPath, await this.buildPackParts(chapters));
 	}
 
-	/** 导出书稿（写字台「书稿」小节标题右键 / 卷节点「打包章节全集…」）：所选范围全部章节《章节.md》正文合一 MD，阅读序排列。spec 语义同 /pack（留空/all/全部=整本——不回落 current_volume、区别于 /pack；支持卷名前缀+区间/列表）。有卷模式按容器装配：**每个卷组前都带「# 第N卷 · 卷名」标题行，无章的空卷也照样输出其卷名行**（卷号按《卷.md》order 序号），书根未归卷章节排最前不带标题；无卷模式（use_volumes===false）平铺不带任何卷标题。**默认文件名按口径区分**：限定某卷=`<书名>-<卷名>-范围.md`（范围取实际有正文章节号：单章 第N章／连续 第X-Y章／离散 第1、4、5章），整本或书根域=`<书名>-书稿.md`；重导覆盖同名文件 */
+	/** 导出书稿/卷节点「导出…」共用引擎：所选范围全部章节《章节.md》正文合一 MD，阅读序排列。spec 语义同 /pack——**未锁卷**（forcedVolId===undefined）时留空/all/全部=整本（不回落 current_volume、区别于 /pack；支持卷名前缀+区间/列表）；**锁定某卷**（forcedVolId!==undefined）时留空/all=该卷全部章节、区间/列表按该卷本地号解析（无歧义）。有卷模式按容器装配：**每个卷组前都带「# 第N卷 · 卷名」标题行，无章的空卷也照样输出其卷名行**（卷号按《卷.md》order 序号），书根未归卷章节排最前不带标题；无卷模式（use_volumes===false）平铺不带任何卷标题。**默认文件名按口径区分**：限定某卷=`<书名>-<卷名>-范围.md`（范围取实际有正文章节号：单章 第N章／连续 第X-Y章／离散 第1、4、5章），整本或书根域=`<书名>-书稿.md`；重导覆盖同名文件 */
 	async packStory(storyName: string, spec: string, forcedVolId?: string | null, outputPath = "") {
 		const expr = String(spec ?? "").trim();
-		if (!expr || /^(all|全部)$/i.test(expr)) {
+		if (forcedVolId === undefined && (!expr || /^(all|全部)$/i.test(expr))) {
 			return this.packStoryByKeys(storyName, (await this.listChapters(storyName)).map((c) => c.key), { whole: true }, outputPath); // 整本（含书根未归卷 + 各卷，空卷亦出卷名行）
 		}
-		const res = await this.resolvePackSelection(storyName, expr, forcedVolId);
+		const res = await this.resolvePackSelection(storyName, expr, forcedVolId); // 锁卷时留空/all=该卷全章
 		if ("ambiguous" in res) throw new Error("PACK_AMBIGUOUS_CONTAINER"); // 调用方应 pickAction 选容器后以 forcedVolId 重入
 		return this.packStoryByKeys(storyName, res.keys, { whole: false, volId: res.volId ?? "" }, outputPath); // ""=书根容器
 	}

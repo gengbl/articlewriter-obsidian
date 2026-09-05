@@ -2367,33 +2367,27 @@ export default class ArticleWriterPlugin extends Plugin {
 				const vols = await this.manager.volumeList(a.story);
 				const vol = vols.find((v) => v.id === a.id);
 				if (!vol) throw new Error(`卷 ${a.id} 不存在或已被删除`);
-				const outText = await this.prompt(`导出卷「${vol.name}」`, "输出位置（留空用默认文件名）", [
-				"将该卷全部章节的《章节.md》正文合一 MD（按章序排列），输出路径规则：",
-				"· 留空 —— 存到该小说目录下 <书名>-<卷名>-合集.md（再次导出会覆盖同名文件）",
-				"· 以 .md 结尾 —— 视为完整文件名，原样使用",
-				"· 其他 —— 视为目标目录，自动拼上默认文件名 <书名>-<卷名>-合集.md",
-			].join("\n"));
-				if (outText == null) return;
-				const r = await this.manager.packVolume(a.story, vol.id, outText.trim());
+				const specText = await this.prompt(`导出（卷「${vol.name}」）`, "输入范围表达式（留空/all=该卷全部章节）", [
+					"将该卷内所选范围的《章节.md》正文合一 MD，按章序排列、文件首行带本卷标题；默认存 <书名>-<卷名>-范围.md（不支持自定义文件名/路径，重导覆盖同名文件）。范围写法：",
+					"· 留空 / all / 全部 —— 该卷全部章节",
+					"· 区间 —— 如 3-7 或 三至七（该卷内本地章号，自动升序去重）",
+					"· 列表 —— 如 1、4、5（顿号/逗号/空格分隔均可）",
+				].join("\n"));
+				if (specText == null) return;
+				const r = await this.manager.packStory(a.story, specText.trim(), vol.id, ""); // 锁定本卷：留空=all 即该卷全章；默认名 <书名>-<卷名>-范围.md
 				const words = r.packed.reduce((s, p) => s + p.words, 0);
 				new Notice(`已生成 ${r.path}（共 ${r.packed.length} 章，纯文字 ${words} 字${r.skipped.length ? `；跳过无正文：${r.skipped.map((n) => this.chapterLabel(n)).join("、")}` : ""}`, 8000);
 				await this.manager.openMarkdown(r.path);
 				return;
 			}
 			case "export-story": {
-				const fromVol = a.volName; // 从卷节点触发：弹窗带卷名、范围预填该卷名（直接回车=打该卷全章）
-				const specText = await this.prompt(
-					fromVol ? `打包章节全集（卷「${fromVol}」）` : "导出书稿",
-					fromVol ? "范围表达式（已预填当前卷名，直接回车=打该卷全部章节）" : "输入范围表达式（留空=整本）",
-					[
-						fromVol ? `输入框已预填卷名「${fromVol}」——直接回车即打包该卷全部章节；清空或改写为其他表达式后：` : "导出所选范围内全部章节的《章节.md》正文，按阅读序拼成一个 MD 文件：",
-						"· 留空 / all / 全部 —— 整本书（书根未归卷章节 + 各卷；有卷模式每个卷组前带「第N卷 · 卷名」标题行，无卷平铺不带）",
-						"· 区间 —— 如 3-7 或 三至七（容器内本地章号，自动升序）",
-						"· 列表 —— 如 1、4、5（逗号/顿号/空格分隔均可）",
-						"· 多卷可加卷名前缀限定范围，如 「风起 3-7」（卷名精确或唯一包含匹配）；裸号在多个容器都存在时会弹框让你选所在卷",
-					].join("\n"),
-					fromVol
-				);
+				const specText = await this.prompt("导出书稿", "输入范围表达式（留空/all=整本）", [
+					"将所选范围内全部章节的《章节.md》正文合一 MD，阅读序排列。有卷模式每个卷组前带「# 第N卷 · 卷名」标题行（无章的空卷也照样输出其卷名），无卷模式平铺不带；章标题行为「## 第N章 章节名」。范围写法：",
+					"· 留空 / all / 全部 —— 整本（含书根未归卷 + 各卷）",
+					"· 区间 —— 如 3-7 或 三至七（自动升序去重；多卷书可加卷名前缀限定，如 风起:3-7、第一卷,2-5）",
+					"· 列表 —— 如 1、4、5（顿号/逗号/空格分隔均可）",
+					"· 裸号跨多个卷重名时会弹选择器让你选所在卷",
+				].join("\n"));
 				if (specText == null) return;
 				const outText = await this.prompt("输出路径", "输出位置（留空用默认文件名）", [
 					"· 留空 —— 限定某卷时存到该小说目录下 <书名>-<卷名>-范围.md（如 <书名>-风起-第3-7章.md；单章为 -第N章、离散号为 -第1、4、5章），整本/书根域为 <书名>-书稿.md（重导覆盖同名文件）",

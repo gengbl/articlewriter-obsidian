@@ -21,7 +21,7 @@ export class TextInputModal extends Modal {
 		if (this.hintText) this.contentEl.createDiv({ text: this.hintText, cls: "aw-prompt-hint" }); // v0.1.6+：详细说明放输入框上方（原仅占位符提示、易被忽略）
 		new Setting(this.contentEl).addText((text) => {
 			text.setPlaceholder(this.placeholderText);
-			if (this.initialText) text.inputEl.value = this.initialText; // 预填（如卷节点「打包章节全集…」带当前卷名），回车即按预填值提交
+			if (this.initialText) text.inputEl.value = this.initialText; // 预填（可选；回车即按预填值提交）
 			text.inputEl.focus();
 			window.setTimeout(() => { const n = text.inputEl.value.length; text.inputEl.setSelectionRange(n, n); }, 0); // 光标置末尾，避免选中态误删预填内容
 			text.inputEl.addEventListener("keydown", (e) => {
