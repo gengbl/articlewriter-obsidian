@@ -1,6 +1,6 @@
 import { App, Component, MarkdownRenderer, Modal, SuggestModal, Setting, TFolder } from "obsidian";
 
-/** 单行文本输入框；提交回调收到值（空串视为取消） */
+/** 单行文本输入框；提交回调收到值（空串视为取消）。可选 hint：渲染在标题与输入框之间的说明文字（支持 \n 多行，样式 .aw-prompt-hint） */
 export class TextInputModal extends Modal {
 	private submitted = false;
 
@@ -9,13 +9,15 @@ export class TextInputModal extends Modal {
 		private title: string,
 		private placeholderText: string,
 		private onSubmit: (value: string) => void | Promise<void>,
-		private onCancel?: () => void
+		private onCancel?: () => void,
+		private hintText?: string
 	) {
 		super(app);
 	}
 
 	onOpen(): void {
 		this.contentEl.createEl("h3", { text: this.title });
+		if (this.hintText) this.contentEl.createDiv({ text: this.hintText, cls: "aw-prompt-hint" }); // v0.1.6+：详细说明放输入框上方（原仅占位符提示、易被忽略）
 		new Setting(this.contentEl).addText((text) => {
 			text.setPlaceholder(this.placeholderText);
 			text.inputEl.focus();

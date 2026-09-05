@@ -3,6 +3,15 @@
 	margin-left: 0.5em;
 }
 
+/* 输入弹窗标题与输入框之间的说明文字（TextInputModal hint，支持多行） */
+.aw-prompt-hint {
+	color: var(--text-muted);
+	font-size: 0.9em;
+	line-height: 1.6;
+	white-space: pre-line;
+	margin: 2px 0 8px;
+}
+
 /* LLM 对话窗口 */
 .aw-chat-body {
 	max-height: 58vh;

@@ -101,3 +101,5 @@
 - 2026-09-05：写字台案头资料组右键项「新建文章…」更名「新建资料…」（书根目录建资料文件；对应 prompt 标题随入口区分——书根=新建资料、章节目录内仍为新建文章）。
 
 - 2026-09-05：写字台「书稿」小节标题右键新增「导出书稿…」——所选范围全部章节《章节.md》正文按阅读序合一 MD（留空/all=整本〔不回落 current_volume，区别于 /pack〕、区间/列表/卷名前缀支持、裸号跨容器弹选卷后重入）；有卷模式每卷组前贴「# 第N卷 · 卷名」H1 标题行（卷号按《卷.md》order 序号）、无卷平铺不带；默认输出 <书名>-书稿.md（重导覆盖）。manager 新增 packStory/packStoryByKeys；docs/使用说明 + agents/ui-conventions·code-structure 同步。
+
+- 2026-09-05：导出书稿两问弹窗的用法说明移至输入框上方并细化（TextInputModal 增可选 hintText 第 6 参→`.aw-prompt-hint` muted 多行样式，main.ts prompt() 第 3 参透传，placeholder 只留极短占位）；装配改按容器遍历——有卷模式下**无章的空卷也照样输出其「第N卷 · 卷名」标题行**，use_volumes===false 一律平铺不带任何卷标题。
