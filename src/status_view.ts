@@ -273,9 +273,9 @@ export class StatusView extends ItemView {
 	/** 「案头资料」「书稿」两个小节；isActive=该书是否为当前激活小说（仅其下章节/卷可被 Radio 选中激活）。书稿小节按归属卷渲染为树节点（卷名行 + 缩进章节），未归属章节平铺兜底 */
 	private renderStorySections(parent: HTMLElement, d: StatusDetail, isActive: boolean): void {
 		if (d.globalFiles.length) {
-			// 案头资料分组：标题行与组内空白右键仅「书根目录新建文章」（v0.1.6+：不再提供新建章节/新建卷——建章在书稿具体章节/卷节点上、建卷在书籍列表标题行或书稿小节标题）
+			// 案头资料分组：标题行与组内空白右键仅「书根目录新建资料」（v0.1.6+：不再提供新建章节/新建卷——建章在书稿具体章节/卷节点上、建卷在书籍列表标题行或书稿小节标题）
 			const gItems = (): Array<{ label: string; run: () => void } | { sep: true }> => [
-				{ label: "新建文章…", run: () => this.runStatusAction({ kind: "new-file", story: d.storyName, key: null }) },
+				{ label: "新建资料…", run: () => this.runStatusAction({ kind: "new-file", story: d.storyName, key: null }) },
 			];
 			const gBody = this.sectionHead(parent, `案头资料（${String(d.globalFiles.length)}）`, `gdocs:${d.storyName}`, (e) => this.showContextMenu(e, gItems()));
 			if (gBody) {

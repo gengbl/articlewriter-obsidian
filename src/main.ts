@@ -2395,7 +2395,7 @@ export default class ArticleWriterPlugin extends Plugin {
 					if (!ch) throw new Error(`第${parseChKey(a.key).num}章不存在`);
 					folder = ch.dir.path;
 				}
-				const name = await this.prompt("新建文章", `在${a.key == null ? "书根目录" : "该章节目录"}下创建 .md 文件名（留扩展名可自定义）`);
+				const name = await this.prompt(a.key == null ? "新建资料" : "新建文章", `在${a.key == null ? "书根目录（案头资料）" : "该章节目录"}下创建 .md 文件名（留扩展名可自定义）`); // v0.1.6+：书根入口文案与「新建资料…」菜单项一致，章节目录内仍为「新建文章」
 				if (name == null || !name.trim()) return;
 				let base = safeFilename(name.trim());
 				if (!base.toLowerCase().endsWith(".md")) base += ".md";
