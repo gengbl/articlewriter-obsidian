@@ -91,7 +91,7 @@ export default class ArticleWriterPlugin extends Plugin {
 					return null;
 				}
 			},
-			onProgress: (msg) => this.notifyGenProgress(msg), // v0.1.4+：延迟生成的进度反馈（持久 Notice + 空闲超时兜底）
+			onProgress: (msg) => { void this.notifyGenProgress(msg); }, // v0.1.4+：延迟生成的进度反馈（持久 Notice + 空闲超时兜底）；回调契约为 void，显式丢弃 Promise
 		});
 		await this.ensureSystemGuideFile(); // 首次运行把系统级写作指南从 data.json/内置默认播种到插件数据目录文件
 		void this.ensureUsageDocOnStartup(); // 工作目录已设且《使用说明.md》缺失时：自动生成并打开（首跑引导）；真·首启无工作目录则等 pickWorkDir 投放
