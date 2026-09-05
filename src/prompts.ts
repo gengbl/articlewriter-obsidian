@@ -384,6 +384,7 @@ export interface WritingContextInput {
 	excludeCharNames?: string[]; // 本章目录《人物.md》归属角色名——folderDocs【本章人物设定】已全文渲染，结构化列表排除避免重复
 	excludeSceneIds?: string[]; // 本章目录《场景.md》归属场景 id——同上
 	volSummary?: string; // 最新卷摘要（<volDir>/卷摘要.md 内容哈希校验通过时非空）
+	prevVolSummaries?: Array<{ name: string; text: string }>; // v0.1.4+：前文窗口跨卷缺口——以最近各前卷的新鲜《卷摘要》填充（仅卷模式、本卷内不足 prevN 章时出现，按阅读序由近及远）
 	prevChapters: PrevChapterRef[];
 	summaries: Record<number, string>;
 	prevN?: number;
@@ -479,22 +480,32 @@ export function buildWritingContext(input: WritingContextInput): string {
 	renderCharBlock("【书籍角色设定】", bookChars);
 	if (bookRel) parts.push(`\n【书籍人物关系】\n${bookRel}`);
 
+	// v0.1.4+：前文窗口跨卷缺口——本卷内不足 prevN 章时以最近各前卷《卷摘要》填充（由近及远），不拉取他卷章节细节
+	if ((input.prevN ?? 3) > 0 && (input.chapterNum > 1) && (input.prevVolSummaries?.length)) {
+		for (const pv of input.prevVolSummaries) parts.push(`\n【前卷摘要 · ${pv.name}】\n${pv.text}`);
+	}
+
 	const prevN = input.prevN ?? 3;
 	if (input.chapterNum > 1 && prevN > 0) {
-		const startChap = Math.max(1, input.chapterNum - prevN);
 		const labelAt = (i: number): string => input.prevChapters.find((p) => p.num === i)?.label || `第${i}章`;
-		parts.push(`\n【前文内容】（${labelAt(startChap)}至${labelAt(input.chapterNum - 1)}）`);
-		for (let i = startChap; i < input.chapterNum; i++) {
-			const prev = input.prevChapters.find((p) => p.num === i);
-			if (!prev || !prev.content) continue;
-			const summary = ((input.summaries[i] || "")).trim();
-			parts.push(`\n--- ${labelAt(i)} ${prev.title || ""} ---`);
-			if (summary) {
-				parts.push(`[摘要] ${summary}`);
-			} else {
-				const preview = prev.content.slice(0, 500);
-				parts.push(preview);
-				if (prev.content.length > 500) parts.push("[...内容省略...]");
+		// v0.1.4+：窗口可能因跨卷限制/空章出现缺口——标题与遍历范围按实际收录章节的 min/max ordinal，缺位自动跳过
+		const present = input.prevChapters.filter((p) => p.content.trim());
+		if (present.length) {
+			const first = Math.min(...present.map((p) => p.num));
+			const last = Math.max(...present.map((p) => p.num));
+			parts.push(`\n【前文内容】（${labelAt(first)}至${labelAt(last)}）`);
+			for (let i = first; i <= last; i++) {
+				const prev = input.prevChapters.find((p) => p.num === i);
+				if (!prev || !prev.content) continue;
+				const summary = ((input.summaries[i] || "")).trim();
+				parts.push(`\n--- ${labelAt(i)} ${prev.title || ""} ---`);
+				if (summary) {
+					parts.push(`[摘要] ${summary}`);
+				} else {
+					const preview = prev.content.slice(0, 500);
+					parts.push(preview);
+					if (prev.content.length > 500) parts.push("[...内容省略...]");
+				}
 			}
 		}
 	}
@@ -816,29 +827,45 @@ ${input.userInstruction ? `【续写要求】${input.userInstruction}` : "请按
 
 // ---------- 卷摘要（v0.0.15+：随章节增加自动增量提取；插件特有，CLI 无对应概念） ----------
 
-export const VOL_SUMMARY_SYSTEM_PROMPT = "你是小说创作助理，负责维护整卷的滚动卷级摘要。";
+export const VOL_SUMMARY_SYSTEM_PROMPT = "你是小说创作助理，负责依据整卷各章节的摘要生成完整的卷级摘要。";
 
-export interface VolumeSummaryInput {
-	volumeName: string;
-	existingSummary?: string; // 现有卷摘要（缺失/过期时为空）
-	chapterLabel: string; // 本卷最新章节展示标签
-	chapterText: string; // 该章 AI 摘要优先，否则正文节选
+export interface VolRebuildChapterLine {
+	label: string; // 展示标签（含卷名前缀），如「第2卷·第3章」
+	title?: string; // 章节标题
+	summary: string; // 该章 AI 摘要文本
 }
 
-/** 卷摘要增量更新：把现有滚动摘要与最新章节信息合并为新的卷摘要 */
-export function buildVolumeSummaryPrompt(input: VolumeSummaryInput): string {
-	return `请把「${input.volumeName}」现有的卷摘要与最新章节信息合并，更新为一份新的卷摘要。要求：
-- 保留仍然有效的既有情节脉络、人物状态变化、伏笔与悬念
-- 并入新章的关键情节、人物处境/情绪/关系变化、新增设定或线索
+/** v0.1.4+ 卷摘要全量重建提示词——以本卷全部成员章的新鲜 AI 摘要为唯一输入按阅读序重建（取代旧「最新章节增量合并」滚动法：多轮有损压缩会丢失早期章节信息）。上下文组装时延迟触发 */
+export function buildVolRebuildPrompt(volumeName: string, chapterLines: Array<VolRebuildChapterLine>): string {
+	const blocks = chapterLines.map((c) => `--- ${c.label}${c.title ? ` ${c.title}` : ""} ---\n${c.summary}`).join("\n\n");
+	return `请根据下面「${volumeName}」全部 ${chapterLines.length} 个章节的摘要（按阅读顺序排列），为该卷生成一份完整的卷级摘要。要求：
+- 完整覆盖全卷情节主线与关键转折，不要遗漏任何一章的核心事件
+- 梳理主要人物在全卷中的状态/关系变化轨迹（从开卷到当前）
+- 保留本卷尚未回收的伏笔与悬念
 - 控制在 400~600 字；只保留对后续创作有用的信息
 直接输出新的卷摘要正文，不要标题、解释或任何格式标记。
 
-【现有卷摘要】
-${(input.existingSummary || "").trim() || "（暂无）"}
+【各章摘要 · 阅读序】
+${blocks}`;
+}
 
-【本卷最新章节】${input.chapterLabel}
+// ---------- 章节摘要（对齐 CLI writer.py _summarize_chapter：正文写盘后/上下文组装时缺失即生成，落 <章目录>/章节摘要.md）----------
+
+export const CHAPTER_SUMMARY_SYSTEM_PROMPT = "你是小说创作助理，负责为小说章节提炼简洁、信息完整的摘要。";
+
+/** 章节摘要生成提示词（逐字对齐 CLI `_summarize_chapter`；无正文时按大纲概括并加标注） */
+export function buildChapterSummaryPrompt(chapterLabel: string, sourceText: string, viaOutline?: boolean): string {
+	return `请把下面这章小说压缩成 200~300 字的章节摘要，只保留对后续创作有用的信息：
+- 关键情节：本章发生了什么事，章末落点是什么
+- 人物状态：出场角色的处境、情绪、关系变化
+- 伏笔与悬念：埋下的伏笔、未解决的悬念
+- 新增信息：揭示的世界观、设定或线索
+
+直接输出摘要正文，不要标题、不要解释、不要任何格式标记。
+
+章节：${chapterLabel}${viaOutline ? "（暂无正文，依据本章大纲概括）" : ""}
 ---
-${input.chapterText}`;
+${sourceText}`;
 }
 
 // ---------- /rewrite 重写提示词（对应 writer.py rewrite_chapter 的 f-string） ----------
@@ -1184,19 +1211,78 @@ export function buildEmptyGuideTemplate(src: string): string {
 export const AGG_TITLE = "# 写作指南汇总";
 
 /**
+ * 把正文里「空指示段」（标题之下到下一个同级/更高级标题之间没有任何内容行的 Markdown 小节）
+ * 整体注释掉，并在连续成片的空段上方加一行提示注释——引导用户去 WRITING_GUIDE.md 填写；
+ * 注入提示词前 stripComments 会剥掉全部 HTML 注释，故这些段落不参与生成。
+ * - 代码围栏（``` / ~~~）内的 # 行不当标题；水平线（---/***）不算内容
+ * - 父节为空时整块（含其下嵌套子标题）一次注释，不逐个子节重复提示
+ */
+export function commentOutEmptySections(text: string): string {
+	const lines = String(text || "").split("\n");
+	const n = lines.length;
+	const levelAt: number[] = [];
+	let fence = false;
+	for (let i = 0; i < n; i++) {
+		levelAt[i] = 0;
+		const t = lines[i].trim();
+		if (/^(`{3,}|~{3,})/.test(t)) { fence = !fence; continue; } // 围栏开关行本身也不参与判定
+		if (!fence) {
+			const m = /^(#{1,6})(?:\s|$)/.exec(t);
+			if (m) levelAt[i] = m[1].length;
+		}
+	}
+	const HR_RE = /^(?:-{3,}|\*{3,}|_{3,})$/;
+	const endOf = (i: number): number => { // 小节范围 [i, end)，止于下一个同级或更高级标题
+		const lv = levelAt[i];
+		for (let j = i + 1; j < n; j++) if (levelAt[j] > 0 && levelAt[j] <= lv) return j;
+		return n;
+	};
+	const hasContent = (a: number, b: number): boolean => {
+		for (let k = a + 1; k < b; k++) {
+			const t = lines[k].trim();
+			if (!t || levelAt[k] > 0 || HR_RE.test(t)) continue;
+			return true;
+		}
+		return false;
+	};
+	type Claim = { start: number; end: number };
+	const claims: Claim[] = [];
+	let claimedEnd = -1;
+	for (let i = 0; i < n; i++) {
+		if (!levelAt[i] || i < claimedEnd) continue; // 已被空父节整块注释的嵌套子标题跳过
+		const e = endOf(i);
+		if (!hasContent(i, e)) {
+			const prev = claims[claims.length - 1];
+			if (prev && prev.end === i) prev.end = e; // 相邻空段合并成一片，共用一条提示
+			else claims.push({ start: i, end: e });
+			claimedEnd = e;
+		}
+	}
+	const HINT = "<!-- 以下段落暂无内容：请在 WRITING_GUIDE.md（小说级/用户级）对应章节填入写作要求；保存后本汇总自动刷新，这些段落即参与提示词生成 -->";
+	for (let c = claims.length - 1; c >= 0; c--) {
+		const cl = claims[c];
+		const body = lines.slice(cl.start, cl.end).join("\n").replace(/\s+$/, ""); // 去掉尾随空行再包注释
+		lines.splice(cl.start, cl.end - cl.start, HINT, "<!--", body, "-->");
+	}
+	return lines.join("\n");
+}
+
+/**
  * 把 mergeGuideCategories 的合并结果序列化为可再次解析的 MD：通用内容裸放，其余分类用
  * 「<!-- 写作指南分类:X -->…<!-- /写作指南分类 -->」包裹——与三层原格式一致，喂回
  * extractGuideCategories/mergeGuideCategories 即幂等。空分类不输出对应块。
+ * 各分类先经 commentOutEmptySections：空指示段整体转 HTML 注释并在上方加填写提示
+ * （注入前 stripComments 剥掉，不参与提示词）。
  */
 export function serializeAggregateGuide(m: Record<string, string>): string {
 	const parts: string[] = [];
-	const general = String(m["通用"] || "").trim();
+	const general = commentOutEmptySections(String(m["通用"] || "")).trim();
 	if (general) parts.push(general);
 	for (const name of ["故事风格", "个人特色"]) {
-		const v = String(m[name] || "").trim();
+		const v = commentOutEmptySections(String(m[name] || "")).trim();
 		if (v) parts.push(`<!-- 写作指南分类:${name} -->\n${v}\n<!-- /写作指南分类 -->`);
 	}
-	const banned = String(m["禁用词"] || "").trim();
+	const banned = commentOutEmptySections(String(m["禁用词"] || "")).trim();
 	if (banned) parts.push(`<!-- 写作指南分类:禁用词 -->\n${banned}\n<!-- /写作指南分类 -->`);
 	return AGG_TITLE + "\n\n" + parts.join("\n\n") + "\n";
 }

@@ -174,9 +174,8 @@
 	padding-bottom: 2px;
 }
 
-/* 「全局文档」「章节」小节标题：正常字重（不加粗） */
+/* 「案头资料」「书稿」小节标题的纵向间距辅助——文字/交互样式全部来自复用的卷名行类 .aw-st-vol，不另定义字体 */
 .aw-st-subsection {
-	font-weight: 400;
 	margin: 6px 0 2px;
 }
 
@@ -334,19 +333,7 @@
 	padding-left: 20px;
 }
 
-/* v0.1.3+：卷内「文档」命名头——字体与章节名行(.aw-st-chap)完全一致（默认字号字色、无额外水平内边距，文字起点与之对齐），仅加指针光标与悬停高亮提示可点；层级缩进沿用外层 .aw-st-kids，其文件列表再嵌一层 .aw-st-kids 与章下文档对齐 */
-.aw-st-vol-dochead {
-	cursor: pointer;
-	user-select: none;
-	padding-top: 3px;
-	padding-bottom: 3px;
-	/* v0.1.3+：实测该命名头比同层章节名行(.aw-st-chap)靠左约一个 caret 宽，补等量左内边距使标签列与章节名对齐（待用户复核后可再微调） */
-	padding-left: 1em;
-}
-.aw-st-vol-dochead:hover {
-	background: rgba(128, 128, 128, 0.16);
-	border-radius: 4px;
-}
+/* 卷内「文档」命名头直接复用章节名行的 .aw-st-chap 类（同一显示风格，不重复定义样式）；层级缩进沿用外层 .aw-st-kids，其文件列表再嵌一层 .aw-st-kids 与章下文档对齐 */
 
 .aw-st-hint {
 	margin: 4px 0;
@@ -388,8 +375,8 @@
 	border-radius: 4px;
 }
 
-.aw-st-section:hover,
-.aw-st-subsection:hover {
+/* 「案头资料」「书稿」标题行悬停走 .aw-st-vol:hover（与卷名行一致），此处仅余顶层「书籍列表」 */
+.aw-st-section:hover {
 	background: var(--background-modifier-hover);
 	border-radius: 4px;
 }
@@ -533,16 +520,7 @@
 	margin-top: 8px;
 }
 
-/* 流式预览 Modal：宽度 + 正文滚动区 + pre 换行 */
-.aw-stream-modal {
-	width: min(720px, 90vw);
-}
-
-.aw-stream-body {
-	max-height: 65vh;
-	overflow-y: auto;
-}
-
+/* 流式正文换行（统一生成面板的流式小节使用） */
 .aw-stream-pre {
 	white-space: pre-wrap;
 }
@@ -564,4 +542,43 @@
 /* @ 引用候选弹窗打开态（基础规则 display:none） */
 .aw-ref-popup.is-open {
 	display: block;
+}
+
+/* v0.1.4+ 统一生成过程面板（GenProgressView：摘要延迟生成日志 + 章节/报告流式预览与保存决定，替换原独立 StreamingPreviewModal） */
+.aw-gen-view {
+	display: flex;
+	flex-direction: column;
+	height: 100%;
+	padding: var(--size-2-3) var(--size-2-4);
+	gap: var(--size-2-2);
+}
+.aw-gen-title {
+	font-weight: var(--font-semibold);
+	color: var(--text-muted);
+	font-size: var(--font-small);
+	text-transform: uppercase;
+	letter-spacing: 0.04em;
+}
+.aw-gen-body {
+	flex: 1;
+	overflow-y: auto;
+	font-family: var(--font-monospace);
+	font-size: var(--font-smaller);
+	line-height: 1.7;
+	word-break: break-all;
+}
+.aw-gen-line { white-space: pre-wrap; }
+.aw-gen-step { color: var(--text-normal); }
+.aw-gen-ok { color: var(--color-green, #4caf50); font-weight: var(--font-medium); }
+.aw-gen-div { color: var(--text-faint); margin-top: var(--size-2-2); }
+/* 流式小节：状态行 + 按钮区（Setting 自带间距，这里只补上边距与换行） */
+.aw-gen-status {
+	margin-top: var(--size-2-1);
+	font-family: var(--font-interface);
+}
+.aw-gen-footer {
+	margin-top: var(--size-2-2);
+	display: flex;
+	gap: var(--size-2-2);
+	flex-wrap: wrap;
 }

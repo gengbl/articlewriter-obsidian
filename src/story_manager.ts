@@ -58,6 +58,16 @@ export interface StoryManagerOptions {
 	getStoryRoot: () => string;
 	/** 每次 saveState 成功落盘后回调（供插件广播刷新依赖状态文档的 UI，如 LLM 面板顶部当前小说·章节行） */
 	onStateChanged?: () => void;
+	/** v0.1.4+：写作提示词「前文内容」窗口章数 N（data.json settings.prevChapters；缺省/未注入时按 CLI 默认 3）。卷模式下窗口限本卷、跨卷缺口以各前卷《卷摘要》填充 */
+	getPrevChapters?: () => number;
+	/** v0.1.4+：是否把整卷《卷摘要》/跨卷前卷摘要注入写作上下文（data.json settings.includeVolumeSummary，缺省=false 关闭——默认严格只按 prevN 注入单章摘要，与 CLI 语义一致；开启后恢复三层上下文的卷级 digest 行为） */
+	includeVolumeSummary?: () => boolean;
+	/** v0.1.4+：LLM 生成单章摘要（对齐 CLI _summarize_chapter）——上下文组装时发现缺失/过期摘要即经此延迟生成并落盘；无可用配置或失败返回 null（调用方回退原文预览，不阻断写作）。卷摘要重建前会先对本卷全部成员章确保新鲜摘要 */
+	generateChapterSummary?: (input: { storyName: string; chapterKey: string; label: string; sourceText: string; viaOutline: boolean }) => Promise<string | null>;
+	/** v0.1.4+：LLM 全量重建某卷《卷摘要》——输入为本卷全部成员章的新鲜 AI 摘要（阅读序），取代旧「最新章节增量合并」滚动法。无可用配置或失败返回 null（该卷按无摘要降级，不阻断写作） */
+	generateVolumeSummary?: (input: { storyName: string; volId: string; volumeName: string; chapters: Array<{ key: string; label: string; title: string; summary: string }> }) => Promise<string | null>;
+	/** v0.1.4+：摘要 LLM 生成的进度反馈钩子（msg=null 表示本轮结束、隐藏提示）。延迟生成可能串行多次 LLM 调用，期间给用户可见进展 */
+	onProgress?: (msg: string | null) => void;
 }
 
 /** /pack 表达式解析结果：已定位到具体容器+章节键列表；或整本多容器下裸号有歧义、需调用方让用户选容器后以 forcedVolId 重入 */
@@ -68,11 +78,21 @@ export class StoryManager {
 	private app: App;
 	private getStoryRoot: () => string;
 	private onStateChanged?: () => void;
+	private getPrevChapters?: () => number; // v0.1.4+：前文窗口章数（data.json 可配，缺省 3）
+	private includeVolumeSummary?: () => boolean; // v0.1.4+：卷级摘要注入开关（默认关）
+	private generateChapterSummary?: (input: { storyName: string; chapterKey: string; label: string; sourceText: string; viaOutline: boolean }) => Promise<string | null>;
+	private generateVolumeSummary?: (input: { storyName: string; volId: string; volumeName: string; chapters: Array<{ key: string; label: string; title: string; summary: string }> }) => Promise<string | null>;
+	private onProgress?: (msg: string | null) => void; // v0.1.4+：摘要生成进度反馈
 
 	constructor(opts: StoryManagerOptions) {
 		this.app = opts.app;
 		this.getStoryRoot = opts.getStoryRoot;
 		this.onStateChanged = opts.onStateChanged;
+		this.getPrevChapters = opts.getPrevChapters;
+		this.includeVolumeSummary = opts.includeVolumeSummary;
+		this.generateChapterSummary = opts.generateChapterSummary;
+		this.generateVolumeSummary = opts.generateVolumeSummary;
+		this.onProgress = opts.onProgress;
 	}
 
 	private get vault(): Vault {
@@ -233,6 +253,39 @@ export class StoryManager {
 		return name;
 	}
 
+	/** 改书名：更新状态文档 title + 顶层目录改名（净化后同名则仅改标题不动目录）+ 同步《大纲.md》起始标题行；返回新目录名 */
+	async renameStory(oldName: string, newTitle: string): Promise<{ newName: string }> {
+		const st = await this.loadState(oldName);
+		if (!st) throw new Error(`小说 ${oldName} 的状态文档缺失`);
+		const folder = this.vault.getAbstractFileByPath(this.storyPath(oldName));
+		if (!(folder instanceof TFolder)) throw new Error("小说目录不存在或已被移动");
+		const trimmed = newTitle.trim();
+		if (!trimmed) throw new Error("新书名不能为空");
+		const oldTitle = st.title;
+		st.title = trimmed;
+		await this.saveState(oldName, st); // 先回盘标题（含故事状态.md），再随目录整体搬走
+		let newName = oldName;
+		const safeNew = safeFilename(trimmed);
+		if (safeNew !== oldName) {
+			const parent = folder.parent?.path ?? "";
+			const target = parent ? `${parent}/${safeNew}` : safeNew;
+			if (this.vault.getAbstractFileByPath(target)) throw new Error(`当前目录已存在同名项：${target}，请换一个名字`);
+			await this.vault.rename(folder, target); // 整树搬移，vault 索引与链接随之更新
+			newName = safeNew;
+		}
+		// 《大纲.md》起始行 `# <旧书名> 大纲` → 新书名（仅精确匹配文件开头的首个标题行，不动正文用户内容）
+		try {
+			const outlinePath = `${this.storyPath(newName)}/大纲.md`;
+			const f = this.vault.getAbstractFileByPath(outlinePath);
+			if (f instanceof TFile && oldTitle.trim()) {
+				const text = await this.vault.read(f);
+				const head = `# ${oldTitle.trim()} 大纲`;
+				if (text.startsWith(head)) await this.vault.modify(f, `# ${trimmed} 大纲` + text.slice(head.length));
+			}
+		} catch { /* 大纲缺失/不可读不阻断改名 */ }
+		return { newName };
+	}
+
 	// ---------- 章节扫描与创建 ----------
 
 	/** 卷实体目录名（= 净化后的卷名）。未归属章节留在书根，故卷名须唯一（addVolume/updateVolume 强制） */
@@ -278,19 +331,38 @@ export class StoryManager {
 		return paths;
 	}
 
-	/** 确保卷实体目录存在（并补建缺失的卷级设定四件套模板），返回其路径 */
-	private async ensureVolumeFolder(storyName: string, vol: doc.VolumeInfo): Promise<string> {
-		const p = `${this.storyPath(storyName)}/${this.volumeFolderName(vol)}`;
-		if (!this.vault.getAbstractFileByPath(p)) await this.createFolderPath(p);
-		for (const [fname, tpl] of [
+	/** 卷级设定四件套模板清单（建卷播种 / scan 补缺 / 写字台「补全卷文档」同一来源） */
+	private volumeDocTemplates(vol: doc.VolumeInfo): Array<[string, string]> {
+		return [
 			["卷大纲.md", VOL_OUTLINE_TEMPLATE(vol.name)],
 			["人物.md", VOL_CHARACTERS_TEMPLATE],
 			["人物关系.md", VOL_RELATIONSHIPS_TEMPLATE],
 			["场景.md", VOL_SCENES_TEMPLATE(vol.name)],
-		] as Array<[string, string]>) {
+		];
+	}
+
+	/** 确保卷实体目录存在（并补建缺失的卷级设定四件套模板），返回其路径 */
+	private async ensureVolumeFolder(storyName: string, vol: doc.VolumeInfo): Promise<string> {
+		const p = `${this.storyPath(storyName)}/${this.volumeFolderName(vol)}`;
+		if (!this.vault.getAbstractFileByPath(p)) await this.createFolderPath(p);
+		for (const [fname, tpl] of this.volumeDocTemplates(vol)) {
 			await this.ensureDoc(`${p}/${fname}`, tpl).catch(() => {}); // 模板补齐尽力而为，不阻断主流程
 		}
 		return p;
+	}
+
+	/** 检查指定卷下的卷级设定模板，缺失者按模板创建（已存在一律保留不覆盖）；返回本次新建的文件名列表（全齐则为空数组）。卷实体目录缺失时一并补建 */
+	async ensureVolumeDocs(storyName: string, volId: string): Promise<string[]> {
+		const vols = await this.loadVolumes(storyName);
+		const vol = this.findVolumeIn(vols, volId); // 按 id/名解析目标卷
+		if (!vol) throw new Error(`卷 ${volId} 不存在或已被删除`);
+		const p = `${this.storyPath(storyName)}/${this.volumeFolderName(vol)}`;
+		if (!this.vault.getAbstractFileByPath(p)) await this.createFolderPath(p);
+		const created: string[] = [];
+		for (const [fname, tpl] of this.volumeDocTemplates(vol)) {
+			if ((await this.ensureDoc(`${p}/${fname}`, tpl)) === "created") created.push(fname);
+		}
+		return created;
 	}
 
 	async listChapters(storyName: string): Promise<Array<{ key: string; num: number; title: string; dir: TFolder; vol?: string; parentPath: string }>> {
@@ -312,8 +384,7 @@ export class StoryManager {
 				if (!(child instanceof TFolder)) continue;
 				const m = CHAPTER_DIR_RE.exec(child.name);
 				if (!m) continue;
-				if (!(await this.vault.adapter.exists(child.path))) continue; // 过滤元数据索引陈旧条目（目录已被改名/删除而索引未更新），防止其被当作存活章节再次迁移出重复目录
-				if (!(await this.vault.adapter.exists(`${child.path}/章节.md`))) continue; // 空心残留目录（无章节.md，多为外部插件如 make-md 在迁移窗口期写入 .space 的残骸）：一律不当作章节——面板不显示、不参与任何迁移；由 quarantineHollowChapters 自动隔离进 _backup
+				if (!(await this.vault.adapter.exists(child.path))) continue; // 过滤元数据索引陈旧条目（目录已被改名/删除而索引未更新）；v0.1.4+：磁盘上存在的章节目录一律视为存活章节（标题取自目录名），无《章节.md》的空正文章照常列出、可被写作命令补写正文，不再隔离进 _backup
 				result.push({ key: chKey(volId ?? null, parseInt(m[1], 10)), num: parseInt(m[1], 10), title: m[2], dir: child, ...(volId ? { vol: volId } : {}), parentPath: containerPath });
 			}
 		}
@@ -790,7 +861,6 @@ export class StoryManager {
 
 	/** 级联删除卷：其归属章节目录整体移入 Obsidian 回收站（删卷即删章，区别于 deleteVolume 的「解绑回移」），元数据一次清理。供写字台面板「删除本卷」右键项使用 */
 	async deleteVolumeCascade(storyName: string, key: string): Promise<{ volId: string; name: string; chaptersDeleted: number[] }> {
-		await this.quarantineHollowChapters(storyName); // 先隔离空心残留，防止把残骸当作存活章节误删/漏删
 		const vols = await this.loadVolumes(storyName);
 		const vol = this.findVolumeIn(vols, key);
 		if (!vol) throw new Error(`未找到卷：${key}`);
@@ -1538,7 +1608,6 @@ export class StoryManager {
 
 	/** 删除章节：移入回收站、清理元数据；当前章回退到同容器最后一章。**被删号之后（同容器内）仍有章节时自动补洞**——复用 renumberChapters 把后续各章整体 -1（两阶段迁移+文档/伏笔引用重写），保持容器内 1..N 连续 */
 	async deleteChapter(storyName: string, chapterKey: string): Promise<{ title: string; resequenced: boolean }> {
-		await this.quarantineHollowChapters(storyName); // 先隔离空心残留，防止后续自动重排把它们迁移成新幽灵章节
 		const ch = await this.chapterDirOf(storyName, chapterKey);
 		if (!ch) throw new Error(`章节不存在：${chapterKey}`);
 		await this.app.fileManager.trashFile(ch.dir);
@@ -1566,8 +1635,6 @@ export class StoryManager {
 			.map((k) => parseChKey(k).num);
 		if (scopeNumsAfter.some((n) => n > ch.num)) {
 			resequenced = (await this.renumberChapters(storyName)).ok; // ok=false 仅「各容器均连续/无章节」，此处必有洞故预期 true
-		} else {
-			void this.quarantineHollowChapters(storyName); // 未触发重排时也要清扫删除窗口期可能产生的空心残骸
 		}
 		return { title: removed?.title || ch.title, resequenced };
 	}
@@ -1681,39 +1748,6 @@ export class StoryManager {
 		return files;
 	}
 
-	/**
-	 * 空心章节目录＝连「章节.md」都没有（中断操作/外部插件干扰留下的损坏残留，通常只剩 .space/context.mdb）。
-	 * 迁移类操作前把它们隔离到 <书>/_backup/，防止其参与两阶段迁移、把大号编号一路拖成幽灵章节。返回隔离数量。
-	 * 扫描范围含书根与各容器（卷实体目录），残壳可能落在任何一层。
-	 */
-	private async quarantineHollowChapters(storyName: string): Promise<number> {
-		const root = this.storyPath(storyName);
-		let n = 0;
-		for (const contPath of await this.containerPaths(storyName)) {
-			let names: string[] = [];
-			try {
-				names = ((await this.vault.adapter.list(contPath)).folders ?? [])
-					.map((p) => p.split("/").pop() as string)
-					.filter((f) => CHAPTER_DIR_RE.test(f)); // 直接扫真实文件系统——listChapters 已隐藏空心目录，这里必须独立枚举才能找到它们
-			} catch { continue; }
-			for (const name of names) {
-				const dirPath = `${contPath}/${name}`;
-				try {
-					if (!(await this.vault.adapter.exists(dirPath))) continue; // 索引陈旧条目，磁盘上已无此目录
-					if (await this.vault.adapter.exists(`${dirPath}/章节.md`)) continue; // 正常章节
-					const stamp = new Date().toISOString().replace(/[-:]/g, "").slice(0, 15);
-					const bakDir = `${root}/_backup/空心残留_${stamp}`;
-					if (!(await this.vault.adapter.exists(bakDir))) await this.createFolderPath(bakDir);
-					await this.vault.adapter.rename(dirPath, `${bakDir}/${name}${n ? `_${n}` : ""}`);
-					n++;
-				} catch (e) {
-					console.warn(`[ArticleWriter] 隔离空心章节目录失败 ${dirPath}:`, e);
-				}
-			}
-		}
-		return n;
-	}
-
 	/** 中断残留可能造成同容器同号双目录（复合键重复）——两阶段迁移遇到会错移，直接拒绝并提示手动清理 */
 	private assertUniqueKeys(keys: string[]): void {
 		const seen = new Set<string>();
@@ -1752,7 +1786,6 @@ export class StoryManager {
 	async renumberChapters(storyName: string): Promise<{ ok: boolean; msg: string }> {
 		const folder = this.storyFolder(storyName);
 		if (!folder) return { ok: false, msg: "没有章节" };
-		await this.quarantineHollowChapters(storyName); // 先隔离空心残留，防止其参与两阶段迁移
 		const chapters = await this.listChapters(storyName);
 		if (chapters.length === 0) return { ok: false, msg: "没有章节" };
 		this.assertUniqueKeys(chapters.map((c) => c.key)); // 中断残留的重复键会令两阶段迁移错移，直接拒绝
@@ -1822,8 +1855,7 @@ export class StoryManager {
 		}
 		if (fsChanged) await this.saveForeshadowsFile(storyName, items);
 
-		const quarantined = await this.quarantineHollowChapters(storyName); // 收尾清扫：外部插件（如 make-md）可能在迁移窗口期往临时目录写 .space 留下残骸，立即隔离出书目录
-		return { ok: true, msg: `已按容器压缩为连续章号（共移动 ${movedTotal} 章${quarantined > 0 ? `，另隔离 ${quarantined} 个空心残留至 _backup` : ""}），原文件已备份到 _backup/卷内重排_${ts}/` };
+		return { ok: true, msg: `已按容器压缩为连续章号（共移动 ${movedTotal} 章），原文件已备份到 _backup/卷内重排_${ts}/` };
 	}
 
 	/**
@@ -1832,7 +1864,6 @@ export class StoryManager {
 	 * createChapterAt 会把 current_chapter 设为新章——插入后自然聚焦到新章。返回新章复合键、本地号与其正文路径。
 	 */
 	async insertChapter(storyName: string, refKey: string, pos: "before" | "after", title: string): Promise<{ key: string; newNum: number; path: string }> {
-		await this.quarantineHollowChapters(storyName); // 先隔离空心残留，防止其参与两阶段迁移
 		const chapters = await this.listChapters(storyName);
 		this.assertUniqueKeys(chapters.map((c) => c.key));
 		const ref = chapters.find((c) => c.key === refKey);
@@ -1878,7 +1909,6 @@ export class StoryManager {
 			}
 			if (fsChanged) await this.saveForeshadowsFile(storyName, items);
 		}
-		void this.quarantineHollowChapters(storyName); // 收尾清扫迁移窗口期可能产生的空心残骸（不阻塞返回）
 		return { key: newKey, newNum, path };
 	}
 
@@ -2047,15 +2077,10 @@ export class StoryManager {
 		}
 		const diskChapters = await this.listChapters(storyName);
 		const vols = await this.loadVolumes(storyName);
-		// v0.0.15：既有卷实体目录的卷级设定四件套缺失补建（与建卷时同模板）
+		// v0.0.15：既有卷实体目录的卷级设定四件套缺失补建（与建卷时同模板，同一清单来源 volumeDocTemplates）
 		for (const vol of Object.values(vols)) {
 			const volDir = `${base}/${this.volumeFolderName(vol)}`;
-			for (const [fname, tpl] of [
-				["卷大纲.md", VOL_OUTLINE_TEMPLATE(vol.name)],
-				["人物.md", VOL_CHARACTERS_TEMPLATE],
-				["人物关系.md", VOL_RELATIONSHIPS_TEMPLATE],
-				["场景.md", VOL_SCENES_TEMPLATE(vol.name)],
-			] as Array<[string, string]>) {
+			for (const [fname, tpl] of this.volumeDocTemplates(vol)) {
 				if ((await this.ensureDoc(`${volDir}/${fname}`, tpl)) === "created") created++;
 			}
 		}
@@ -2136,40 +2161,90 @@ export class StoryManager {
 		return doc.stripTitleLine(stripAiWordMarks(await this.readDoc(`${ch.dir.path}/章节.md`)))[0];
 	}
 
-	/** 读某章已保存的 AI 摘要；缺失/无哈希/内容已变化时返回空串（不自动生成，调用方回退原文预览） */
-	private async readFreshSummary(storyName: string, chapterKey: string, content: string): Promise<string> {
+	/** v0.1.4+ 摘要来源文本：优先正文；无正文时回落《章节大纲》清洗文本按纲概括——哈希校验基于同一份「有效来源」，任一变化即旧摘要失效。两者皆空返回 null */
+	async chapterSummarySource(storyName: string, chapterKey: string): Promise<{ text: string; viaOutline: boolean } | null> {
+		const content = await this.readChapterContent(storyName, chapterKey);
+		if (content.trim()) return { text: content, viaOutline: false };
+		const outline = await this.readChapterOutlineForPrompt(storyName, chapterKey);
+		if (outline.trim()) return { text: outline, viaOutline: true };
+		return null;
+	}
+
+	/** 读某章已保存的 AI 摘要；缺失/无哈希/有效来源（正文或回落大纲）已变化时返回空串 */
+	private async readFreshSummary(storyName: string, chapterKey: string): Promise<string> {
+		const src = await this.chapterSummarySource(storyName, chapterKey);
+		if (!src) return "";
 		const ch = await this.chapterDirOf(storyName, chapterKey);
-		if (!ch || !content.trim()) return "";
+		if (!ch) return "";
 		const raw = await this.readDoc(`${ch.dir.path}/章节摘要.md`);
 		if (!raw.trim()) return "";
 		const m = /<!--\s*内容哈希[:：]\s*([0-9a-f]{32})\s*-->/.exec(raw);
-		if (!m || m[1] !== md5(content)) return "";
+		if (!m || m[1] !== md5(src.text)) return "";
 		return doc.stripTitleLine(doc.stripComments(raw))[0];
 	}
 
-	/** 读某章新鲜 AI 摘要（自取正文比对哈希；供卷摘要增量更新用），缺失/过期返回空串 */
-	async getChapterSummaryText(storyName: string, chapterKey: string): Promise<string> {
-		const content = await this.readChapterContent(storyName, chapterKey);
-		return (await this.readFreshSummary(storyName, chapterKey, content)).trim();
+	/** v0.1.4+ 保存单章 AI 摘要并写入当前内容哈希头（对齐《卷摘要》格式；哈希基于有效来源文本） */
+	async saveChapterSummary(storyName: string, chapterKey: string, summary: string): Promise<void> {
+		const s = String(summary ?? "").trim();
+		if (!s) throw new Error("摘要不能为空");
+		const src = await this.chapterSummarySource(storyName, chapterKey);
+		if (!src) throw new Error(`本章无可概括内容（正文与大纲均为空）：${chapterKey}`);
+		const ch = await this.chapterDirOf(storyName, chapterKey);
+		if (!ch) throw new Error(`章节不存在：${chapterKey}`);
+		const num = parseChKey(chapterKey).num; // 落盘标题用容器内本地号
+		await this.writeDoc(`${ch.dir.path}/章节摘要.md`, `# 第${num}章 摘要\n\n<!-- 内容哈希：${md5(src.text)} -->\n\n${s}\n`);
 	}
 
-	// ---------- v0.0.15+ 卷摘要（<volDir>/卷摘要.md，插件特有、CLI 无对应概念）----------
-	// 格式对齐《章节摘要.md》：H1 标题 + <!-- 内容哈希 --> 校验头。哈希 = 本卷各成员章「key|md5(正文)」拼接的 md5——
-	// 任一成员正文变化即视为过期，由 main.ts refreshVolumeSummary 在写盘命令后增量重算（LLM）。
+	private genInFlight = new Map<string, Promise<string>>(); // v0.1.4+：在途生成任务缓存——并发组装共享同一 Promise，消除竞态窗口内对同章/同卷的双重 LLM 调用
 
-	/** 本卷内容指纹：全部有正文的成员章按阅读序拼 key|md5(正文) 再取 md5 */
-	private async computeVolumeHash(storyName: string, volId: string): Promise<string> {
+	/** v0.1.4+ 确保某章有新鲜 AI 摘要（公开入口、含在途去重）：两个上下文组装交错并发时共享首个任务的生成结果，避免重复生成 */
+	async ensureFreshChapterSummary(storyName: string, chapterKey: string, label?: string): Promise<string> {
+		const k = `${storyName}\u0001ch\u0001${chapterKey}`;
+		const inflight = this.genInFlight.get(k);
+		if (inflight) return inflight;
+		const p = this.doEnsureFreshChapterSummary(storyName, chapterKey, label).finally(() => this.genInFlight.delete(k));
+		this.genInFlight.set(k, p);
+		return p;
+	}
+
+	/** 已存且哈希匹配直接返回；否则经注入的 LLM 生成并落盘。无来源/未注入生成器/use_summaries=false/失败均返回空串（调用方回退原文预览，不阻断流程）。label=展示标签（含卷名前缀），供提示词「章节：」行 */
+	private async doEnsureFreshChapterSummary(storyName: string, chapterKey: string, label?: string): Promise<string> {
+		try {
+			const state = await this.validatedState(storyName);
+			if (state.use_summaries === false) return "";
+			const src = await this.chapterSummarySource(storyName, chapterKey);
+			if (!src || !this.generateChapterSummary) return "";
+			const fresh = (await this.readFreshSummary(storyName, chapterKey)).trim();
+			if (fresh) return fresh;
+			const lbl = label?.trim() || (() => { const p = parseChKey(chapterKey); return `第${p.num}章`; })();
+			this.onProgress?.(`正在生成「${lbl}」章节摘要…`); // v0.1.4+：延迟生成的进度反馈（LLM 调用可能耗时数十秒）
+			const t = ((await this.generateChapterSummary({ storyName, chapterKey, label: lbl, sourceText: src.text, viaOutline: src.viaOutline })) ?? "").trim();
+			if (!t) return "";
+			await this.saveChapterSummary(storyName, chapterKey, t);
+			return t;
+		} catch {
+			return ""; // 摘要失败不影响写作上下文组装/写盘流程
+		}
+	}
+
+	// ---------- v0.0.15+ / v0.1.4+ 卷摘要（<volDir>/卷摘要.md，插件特有、CLI 无对应概念）----------
+	// 格式对齐《章节摘要.md》：H1 标题 + <!-- 内容哈希 --> 校验头。v0.1.4+ 起**整体重建语义**——输入为本卷中已有且未过期的成员章 AI 摘要（只读收集，不主动触发其他章节生成）；
+	// 指纹 = 各成员章「key|md5(已存且新鲜的章节摘要)」按阅读序拼接的 md5，与生成输入完全一致（旧版基于正文 md5 的文件首次使用必然失配→触发一次自愈重建）。
+	// **延迟生成**：不再在写盘命令后 eager 刷新；上下文组装需要时经 ensureFreshVolumeSummary 按需生成并落盘。
+
+	/** 本卷摘要指纹：全部有新鲜章节摘要的成员章按阅读序拼 key|md5(摘要) 再取 md5 */
+	private async computeVolumeDigest(storyName: string, volId: string): Promise<string> {
 		const parts: string[] = [];
 		for (const c of await this.listChapters(storyName)) {
 			if (parseChKey(c.key).vol !== volId) continue;
-			const body = await this.readChapterContent(storyName, c.key);
-			if (!body.trim()) continue;
-			parts.push(`${c.key}|${md5(body)}`);
+			const s = (await this.readFreshSummary(storyName, c.key)).trim(); // 仅计已存且未过期的章节摘要
+			if (!s) continue;
+			parts.push(`${c.key}|${md5(s)}`);
 		}
 		return md5(parts.join("\n"));
 	}
 
-	/** 读新鲜卷摘要；文件缺失/哈希不匹配（任一本卷章节正文已变）时返回空串 */
+	/** 读新鲜卷摘要（快速路径、不触发生成）；文件缺失/哈希不匹配（任一成员章节摘要已变或缺失）时返回空串 */
 	async readFreshVolumeSummary(storyName: string, volId: string): Promise<string> {
 		try {
 			const vols = await this.loadVolumes(storyName);
@@ -2178,19 +2253,61 @@ export class StoryManager {
 			const raw = await this.readDoc(`${this.storyPath(storyName)}/${this.volumeFolderName(vol)}/卷摘要.md`);
 			if (!raw.trim()) return "";
 			const m = /<!--\s*内容哈希[:：]\s*([0-9a-f]{32})\s*-->/.exec(raw);
-			if (!m || m[1] !== (await this.computeVolumeHash(storyName, volId))) return "";
+			if (!m || m[1] !== (await this.computeVolumeDigest(storyName, volId))) return "";
 			return doc.stripTitleLine(doc.stripComments(raw))[0].trim();
 		} catch {
 			return ""; // 读取失败按无摘要处理，不阻断写作上下文组装
 		}
 	}
 
-	/** 保存卷摘要并写入当前内容哈希头 */
+	/** v0.1.4+ 确保某卷有新鲜《卷摘要》——延迟生成入口（上下文组装需要时调用）：
+	 * ①只读收集本卷中**已有且未过期**的成员章《章节摘要》（不主动触发其他章节的 LLM 生成——只生成当前提示词真正用到的窗口章；无可用摘要则直接返回空串降级）；
+	 * ②指纹=这些成员章摘要的 md5 拼接，与已存文件匹配则直接返回；
+	 * ③否则以收集到的章节摘要为输入经注入 LLM 整体重建并落盘（随更多章节摘要陆续生成而增量变全）。
+	 * use_summaries=false/无任何可概括章节/未注入生成器/失败均返回空串（该卷按无摘要降级，不阻断流程）。公开入口含在途去重——并发组装共享同一重建任务 */
+	async ensureFreshVolumeSummary(storyName: string, volId: string): Promise<string> {
+		const k = `${storyName}\u0001vol\u0001${volId}`;
+		const inflight = this.genInFlight.get(k);
+		if (inflight) return inflight;
+		const p = this.doEnsureFreshVolumeSummary(storyName, volId).finally(() => this.genInFlight.delete(k));
+		this.genInFlight.set(k, p);
+		return p;
+	}
+
+	private async doEnsureFreshVolumeSummary(storyName: string, volId: string): Promise<string> {
+		try {
+			const state = await this.validatedState(storyName);
+			if (state.use_summaries === false) return "";
+			const vols = await this.loadVolumes(storyName);
+			const vol = vols[volId];
+			if (!vol) return "";
+			const volName = vol.name || volId;
+			const members = (await this.listChapters(storyName)).filter((c) => parseChKey(c.key).vol === volId); // listChapters 即阅读序
+			const chapters: Array<{ key: string; label: string; title: string; summary: string }> = [];
+			for (const c of members) {
+				const s = (await this.readFreshSummary(storyName, c.key)).trim(); // v0.1.4+：只取**已生成且未过期**的章节摘要（只读收集）——不为卷重建主动触发其他章节的 LLM 生成；上下文组装真正需要的窗口章各自在 loadWritingData 中按需自生，缺失/过期的成员章跳过、待其进入前文窗口时再生成
+				if (!s) continue;
+				chapters.push({ key: String(c.key ?? ""), label: `${volName}·第${c.num}章`, title: state.chapters[c.key]?.title || "", summary: s });
+			}
+			if (!chapters.length || !this.generateVolumeSummary) return "";
+			const stored = await this.readFreshVolumeSummary(storyName, volId);
+			if (stored) return stored;
+			this.onProgress?.(`正在依据 ${chapters.length} 个章节摘要生成「${volName}」卷摘要…`);
+			const t = ((await this.generateVolumeSummary({ storyName, volId, volumeName: volName, chapters })) ?? "").trim();
+			if (!t) return "";
+			await this.saveVolumeSummary(storyName, volId, t);
+			return t;
+		} catch {
+			return ""; // 卷摘要失败不影响写作上下文组装/写盘流程
+		}
+	}
+
+	/** 保存卷摘要并写入当前内容哈希头（指纹口径与 computeVolumeDigest 一致） */
 	async saveVolumeSummary(storyName: string, volId: string, summary: string): Promise<void> {
 		const vols = await this.loadVolumes(storyName);
 		const vol = vols[volId];
 		if (!vol) throw new Error(`卷不存在：${volId}`);
-		const hash = await this.computeVolumeHash(storyName, volId);
+		const hash = await this.computeVolumeDigest(storyName, volId);
 		await this.writeDoc(
 			`${this.storyPath(storyName)}/${this.volumeFolderName(vol)}/卷摘要.md`,
 			`# ${vol.name || volId} 卷摘要\n\n<!-- 内容哈希：${hash} -->\n\n${summary}\n`
@@ -2202,6 +2319,10 @@ export class StoryManager {
 	 * v0.0.15：chapterNum=阅读序位置（ordinal，跨卷连续），本地章号仅用于落盘标题与容器内引用；
 	 * prevChapters/summaries 按阅读序窗口取（可跨卷延续）。副作用：从全局大纲与本章大纲抽取 [伏]…[/] 标记并持久化到 伏笔.md。
 	 * v0.0.15 三层上下文：人物关系分书/卷/章三份返回（去重在 buildWritingContext）、activeVolId/exclude*Names/volSummary 供分层渲染；folderDocs 已剔除《人物关系.md》。
+	 * v0.1.4+：①前文窗口章数 N=data.json settings.prevChapters（getPrevChapters 注入、缺省 3）且**限本容器**——卷模式不再拉取他卷章节，缺口以最近各前卷《卷摘要》填充（prevVolSummaries，由近及远）；
+	 * ②**摘要全部延迟生成**（不在写盘命令后 eager 刷新）：窗口章/前卷/本卷需要时经 ensureFresh* 按需触发 LLM 并经 onProgress 给用户进度反馈——窗口章无正文时回落《章节大纲》作来源（预览即大纲文本），缺失/过期经 ensureFreshChapterSummary 生成落盘；
+	 * ③**卷摘要=本卷全部成员章新鲜章节摘要的全量重建**（ensureFreshVolumeSummary，指纹=各章「key|md5(摘要)」拼接 md5；旧版基于正文哈希的文件首次使用自愈重建一次）；
+	 * ④角色范围收窄——跨容器不深入他章《人物.md》：书根文档恒含、写卷内时排除书根区章节级条目、他卷仅取其卷级《人物.md》条目且仅限阅读序在前者。
 	 */
 	async loadWritingData(
 		storyName: string,
@@ -2241,25 +2362,60 @@ export class StoryManager {
 		const chapterOutlineText = await this.readChapterOutlineForPrompt(storyName, ch.key);
 		savedForeshadows += await this.saveOutlineForeshadows(storyName, chapterOutlineText, ch.key);
 
-		const prevN = 3; // Python story_state.context_prev_chapters 缺省值（插件状态无此字段）
+		// v0.1.4+：窗口章数 N=data.json settings.prevChapters（缺省/非法回落 CLI 默认 3）；卷模式窗口限本容器——
+		// 跨卷缺口不拉取他卷章节，改以最近各前卷新鲜《卷摘要》填充（prevVolSummaries，由近及远）
+		const rawPrevN = Number(this.getPrevChapters?.() ?? 3);
+		const prevN = Number.isFinite(rawPrevN) && rawPrevN >= 0 ? Math.floor(rawPrevN) : 3;
+		let startIdx = Math.max(0, idx - prevN);
+		while (ch.vol && startIdx < idx && parseChKey(ordered[startIdx].key).vol !== ch.vol) startIdx++; // 卷模式跳过落在其他容器的头部
 		const prevChapters: PrevChapterRef[] = [];
-		for (let i = Math.max(0, idx - prevN); i < idx; i++) {
+		for (let i = startIdx; i < idx; i++) {
 			const meta = ordered[i];
-			const content = await this.readChapterContent(storyName, meta.key);
-			if (!content.trim()) continue;
-			prevChapters.push({ key: meta.key, num: i + 1, label: labelOf(meta.key), title: state.chapters[meta.key]?.title || meta.title, content });
+			const src = await this.chapterSummarySource(storyName, meta.key); // 正文优先；无正文回落大纲作来源（预览即大纲文本）
+			if (!src) continue;
+			prevChapters.push({ key: meta.key, num: i + 1, label: labelOf(meta.key), title: state.chapters[meta.key]?.title || meta.title, content: src.text });
 		}
 
+		// v0.1.4+：窗口章缺失/过期摘要经注入 LLM 自动生成并落盘（对齐 CLI get_previous_summaries 自动补全语义）；includeCurrentSummary 路径同覆盖当前章
 		const summaries: Record<number, string> = {};
 		if (state.use_summaries !== false && prevN > 0) {
-			const end = opts?.includeCurrentSummary ? ordinal : ordinal - 1;
-			for (let i = Math.max(1, ordinal - prevN); i <= end; i++) {
-				const meta = ordered[i - 1];
-				const content = await this.readChapterContent(storyName, meta.key);
-				const s = await this.readFreshSummary(storyName, meta.key, content);
-				if (s) summaries[i] = s;
+			const targets: Array<{ ord: number; key: string }> = prevChapters.map((p) => ({ ord: p.num, key: String(p.key ?? "") }));
+			if (opts?.includeCurrentSummary) targets.push({ ord: ordinal, key: ch.key });
+			for (const t of targets) {
+				const s = await this.ensureFreshChapterSummary(storyName, t.key, labelOf(t.key));
+				if (s) summaries[t.ord] = s;
 			}
 		}
+
+		// v0.1.4+：跨卷缺口填充（仅 includeVolumeSummary 开启时）——本容器内不足 N 章时，以阅读序最近各前卷的新鲜《卷摘要》补足至 N（由近及远、不深入他卷章节）；默认关闭时严格只按 prevN 注入单章摘要
+		let prevVolSummaries: Array<{ name: string; text: string }> | undefined;
+		if (this.includeVolumeSummary?.() && ch.vol && state.use_summaries !== false && prevN > 0 && prevN - prevChapters.length > 0) {
+			const prevVolsFarToNear: string[] = []; // 阅读序在前且非本卷的卷 id（远→近）
+			for (let i = 0; i < idx; i++) {
+				const v = parseChKey(ordered[i].key).vol;
+				if (v && v !== ch.vol && !prevVolsFarToNear.includes(v)) prevVolsFarToNear.push(v);
+			}
+			const picked: Array<{ name: string; text: string }> = [];
+			for (const vid of [...prevVolsFarToNear].reverse()) {
+				if (picked.length >= prevN - prevChapters.length) break;
+				const t = await this.ensureFreshVolumeSummary(storyName, vid); // v0.1.4+：需要即生成——前卷摘要缺失/过期时同样延迟重建（带进度反馈），不再因无文件而静默为空
+				if (t.trim()) picked.push({ name: volNames[vid] || vid, text: t.trim() });
+			}
+			if (picked.length) prevVolSummaries = picked;
+		}
+
+		// v0.1.4+：角色范围收窄——跨容器不深入他章《人物.md》：书根文档恒含；写卷内时排除书根区章节级条目；
+		// 本卷全量保留；他卷仅取其卷级《人物.md》条目（chapter=0）且仅限阅读序在前者（未来卷不注入）
+		const curVolId = ch.vol ?? "";
+		const prevVolIds = new Set<string>();
+		for (let i = 0; i < idx; i++) {
+			const v = parseChKey(ordered[i].key).vol;
+			if (v && v !== curVolId) prevVolIds.add(v);
+		}
+		const characters = Object.values(await this.loadAllCharacters(storyName)).filter((c) => {
+			if (!c.vol) return c.chapter <= 0 ? true : curVolId === ""; // 书根《人物.md》恒含；书根区章节级条目仅在书根/平面写作时保留
+			return c.vol === curVolId || (c.chapter <= 0 && prevVolIds.has(c.vol));
+		});
 
 		// v0.0.15 三层上下文：人物关系按 书/卷/章 三份清洗文本返回，跨层逐行去重由 buildWritingContext 完成（优先级 章 > 卷 > 书）
 		let relationshipsRaw = await this.readDoc(`${this.storyPath(storyName)}/人物关系.md`);
@@ -2277,8 +2433,9 @@ export class StoryManager {
 			const lines = doc.stripComments((await this.readDoc(`${volDir}/卷大纲.md`)).trim()).split("\n");
 			while (lines.length && /^#\s/.test(lines[0])) lines.shift(); // 去 H1 标题行
 			volOutlineText = lines.join("\n").trim();
-			if (state.use_summaries !== false) volSummary = await this.readFreshVolumeSummary(storyName, ch.vol);
+			if (state.use_summaries !== false && this.includeVolumeSummary?.()) volSummary = await this.ensureFreshVolumeSummary(storyName, ch.vol); // v0.1.4+：延迟生成——本卷全部章节摘要为输入全量重建，需要时才触发 LLM（带进度反馈）；默认关闭不注入整卷 digest、也不触发其重建
 		}
+		this.onProgress?.(null); // v0.1.4+：本轮上下文组装的摘要生成阶段结束 → 隐藏进度提示（插件侧另有空闲超时兜底）
 		const foreshadows = (await this.loadForeshadows(storyName)).filter((f) => !f.done);
 
 		return {
@@ -2297,7 +2454,7 @@ export class StoryManager {
 			currentSceneId: state.current_scene,
 			globalOutlineRaw,
 			chapterOutlineText,
-			characters: Object.values(await this.loadAllCharacters(storyName)),
+			characters, // v0.1.4+：已按容器范围收窄（见上文 filter）
 			activeVolId: ch.vol ?? "",
 			excludeCharNames,
 			excludeSceneIds,
@@ -2305,8 +2462,10 @@ export class StoryManager {
 			volRelationships,
 			chapterRelationships,
 			volSummary,
+			prevVolSummaries,
 			prevChapters,
 			summaries,
+			prevN,
 			world: await this.readWorldDoc(storyName),
 			scenes: Object.values(await this.loadAllScenes(storyName)),
 			foreshadows,

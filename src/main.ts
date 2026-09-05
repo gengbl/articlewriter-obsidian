@@ -1,6 +1,7 @@
 import { App, Modal, Notice, Plugin, PluginSettingTab, TAbstractFile, TFile, TFolder, type SettingDefinitionItem, type SettingDefinitionPage } from "obsidian";
-import { ActionItem, ActionMenuModal, ChapterListModal, ConfirmModal, FolderPickerModal, MarkdownViewerModal, MultiFieldModal, NewStoryInput, NewStoryModal, PanelLine, StoryPickerModal, StreamingPreviewModal, TextAreaPrompt, TextPanelModal, TextInputModal, VolumeBatchCreateModal } from "./modals";
+import { ActionItem, ActionMenuModal, ChapterListModal, ConfirmModal, FolderPickerModal, MarkdownViewerModal, MultiFieldModal, NewStoryInput, NewStoryModal, PanelLine, StoryPickerModal, TextAreaPrompt, TextPanelModal, TextInputModal, VolumeBatchCreateModal } from "./modals";
 import { LlmChatView } from "./llm_chat_view";
+import { GenProgressView, type WritingStreamSink } from "./gen_progress_view";
 import { StatusView, type StatusAction, type StatusChapterEntry, type StatusDetail, type StatusSnapshot, type StatusStoryEntry } from "./status_view";
 import { chapterOutlineTemplate, countPureWords, FORESHADOW_TEMPLATE, formatLocalDateTime, md5, NOTES_TEMPLATE, outlineTemplate, WORLD_TEMPLATE } from "./story_types";
 import { safeFilename } from "./story_types";
@@ -14,13 +15,15 @@ import { DEFAULT_USAGE_GUIDE } from "./usage_guide_default";
 import { assembleSystemPrompt, chatCompletion, chatStream, normalizeBaseURL, testConnection } from "./llm_client";
 import type { Message } from "./llm_client";
 import { findAiWordHits, mergeGuideCategories } from "./banned_words";
-import { appendOutlineInstruction, buildChapterPrompt, buildContinuePrompt, buildPolishPrompt, buildReviewPrompt, buildRewritePrompt, buildStoryTypeSystemPrompt, buildVolumeSummaryPrompt, buildWritingContext, checkOutlineCoverage, cleanAiText, embedAggHash, formatRetryNote, parseAggHash, serializeAggregateGuide, stripHeading, validateStoryTypeFormat, VOL_SUMMARY_SYSTEM_PROMPT, wordRangeFromGuides } from "./prompts";
+import { appendOutlineInstruction, buildChapterPrompt, buildChapterSummaryPrompt, buildContinuePrompt, buildPolishPrompt, buildReviewPrompt, buildRewritePrompt, buildStoryTypeSystemPrompt, buildVolRebuildPrompt, buildWritingContext, CHAPTER_SUMMARY_SYSTEM_PROMPT, checkOutlineCoverage, cleanAiText, embedAggHash, formatRetryNote, parseAggHash, serializeAggregateGuide, stripHeading, validateStoryTypeFormat, VOL_SUMMARY_SYSTEM_PROMPT, wordRangeFromGuides } from "./prompts";
 import { parseChapterSelection, splitList, stripComments } from "./md_docs";
 
 interface ArticleWriterSettings {
 	workDir: string; // 写小说的文件夹（对齐 CLI --work_dir / /dir）；空=未初始化，首次用命令时弹选择器
 	lastStory: string;
 	autoOpenOnCreate: boolean;
+	prevChapters?: number; // v0.1.4+：写作提示词「前文内容」窗口章数 N（缺省/非法按 CLI 默认 3；0=不注入前文）。卷模式窗口限本卷、跨卷缺口以各前卷《卷摘要》填充
+	includeVolumeSummary?: boolean; // v0.1.4+：是否把整卷《卷摘要》注入写作上下文（含跨卷前卷摘要）；默认关——对齐 Python 原版严格 prev_n 语义，只注入最近 N 章
 	llm?: PluginConfig; // LLM 多组模型配置 + system_prompt/desc_style（替代 ~/.articlewriter/config.json，存插件数据目录 data.json）
 }
 
@@ -28,6 +31,7 @@ const DEFAULT_SETTINGS: ArticleWriterSettings = {
 	workDir: "",
 	lastStory: "",
 	autoOpenOnCreate: true,
+	prevChapters: 3,
 };
 
 export default class ArticleWriterPlugin extends Plugin {
@@ -36,9 +40,59 @@ export default class ArticleWriterPlugin extends Plugin {
 	private statusRefreshTimer: number | null = null; // 工作目录内文件变更 → 防抖刷新已打开状态面板的定时器
 	private flatBlocked: string | null = null; // 仍为平面结构且整理失败的书名：章节/卷结构操作锁定，直至「按卷整理目录」成功
 
+	/** v0.1.4+：data.json settings.prevChapters → 有效窗口章数 N（缺省/非法回落 CLI 默认 3；0=不注入前文） */
+	private effectivePrevN(): number {
+		const n = Math.floor(Number(this.settings.prevChapters ?? 3));
+		return Number.isFinite(n) && n >= 0 ? n : 3;
+	}
+
 	async onload(): Promise<void> {
 		await this.loadSettings();
-		this.manager = new StoryManager({ app: this.app, getStoryRoot: () => this.settings.workDir, onStateChanged: () => this.notifyContextChanged() });
+		this.manager = new StoryManager({
+			app: this.app,
+			getStoryRoot: () => this.settings.workDir,
+			onStateChanged: () => this.notifyContextChanged(),
+			getPrevChapters: () => this.effectivePrevN(), // v0.1.4+：实时读 data.json，改设置即时生效
+			includeVolumeSummary: () => !!this.settings.includeVolumeSummary, // v0.1.4+：卷摘要注入开关（默认关）
+			generateChapterSummary: async ({ label, sourceText, viaOutline }) => { // v0.1.4+：缺失/过期章节摘要的 LLM 延迟生成入口（对齐 CLI _summarize_chapter），无配置/失败返回 null
+				const setup = this.getLlmSetup();
+				if (!setup) return null;
+				try {
+					const t = await chatCompletion(
+						setup.cfg,
+						[
+							{ role: "system" as const, content: CHAPTER_SUMMARY_SYSTEM_PROMPT },
+							{ role: "user" as const, content: buildChapterSummaryPrompt(label, sourceText, viaOutline) },
+						],
+						{ max_tokens: 600, temperature: 0.4 }
+					);
+					return (t || "").trim() || null;
+				} catch (e) {
+					console.warn("[articlewriter] 章节摘要生成失败：", e);
+					return null;
+				}
+			},
+			generateVolumeSummary: async ({ volumeName, chapters }) => { // v0.1.4+：卷摘要全量重建——输入本卷全部成员章的新鲜 AI 摘要，取代旧增量合并滚动法
+				const setup = this.getLlmSetup();
+				if (!setup) return null;
+				try {
+					const lines = chapters.map((c) => ({ label: c.label, title: c.title, summary: c.summary }));
+					const t = await chatCompletion(
+						setup.cfg,
+						[
+							{ role: "system" as const, content: VOL_SUMMARY_SYSTEM_PROMPT },
+							{ role: "user" as const, content: buildVolRebuildPrompt(volumeName, lines) },
+						],
+						{ max_tokens: 900, temperature: 0.4 }
+					);
+					return (t || "").trim() || null;
+				} catch (e) {
+					console.warn("[articlewriter] 卷摘要生成失败：", e);
+					return null;
+				}
+			},
+			onProgress: (msg) => this.notifyGenProgress(msg), // v0.1.4+：延迟生成的进度反馈（持久 Notice + 空闲超时兜底）
+		});
 		await this.ensureSystemGuideFile(); // 首次运行把系统级写作指南从 data.json/内置默认播种到插件数据目录文件
 		void this.ensureUsageDocOnStartup(); // 工作目录已设且《使用说明.md》缺失时：自动生成并打开（首跑引导）；真·首启无工作目录则等 pickWorkDir 投放
 
@@ -110,6 +164,7 @@ export default class ArticleWriterPlugin extends Plugin {
 		this.addCommand({ id: "status-page", name: "打开写字台（当前书/章节/文件一览，点击小说或章节可切换激活）", callback: () => void this.openStatusPanel() });
 
 		this.registerView(LlmChatView.VIEW_TYPE, (leaf) => new LlmChatView(leaf, () => this.settings.llm, () => this.getChatSystemPrompt(), () => this.getActiveStoryInfo()));
+		this.registerView(GenProgressView.VIEW_TYPE, (leaf) => new GenProgressView(leaf)); // v0.1.4+：摘要延迟生成的工作过程面板（notifyGenProgress 驱动）
 		this.registerView(StatusView.VIEW_TYPE, (leaf) => new StatusView(leaf, () => this.getStatusSnapshot(), (name) => this.statusSwitchStory(name), (story, key) => this.statusActivateChapter(story, key), (a) => this.handleStatusAction(a)));
 		this.addRibbonIcon("message-square", "打开 LLM 对话窗口（常驻面板）", () => void this.openLlmPanel());
 		this.addRibbonIcon("book-open", "打开写字台（当前书/章节/文件）", () => void this.openStatusPanel());
@@ -2187,6 +2242,18 @@ export default class ArticleWriterPlugin extends Plugin {
 				await this.cmdNewStory(); // 复用建书三问流程
 				return;
 			}
+			case "rename-story": {
+				const cur = (await this.manager.loadState(a.name))?.title ?? a.name;
+				const t = await this.prompt(`改名「${a.name}」`, `新书名（当前：${cur || "无"}）`);
+				if (t == null || !t.trim() || t.trim() === cur) return; // 留空/未变更不执行
+				const r = await this.manager.renameStory(a.name, t.trim()); // title + 顶层目录同步改名 + 大纲起始标题行
+				if ((this.settings.lastStory || "") === a.name) {
+					this.settings.lastStory = r.newName; // 当前书记忆随目录改名，同时触发 LLM 面板上下文行刷新
+					await this.saveSettings();
+				}
+				new Notice(r.newName !== a.name ? `已改名为「${t.trim()}」，顶层目录已同步移动为 ${r.newName}` : `已改名为「${t.trim()}」（目录名不变）`, 6000);
+				return;
+			}
 			case "delete-story": {
 				const folder = this.app.vault.getAbstractFileByPath(this.manager.storyPath(a.name));
 				if (!(folder instanceof TFolder)) throw new Error("小说目录不存在或已被移动");
@@ -2364,6 +2431,14 @@ export default class ArticleWriterPlugin extends Plugin {
 				new Notice(`已在卷「${vol.name}」创建 ${base}`);
 				return;
 			}
+			case "complete-volume-docs": {
+				const vols = await this.manager.loadVolumes(a.story);
+				const vol = this.manager.findVolumeIn(vols, a.volId); // 按 id/名解析目标卷
+				if (!vol) throw new Error(`卷 ${a.volId} 不存在或已被删除`);
+				const created = await this.manager.ensureVolumeDocs(a.story, vol.id); // 缺失的设定模板补建，已存在保留不覆盖
+				new Notice(created.length ? `已为卷「${vol.name}」补全缺失文档：${created.join("、")}` : `卷「${vol.name}」的模板文档已齐全（卷大纲/人物/人物关系/场景），无需补全`, 8000);
+				return;
+			}
 			case "llm-write":
 			case "llm-continue":
 			case "llm-polish": {
@@ -2480,11 +2555,11 @@ export default class ArticleWriterPlugin extends Plugin {
 	}
 
 	/** 单次流式调用：空流按「结果为空」处理（返回""），用户中断向上抛 AbortError，其余异常原样抛出 */
-	private async streamOnce(cfg: LlmConfigDoc, messages: Message[], modal: StreamingPreviewModal): Promise<string> {
+	private async streamOnce(cfg: LlmConfigDoc, messages: Message[], sink: WritingStreamSink): Promise<string> {
 		try {
-			return await chatStream(cfg, messages, (d) => modal.append(d), undefined, modal.signal);
+			return await chatStream(cfg, messages, (d) => sink.append(d), undefined, sink.signal);
 		} catch (e) {
-			if (modal.signal.aborted || (e instanceof Error && e.name === "AbortError")) throw e;
+			if (sink.signal.aborted || (e instanceof Error && e.name === "AbortError")) throw e;
 			const msg = e instanceof Error ? e.message : String(e);
 			if (msg.includes("输出为空") || msg.includes("未返回内容")) return "";
 			throw e;
@@ -2492,38 +2567,38 @@ export default class ArticleWriterPlugin extends Plugin {
 	}
 
 	/** 生成失败统一提示：用户中断仅通知；其它错误额外在预览框内显示失败态 */
-	private genFailure(e: unknown, label: string, modal?: StreamingPreviewModal): void {
+	private genFailure(e: unknown, label: string, sink?: WritingStreamSink): void {
 		if (e instanceof Error && e.name === "AbortError") {
 			new Notice(`已停止生成，${label}未保存`);
 			return;
 		}
 		this.notifyError(`${label}失败`, e);
-		modal?.fail((e as Error)?.message || String(e));
+		sink?.fail((e as Error)?.message || String(e));
 	}
 
 	/** 流式生成 + 结果为空自动重试 ×3（对应 cmd 层 max_attempts=3）；失败/中断/全空均返回"" */
 	private async streamWithEmptyRetry(
 		cfg: LlmConfigDoc,
 		buildMessages: () => Message[],
-		modal: StreamingPreviewModal,
+		sink: WritingStreamSink,
 		label: string
 	): Promise<string> {
 		for (let attempt = 1; attempt <= 3; attempt++) {
 			let content: string;
 			try {
-				content = await this.streamOnce(cfg, buildMessages(), modal);
+				content = await this.streamOnce(cfg, buildMessages(), sink);
 			} catch (e) {
-				this.genFailure(e, label, modal);
+				this.genFailure(e, label, sink);
 				return "";
 			}
 			if (content.trim()) return content;
 			if (attempt < 3) {
 				new Notice(`生成结果为空（第${String(attempt)}次），正在重试…`, 6000);
-				modal.reset();
+				sink.reset();
 			}
 		}
 		new Notice(`✗ ${label}失败：连续 3 次生成结果为空`, 12000);
-		modal.fail("连续 3 次生成结果为空");
+		sink.fail("连续 3 次生成结果为空");
 		return "";
 	}
 
@@ -2533,27 +2608,27 @@ export default class ArticleWriterPlugin extends Plugin {
 		systemPrompt: string,
 		prompt: string,
 		writingStyle: string | undefined,
-		modal: StreamingPreviewModal
+		sink: WritingStreamSink
 	): Promise<string> {
 		const sysMsg: Message = { role: "system", content: systemPrompt };
 		let content = "";
 		for (let attempt = 1; attempt <= 3; attempt++) {
 			try {
-				content = await this.streamOnce(cfg, [sysMsg, { role: "user" as const, content: prompt }], modal);
+				content = await this.streamOnce(cfg, [sysMsg, { role: "user" as const, content: prompt }], sink);
 			} catch (e) {
-				this.genFailure(e, "创作", modal);
+				this.genFailure(e, "创作", sink);
 				return "";
 			}
 			if (!content.trim()) break; // 空结果 → 外层统一报错（与 Python break 一致）
 			const reason = validateStoryTypeFormat(content, writingStyle);
 			if (!reason) return content;
 			new Notice(`生成内容不符合【编写类型】（第${String(attempt)}次）：${reason}\n正在附加格式修正要求重新生成…`, 8000);
-			modal.reset();
+			sink.reset();
 			let retried: string;
 			try {
-				retried = await this.streamOnce(cfg, [sysMsg, { role: "user" as const, content: prompt + formatRetryNote(writingStyle, reason) }], modal);
+				retried = await this.streamOnce(cfg, [sysMsg, { role: "user" as const, content: prompt + formatRetryNote(writingStyle, reason) }], sink);
 			} catch (e) {
-				this.genFailure(e, "创作", modal);
+				this.genFailure(e, "创作", sink);
 				return "";
 			}
 			const r2 = validateStoryTypeFormat(retried, writingStyle);
@@ -2562,49 +2637,52 @@ export default class ArticleWriterPlugin extends Plugin {
 		}
 		if (!content.trim()) {
 			new Notice("✗ 创作失败：连续 3 次生成结果为空", 12000);
-			modal.fail("连续 3 次生成结果为空");
+			sink.fail("连续 3 次生成结果为空");
 		}
 		return content;
 	}
 
-	/** v0.0.15+ 卷摘要增量更新（随章节增加自动提取，插件特有、CLI 无对应概念）：写盘命令保存正文后调用——当前章归属某卷时，取该卷最新章节的 AI 摘要（缺失则正文尾部节选）与现有卷摘要合并为新的滚动摘要，落 <volDir>/卷摘要.md。全程尽力而为：任何失败仅警告不阻断写作流程 */
-	private async refreshVolumeSummary(cfg: LlmConfigDoc, storyName: string, chapterKey: string): Promise<void> {
+	// v0.1.4+ 起卷摘要不再在写盘命令后 eager 刷新：上下文组装需要时由 manager.ensureFreshVolumeSummary 延迟全量重建（输入=本卷全部成员章的新鲜章节摘要）。
+
+	/** v0.1.4+ 摘要延迟生成的进度反馈——专用面板展示工作过程（GenProgressView）：每个 LLM 任务实时追加一行带时间戳的日志并自动滚底；onProgress(null)=本轮结束，追加分隔完成行后面板保持展示，直到下一轮生成清空或用户手动关闭。面板打开/写入失败仅告警，绝不影响生成本身 */
+	private genRunOpen = false;
+	private async notifyGenProgress(msg: string | null): Promise<void> {
 		try {
-			const state = await this.manager.validatedState(storyName);
-			if (state.use_summaries === false) return;
-			const volId = parseChKey(chapterKey).vol;
-			if (!volId) return; // 书根章节不触发
-			const vols = await this.manager.loadVolumes(storyName);
-			const vol = vols[volId];
-			if (!vol) return;
-			const members = (await this.manager.listChapters(storyName)).filter((c) => c.vol === volId);
-			if (!members.length) return;
-			const last = members[members.length - 1]; // 阅读序最后一章
-			const body = await this.manager.readChapterContent(storyName, last.key);
-			const chSummary = await this.manager.getChapterSummaryText(storyName, last.key);
-			const chapterText = (chSummary || body.slice(-1500)).trim();
-			if (!chapterText) return;
-			const existing = await this.manager.readFreshVolumeSummary(storyName, volId);
-			const prompt = buildVolumeSummaryPrompt({
-				volumeName: vol.name || volId,
-				existingSummary: existing,
-				chapterLabel: this.keyLabel(last.key, await this.volNameMap(storyName)),
-				chapterText,
-			});
-			const text = (
-				await chatCompletion(
-					cfg,
-					[
-						{ role: "system" as const, content: VOL_SUMMARY_SYSTEM_PROMPT },
-						{ role: "user" as const, content: prompt },
-					],
-					{ max_tokens: 900, temperature: 0.4 }
-				)
-			).trim();
-			if (text) await this.manager.saveVolumeSummary(storyName, volId, text);
+			if (!msg) {
+				if (this.genRunOpen) {
+					const view = await this.getGenPanel(false); // 只找已开实例；用户中途关过面板则静默跳过收尾行
+					view?.finishRun();
+					this.genRunOpen = false;
+				}
+				return;
+			}
+			const view = await this.getGenPanel(true); // 无已开实例则新开 tab
+			if (!view) return;
+			if (!this.genRunOpen) {
+				view.startRun(this.settings.lastStory?.trim() || undefined);
+				this.genRunOpen = true;
+			}
+			view.appendLine(`⏳ ${msg}`);
 		} catch (e) {
-			this.notifyError("卷摘要更新失败（不影响正文）", e);
+			console.warn("[articlewriter] 更新摘要进度面板失败：", e);
 		}
+	}
+
+	/** 取「生成过程」面板视图：withOpen=false 只找已开启的实例（收尾用）；true=没有时新开一个 tab。失败返回 null */
+	private async getGenPanel(withOpen: boolean): Promise<GenProgressView | null> {
+		for (const l of this.app.workspace.getLeavesOfType(GenProgressView.VIEW_TYPE)) if (l.view instanceof GenProgressView) return l.view;
+		if (!withOpen) return null;
+		const leaf = this.app.workspace.getLeaf("tab");
+		await leaf.setViewState({ type: GenProgressView.VIEW_TYPE, active: true });
+		return leaf.view instanceof GenProgressView ? leaf.view : null;
+	}
+
+	/** v0.1.4+ 打开统一生成面板并进入流式小节（与摘要日志同一 ItemView，替换原独立 StreamingPreviewModal）：无实例则新开 tab；失败返回 null */
+	private async beginWritingPanel(title: string): Promise<GenProgressView | null> {
+		const view = await this.getGenPanel(true);
+		if (!view) return null;
+		view.beginStream(title);
+		return view;
 	}
 
 	/** 生成后自动去AI味（对应 _auto_clean_ai）：命中 AI 常用词的句子打回 LLM 重写并原位替换；失败保留原文 */
@@ -2804,8 +2882,8 @@ export default class ArticleWriterPlugin extends Plugin {
 			});
 
 			// 流式生成（带编写类型格式校验重试）
-			const modal = new StreamingPreviewModal(this.app, `创作 ${this.keyLabel(targetKey, volNames, title)}`);
-			modal.open();
+			const modal = await this.beginWritingPanel(`创作 ${this.keyLabel(targetKey, volNames, title)}`);
+			if (!modal) { new Notice("无法打开生成面板，本次操作已取消", 8000); return; }
 			let content = await this.generateChapterStreamed(setup.cfg, sp, built.prompt, state.writing_style, modal);
 			if (modal.signal.aborted) return;
 			if (!content.trim()) return;
@@ -2832,8 +2910,7 @@ export default class ArticleWriterPlugin extends Plugin {
 				await this.manager.createChapter(story, title, targetVol); // 目标容器内自动顺延编号
 				structureReady = true;
 			}
-			const words = await this.manager.setChapterBody(story, targetKey, content);
-			void this.refreshVolumeSummary(setup.cfg, story, targetKey); // v0.0.15+ 卷摘要增量更新（非阻塞，失败仅警告）
+			const words = await this.manager.setChapterBody(story, targetKey, content); // v0.1.4+：摘要不再写盘后即时生成——下次组装写作上下文时按需延迟生成（带进度反馈）
 			if (wasNew) {
 				let finalOutline = outlineForGen;
 				if (instruction) finalOutline = appendOutlineInstruction(finalOutline, "创作要点", instruction);
@@ -2942,8 +3019,8 @@ export default class ArticleWriterPlugin extends Plugin {
 				wordRange,
 			});
 
-			const modal = new StreamingPreviewModal(this.app, `续写 ${this.keyLabel(currentKey, volNames, meta?.title || chEntry.title)}`);
-			modal.open();
+			const modal = await this.beginWritingPanel(`续写 ${this.keyLabel(currentKey, volNames, meta?.title || chEntry.title)}`);
+			if (!modal) { new Notice("无法打开生成面板，本次操作已取消", 8000); return; }
 			let content = await this.streamWithEmptyRetry(
 				setup.cfg,
 				() => [
@@ -2972,8 +3049,7 @@ export default class ArticleWriterPlugin extends Plugin {
 				new Notice("未保存（续写内容仅预览）", 6000);
 				return;
 			}
-			const words = await this.manager.setChapterBody(story, currentKey, newContent);
-			void this.refreshVolumeSummary(setup.cfg, story, currentKey); // v0.0.15+ 卷摘要增量更新（非阻塞，失败仅警告）
+			const words = await this.manager.setChapterBody(story, currentKey, newContent); // v0.1.4+：摘要延迟到下次上下文组装时按需生成
 			try {
 				const f = await this.manager.chapterBodyFile(story, currentKey);
 				if (f instanceof TFile) await this.manager.openMarkdown(f.path);
@@ -3033,8 +3109,8 @@ export default class ArticleWriterPlugin extends Plugin {
 				storyType: state.writing_style,
 			});
 
-			const modal = new StreamingPreviewModal(this.app, `重写 ${chLabel}`);
-			modal.open();
+			const modal = await this.beginWritingPanel(`重写 ${chLabel}`);
+			if (!modal) { new Notice("无法打开生成面板，本次操作已取消", 8000); return; }
 			let content = await this.streamWithEmptyRetry(
 				setup.cfg,
 				() => [
@@ -3062,8 +3138,7 @@ export default class ArticleWriterPlugin extends Plugin {
 				new Notice("未保存（重写结果仅预览）", 6000);
 				return;
 			}
-			const words = await this.manager.setChapterBody(story, num, content); // 全量覆盖
-			void this.refreshVolumeSummary(setup.cfg, story, num); // v0.0.15+ 卷摘要增量更新（非阻塞，失败仅警告）
+			const words = await this.manager.setChapterBody(story, num, content); // 全量覆盖；v0.1.4+：摘要延迟到下次上下文组装时按需生成
 			try {
 				const f = await this.manager.chapterBodyFile(story, num);
 				if (f instanceof TFile) await this.manager.openMarkdown(f.path);
@@ -3110,8 +3185,8 @@ export default class ArticleWriterPlugin extends Plugin {
 				storyType: state.writing_style,
 			});
 
-			const modal = new StreamingPreviewModal(this.app, `润色 ${curLabel}`);
-			modal.open();
+			const modal = await this.beginWritingPanel(`润色 ${curLabel}`);
+			if (!modal) { new Notice("无法打开生成面板，本次操作已取消", 8000); return; }
 			let content = await this.streamWithEmptyRetry(
 				setup.cfg,
 				() => [
@@ -3132,8 +3207,7 @@ export default class ArticleWriterPlugin extends Plugin {
 				new Notice("未保存（润色结果仅预览）", 6000);
 				return;
 			}
-			const words = await this.manager.setChapterBody(story, currentKey, content); // 全量覆盖原章节
-			void this.refreshVolumeSummary(setup.cfg, story, currentKey); // v0.0.15+ 卷摘要增量更新（非阻塞，失败仅警告）
+			const words = await this.manager.setChapterBody(story, currentKey, content); // 全量覆盖原章节；v0.1.4+：摘要延迟到下次上下文组装时按需生成
 			try {
 				const f = await this.manager.chapterBodyFile(story, currentKey);
 				if (f instanceof TFile) await this.manager.openMarkdown(f.path);
@@ -3194,8 +3268,8 @@ export default class ArticleWriterPlugin extends Plugin {
 				new Notice("✗ 清洗结果为空", 8000);
 				return;
 			}
-			const modal = new StreamingPreviewModal(this.app, `去AI味结果 · ${chLabel}`);
-			modal.open();
+			const modal = await this.beginWritingPanel(`去AI味结果 · ${chLabel}`);
+			if (!modal) { new Notice("无法打开生成面板，本次操作已取消", 8000); return; }
 			modal.append(cleaned);
 			modal.finish();
 			const keep = await modal.done;
@@ -3203,8 +3277,7 @@ export default class ArticleWriterPlugin extends Plugin {
 				new Notice("未保存（清洗结果仅预览）", 6000);
 				return;
 			}
-			const words = await this.manager.setChapterBody(story, num, cleaned); // 全量覆盖
-			void this.refreshVolumeSummary(setup.cfg, story, num); // v0.0.15+ 卷摘要增量更新（非阻塞，失败仅警告）
+			const words = await this.manager.setChapterBody(story, num, cleaned); // 全量覆盖；v0.1.4+：摘要延迟到下次上下文组装时按需生成
 			try {
 				const f = await this.manager.chapterBodyFile(story, num);
 				if (f instanceof TFile) await this.manager.openMarkdown(f.path);
@@ -3286,8 +3359,8 @@ export default class ArticleWriterPlugin extends Plugin {
 				return;
 			}
 
-			const modal = new StreamingPreviewModal(this.app, `审阅报告 · ${chLabel}`);
-			modal.open();
+			const modal = await this.beginWritingPanel(`审阅报告 · ${chLabel}`);
+			if (!modal) { new Notice("无法打开生成面板，本次操作已取消", 8000); return; }
 			modal.append(report);
 			modal.finish();
 			const keep = await modal.done;
@@ -3341,6 +3414,8 @@ class ArticleWriterSettingTab extends PluginSettingTab {
 		defs.push({ name: "工作目录（work_dir）", desc: "写小说的文件夹（vault 内已有文件夹）。首次使用任何命令时会自动弹出选择器让你选定；以后建书/建章/打开文档等全部在该目录下操作。每个小说是其下一个子文件夹：故事状态.md、大纲.md、第NN章-标题/章节.md 等", control: { key: "workDir", type: "text", placeholder: "首次使用时自动选择" } });
 		defs.push({ name: "重新选择工作目录…", desc: "弹出文件夹选择器切换 work_dir（同「选择工作目录」命令）", action: () => void this.plugin.pickWorkDir(false) });
 		defs.push({ name: "创建后自动打开文档", desc: "新建小说/章节后立即在标签页中打开对应正文或大纲", control: { key: "autoOpenOnCreate", type: "toggle" } });
+		defs.push({ name: "前文参考章数 prevN", desc: "写作命令生成提示词时注入【前文内容】的最近 N 章（每章取 AI 摘要、缺失自动生成；0=不注入前文）。留空=默认 3。卷模式下窗口限本卷，不再拉取他卷章节细节", control: { key: "prevChapters", type: "text", placeholder: "默认 3" } });
+		defs.push({ name: "注入整卷《卷摘要》", desc: "开启后写作上下文额外包含当前卷完整《卷摘要》，跨卷缺口另以各前卷《卷摘要》填充（含触发 LLM 重建）；关闭=严格只注入最近 N 章（对齐 Python 原版语义，默认关）", control: { key: "includeVolumeSummary", type: "toggle" } });
 
 		const llmNameMap = cfgs.reduce<Record<string, string>>((m, c) => { m[c.name] = c.name; return m; }, {}); // ES2019 同名 API 的低版本等价写法：构造 name→name 恒等映射
 		defs.push({ type: "group", heading: "LLM 全局设置", items: [
@@ -3376,6 +3451,8 @@ class ArticleWriterSettingTab extends PluginSettingTab {
 		const s = this.plugin.settings;
 		if (key === "workDir") return s.workDir ?? "";
 		if (key === "autoOpenOnCreate") return !!s.autoOpenOnCreate;
+		if (key === "prevChapters") return s.prevChapters == null ? "" : String(s.prevChapters); // v0.1.4+：空=按内置默认 3
+		if (key === "includeVolumeSummary") return !!s.includeVolumeSummary; // v0.1.4+：卷摘要注入开关（缺省=false）
 		const c = this.conf();
 		if (key === "llm.active_llm") {
 			const names = (c.llm_configs ?? []).map((x) => x.name);
@@ -3403,6 +3480,17 @@ class ArticleWriterSettingTab extends PluginSettingTab {
 		}
 		if (key === "autoOpenOnCreate") {
 			s.autoOpenOnCreate = value === true;
+			await this.plugin.saveSettings();
+			return;
+		}
+		if (key === "prevChapters") { // v0.1.4+：非负整数；留空/非法=清除回落内置默认 3（对齐 cfg 数值字段「空=undefined」约定）
+			const n = Number(str);
+			s.prevChapters = str.trim() !== "" && !Number.isNaN(n) && n >= 0 ? Math.floor(n) : undefined;
+			await this.plugin.saveSettings();
+			return;
+		}
+		if (key === "includeVolumeSummary") { // v0.1.4+：布尔开关，关闭存 false（缺省即关）
+			s.includeVolumeSummary = value === true;
 			await this.plugin.saveSettings();
 			return;
 		}
