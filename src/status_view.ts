@@ -273,13 +273,9 @@ export class StatusView extends ItemView {
 	/** 「案头资料」「书稿」两个小节；isActive=该书是否为当前激活小说（仅其下章节/卷可被 Radio 选中激活）。书稿小节按归属卷渲染为树节点（卷名行 + 缩进章节），未归属章节平铺兜底 */
 	private renderStorySections(parent: HTMLElement, d: StatusDetail, isActive: boolean): void {
 		if (d.globalFiles.length) {
-			// 案头资料分组：标题行与组内空白右键均为「书根目录新建文章 / 新建章节 / 新建卷」（不含删除）
-			const volModeG = d.useVolumes !== false; // v0.0.16+：无卷模式隐藏建卷入口
+			// 案头资料分组：标题行与组内空白右键仅「书根目录新建文章」（v0.1.6+：不再提供新建章节/新建卷——建章在书稿具体章节/卷节点上、建卷在书籍列表标题行或书稿小节标题）
 			const gItems = (): Array<{ label: string; run: () => void } | { sep: true }> => [
 				{ label: "新建文章…", run: () => this.runStatusAction({ kind: "new-file", story: d.storyName, key: null }) },
-				{ sep: true },
-				{ label: "新建章节…", run: () => this.runStatusAction({ kind: "new-chapter", story: d.storyName }) },
-				...(volModeG ? [{ label: "新建卷…", run: () => this.runStatusAction({ kind: "create-volume", story: d.storyName }) }] : []),
 			];
 			const gBody = this.sectionHead(parent, `案头资料（${String(d.globalFiles.length)}）`, `gdocs:${d.storyName}`, (e) => this.showContextMenu(e, gItems()));
 			if (gBody) {
@@ -295,9 +291,9 @@ export class StatusView extends ItemView {
 		const volModeC = d.useVolumes !== false; // v0.0.16+：无卷模式隐藏建卷入口
 		const chBody = this.sectionHead(parent, `书稿（${String(d.chapters.length)}）`, `chapters:${d.storyName}`, (e) =>
 			this.showContextMenu(e, [
-				{ label: "新建章节…", run: () => this.runStatusAction({ kind: "new-chapter", story: d.storyName }) },
+				// v0.1.6+：小节标题不再提供「新建章节」（建章走具体章节行/卷节点的右键），仅保留有卷模式的建卷入口；空列表时 showContextMenu 自动不弹
 				...(volModeC ? [{ label: "新建卷…", run: () => this.runStatusAction({ kind: "create-volume", story: d.storyName }) }] : []),
-			]), // 右键「章节」分组标题→直接对该书建章（有卷模式另可建卷）
+			]),
 		);
 		if (!chBody) return;
 		chBody.addClass("aw-st-kids"); // 与「案头资料」同款：子节点（卷/平铺章）整体缩进并带左侧指示线，体现与标题的包含关系

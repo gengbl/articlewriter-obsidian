@@ -2033,7 +2033,7 @@ export class StoryManager {
 				skipped.push(ch.num);
 				continue;
 			}
-			parts.push(`## ${doc.numToCn(ch.num)}章 ${ch.title}\n\n${text}`);
+			parts.push(`## 第${doc.numToCn(ch.num)}章 ${ch.title}\n\n${text}`); // v0.1.6+：章节号带「第」前缀，对齐 CLI /pack（如「## 第二十章 虎妖初现」）
 			packed.push({ num: ch.num, words: countPureWords(text) });
 		}
 		if (!packed.length) throw new Error("所选章节均无正文，未生成文件");

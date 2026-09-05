@@ -21,7 +21,7 @@
 | `outline-append-current` | `/outline chapter N [内容]` | 追加当前章大纲：去重合并 + `[伏]...[/]` 标记解析入库伏笔记录 |
 | `open-chapter-outline` | —（配合 `/open 号 大纲`） | 打开当前章 `章节大纲.md`（缺失先建模板） |
  | `chapter-delete` / `chapter-rename` / `chapter-renumber` | `/chapter delete`、目录改名、编号重排 | 删除=回收站+清理元数据与归属引用，**被删号之后仍有章节时自动补洞重新排号**（复用 renumberChapters：后续各章 -1、文档/伏笔引用重写，保持 1..N 连续；返回 resequenced 供提示）；重命名同步目录名与文档内引用；renumber 手动连续化并改写交叉引用。三者迁移路径共用防幽灵章机制：真实 FS 层 adapter.rename+exists 逐步强校验、重复号残留即中止（assertUniqueKeys 拒绝并要求手工清理）；listChapters 仅过滤元数据索引陈旧条目——v0.1.4+ 起磁盘上存在的章节目录一律视为存活章节（无「章节.md」的空正文章照常列出、可被写作命令补写正文），旧 quarantineHollowChapters 预隔离/收尾清扫机制已整体移除（用户约定「有文件夹即正常」） |
-| `pack-chapters` | `/pack [选择][路径]` | 正文打包单 MD：中文章节号标题 + `---` 分隔；支持范围/列表/all（表达式解析在 `md_docs.parseChapterSelection`）；默认输出 `<书名>-第X-Y章-合集.md`。与导出卷共用私有装配 buildPackParts（逐章读《章节.md》去 H1、空正文章跳过计入 skipped）+ writePackFile（outputPath 带扩展名=完整文件名、不带当目录拼 fileName）——改合辑格式只动这两处 |
+| `pack-chapters` | `/pack [选择][路径]` | 正文打包单 MD：章标题行「## 第N章 章节名」（中文章节号带「第」前缀，v0.1.6+ 对齐 CLI /pack）+ `---` 分隔；支持范围/列表/all（表达式解析在 `md_docs.parseChapterSelection`）；默认输出 `<书名>-第X-Y章-合集.md`。与导出卷共用私有装配 buildPackParts（逐章读《章节.md》去 H1、空正文章跳过计入 skipped）+ writePackFile（outputPath 带扩展名=完整文件名、不带当目录拼 fileName）——改合辑格式只动这两处 |
 | `pack-volume` | —（插件新增：导出卷合集） | 选卷→该卷实体目录下全部章节（按位置判归属，入口先过 ensureVolumeLayout 门禁保证位置==归属）正文合一 MD；无章报错提示先「按卷整理目录」归位；默认输出 `<书名>-<卷名>-合集.md`；写字台面板卷节点右键「导出本卷合集…」同义入口（StatusAction export-volume），管理卷菜单亦有同款项 |
 | `rescan-story` | `/scan` | 从现有 MD 重建故事状态.md（只初始化，不切小说不改 work_dir） |
 | `set-style` | `/style` | 切换编写类型 writing_style（预设或自定义），持久化到 state |

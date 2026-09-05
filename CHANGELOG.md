@@ -95,3 +95,5 @@
 - 2026-09-05：写作上下文两个 bug 修复——①prevN=3 却注入整卷内容：根因是 loadWritingData 无条件把当前卷《卷摘要》（覆盖全卷章节）与跨卷前卷 digest 注入提示词，新增设置 `settings.includeVolumeSummary`（StoryManagerOptions.includeVolumeSummary 回调、设置页「注入整卷《卷摘要》」toggle 默认关）门控 volSummary/prevVolSummaries 两处注入及其 LLM 重建触发，关闭时严格只按 prevN 注入单章摘要（对齐 Python CLI context_builder 的 prev_n 语义）。②缺《章节.md》章节目录从书籍列表消失：移除 listChapters 的空心目录过滤与整个 quarantineHollowChapters 机制（方法+7 处调用点），改为磁盘上存在的章节目录一律视为存活章节（标题取自目录名、可被写作命令补写正文），重复号残留由 assertUniqueKeys 显式拒绝。story_manager.ts/main.ts/docs/使用说明.md/scope.md/data-model.md/code-structure.md/command-reference.md 同步，npm run build tsc 零错误 + node --check OK，release/main.js 部署 geng_bl vault（data.json / 系统级指南保留）。
 
 - 2026-09-05：社区校验器告警修复——main.ts `onProgress` 回调原直接返回 async `notifyGenProgress` 的 Promise（契约要求 void），改显式 `{ void … }` 包裹；v0.1.4 发布后补丁，随下次版本生效。
+
+- 2026-09-05：打包章节合集/导出卷合辑的章标题行补「第」前缀（「## 第二十章 虎妖初现」，对齐 Python CLI /pack）；写字台右键菜单收敛——书稿小节标题移除「新建章节…」（仅留有卷模式的「新建卷…」）、案头资料组仅保留「新建文章…」（建章走具体章节行/卷节点、建卷走书籍列表标题行或书稿小节标题）；《使用说明》升级为完整指令说明（全部命令逐条列对齐 CLI+参数/交互流程，补齐生成使用说明等缺漏项），agents/ui-conventions·code-structure·command-reference 同步。
