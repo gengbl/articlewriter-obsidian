@@ -118,3 +118,4 @@
 
 - 2026-09-05：写字台各级别文件列表中参与写作提示词生成的模板文档加粗显示——prompts.ts 增 PROMPT_DOCS_ROOT/VOLUME/CHAPTER 名集合（书根六件+旧别名角色关系.md、卷级四件套〔卷摘要因注入开关默认关不计入〕、章节播种六件），status_view 三处文件行命中者加 .aw-st-pdoc（700 字重+正文色）并设悬停 title「参与写作提示词生成」。
 - 2026-09-05：新建资料/文档/文章优先标准模板——案头资料「新建资料…」、卷内「在本卷新建文档…」与章节块「新建文章…」改为先 pickAction 列出该容器标准模板文档（story_manager 新增 standardDocs/ensureStandardDoc，chKey/volId/书根三级解析；章节六件套提取公共 chapterDocTemplates(num,title)，建章播种与 /scan 补缺改同一来源），已存在项禁用标注、选中按模板创建不覆盖，末项「自定义文件名…」回落原名输入建空文件。
+- 2026-09-05：写字台提示词参与文档标识由加粗改为主题成功色（绿）——`.aw-st-pdoc` 去掉 font-weight:700 改用 `color: var(--text-success)`，保持行内观感一致且不用链接蓝避免误认可点链接；悬停 title 说明不变。
