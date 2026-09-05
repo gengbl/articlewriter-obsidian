@@ -2017,6 +2017,63 @@ export class StoryManager {
 		return this.writePackFile(this.storyPath(storyName), fileName, outputPath, await this.buildPackParts(chapters));
 	}
 
+	/** 导出书稿（写字台「书稿」小节标题右键）：所选范围全部章节《章节.md》正文合一 MD，阅读序排列。spec 语义同 /pack（留空/all/全部=整本——不回落 current_volume、区别于 /pack；支持卷名前缀+区间/列表）。有卷模式在每个卷组首章前带「# 第N卷 · 卷名」标题行（卷号按《卷.md》order 序号），无卷/平铺输出不带标题；默认文件名 <书名>-书稿.md（重导覆盖同名文件） */
+	async packStory(storyName: string, spec: string, forcedVolId?: string | null, outputPath = "") {
+		const expr = String(spec ?? "").trim();
+		let keys: string[];
+		if (!expr || /^(all|全部)$/i.test(expr)) {
+			keys = (await this.listChapters(storyName)).map((c) => c.key); // 整本（含书根未归卷 + 各卷）
+		} else {
+			const res = await this.resolvePackSelection(storyName, expr, forcedVolId);
+			if ("ambiguous" in res) throw new Error("PACK_AMBIGUOUS_CONTAINER"); // 调用方应 pickAction 选容器后以 forcedVolId 重入
+			keys = res.keys;
+		}
+		return this.packStoryByKeys(storyName, keys, outputPath);
+	}
+
+	private async packStoryByKeys(
+		storyName: string,
+		keys: string[],
+		outputPath = ""
+	): Promise<{ path: string; packed: Array<{ num: number; words: number }>; skipped: number[] }> {
+		const all = await this.listChapters(storyName); // 阅读序：书根在前 + 各卷按《卷.md》order、组内本地号升序
+		const entries = keys.map((k) => all.find((c) => c.key === k)).filter((c): c is NonNullable<typeof c> => !!c);
+		if (!entries.length) throw new Error("没有可导出的章节");
+		let volsMap: Record<string, doc.VolumeInfo> = {};
+		try {
+			volsMap = await this.loadVolumes(storyName);
+		} catch { /* 无卷 → 平铺输出 */ }
+		const volSeq = new Map(Object.values(volsMap).sort((a, b) => a.order - b.order || a.id.localeCompare(b.id)).map((v, i) => [v.id, i + 1])); // 卷号=卷列表序号（与写字台「第N卷 · 卷名」一致）
+		const bodyRe = /^#\s.*$/m;
+		const parts: string[] = [];
+		const packed: Array<{ num: number; words: number }> = [];
+		const skipped: number[] = [];
+		let lastVol = "";
+		for (const ch of entries) {
+			const f = this.vault.getAbstractFileByPath(`${ch.dir.path}/章节.md`);
+			let text = f instanceof TFile ? await this.vault.read(f) : "";
+			text = text.replace(bodyRe, "").trim();
+			if (!text) {
+				skipped.push(ch.num);
+				continue;
+			}
+			const chap = `## 第${doc.numToCn(ch.num)}章 ${ch.title}\n\n${text}`;
+			const v = ch.vol ?? "";
+			if (v && v !== lastVol) { // 有卷模式：每卷组首带含卷号+卷名的标题行，贴附该卷首个 part（中间不插分隔线）；无卷/书根平铺不带
+				const seqN = volSeq.get(v);
+				parts.push(`# ${seqN ? `第${doc.numToCn(seqN)}卷` : ""}${volsMap[v]?.name ? ` · ${volsMap[v].name}` : ""}\n\n${chap}`);
+				lastVol = v;
+			} else {
+				parts.push(chap);
+			}
+			packed.push({ num: ch.num, words: countPureWords(text) });
+		}
+		if (!packed.length) throw new Error("所选章节均无正文，未生成文件");
+		const state = (await this.loadState(storyName)) ?? this.emptyState(storyName);
+		const fileName = safeFilename(`${this.bookTitle(storyName, state)}-书稿`) + ".md";
+		return this.writePackFile(this.storyPath(storyName), fileName, outputPath, { parts, packed, skipped });
+	}
+
 	/** /pack 与导出卷共用的合辑装配：逐章读《章节.md》正文（去 H1 标题行）、以分隔线拼接；空正文章节跳过并计入 skipped */
 	private async buildPackParts(
 		chapters: Array<{ key: string; num: number; title: string; dir: TFolder }>

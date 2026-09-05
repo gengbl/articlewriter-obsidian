@@ -2352,6 +2352,30 @@ export default class ArticleWriterPlugin extends Plugin {
 				await this.manager.openMarkdown(r.path);
 				return;
 			}
+			case "export-story": {
+				const specText = await this.prompt("导出书稿", "范围：留空/all/全部=整本；支持区间如 3-7、列表如 1、4、5（多卷可加卷名前缀限定，如「风起 3-7」）");
+				if (specText == null) return;
+				const outText = await this.prompt("输出路径", "留空=存到该小说目录下 <书名>-书稿.md（重导覆盖同名文件）");
+				if (outText == null) return;
+				try {
+					let r: Awaited<ReturnType<typeof this.manager.packStory>>;
+					try {
+						r = await this.manager.packStory(a.story, specText.trim(), undefined, outText.trim());
+					} catch (e2) {
+						if (!String((e2 as Error)?.message).includes("PACK_AMBIGUOUS_CONTAINER")) throw e2; // 裸号跨容器有歧义 → 选容器后以 forcedVolId 重入
+						const vols = await this.manager.volumeList(a.story);
+						const idx = await this.pickAction("章节号在多个容器里都存在，请选择所在卷", vols.map((v) => ({ label: v.name })));
+						if (idx == null) return;
+						r = await this.manager.packStory(a.story, specText.trim(), vols[idx].id, outText.trim());
+					}
+					const words = r.packed.reduce((s, p) => s + p.words, 0);
+					new Notice(`已生成 ${r.path}（${r.packed.length} 章，纯文字共 ${words} 字${r.skipped.length ? `；跳过无正文：${r.skipped.map((n) => this.chapterLabel(n)).join("、")}` : ""}）`, 8000);
+					await this.manager.openMarkdown(r.path);
+				} catch (e) {
+					this.notifyError("导出书稿失败", e);
+				}
+				return;
+			}
 			case "rename-chapter": {
 				if (!(await this.ensureVolumeLayout(a.story))) return; // 平面残留 → 先引导按卷整理
 				const curNum = parseChKey(a.key).num;

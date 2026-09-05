@@ -62,6 +62,7 @@ export type StatusAction =
 	| { kind: "delete-volume"; story: string; id: string } // 级联删除卷：其归属章节一并移入回收站（先弹确认框列明受影响章节）
 	| { kind: "activate-volume"; story: string; id: string } // 行尾 Radio 选中：设 current_volume 并跳到该卷最后一章（对齐 /volume use）
 	| { kind: "export-volume"; story: string; id: string } // 导出本卷合集：全部章节正文合一 MD（/pack 同款格式，默认 <书名>-<卷名>-合集.md）
+	| { kind: "export-story"; story: string } // 「书稿」小节标题右键「导出书稿…」：所选范围全部章节《章节.md》正文合一 MD（留空/all=整本；有卷模式输出含「第N卷 · 卷名」标题行），默认 <书名>-书稿.md
 	| { kind: "rename-chapter"; story: string; key: string } // 改写章名：重命名目录并同步文档引用（对齐 /chapter rename）；key=复合键
 	| { kind: "delete-chapter"; story: string; key: string }
 	| { kind: "new-file"; story: string; key: string | null } // key=null → 书根目录；否则该章节目录
@@ -291,8 +292,9 @@ export class StatusView extends ItemView {
 		const volModeC = d.useVolumes !== false; // v0.0.16+：无卷模式隐藏建卷入口
 		const chBody = this.sectionHead(parent, `书稿（${String(d.chapters.length)}）`, `chapters:${d.storyName}`, (e) =>
 			this.showContextMenu(e, [
-				// v0.1.6+：小节标题不再提供「新建章节」（建章走具体章节行/卷节点的右键），仅保留有卷模式的建卷入口；空列表时 showContextMenu 自动不弹
+				// v0.1.6+：小节标题不再提供「新建章节」（建章走具体章节行/卷节点右键），仅保留有卷模式的建卷入口 + 「导出书稿…」
 				...(volModeC ? [{ label: "新建卷…", run: () => this.runStatusAction({ kind: "create-volume", story: d.storyName }) }] : []),
+				{ label: "导出书稿…", run: () => this.runStatusAction({ kind: "export-story", story: d.storyName }) }, // 全部/所选范围章节《章节.md》正文合一 MD，有卷模式带卷号+卷名标题行
 			]),
 		);
 		if (!chBody) return;
