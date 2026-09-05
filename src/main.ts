@@ -1028,7 +1028,12 @@ export default class ArticleWriterPlugin extends Plugin {
 					break;
 				}
 			case 5: {
-				const outText = await this.prompt(`导出卷「${vol.name}」`, "输出路径（留空=存到该小说目录下，文件名自动为 <书名>-<卷名>-合集.md）");
+				const outText = await this.prompt(`导出卷「${vol.name}」`, "输出位置（留空用默认文件名）", [
+				"将该卷全部章节的《章节.md》正文合一 MD（按章序排列），输出路径规则：",
+				"· 留空 —— 存到该小说目录下 <书名>-<卷名>-合集.md（再次导出会覆盖同名文件）",
+				"· 以 .md 结尾 —— 视为完整文件名，原样使用",
+				"· 其他 —— 视为目标目录，自动拼上默认文件名 <书名>-<卷名>-合集.md",
+			].join("\n"));
 				if (outText == null) break;
 				const r = await this.manager.packVolume(story, vol.id, outText.trim());
 				const words = r.packed.reduce((s, p) => s + p.words, 0);
@@ -1681,7 +1686,12 @@ export default class ArticleWriterPlugin extends Plugin {
 			);
 			if (idx == null) return;
 			const vol = vols[idx];
-			const outText = await this.prompt(`导出卷「${vol.name}」`, "输出路径（留空=存到该小说目录下，文件名自动为 <书名>-<卷名>-合集.md）");
+			const outText = await this.prompt(`导出卷「${vol.name}」`, "输出位置（留空用默认文件名）", [
+				"将该卷全部章节的《章节.md》正文合一 MD（按章序排列），输出路径规则：",
+				"· 留空 —— 存到该小说目录下 <书名>-<卷名>-合集.md（再次导出会覆盖同名文件）",
+				"· 以 .md 结尾 —— 视为完整文件名，原样使用",
+				"· 其他 —— 视为目标目录，自动拼上默认文件名 <书名>-<卷名>-合集.md",
+			].join("\n"));
 			if (outText == null) return;
 			const r = await this.manager.packVolume(story, vol.id, outText.trim());
 			const words = r.packed.reduce((s, p) => s + p.words, 0);
@@ -2345,7 +2355,12 @@ export default class ArticleWriterPlugin extends Plugin {
 				const vols = await this.manager.volumeList(a.story);
 				const vol = vols.find((v) => v.id === a.id);
 				if (!vol) throw new Error(`卷 ${a.id} 不存在或已被删除`);
-				const outText = await this.prompt(`导出卷「${vol.name}」`, "输出路径（留空=存到该小说目录下，文件名自动为 <书名>-<卷名>-合集.md）");
+				const outText = await this.prompt(`导出卷「${vol.name}」`, "输出位置（留空用默认文件名）", [
+				"将该卷全部章节的《章节.md》正文合一 MD（按章序排列），输出路径规则：",
+				"· 留空 —— 存到该小说目录下 <书名>-<卷名>-合集.md（再次导出会覆盖同名文件）",
+				"· 以 .md 结尾 —— 视为完整文件名，原样使用",
+				"· 其他 —— 视为目标目录，自动拼上默认文件名 <书名>-<卷名>-合集.md",
+			].join("\n"));
 				if (outText == null) return;
 				const r = await this.manager.packVolume(a.story, vol.id, outText.trim());
 				const words = r.packed.reduce((s, p) => s + p.words, 0);
