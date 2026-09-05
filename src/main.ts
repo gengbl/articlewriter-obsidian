@@ -1652,9 +1652,20 @@ export default class ArticleWriterPlugin extends Plugin {
 		if (!(await this.ensureWorkDir())) return;
 		const story = await this.requireStory();
 		if (!story) return;
-		const specText = await this.prompt("打包章节合集", '范围：留空=当前章；支持 all/全部、区间如 3-7、列表如 1、4、5');
+		const specText = await this.prompt("打包章节合集", "输入范围表达式（留空=仅当前章）", [
+			"将所选范围内章节的《章节.md》正文合一 MD、按阅读序排列：",
+			"· 留空 —— 只打当前章",
+			"· all / 全部 —— 整本书（书根未归卷章节 + 各卷）",
+			"· 区间 —— 如 3-7 或 三至七（容器内本地章号，自动升序）",
+			"· 列表 —— 如 1、4、5（逗号/顿号/空格分隔均可）",
+			"· 多卷可加卷名前缀限定范围，如 「风起 3-7」（裸号跨多个容器会报歧义，请加前缀区分）",
+		].join("\n"));
 		if (specText == null) return;
-		const outText = await this.prompt("输出路径", "留空=存到小说目录下 <书名>-第X-Y章-合集.md");
+		const outText = await this.prompt("输出路径", "输出位置（留空用默认文件名）", [
+			"· 留空 —— 存到该小说目录下 <书名>-第X-Y章-合集.md（单章为 <书名>-第X章-合集.md；重打包覆盖同名文件）",
+			"· 以 .md 结尾 —— 视为完整文件名，原样使用",
+			"· 其他 —— 视为目标目录，自动拼上默认文件名",
+		].join("\n"));
 		if (outText == null) return;
 		try {
 			const r = await this.manager.packChapters(story, specText.trim(), outText.trim());

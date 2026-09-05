@@ -333,6 +333,7 @@ export class StatusView extends ItemView {
 			{ label: "新建卷…", run: () => this.runStatusAction({ kind: "create-volume", story: d.storyName }) },
 			{ sep: true },
 			{ label: "重命名本卷…", run: () => this.runStatusAction({ kind: "rename-volume", story: d.storyName, id: v.id }) },
+			{ label: "打包章节全集…", run: () => this.runStatusAction({ kind: "export-story", story: d.storyName }) }, // 整书口径（留空=all=整本），与「书稿」小节标题的「导出书稿…」同义；置于「导出本卷合集…」之上形成 全/单卷 对照
 			{ label: "导出本卷合集…", run: () => this.runStatusAction({ kind: "export-volume", story: d.storyName, id: v.id }) }, // 空卷由 manager 报错提示先整理归位
 			{ label: `删除本卷「${v.name}」（级联删其 ${String(chs.length)} 章）`, danger: true, run: () => this.runStatusAction({ kind: "delete-volume", story: d.storyName, id: v.id }) },
 		];
