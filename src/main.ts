@@ -2501,6 +2501,11 @@ export default class ArticleWriterPlugin extends Plugin {
 				new Notice(created.length ? `已为卷「${vol.name}」补全缺失文档：${created.join("、")}` : `卷「${vol.name}」的模板文档已齐全（卷大纲/人物/人物关系/场景），无需补全`, 8000);
 				return;
 			}
+			case "complete-root-docs": {
+				const created = await this.manager.ensureRootDocs(a.story); // 书根默认资料七件套补缺，已存在保留不覆盖
+				new Notice(created.length ? `已为「${a.story}」补全缺失资料：${created.join("、")}` : `「${a.story}」的默认资料文件已齐全（大纲/世界观/伏笔/笔记/人物/人物关系/场景），无需补全`, 8000);
+				return;
+			}
 			case "llm-write":
 			case "llm-continue":
 			case "llm-polish": {

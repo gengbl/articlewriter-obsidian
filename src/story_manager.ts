@@ -236,17 +236,7 @@ export class StoryManager {
 			updated_at: nowIso(),
 		};
 		await this.vault.createFolder(base);
-		const docs: Array<[string, string]> = [
-			["大纲.md", outlineTemplate(title)],
-			["世界观.md", WORLD_TEMPLATE],
-			["卷.md", VOLUME_TEMPLATE],
-			["伏笔.md", FORESHADOW_TEMPLATE],
-			["笔记.md", NOTES_TEMPLATE],
-			["人物.md", CHAPTER_CHARACTERS_TEMPLATE],
-			["人物关系.md", CHAPTER_RELATIONSHIPS_TEMPLATE],
-			["场景.md", CHAPTER_SCENES_TEMPLATE],
-		];
-		for (const [fname, tpl] of docs) {
+		for (const [fname, tpl] of [...this.rootDocTemplates(title), ["卷.md", VOLUME_TEMPLATE]]) { // 默认资料七件套 + 系统管理的《卷.md》（与 ensureRootDocs 同一清单来源）
 			await this.ensureDoc(`${base}/${fname}`, tpl);
 		}
 		await this.saveState(name, state);
@@ -361,6 +351,32 @@ export class StoryManager {
 		const created: string[] = [];
 		for (const [fname, tpl] of this.volumeDocTemplates(vol)) {
 			if ((await this.ensureDoc(`${p}/${fname}`, tpl)) === "created") created.push(fname);
+		}
+		return created;
+	}
+
+	/** 书根默认资料七件套模板清单（建书播种 / 写字台「补全资料」同一来源；《故事状态.md》与系统管理的《卷.md》不在其内） */
+	private rootDocTemplates(title: string): Array<[string, string]> {
+		return [
+			["大纲.md", outlineTemplate(title)],
+			["世界观.md", WORLD_TEMPLATE],
+			["伏笔.md", FORESHADOW_TEMPLATE],
+			["笔记.md", NOTES_TEMPLATE],
+			["人物.md", CHAPTER_CHARACTERS_TEMPLATE],
+			["人物关系.md", CHAPTER_RELATIONSHIPS_TEMPLATE],
+			["场景.md", CHAPTER_SCENES_TEMPLATE],
+		];
+	}
+
+	/** 检查书根下的默认资料文件，缺失者按模板创建（已存在一律保留不覆盖）；返回本次新建的文件名列表（全齐则为空数组）。供写字台案头资料节点右键「补全资料」 */
+	async ensureRootDocs(storyName: string): Promise<string[]> {
+		const st = await this.loadState(storyName);
+		if (!st) throw new Error(`小说 ${storyName} 的状态文档缺失`);
+		const base = this.storyPath(storyName);
+		if (!this.vault.getAbstractFileByPath(base)) throw new Error("小说目录不存在或已被移动");
+		const created: string[] = [];
+		for (const [fname, tpl] of this.rootDocTemplates(st.title || storyName)) {
+			if ((await this.ensureDoc(`${base}/${fname}`, tpl)) === "created") created.push(fname);
 		}
 		return created;
 	}
