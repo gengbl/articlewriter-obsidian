@@ -2396,9 +2396,9 @@ export default class ArticleWriterPlugin extends Plugin {
 				);
 				if (specText == null) return;
 				const outText = await this.prompt("输出路径", "输出位置（留空用默认文件名）", [
-					"· 留空 —— 存到该小说目录下 <书名>-书稿.md（再次导出会覆盖同名文件）",
+					"· 留空 —— 限定某卷时存到该小说目录下 <书名>-<卷名>-范围.md（如 <书名>-风起-第3-7章.md；单章为 -第N章、离散号为 -第1、4、5章），整本/书根域为 <书名>-书稿.md（重导覆盖同名文件）",
 					"· 以 .md 结尾 —— 视为完整文件名，原样使用",
-					"· 其他 —— 视为目标目录，自动拼上默认文件名 <书名>-书稿.md",
+					"· 其他 —— 视为目标目录，自动拼上对应默认文件名",
 				].join("\n"));
 				if (outText == null) return;
 				try {

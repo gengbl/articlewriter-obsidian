@@ -2017,7 +2017,7 @@ export class StoryManager {
 		return this.writePackFile(this.storyPath(storyName), fileName, outputPath, await this.buildPackParts(chapters));
 	}
 
-	/** 导出书稿（写字台「书稿」小节标题右键）：所选范围全部章节《章节.md》正文合一 MD，阅读序排列。spec 语义同 /pack（留空/all/全部=整本——不回落 current_volume、区别于 /pack；支持卷名前缀+区间/列表）。有卷模式按容器装配：**每个卷组前都带「# 第N卷 · 卷名」标题行，无章的空卷也照样输出其卷名行**（卷号按《卷.md》order 序号），书根未归卷章节排最前不带标题；无卷模式（use_volumes===false）平铺不带任何卷标题；默认文件名 <书名>-书稿.md（重导覆盖同名文件） */
+	/** 导出书稿（写字台「书稿」小节标题右键 / 卷节点「打包章节全集…」）：所选范围全部章节《章节.md》正文合一 MD，阅读序排列。spec 语义同 /pack（留空/all/全部=整本——不回落 current_volume、区别于 /pack；支持卷名前缀+区间/列表）。有卷模式按容器装配：**每个卷组前都带「# 第N卷 · 卷名」标题行，无章的空卷也照样输出其卷名行**（卷号按《卷.md》order 序号），书根未归卷章节排最前不带标题；无卷模式（use_volumes===false）平铺不带任何卷标题。**默认文件名按口径区分**：限定某卷=`<书名>-<卷名>-范围.md`（范围取实际有正文章节号：单章 第N章／连续 第X-Y章／离散 第1、4、5章），整本或书根域=`<书名>-书稿.md`；重导覆盖同名文件 */
 	async packStory(storyName: string, spec: string, forcedVolId?: string | null, outputPath = "") {
 		const expr = String(spec ?? "").trim();
 		if (!expr || /^(all|全部)$/i.test(expr)) {
@@ -2077,7 +2077,18 @@ export class StoryManager {
 			for (const ch of entriesOf(volId)) await appendChapter(ch);
 		}
 		if (!packed.length) throw new Error("所选章节均无正文，未生成文件");
-		const fileName = safeFilename(`${this.bookTitle(storyName, state)}-书稿`) + ".md";
+		const title = this.bookTitle(storyName, state);
+		let base = `${title}-书稿`; // 整本 / 书根域（含无卷平铺）默认名
+		if (!scope.whole && scope.volId) { // 限定了某卷 → 按「书名-卷名-范围」命名（范围取实际有正文章节号：单章 第N章、连续 第X-Y章、离散 第1、4、5章）
+			const v = vols.find((x) => x.id === scope.volId);
+			const nums = [...packed.map((p) => p.num)].sort((a, b) => a - b);
+			const first = nums[0];
+			const last = nums[nums.length - 1];
+			const contiguous = nums.every((n, i) => n === first + i);
+			const rangePart = nums.length === 1 ? `第${nums[0]}章` : contiguous ? `第${first}-${last}章` : `第${nums.join("、")}章`;
+			base = `${title}${v?.name ? `-${v.name}` : ""}-${rangePart}`;
+		}
+		const fileName = safeFilename(base) + ".md";
 		return this.writePackFile(this.storyPath(storyName), fileName, outputPath, { parts, packed, skipped });
 	}
 

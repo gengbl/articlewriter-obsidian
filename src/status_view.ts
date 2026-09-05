@@ -62,7 +62,7 @@ export type StatusAction =
 	| { kind: "delete-volume"; story: string; id: string } // 级联删除卷：其归属章节一并移入回收站（先弹确认框列明受影响章节）
 	| { kind: "activate-volume"; story: string; id: string } // 行尾 Radio 选中：设 current_volume 并跳到该卷最后一章（对齐 /volume use）
 	| { kind: "export-volume"; story: string; id: string } // 导出本卷合集：全部章节正文合一 MD（/pack 同款格式，默认 <书名>-<卷名>-合集.md）
-	| { kind: "export-story"; story: string; volName?: string } // 「书稿」小节标题右键「导出书稿…」/卷名节点右键「打包章节全集…」：所选范围全部章节《章节.md》正文合一 MD（留空/all=整本；有卷模式输出含「第N卷 · 卷名」标题行），默认 <书名>-书稿.md。volName=从哪个卷节点触发——弹窗标题带该卷名、范围输入框预填该卷名（直接回车=打该卷全章）
+	| { kind: "export-story"; story: string; volName?: string } // 「书稿」小节标题右键「导出书稿…」/卷名节点右键「打包章节全集…」：所选范围全部章节《章节.md》正文合一 MD（留空/all=整本；有卷模式输出含「第N卷 · 卷名」标题行）。默认名按口径区分——限定某卷=<书名>-<卷名>-范围.md，整本/书根域=<书名>-书稿.md。volName=从哪个卷节点触发——弹窗标题带该卷名、范围输入框预填该卷名（直接回车=打该卷全章）
 	| { kind: "rename-chapter"; story: string; key: string } // 改写章名：重命名目录并同步文档引用（对齐 /chapter rename）；key=复合键
 	| { kind: "delete-chapter"; story: string; key: string }
 	| { kind: "new-file"; story: string; key: string | null } // key=null → 书根目录；否则该章节目录
