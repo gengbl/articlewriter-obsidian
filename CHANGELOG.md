@@ -120,3 +120,4 @@
 - 2026-09-05：新建资料/文档/文章优先标准模板——案头资料「新建资料…」、卷内「在本卷新建文档…」与章节块「新建文章…」改为先 pickAction 列出该容器标准模板文档（story_manager 新增 standardDocs/ensureStandardDoc，chKey/volId/书根三级解析；章节六件套提取公共 chapterDocTemplates(num,title)，建章播种与 /scan 补缺改同一来源），已存在项禁用标注、选中按模板创建不覆盖，末项「自定义文件名…」回落原名输入建空文件。
 - 2026-09-05：写字台提示词参与文档标识由加粗改为主题成功色（绿）——`.aw-st-pdoc` 去掉 font-weight:700 改用 `color: var(--text-success)`，保持行内观感一致且不用链接蓝避免误认可点链接；悬停 title 说明不变。
 - 2026-09-05：以上三项随 **v0.1.7** 打包发布（manifest 0.1.6→0.1.7；Gitea tag `v0.1.7` + Release 附件 articlewriter-v0.1.7.zip〔323974B，REST 校验字节数与本地一致〕+ GitHub 镜像无 v 前缀 tag `0.1.7` 触发 CI 自动重建签名上架三散文件）。
+- 2026-09-05：写字台提示词参与文档标识色由绿改深灰——`.aw-st-pdoc` 改用 `var(--text-normal)`（正文色，随明暗主题适配），非提示词文档保持侧栏默认弱化灰；悬停 title 说明不变。
