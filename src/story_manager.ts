@@ -399,6 +399,15 @@ export class StoryManager {
 		return (await this.ensureDoc(`${dir}/${fname}`, tpl)) === "created";
 	}
 
+	/** 以模板空内容覆盖写指定容器的标准文档（无论是否存在——调用方须先经用户确认丢失现有内容的风险）；非该级标准名则报错 */
+	async overwriteStandardDoc(storyName: string, target: { volId?: string; chKey?: string }, fname: string): Promise<void> {
+		const list = await this.standardTemplateList(storyName, target);
+		const tpl = list.find(([n]) => n === fname)?.[1];
+		if (!tpl) throw new Error(`「${fname}」不是该级别的标准文档`);
+		const dir = await this.standardDirOf(storyName, target);
+		await this.writeDoc(`${dir}/${fname}`, tpl);
+	}
+
 	private async standardTemplateList(storyName: string, target: { volId?: string; chKey?: string }): Promise<Array<[string, string]>> {
 		if (target.chKey != null) {
 			const ch = await this.chapterDirOf(storyName, target.chKey);

@@ -2457,12 +2457,18 @@ export default class ArticleWriterPlugin extends Plugin {
 			case "new-file": {
 				const target = a.key == null ? {} : { chKey: a.key }; // 书根（案头资料）或章节目录
 				const stds = await this.manager.standardDocs(a.story, target); // 标准模板文档列出（参与提示词者），已存在禁用
-				const res = await this.pickNewDoc(`新建${a.key == null ? "资料" : "文章"}（${a.key == null ? "书根目录（案头资料）" : "该章节目录"}）`, stds); // v0.1.8+：全宽输入框+「确定」按钮单视图，不再多窗
+				const res = await this.pickNewDoc(`新建${a.key == null ? "资料" : "文章"}（${a.key == null ? "书根目录（案头资料）" : "该章节目录"}）`, stds); // v0.1.8+：全宽输入框+底部「确定」单视图，不再多窗
 				if (res == null) return;
 				if (res.kind === "std") {
-					const ok = await this.confirmBox(`创建 ${res.name}？`, "将按模板空内容创建。", "确定"); // 用户确认后才以模板空内容生成
-					if (!ok) return;
-					const created = await this.manager.ensureStandardDoc(a.story, target, res.name); // 按模板创建，已存在不覆盖
+					const s = stds.find((o) => o.name === res.name)!;
+					if (s.exists) { // 选中的标准文档已存在→弹存在性提示，用户确认后才以模板空内容替换
+						const ok = await this.confirmBox(`${res.name} 已存在`, "将用模板空内容替换其现有文字。", "替换");
+						if (!ok) return;
+						await this.manager.overwriteStandardDoc(a.story, target, res.name);
+						new Notice(`已将 ${res.name} 替换为模板空内容`);
+						return;
+					}
+					const created = await this.manager.ensureStandardDoc(a.story, target, res.name); // 不存在直接按模板创建
 					new Notice(created ? `已创建 ${res.name}（模板）` : `${res.name} 已存在，未改动`);
 					return;
 				}
@@ -2498,12 +2504,18 @@ export default class ArticleWriterPlugin extends Plugin {
 				if (!vol) throw new Error(`卷 ${a.volId} 不存在或已被删除`);
 				const target = { volId: vol.id };
 				const stds = await this.manager.standardDocs(a.story, target); // 设定四件套列出，已存在禁用
-				const res = await this.pickNewDoc(`在卷「${vol.name}」新建文档`, stds); // v0.1.8+：全宽输入框+「确定」按钮单视图，不再多窗
+				const res = await this.pickNewDoc(`在卷「${vol.name}」新建文档`, stds); // v0.1.8+：全宽输入框+底部「确定」单视图，不再多窗
 				if (res == null) return;
 				if (res.kind === "std") {
-					const ok = await this.confirmBox(`创建 ${res.name}？`, `将在卷「${vol.name}」按模板空内容创建。`, "确定"); // 用户确认后才以模板空内容生成
-					if (!ok) return;
-					const created = await this.manager.ensureStandardDoc(a.story, target, res.name); // 按模板创建，已存在不覆盖
+					const s = stds.find((o) => o.name === res.name)!;
+					if (s.exists) { // 选中的标准文档已存在→弹存在性提示，用户确认后才以模板空内容替换
+						const ok = await this.confirmBox(`${res.name} 已存在`, `将在卷「${vol.name}」用模板空内容替换其现有文字。`, "替换");
+						if (!ok) return;
+						await this.manager.overwriteStandardDoc(a.story, target, res.name);
+						new Notice(`已将 ${res.name} 替换为模板空内容`);
+						return;
+					}
+					const created = await this.manager.ensureStandardDoc(a.story, target, res.name); // 不存在直接按模板创建
 					new Notice(created ? `已在卷「${vol.name}」创建 ${res.name}（模板）` : `${res.name} 已存在，未改动`);
 					return;
 				}

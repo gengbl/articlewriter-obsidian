@@ -347,7 +347,7 @@
 	color: var(--text-accent);
 }
 
-/* 新建文档单弹窗（NewFilePickerModal）标准模板选项行：同写字台文件行的 hover 背景观感；已存在项置灰不可点 */
+/* 新建文档单弹窗（NewFilePickerModal）标准模板选项行：同写字台文件行的 hover 背景观感；已存在项仅置灰作提示、仍可选中 */
 .aw-newdoc-opt {
 	cursor: pointer;
 	padding: 4px 8px;
@@ -363,13 +363,9 @@
 	margin-left: 6px;
 }
 .aw-newdoc-opt.aw-newdoc-off {
-	cursor: default;
 	opacity: 0.55;
 }
-.aw-newdoc-opt.aw-newdoc-off:hover {
-	background: none;
-}
-/* 点选回填后的选中态：hover 同款背景标示当前将创建的名称 */
+/* 点选回填后的选中态：hover 同款背景标示当前将创建/替换的名称 */
 .aw-newdoc-opt.is-selected {
 	background: var(--background-modifier-hover);
 }

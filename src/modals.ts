@@ -44,7 +44,7 @@ export class TextInputModal extends Modal {
 	}
 }
 
-/** 新建文档单弹窗（v0.1.8+）：单一视图——顶部全宽输入框（无前置标签，内部占位提示「自定义文件名…」），其下独立一行 CTA「确定」按钮（手机端可点按确认、回车同效），再下为该容器标准模板文档行（点击把名称填入输入框并标记选中〔is-selected〕、实际创建须再点「确定」；已存在禁用）。全程只弹一次窗 */
+/** 新建文档单弹窗（v0.1.8+）：单一视图——顶部全宽输入框（内部占位提示「自定义文件名…」），中部为该容器标准模板文档行（均可点击选中：名称回填进输入框并标记 is-selected；已存在项保留置灰样式仅作提示、同样可选中），**CTA「确定」按钮位于整个弹窗最底部**（手机端可点按确认、回车同效）。全程只弹一次窗 */
 export class NewFilePickerModal extends Modal {
 	private submitted = false;
 
@@ -60,7 +60,7 @@ export class NewFilePickerModal extends Modal {
 
 	onOpen(): void {
 		this.contentEl.createEl("h3", { text: this.title });
-		let inputEl: HTMLInputElement | null = null; // Setting 回调先于 addButton 执行，闭包经此引用取当前值
+		let inputEl: HTMLInputElement | null = null; // Setting 回调先于后续构建执行，闭包经此引用取当前值
 		new Setting(this.contentEl).addText((text) => {
 			text.setPlaceholder("自定义文件名…"); // 原前置标签改为输入框内部提示，输入框占满整行
 			inputEl = text.inputEl;
@@ -74,29 +74,26 @@ export class NewFilePickerModal extends Modal {
 				}
 			});
 		});
-		new Setting(this.contentEl).addButton((b) => b.setCta().setButtonText("确定").onClick(() => this.submit(inputEl ? inputEl.value.trim() : ""))); // 按钮独立成行置于输入框下方、改名「确定」
 		const rows: Record<string, HTMLElement> = {};
 		for (const opt of this.options) {
 			const row = this.contentEl.createDiv({ cls: `aw-newdoc-opt${opt.exists ? " aw-newdoc-off" : ""}` });
 			row.createSpan({ text: opt.name });
-			if (opt.exists) {
-				row.createSpan({ text: "已存在，未改动", cls: "aw-newdoc-sub" });
-			} else {
-				rows[opt.name] = row;
-				row.addEventListener("click", () => { // 点选=回填名称+标记选中；创建动作统一由「确定」触发（标准文档名会走模板二次确认）
-					if (inputEl) inputEl.value = opt.name;
-					for (const r of Object.values(rows)) r.removeClass("is-selected");
-					row.addClass("is-selected");
-				});
-			}
+			if (opt.exists) row.createSpan({ text: "已存在", cls: "aw-newdoc-sub" });
+			rows[opt.name] = row;
+			row.addEventListener("click", () => { // 点选=回填名称+标记选中（含已存在项）；创建动作统一由底部「确定」触发
+				if (inputEl) inputEl.value = opt.name;
+				for (const r of Object.values(rows)) r.removeClass("is-selected");
+				row.addClass("is-selected");
+			});
 		}
+		new Setting(this.contentEl).addButton((b) => b.setCta().setButtonText("确定").onClick(() => this.submit(inputEl ? inputEl.value.trim() : ""))); // 「确定」置于弹窗最底部：标准名→std 路径（main.ts 按存在性分支），自定义名直接建空文件
 	}
 
 	private submit(value: string): void {
 		if (!value) return; // 空输入不提交，防误触建出无效文件
 		this.submitted = true;
 		this.close();
-		const std = this.options.find((o) => !o.exists && o.name === value); // 与标准模板文档同名→std 路径（main.ts 再经 confirmBox 确认后按模板空内容创建），否则自定义空文件
+		const std = this.options.find((o) => o.name === value); // 与任一标准模板文档同名（不论是否已存在）→std 路径，否则自定义空文件
 		void this.onSubmit(std ? { kind: "std", name: value } : { kind: "custom", name: value });
 	}
 
