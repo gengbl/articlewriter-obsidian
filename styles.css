@@ -347,6 +347,29 @@
 	color: var(--text-accent);
 }
 
+/* 新建文档单弹窗（NewFilePickerModal）标准模板选项行：同写字台文件行的 hover 背景观感；已存在项置灰不可点 */
+.aw-newdoc-opt {
+	cursor: pointer;
+	padding: 4px 8px;
+	border-radius: 4px;
+	margin-top: 2px;
+}
+.aw-newdoc-opt:hover {
+	background: var(--background-modifier-hover);
+}
+.aw-newdoc-opt .aw-newdoc-sub {
+	color: var(--text-muted);
+	font-size: 0.9em;
+	margin-left: 6px;
+}
+.aw-newdoc-opt.aw-newdoc-off {
+	cursor: default;
+	opacity: 0.55;
+}
+.aw-newdoc-opt.aw-newdoc-off:hover {
+	background: none;
+}
+
 /* 卷内「文档」命名头直接复用章节名行的 .aw-st-chap 类（同一显示风格，不重复定义样式）；层级缩进沿用外层 .aw-st-kids，其文件列表再嵌一层 .aw-st-kids 与章下文档对齐 */
 
 .aw-st-hint {

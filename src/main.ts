@@ -1,5 +1,5 @@
 import { App, Modal, Notice, Plugin, PluginSettingTab, TAbstractFile, TFile, TFolder, type SettingDefinitionItem, type SettingDefinitionPage } from "obsidian";
-import { ActionItem, ActionMenuModal, ChapterListModal, ConfirmModal, FolderPickerModal, MarkdownViewerModal, MultiFieldModal, NewStoryInput, NewStoryModal, PanelLine, StoryPickerModal, TextAreaPrompt, TextPanelModal, TextInputModal, VolumeBatchCreateModal } from "./modals";
+import { ActionItem, ActionMenuModal, ChapterListModal, ConfirmModal, FolderPickerModal, MarkdownViewerModal, MultiFieldModal, NewFilePickerModal, NewStoryInput, NewStoryModal, PanelLine, StoryPickerModal, TextAreaPrompt, TextPanelModal, TextInputModal, VolumeBatchCreateModal } from "./modals";
 import { LlmChatView } from "./llm_chat_view";
 import { GenProgressView, type WritingStreamSink } from "./gen_progress_view";
 import { StatusView, type StatusAction, type StatusChapterEntry, type StatusDetail, type StatusSnapshot, type StatusStoryEntry } from "./status_view";
@@ -566,6 +566,12 @@ export default class ArticleWriterPlugin extends Plugin {
 				hint,
 				initial
 			).open();
+		});
+	}
+
+	private pickNewDoc(title: string, placeholder: string, options: Array<{ name: string; exists: boolean }>): Promise<{ kind: "custom"; name: string } | { kind: "std"; name: string } | null> { // v0.1.8+：新建文档单弹窗——直接输入文件名回车即建空文件，或点选标准模板按模板创建；取代旧「pickAction 选择 + 二次 prompt」两步流程
+		return new Promise((resolve) => {
+			new NewFilePickerModal(this.app, title, placeholder, options, (r) => resolve(r), () => resolve(null)).open();
 		});
 	}
 
@@ -2451,16 +2457,11 @@ export default class ArticleWriterPlugin extends Plugin {
 			case "new-file": {
 				const target = a.key == null ? {} : { chKey: a.key }; // 书根（案头资料）或章节目录
 				const stds = await this.manager.standardDocs(a.story, target); // 标准模板文档列出（参与提示词者），已存在禁用
-				const items: ActionItem[] = [
-					{ label: "自定义文件名…" }, // 自定义置首：不套模板的自由命名优先可选
-					...stds.map((s) => ({ label: s.name, sub: s.exists ? "已存在，未改动" : undefined, disabled: s.exists })),
-				];
-				const idx = await this.pickAction(`新建${a.key == null ? "资料" : "文章"}（自定义 / 标准模板）`, items);
-				if (idx == null) return;
-				if (idx > 0) { // 第 0 项是「自定义文件名…」，其余为标准模板文档
-					const s = stds[idx - 1];
-					const created = await this.manager.ensureStandardDoc(a.story, target, s.name); // 按模板创建，已存在不覆盖
-					new Notice(created ? `已创建 ${s.name}（模板）` : `${s.name} 已存在，未改动`);
+				const res = await this.pickNewDoc(`新建${a.key == null ? "资料" : "文章"}（${a.key == null ? "书根目录（案头资料）" : "该章节目录"}）`, "输入文件名回车即创建（可留 .md 扩展名）", stds); // v0.1.8+：单弹窗直接输入/点选，不再二次弹框
+				if (res == null) return;
+				if (res.kind === "std") {
+					const created = await this.manager.ensureStandardDoc(a.story, target, res.name); // 按模板创建，已存在不覆盖
+					new Notice(created ? `已创建 ${res.name}（模板）` : `${res.name} 已存在，未改动`);
 					return;
 				}
 				let folder: string;
@@ -2471,9 +2472,7 @@ export default class ArticleWriterPlugin extends Plugin {
 					if (!ch) throw new Error(`第${parseChKey(a.key).num}章不存在`);
 					folder = ch.dir.path;
 				}
-				const name = await this.prompt(a.key == null ? "新建资料" : "新建文章", `在${a.key == null ? "书根目录（案头资料）" : "该章节目录"}下创建 .md 文件名（留扩展名可自定义）`); // v0.1.6+：书根入口文案与「新建资料…」菜单项一致，章节目录内仍为「新建文章」
-				if (name == null || !name.trim()) return;
-				let base = safeFilename(name.trim());
+				let base = safeFilename(res.name);
 				if (!base.toLowerCase().endsWith(".md")) base += ".md";
 				const path = `${folder}/${base}`;
 				if (this.app.vault.getAbstractFileByPath(path)) throw new Error(`同名文件已存在：${path}`);
@@ -2497,23 +2496,16 @@ export default class ArticleWriterPlugin extends Plugin {
 				if (!vol) throw new Error(`卷 ${a.volId} 不存在或已被删除`);
 				const target = { volId: vol.id };
 				const stds = await this.manager.standardDocs(a.story, target); // 设定四件套列出，已存在禁用
-				const items: ActionItem[] = [
-					{ label: "自定义文件名…" }, // 自定义置首：不套模板的自由命名优先可选
-					...stds.map((s) => ({ label: s.name, sub: s.exists ? "已存在，未改动" : undefined, disabled: s.exists })),
-				];
-				const idx = await this.pickAction(`在卷「${vol.name}」新建文档（自定义 / 标准模板）`, items);
-				if (idx == null) return;
-				if (idx > 0) { // 第 0 项是「自定义文件名…」，其余为标准模板文档
-					const s = stds[idx - 1];
-					const created = await this.manager.ensureStandardDoc(a.story, target, s.name); // 按模板创建，已存在不覆盖
-					new Notice(created ? `已在卷「${vol.name}」创建 ${s.name}（模板）` : `${s.name} 已存在，未改动`);
+				const res = await this.pickNewDoc(`在卷「${vol.name}」新建文档`, "输入文件名回车即创建（可留 .md 扩展名）", stds); // v0.1.8+：单弹窗直接输入/点选，不再二次弹框
+				if (res == null) return;
+				if (res.kind === "std") {
+					const created = await this.manager.ensureStandardDoc(a.story, target, res.name); // 按模板创建，已存在不覆盖
+					new Notice(created ? `已在卷「${vol.name}」创建 ${res.name}（模板）` : `${res.name} 已存在，未改动`);
 					return;
 				}
 				const folder = `${this.manager.storyPath(a.story)}/${this.manager.volumeFolderName(vol)}`;
 				if (!(this.app.vault.getAbstractFileByPath(folder) instanceof TFolder)) throw new Error("该卷实体目录缺失，请先执行「按卷整理目录」");
-				const name = await this.prompt("新建文档", `在卷「${vol.name}」下创建 .md 文件名（留扩展名可自定义）`);
-				if (name == null || !name.trim()) return;
-				let base = safeFilename(name.trim());
+				let base = safeFilename(res.name);
 				if (!base.toLowerCase().endsWith(".md")) base += ".md";
 				const path = `${folder}/${base}`;
 				if (this.app.vault.getAbstractFileByPath(path)) throw new Error(`同名文件已存在：${path}`);

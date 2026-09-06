@@ -44,7 +44,60 @@ export class TextInputModal extends Modal {
 	}
 }
 
-/** 新书创建：标题 / 题材类型 / 编写类型（对齐 Python /new 三项询问） */
+/** 新建文档单弹窗（v0.1.8+）：顶部输入框直接键入文件名（回车即建空 .md），下方列该容器标准模板文档（点击按模板创建、已存在禁用）——取代旧「pickAction 选择 + 二次 prompt」两步流程，全程只弹一次 */
+export class NewFilePickerModal extends Modal {
+	private submitted = false;
+
+	constructor(
+		app: App,
+		private title: string,
+		private placeholderText: string,
+		private options: Array<{ name: string; exists: boolean }>,
+		private onSubmit: (result: { kind: "custom"; name: string } | { kind: "std"; name: string }) => void | Promise<void>,
+		private onCancel?: () => void
+	) {
+		super(app);
+	}
+
+	onOpen(): void {
+		this.contentEl.createEl("h3", { text: this.title });
+		this.contentEl.createDiv({ text: "直接输入文件名回车即创建空文件；或点选下方标准文档按模板创建。", cls: "aw-prompt-hint" });
+		new Setting(this.contentEl).addText((text) => {
+			text.setPlaceholder(this.placeholderText);
+			text.inputEl.focus();
+			text.inputEl.addEventListener("keydown", (e) => {
+				if (e.key === "Enter") {
+					e.preventDefault();
+					const value = text.inputEl.value.trim();
+					if (!value) return; // 空输入不提交，防误触回车建出无效文件
+					this.submitted = true;
+					this.close();
+					void this.onSubmit({ kind: "custom", name: value });
+				} else if (e.key === "Escape") {
+					this.close();
+				}
+			});
+		});
+		for (const opt of this.options) {
+			const row = this.contentEl.createDiv({ cls: `aw-newdoc-opt${opt.exists ? " aw-newdoc-off" : ""}` });
+			row.createSpan({ text: opt.name });
+			if (opt.exists) {
+				row.createSpan({ text: "已存在，未改动", cls: "aw-newdoc-sub" });
+			} else {
+				row.addEventListener("click", () => {
+					this.submitted = true;
+					this.close();
+					void this.onSubmit({ kind: "std", name: opt.name });
+				});
+			}
+		}
+	}
+
+	override onClose(): void {
+		this.contentEl.empty();
+		if (!this.submitted && this.onCancel) this.onCancel(); // 未提交即关闭（Esc/点外部）视为取消
+	}
+}
 export interface NewStoryInput {
 	title: string;
 	genre: string;
@@ -53,6 +106,7 @@ export interface NewStoryInput {
 
 const PRESET_STYLES = ["网文小说", "剧本", "普通小说", "散文随笔"];
 
+/** 新书创建：标题 / 题材类型 / 编写类型（对齐 Python /new 三项询问） */
 export class NewStoryModal extends Modal {
 	private submitted = false;
 
