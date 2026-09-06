@@ -404,9 +404,9 @@ export class StatusView extends ItemView {
 		for (const f of docs) {
 			const el = list.createDiv({ cls: "aw-st-file" });
 			el.setText(f.name);
-			if (PROMPT_DOCS_VOLUME.has(f.name)) { // 参与写作提示词的卷级模板文档加粗区分（悬停有说明）
-				el.addClass("aw-st-pdoc");
-				el.setAttribute("title", "参与写作提示词生成");
+			if (!PROMPT_DOCS_VOLUME.has(f.name)) { // 反向口径：不参与写作提示词的卷级文件着强调色，标准模板文档正常显示（悬停有说明）
+				el.addClass("aw-st-npdoc");
+				el.setAttribute("title", "不参与写作提示词生成");
 			}
 			el.addEventListener("click", (e) => {
 				e.stopPropagation(); // 点文件不触发所在卷行的开合
@@ -502,9 +502,9 @@ export class StatusView extends ItemView {
 	private appendFileRow(parent: HTMLElement, f: StatusFileEntry, ctx?: { story: string; key: string | null }): void {
 		const el = parent.createDiv({ cls: "aw-st-file" });
 		el.setText(f.name);
-		if (ctx && (ctx.key == null ? PROMPT_DOCS_ROOT : PROMPT_DOCS_CHAPTER).has(f.name)) { // 书根（案头资料）/章节目录：参与写作提示词的模板文档加粗区分（悬停有说明）
-			el.addClass("aw-st-pdoc");
-			el.setAttribute("title", "参与写作提示词生成");
+		if (ctx && !(ctx.key == null ? PROMPT_DOCS_ROOT : PROMPT_DOCS_CHAPTER).has(f.name)) { // 反向口径：书根（案头资料）/章节目录中不参与写作提示词的文件着强调色，标准模板文档正常显示（悬停有说明）
+			el.addClass("aw-st-npdoc");
+			el.setAttribute("title", "不参与写作提示词生成");
 		}
 		el.addEventListener("click", (e) => {
 			e.stopPropagation(); // 点文件不触发所在章节行的激活
