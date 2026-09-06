@@ -369,6 +369,10 @@
 .aw-newdoc-opt.aw-newdoc-off:hover {
 	background: none;
 }
+/* 点选回填后的选中态：hover 同款背景标示当前将创建的名称 */
+.aw-newdoc-opt.is-selected {
+	background: var(--background-modifier-hover);
+}
 
 /* 卷内「文档」命名头直接复用章节名行的 .aw-st-chap 类（同一显示风格，不重复定义样式）；层级缩进沿用外层 .aw-st-kids，其文件列表再嵌一层 .aw-st-kids 与章下文档对齐 */
 

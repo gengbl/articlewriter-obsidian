@@ -44,14 +44,13 @@ export class TextInputModal extends Modal {
 	}
 }
 
-/** 新建文档单弹窗（v0.1.8+）：单一视图——首行为「自定义文件名」标签 + 内联输入框 + CTA「创建」按钮（在原地直接键入、回车或点按钮立即建空 .md，手机端可点按确认），其下为该容器标准模板文档行（点击按模板创建、已存在禁用）。全程只弹一次窗、无阶段切换 */
+/** 新建文档单弹窗（v0.1.8+）：单一视图——顶部全宽输入框（无前置标签，内部占位提示「自定义文件名…」），其下独立一行 CTA「确定」按钮（手机端可点按确认、回车同效），再下为该容器标准模板文档行（点击把名称填入输入框并标记选中〔is-selected〕、实际创建须再点「确定」；已存在禁用）。全程只弹一次窗 */
 export class NewFilePickerModal extends Modal {
 	private submitted = false;
 
 	constructor(
 		app: App,
 		private title: string,
-		private placeholderText: string,
 		private options: Array<{ name: string; exists: boolean }>,
 		private onSubmit: (result: { kind: "custom"; name: string } | { kind: "std"; name: string }) => void | Promise<void>,
 		private onCancel?: () => void
@@ -62,41 +61,43 @@ export class NewFilePickerModal extends Modal {
 	onOpen(): void {
 		this.contentEl.createEl("h3", { text: this.title });
 		let inputEl: HTMLInputElement | null = null; // Setting 回调先于 addButton 执行，闭包经此引用取当前值
-		const firstRow = new Setting(this.contentEl).setName("自定义文件名");
-		firstRow.addText((text) => {
-			text.setPlaceholder(this.placeholderText);
+		new Setting(this.contentEl).addText((text) => {
+			text.setPlaceholder("自定义文件名…"); // 原前置标签改为输入框内部提示，输入框占满整行
 			inputEl = text.inputEl;
 			text.inputEl.focus();
 			text.inputEl.addEventListener("keydown", (e) => {
 				if (e.key === "Enter") {
 					e.preventDefault();
-					this.submitCustom(text.inputEl.value.trim());
+					this.submit(text.inputEl.value.trim());
 				} else if (e.key === "Escape") {
 					this.close();
 				}
 			});
 		});
-		firstRow.addButton((b) => b.setCta().setButtonText("创建").onClick(() => this.submitCustom(inputEl ? inputEl.value.trim() : ""))); // 显式按钮：手机端无回车键也可确认
+		new Setting(this.contentEl).addButton((b) => b.setCta().setButtonText("确定").onClick(() => this.submit(inputEl ? inputEl.value.trim() : ""))); // 按钮独立成行置于输入框下方、改名「确定」
+		const rows: Record<string, HTMLElement> = {};
 		for (const opt of this.options) {
 			const row = this.contentEl.createDiv({ cls: `aw-newdoc-opt${opt.exists ? " aw-newdoc-off" : ""}` });
 			row.createSpan({ text: opt.name });
 			if (opt.exists) {
 				row.createSpan({ text: "已存在，未改动", cls: "aw-newdoc-sub" });
 			} else {
-				row.addEventListener("click", () => {
-					this.submitted = true;
-					this.close();
-					void this.onSubmit({ kind: "std", name: opt.name });
+				rows[opt.name] = row;
+				row.addEventListener("click", () => { // 点选=回填名称+标记选中；创建动作统一由「确定」触发（标准文档名会走模板二次确认）
+					if (inputEl) inputEl.value = opt.name;
+					for (const r of Object.values(rows)) r.removeClass("is-selected");
+					row.addClass("is-selected");
 				});
 			}
 		}
 	}
 
-	private submitCustom(value: string): void {
+	private submit(value: string): void {
 		if (!value) return; // 空输入不提交，防误触建出无效文件
 		this.submitted = true;
 		this.close();
-		void this.onSubmit({ kind: "custom", name: value });
+		const std = this.options.find((o) => !o.exists && o.name === value); // 与标准模板文档同名→std 路径（main.ts 再经 confirmBox 确认后按模板空内容创建），否则自定义空文件
+		void this.onSubmit(std ? { kind: "std", name: value } : { kind: "custom", name: value });
 	}
 
 	override onClose(): void {
