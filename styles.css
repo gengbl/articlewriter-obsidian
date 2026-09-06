@@ -347,6 +347,13 @@
 	color: var(--text-accent);
 }
 
+/* 新建文档单弹窗（NewFilePickerModal）顶部原生输入框：强制占满整行，与下方模板列表同宽对齐 */
+.aw-newdoc-input {
+	width: 100%;
+	box-sizing: border-box;
+	margin-bottom: 4px;
+}
+
 /* 新建文档单弹窗（NewFilePickerModal）标准模板选项行：同写字台文件行的 hover 背景观感；已存在项仅置灰作提示、仍可选中 */
 .aw-newdoc-opt {
 	cursor: pointer;

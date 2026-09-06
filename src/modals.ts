@@ -60,19 +60,16 @@ export class NewFilePickerModal extends Modal {
 
 	onOpen(): void {
 		this.contentEl.createEl("h3", { text: this.title });
-		let inputEl: HTMLInputElement | null = null; // Setting 回调先于后续构建执行，闭包经此引用取当前值
-		new Setting(this.contentEl).addText((text) => {
-			text.setPlaceholder("自定义文件名…"); // 原前置标签改为输入框内部提示，输入框占满整行
-			inputEl = text.inputEl;
-			text.inputEl.focus();
-			text.inputEl.addEventListener("keydown", (e) => {
-				if (e.key === "Enter") {
-					e.preventDefault();
-					this.submit(text.inputEl.value.trim());
-				} else if (e.key === "Escape") {
-					this.close();
-				}
-			});
+		const inputEl = this.contentEl.createEl("input", { cls: "text-input aw-newdoc-input", type: "text" }); // 原生 input 保证占满整行（Setting 布局在部分主题下会右对齐缩窄、与下方列表错列）
+		inputEl.setAttr("placeholder", "自定义文件名…"); // 原前置标签改为输入框内部提示
+		inputEl.focus();
+		inputEl.addEventListener("keydown", (e) => {
+			if (e.key === "Enter") {
+				e.preventDefault();
+				this.submit(inputEl.value.trim());
+			} else if (e.key === "Escape") {
+				this.close();
+			}
 		});
 		const rows: Record<string, HTMLElement> = {};
 		for (const opt of this.options) {
@@ -81,12 +78,12 @@ export class NewFilePickerModal extends Modal {
 			if (opt.exists) row.createSpan({ text: "已存在", cls: "aw-newdoc-sub" });
 			rows[opt.name] = row;
 			row.addEventListener("click", () => { // 点选=回填名称+标记选中（含已存在项）；创建动作统一由底部「确定」触发
-				if (inputEl) inputEl.value = opt.name;
+				inputEl.value = opt.name;
 				for (const r of Object.values(rows)) r.removeClass("is-selected");
 				row.addClass("is-selected");
 			});
 		}
-		new Setting(this.contentEl).addButton((b) => b.setCta().setButtonText("确定").onClick(() => this.submit(inputEl ? inputEl.value.trim() : ""))); // 「确定」置于弹窗最底部：标准名→std 路径（main.ts 按存在性分支），自定义名直接建空文件
+		new Setting(this.contentEl).addButton((b) => b.setCta().setButtonText("确定").onClick(() => this.submit(inputEl.value.trim()))); // 「确定」置于弹窗最底部：标准名→std 路径（main.ts 按存在性分支），自定义名直接建空文件
 	}
 
 	private submit(value: string): void {
