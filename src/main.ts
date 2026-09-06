@@ -2450,16 +2450,17 @@ export default class ArticleWriterPlugin extends Plugin {
 			}
 			case "new-file": {
 				const target = a.key == null ? {} : { chKey: a.key }; // 书根（案头资料）或章节目录
-				const stds = await this.manager.standardDocs(a.story, target); // 标准模板文档优先列出（参与提示词者），已存在禁用
+				const stds = await this.manager.standardDocs(a.story, target); // 标准模板文档列出（参与提示词者），已存在禁用
 				const items: ActionItem[] = [
+					{ label: "自定义文件名…" }, // 自定义置首：不套模板的自由命名优先可选
 					...stds.map((s) => ({ label: s.name, sub: s.exists ? "已存在，未改动" : undefined, disabled: s.exists })),
-					{ label: "自定义文件名…" },
 				];
-				const idx = await this.pickAction(`新建${a.key == null ? "资料" : "文章"}（优先标准文档）`, items);
+				const idx = await this.pickAction(`新建${a.key == null ? "资料" : "文章"}（自定义 / 标准模板）`, items);
 				if (idx == null) return;
-				if (idx < stds.length) {
-					const created = await this.manager.ensureStandardDoc(a.story, target, stds[idx].name); // 按模板创建，已存在不覆盖
-					new Notice(created ? `已创建 ${stds[idx].name}（模板）` : `${stds[idx].name} 已存在，未改动`);
+				if (idx > 0) { // 第 0 项是「自定义文件名…」，其余为标准模板文档
+					const s = stds[idx - 1];
+					const created = await this.manager.ensureStandardDoc(a.story, target, s.name); // 按模板创建，已存在不覆盖
+					new Notice(created ? `已创建 ${s.name}（模板）` : `${s.name} 已存在，未改动`);
 					return;
 				}
 				let folder: string;
@@ -2495,16 +2496,17 @@ export default class ArticleWriterPlugin extends Plugin {
 				const vol = this.manager.findVolumeIn(vols, a.volId); // 按 id/名解析目标卷
 				if (!vol) throw new Error(`卷 ${a.volId} 不存在或已被删除`);
 				const target = { volId: vol.id };
-				const stds = await this.manager.standardDocs(a.story, target); // 设定四件套优先列出，已存在禁用
+				const stds = await this.manager.standardDocs(a.story, target); // 设定四件套列出，已存在禁用
 				const items: ActionItem[] = [
+					{ label: "自定义文件名…" }, // 自定义置首：不套模板的自由命名优先可选
 					...stds.map((s) => ({ label: s.name, sub: s.exists ? "已存在，未改动" : undefined, disabled: s.exists })),
-					{ label: "自定义文件名…" },
 				];
-				const idx = await this.pickAction(`在卷「${vol.name}」新建文档（优先标准文档）`, items);
+				const idx = await this.pickAction(`在卷「${vol.name}」新建文档（自定义 / 标准模板）`, items);
 				if (idx == null) return;
-				if (idx < stds.length) {
-					const created = await this.manager.ensureStandardDoc(a.story, target, stds[idx].name); // 按模板创建，已存在不覆盖
-					new Notice(created ? `已在卷「${vol.name}」创建 ${stds[idx].name}（模板）` : `${stds[idx].name} 已存在，未改动`);
+				if (idx > 0) { // 第 0 项是「自定义文件名…」，其余为标准模板文档
+					const s = stds[idx - 1];
+					const created = await this.manager.ensureStandardDoc(a.story, target, s.name); // 按模板创建，已存在不覆盖
+					new Notice(created ? `已在卷「${vol.name}」创建 ${s.name}（模板）` : `${s.name} 已存在，未改动`);
 					return;
 				}
 				const folder = `${this.manager.storyPath(a.story)}/${this.manager.volumeFolderName(vol)}`;
