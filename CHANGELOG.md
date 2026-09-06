@@ -126,3 +126,4 @@
 - 2026-09-05：写字台提示词文档标识改反向口径——未命中 PROMPT_DOCS_*（不参与写作提示词生成）的文件行着 `.aw-st-npdoc` 强调色 `var(--text-accent)`+title「不参与写作提示词生成」，标准模板文档恢复侧栏默认弱化灰正常显示；status_view 三处判定取反、旧 .aw-st-pdoc 规则移除。
 - 2026-09-05：新建资料/文档/文章改单弹窗——modals.ts 新增 `NewFilePickerModal`（顶部输入框直接键入文件名回车即建空 .md〔空输入不提交〕，下方列标准模板文档行 `.aw-newdoc-opt`、已存在 `.aw-newdoc-off` 置灰禁用）+ main.ts `pickNewDoc` 辅助；new-file/new-volume-doc 两 case 不再走「pickAction 选择 + 二次 prompt」两步流程，全程只弹一次窗。
 - 2026-09-05：NewFilePickerModal 改列表优先+内联输入——首屏恢复为简洁选项列表（观感同旧 pickAction、自定义置首），点「自定义文件名…」在同一弹窗内切换为输入视图并带显式「创建」「返回」按钮（手机端无回车键也可点按确认；Esc 返回列表不关窗）；仍保持单窗口不二次弹窗。
+- 2026-09-05：NewFilePickerModal 再改单一视图——取消两阶段切换，首行即「自定义文件名」Setting 标签+内联输入框+CTA「创建」按钮（原地直接键入、回车或点按钮立即建文件），下方标准模板文档点击即建；空值不提交防误触。
