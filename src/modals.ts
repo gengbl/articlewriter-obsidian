@@ -44,7 +44,7 @@ export class TextInputModal extends Modal {
 	}
 }
 
-/** 新建文档单弹窗（v0.1.8+）：顶部输入框直接键入文件名（回车即建空 .md），下方列该容器标准模板文档（点击按模板创建、已存在禁用）——取代旧「pickAction 选择 + 二次 prompt」两步流程，全程只弹一次 */
+/** 新建文档单弹窗（v0.1.8+）：默认显示简洁选项列表——首项「自定义文件名…」+ 该容器标准模板文档（已存在禁用）；点首项在同一弹窗内切换为输入视图并带显式「创建」「返回」按钮（手机端无回车键也可提交），其余选项点击即按模板创建。全程只弹一次窗、不二次弹窗 */
 export class NewFilePickerModal extends Modal {
 	private submitted = false;
 
@@ -60,24 +60,15 @@ export class NewFilePickerModal extends Modal {
 	}
 
 	onOpen(): void {
+		this.renderList();
+	}
+
+	private renderList(): void { // 第一阶段：纯列表，观感同旧 pickAction（自定义置首）
+		this.contentEl.empty();
 		this.contentEl.createEl("h3", { text: this.title });
-		this.contentEl.createDiv({ text: "直接输入文件名回车即创建空文件；或点选下方标准文档按模板创建。", cls: "aw-prompt-hint" });
-		new Setting(this.contentEl).addText((text) => {
-			text.setPlaceholder(this.placeholderText);
-			text.inputEl.focus();
-			text.inputEl.addEventListener("keydown", (e) => {
-				if (e.key === "Enter") {
-					e.preventDefault();
-					const value = text.inputEl.value.trim();
-					if (!value) return; // 空输入不提交，防误触回车建出无效文件
-					this.submitted = true;
-					this.close();
-					void this.onSubmit({ kind: "custom", name: value });
-				} else if (e.key === "Escape") {
-					this.close();
-				}
-			});
-		});
+		const customRow = this.contentEl.createDiv({ cls: "aw-newdoc-opt" });
+		customRow.setText("自定义文件名…");
+		customRow.addEventListener("click", () => this.renderInput());
 		for (const opt of this.options) {
 			const row = this.contentEl.createDiv({ cls: `aw-newdoc-opt${opt.exists ? " aw-newdoc-off" : ""}` });
 			row.createSpan({ text: opt.name });
@@ -91,6 +82,34 @@ export class NewFilePickerModal extends Modal {
 				});
 			}
 		}
+	}
+
+	private renderInput(): void { // 第二阶段：同一弹窗内切换为输入视图——显式「创建」按钮保证手机端可确认；回车同样提交
+		this.contentEl.empty();
+		this.contentEl.createEl("h3", { text: `${this.title} · 自定义文件名` });
+		new Setting(this.contentEl).addText((text) => {
+			text.setPlaceholder(this.placeholderText);
+			text.inputEl.focus();
+			text.inputEl.addEventListener("keydown", (e) => {
+				if (e.key === "Enter") {
+					e.preventDefault();
+					this.submitCustom(text.inputEl.value.trim());
+				} else if (e.key === "Escape") {
+					this.renderList(); // Esc 返回列表而非直接关窗
+				}
+			});
+		});
+		const inputEl = this.contentEl.querySelector<HTMLInputElement>("input");
+		const btns = new Setting(this.contentEl);
+		btns.addButton((b) => b.setButtonText("返回").onClick(() => this.renderList()));
+		btns.addButton((b) => b.setCta().setButtonText("创建").onClick(() => this.submitCustom(inputEl ? inputEl.value.trim() : "")));
+	}
+
+	private submitCustom(value: string): void {
+		if (!value) return; // 空输入不提交，防误触建出无效文件
+		this.submitted = true;
+		this.close();
+		void this.onSubmit({ kind: "custom", name: value });
 	}
 
 	override onClose(): void {
