@@ -130,3 +130,4 @@
 - 2026-09-05：NewFilePickerModal 再调——去掉前置「自定义文件名」标签改为全宽输入框内部占位提示，CTA 按钮独立成行置于输入框下方并改名「确定」；列表项点击不再即时创建，仅回填名称到输入框+`.is-selected` 选中态，创建统一由「确定」触发；名称与标准文档一致时 main.ts 先 confirmBox 询问按模板空内容生成、用户确认后才 ensureStandardDoc 创建。
 - 2026-09-05：NewFilePickerModal 布局定稿——「确定」按钮移至弹窗最底部（输入框→模板列表→确定），已存在项不再禁用、同样可点选；点「确定」后 std 名按存在性分支：**已存在→confirmBox 弹存在性提示（「替换」）、确认后 story_manager.overwriteStandardDoc 以模板空内容覆盖写**，不存在直接 ensureStandardDoc 创建；自定义名直接建空文件。
 - 2026-09-05：修复 NewFilePickerModal 输入框未占满整行（Setting 布局在部分主题下右对齐缩窄、与下方列表错列）——改为原生 `.text-input.aw-newdoc-input`（width:100%），与模板列表同宽对齐。
+- 2026-09-06：发布 v0.1.8（Gitea tag `v0.1.8` + Release 附件 articlewriter-v0.1.8.zip；GitHub 镜像 tag `0.1.8` 由 CI 自动重建签名上架）。
