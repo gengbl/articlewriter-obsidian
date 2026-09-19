@@ -275,6 +275,27 @@
 	line-height: 1.6; /* 「小说状态」信息区行距加大，比侧栏默认 1.3 更宽松 */
 }
 
+/* 「小说状态」标题行（可折叠）：caret + 「小说状态」标签，同「案头资料」「书稿」小节标题的点整行开合交互 */
+.aw-st-status-head {
+	cursor: pointer;
+	display: flex;
+	align-items: center;
+	font-weight: 600;
+	color: var(--text-normal);
+	border-radius: 4px;
+	transition: background-color 0.1s;
+}
+.aw-st-status-head:hover {
+	background-color: var(--background-modifier-hover);
+}
+
+/* 收起状态：仅保留标题行，去掉底部横线与底部留白，避免与「书籍列表」标题行贴得太挤 */
+.aw-st-status.is-collapsed {
+	padding-bottom: 0;
+	margin-bottom: 2px;
+	border-bottom: none;
+}
+
 /* 书名行：名称左对齐，更新时间右对齐（flex space-between） */
 .aw-st-status-title {
 	font-weight: 600;
@@ -471,6 +492,600 @@
 	height: 1px;
 	margin: 4px 8px;
 	background: var(--background-modifier-border);
+}
+
+/* 人物关系面板（RelationshipView，v0.1.9+）：容器/头部/滚动布局复用 .aw-status-view + .aw-st-top/.aw-st-tree/.aw-st-chap，此处只定义关系专属部分 */
+
+.aw-rel-filter-row {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	margin: 6px 0 2px;
+}
+
+.aw-rel-filter {
+	flex: 1 1 auto;
+	width: auto;
+	min-width: 0;
+}
+
+/* 「卡片 / 图表」展示方式切换（分段控件，会话内保持） */
+.aw-rel-modes {
+	display: inline-flex;
+	flex-shrink: 0;
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 5px;
+	overflow: hidden;
+}
+
+.aw-rel-modebtn {
+	padding: 2px 8px;
+	font-size: 0.85em;
+	line-height: 1.7;
+	border: 0;
+	border-radius: 0;
+	background: transparent;
+	box-shadow: none;
+	cursor: pointer;
+	color: var(--text-muted);
+}
+
+.aw-rel-modebtn:hover {
+	background: var(--background-modifier-hover);
+}
+
+.aw-rel-modebtn.is-active {
+	background: var(--interactive-accent);
+	color: var(--text-on-accent);
+}
+
+.aw-rel-summary {
+	padding: 2px 4px 4px;
+	margin-bottom: 4px;
+	border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.aw-rel-group {
+	margin-bottom: 4px;
+}
+
+.aw-rel-grouptitle {
+	font-weight: 600;
+}
+
+.aw-rel-grouplabel {
+	flex: 1 1 auto;
+	min-width: 0;
+	overflow: hidden;
+	white-space: nowrap;
+	text-overflow: ellipsis;
+}
+
+/* 分组命名头右侧「打开文档」入口（点击在编辑器打开该层来源 md，不触发行开合） */
+.aw-rel-openfile {
+	flex-shrink: 0;
+	margin-left: auto;
+	color: var(--text-accent);
+	cursor: pointer;
+}
+
+.aw-rel-openfile:hover {
+	text-decoration: underline;
+}
+
+/* 单条关系卡片：角色对 + 类型徽章 + 状态指示点 + 描述，整卡可点打开来源文档 */
+.aw-rel-card {
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 6px;
+	padding: 6px 8px;
+	margin: 4px 0;
+	cursor: pointer;
+	background: var(--background-primary);
+}
+
+.aw-rel-card:hover {
+	background: rgba(128, 128, 128, 0.12);
+}
+
+.aw-rel-pair {
+	display: flex;
+	align-items: center;
+	flex-wrap: wrap;
+	gap: 6px;
+	font-weight: 600;
+}
+
+.aw-rel-typeicon {
+	display: inline-flex;
+	align-items: center;
+	flex-shrink: 0;
+	color: var(--text-accent);
+}
+
+.aw-rel-typeicon svg {
+	width: 14px;
+	height: 14px;
+}
+
+.aw-rel-name {
+	word-break: break-word;
+}
+
+.aw-rel-arrow {
+	flex-shrink: 0;
+}
+
+.aw-rel-meta {
+	display: flex;
+	align-items: center;
+	flex-wrap: wrap;
+	gap: 6px;
+	margin-top: 3px;
+}
+
+.aw-rel-badge {
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 999px;
+	padding: 0 6px;
+	font-size: 0.9em;
+	color: var(--text-muted);
+}
+
+.aw-rel-badge.is-empty {
+	opacity: 0.6;
+}
+
+.aw-rel-status {
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
+	font-size: 0.9em;
+	color: var(--text-muted);
+}
+
+.aw-rel-dot {
+	width: 8px;
+	height: 8px;
+	flex-shrink: 0;
+	border-radius: 50%;
+	background: var(--text-faint);
+}
+
+.aw-rel-status.is-active .aw-rel-dot {
+	background: var(--color-green);
+}
+
+.aw-rel-status.is-pending .aw-rel-dot {
+	background: var(--color-yellow);
+}
+
+.aw-rel-status.is-ended .aw-rel-dot,
+.aw-rel-status.is-unknown .aw-rel-dot {
+	background: var(--text-faint);
+}
+
+.aw-rel-status.is-unknown {
+	opacity: 0.75;
+}
+
+.aw-rel-scope {
+	margin-left: auto;
+	font-size: 0.85em;
+	color: var(--text-faint);
+}
+
+.aw-rel-desc {
+	margin-top: 4px;
+	color: var(--text-muted);
+	white-space: pre-wrap;
+	word-break: break-word;
+}
+
+/* ---- 「图表」展示方式：SVG 节点连线图（角色=节点、关系=连线；颜色=类型、线型=状态、粗细=登记处数） ---- */
+
+/* 图表模式的主体（.aw-st-tree 的修饰类）：裁剪、不出滚动条——放大后超出面板的部分靠拖拽平移查看。
+   纵向改由 flex 让图自己收缩（面板不够高时按高度适配），免得图例被裁到面板外 */
+.aw-st-tree.is-graph {
+	display: flex;
+	flex-direction: column;
+	overflow: hidden;
+}
+
+/* 摘要 / 图例是固定项，不参与收缩 */
+.aw-st-tree.is-graph > .aw-rel-summary,
+.aw-st-tree.is-graph > .aw-rel-glegend {
+	flex: 0 0 auto;
+}
+
+/* 图占剩余空间：不够时压缩自身（min-height:0 才允许缩到内容尺寸以下），内部靠 viewBox 等比缩放 */
+.aw-st-tree.is-graph > .aw-rel-graph {
+	flex: 1 1 auto;
+	min-height: 0;
+}
+
+/* 布局尺寸恒为「适应面板宽度」（100% 宽 × viewBox 等比高，上限 70vh）；缩放/平移是叠加其上的内联 transform，不改布局故不出滚动条 */
+.aw-rel-graph {
+	display: block;
+	width: 100%;
+	height: auto;
+	max-height: 70vh;
+	margin: 2px 0 6px;
+	transform-origin: center center; /* 缩放围绕图心；pan 已在 js 内按"鼠标不动点"更新（zoomAt 把鼠标 viewport 坐标换算到 svg layout 偏移后与 ecX/ecY 同坐标系） */
+	touch-action: none; /* 触屏拖动时不连带滚动页面 */
+	cursor: grab; /* 提示可按住拖动 */
+	user-select: none; /* 拖动时不选中角色名文字 */
+}
+
+/* 拖动进行中 */
+.aw-rel-graph.is-panning {
+	cursor: grabbing;
+}
+
+/* 边 tip 浮层（自定义 HTML，不用 SVG <title>，避免多行内容被浏览器原生 tooltip 截断）：position:fixed 跟手、pointer-events:none 不抢事件、白底黑字 + 弱化灰边框、pre-wrap 保留换行且自动按词/字符换行 */
+.aw-rel-gtip {
+	position: fixed;
+	z-index: 9999;
+	display: none;
+	max-width: 320px;
+	padding: 6px 9px;
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 4px;
+	background: var(--background-primary);
+	color: var(--text-normal);
+	font-size: var(--font-ui-small, 12px);
+	line-height: 1.5;
+	white-space: pre-wrap; /* 保留 \n 段间换行，其余按词/字符自然换行 */
+	word-break: break-word;
+	box-shadow: 0 2px 8px rgba(0, 0, 0, 0.18);
+	pointer-events: none; /* 不抢鼠标事件，避免经过 tip 时触发 edge mouseleave 闪掉 */
+}
+
+.aw-rel-gtip.is-show {
+	display: block;
+}
+
+.aw-rel-gline {
+	fill: none;
+	stroke: var(--text-muted);
+	stroke-width: 1.6;
+}
+
+/* 透明加粗命中区：细线也好点中/悬停 */
+.aw-rel-gedgehit {
+	fill: none;
+	stroke: transparent;
+	stroke-width: 12;
+	cursor: pointer;
+}
+
+.aw-rel-gedge.is-multi .aw-rel-gline {
+	stroke-width: 3;
+}
+
+.aw-rel-gedge.is-pending .aw-rel-gline {
+	stroke-dasharray: 6 4;
+}
+
+.aw-rel-gedge.is-ended .aw-rel-gline {
+	stroke-dasharray: 2 4;
+	opacity: 0.8;
+}
+
+.aw-rel-gedge.is-teach .aw-rel-gline {
+	stroke: #b58b3a;
+}
+
+.aw-rel-gedge.is-enemy .aw-rel-gline {
+	stroke: #c0574f;
+}
+
+.aw-rel-gedge.is-love .aw-rel-gline {
+	stroke: #c96b9a;
+}
+
+.aw-rel-gedge.is-family .aw-rel-gline {
+	stroke: #a97b52;
+}
+
+.aw-rel-gedge.is-master .aw-rel-gline {
+	stroke: #6b8fb5;
+}
+
+.aw-rel-gedge.is-sect .aw-rel-gline {
+	stroke: #8a7ec4;
+}
+
+.aw-rel-gedge.is-mate .aw-rel-gline {
+	stroke: #7aa05a;
+}
+
+.aw-rel-gedge.is-friend .aw-rel-gline {
+	stroke: #4f9b8e;
+}
+
+/* 节点：圆=角色、圆旁文字=角色名；孤立节点（只有单角色条目）用虚线边 */
+.aw-rel-gnode circle {
+	fill: var(--background-secondary);
+	stroke: var(--text-muted);
+	stroke-width: 1.5;
+	cursor: pointer;
+}
+
+.aw-rel-gnode.is-orphan circle {
+	stroke-dasharray: 2 2;
+}
+
+.aw-rel-gname {
+	fill: var(--text-normal);
+	font-size: 11px;
+	pointer-events: none; /* 文字不抢命中区，点名字也算点节点 */
+}
+
+/* 悬停高亮：命中的节点/连线提亮，其余整体淡出 */
+.aw-rel-gnode.is-hot circle {
+	fill: var(--interactive-accent);
+	stroke: var(--text-accent);
+	stroke-width: 2.5;
+}
+
+.aw-rel-gedge.is-hot .aw-rel-gline {
+	stroke-width: 3.2;
+}
+
+.aw-rel-gnode.is-fade,
+.aw-rel-gedge.is-fade {
+	opacity: 0.18;
+}
+
+/* 选中节点（单击后在「人物状态」区展示详情）：主题强调色描边加粗，与悬停高亮同色系 */
+.aw-rel-gnode.is-sel circle {
+	fill: var(--background-secondary);
+	stroke: var(--text-accent);
+	stroke-width: 3;
+}
+
+/* 「人物状态」区（图表模式主体底部固定项）：内容多时自身滚动、把图压小而不裁切 */
+.aw-st-tree.is-graph > .aw-rel-charinfo {
+	flex: 0 0 auto;
+	max-height: 42%;
+	overflow-y: auto;
+	border-top: 1px solid var(--background-modifier-border);
+	margin-top: 2px;
+	padding-top: 6px;
+}
+
+.aw-rel-charhead {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	margin-bottom: 4px;
+}
+
+.aw-rel-chartitle {
+	font-weight: 600;
+	flex-shrink: 0;
+}
+
+.aw-rel-charselect {
+	color: var(--text-accent);
+}
+
+.aw-rel-charclose {
+	cursor: pointer;
+	color: var(--text-muted);
+	font-size: 1.1em;
+	line-height: 1;
+	padding: 0 2px;
+}
+
+.aw-rel-charclose:hover {
+	color: var(--text-normal);
+}
+
+/* 人物设定块（来自某一层《人物.md》；同名多层登记时逐条各一块） */
+.aw-rel-charentry {
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 6px;
+	padding: 6px 8px;
+	margin: 4px 0;
+	background: var(--background-primary);
+}
+
+.aw-rel-charenty-head {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 8px;
+	margin-bottom: 2px;
+}
+
+.aw-rel-charscope {
+	font-size: 0.9em;
+}
+
+/* 字段行：标签定宽弱化、值占剩余宽度可换行 */
+.aw-rel-charfield {
+	display: flex;
+	gap: 8px;
+	font-size: 0.95em;
+	line-height: 1.5;
+}
+
+.aw-rel-charflabel {
+	flex-shrink: 0;
+	min-width: 3.5em;
+	color: var(--text-muted);
+}
+
+/* 图例：解释边色（类型）与线型（状态） */
+.aw-rel-glegend {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 4px 10px;
+	padding: 0 4px;
+	margin-bottom: 4px;
+	font-size: 0.9em;
+}
+
+.aw-rel-glegend-item {
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
+}
+
+.aw-rel-glegend-swatch {
+	display: inline-block;
+	width: 14px;
+	height: 0;
+	border-top: 2px solid var(--text-muted);
+}
+
+.aw-rel-glegend-swatch.is-teach {
+	border-top-color: #b58b3a;
+}
+
+.aw-rel-glegend-swatch.is-enemy {
+	border-top-color: #c0574f;
+}
+
+.aw-rel-glegend-swatch.is-love {
+	border-top-color: #c96b9a;
+}
+
+.aw-rel-glegend-swatch.is-family {
+	border-top-color: #a97b52;
+}
+
+.aw-rel-glegend-swatch.is-master {
+	border-top-color: #6b8fb5;
+}
+
+.aw-rel-glegend-swatch.is-sect {
+	border-top-color: #8a7ec4;
+}
+
+.aw-rel-glegend-swatch.is-mate {
+	border-top-color: #7aa05a;
+}
+
+.aw-rel-glegend-swatch.is-friend {
+	border-top-color: #4f9b8e;
+}
+
+/* 多字段表单统一紧凑行距（MultiFieldModal「新增/编辑人物」等 + AddCharacterModal「添加人物」）：
+   Obsidian .setting-item 默认 padding 0.75em≈12px 且带行间分隔线、input 高度约 32px，十几行叠加就非常占纵向空间；
+   这里把 padding/分隔线/标签行高/控件高度一起压，并限定作用域不外溢到设置页与其它 Modal */
+/* 选择器刻意写到 `.setting-item:not(:first-child)`（特异性 0,3,0）：Obsidian 内置规则正是
+   `.setting-item:not(:first-child) { border-top: … }`，只写 `.aw-form-compact .setting-item` 与之同级、
+   胜负取决于注入顺序，容易压不掉；这里用更高特异性确保**人物属性各字段行之间完全没有分隔线** */
+.aw-form-compact .setting-item,
+.aw-form-compact .setting-item:not(:first-child) {
+	padding: 1px 0;
+	border-top: none;
+	align-items: center;
+	gap: 10px; /* 标签与输入框之间的空隙（行内 flex 两列，gap 只作用在它们之间） */
+}
+
+/* 标签列**定宽**：各行的控件区（输入框 / 下拉框）起点因此完全一致，左右边缘逐行对齐；
+   若按内容宽度（flex:0 0 auto）则「人物级别」这类长标签会把本行控件区推右，与其它行的输入框错位 */
+.aw-form-compact .setting-item-info {
+	margin: 0;
+	padding: 0;
+	flex: 0 0 6.5em;
+	max-width: 6.5em;
+}
+
+.aw-form-compact .setting-item-name {
+	font-size: 0.9em;
+	line-height: 1.35;
+	margin: 0;
+	white-space: normal; /* 超长标签（如「归属章节号（卷内本地号）」）本列内换行，不撑宽标签列 */
+	overflow-wrap: anywhere;
+}
+
+/* 控件区吃满「标签之外的全部一行空间」：Obsidian 默认 .setting-item-control 是 flex:0 0 auto + justify-content:flex-end，
+   输入框只会按内容宽度靠右摆；这里给 control flex:1 1 auto 并把内容轴改为 stretch、再让 input/select 自身 width:100% */
+.aw-form-compact .setting-item-control {
+	flex: 1 1 auto;
+	min-width: 0;
+	padding: 0;
+	justify-content: stretch;
+}
+
+.aw-form-compact .setting-item-control input[type="text"],
+.aw-form-compact .setting-item-control select {
+	flex: 1 1 auto;
+	width: 100%;
+	min-width: 0;
+	height: 24px;
+	min-height: 24px;
+	padding: 0 6px;
+	font-size: 0.9em;
+}
+
+/* 按钮（「+ 添加关系」/「创建」等）贴右：control 已改成 justify-content:stretch 让输入框撑满，
+   按钮必须用 margin-left:auto 自己顶回右侧，右缘才与上方输入框右缘对齐 */
+.aw-form-compact .setting-item-control button {
+	height: 24px;
+	font-size: 0.9em;
+	margin: 0 0 0 auto;
+}
+
+/* 末尾一般承载按钮行（确定/创建/删除）：特异性写到 0,4,0 以免被上面 0,3,0 的 padding 简写覆盖 */
+.aw-form-compact > .setting-item:last-child:not(:first-child) {
+	padding-top: 6px;
+}
+
+.aw-form-compact h3 {
+	margin: 0 0 6px;
+}
+
+/* 唯一的横向分隔线：只在「人物关系」小节标题（h4）上方给一条，把属性区与关系区在视觉上分开 */
+.aw-form-compact h4 {
+	margin: 10px 0 4px;
+	padding-top: 8px;
+	border-top: 1px solid var(--background-modifier-border);
+}
+
+.aw-addchar-hint {
+	margin: 4px 0 8px;
+	font-size: 0.9em;
+}
+
+.aw-addchar-rels {
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+	margin: 6px 0;
+}
+
+.aw-addchar-rel {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+}
+
+.aw-addchar-relidx {
+	flex: 0 0 auto;
+	font-size: 0.85em;
+}
+
+.aw-addchar-sel {
+	flex: 1 1 auto;
+	min-width: 0; /* 允许下拉在窄弹窗里收缩，不撑破行宽 */
+}
+
+.aw-addchar-relrm {
+	flex: 0 0 auto;
+	padding: 0 8px;
+	cursor: pointer;
+}
+
+.aw-addchar-actions {
+	display: flex;
+	justify-content: flex-end;
+	margin-top: 12px;
 }
 
 /* ===== 静态样式集中化（原 JS 内联 style 赋值迁移至此）===== */

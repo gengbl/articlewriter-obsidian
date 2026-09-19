@@ -1,6 +1,6 @@
 import { ItemView, TFile, WorkspaceLeaf } from "obsidian";
 import type { LlmConfigDoc, PluginConfig } from "./plugin_config";
-import { chatStream, normalizeBaseURL } from "./llm_client";
+import { chatStream, describeLlmError, normalizeBaseURL } from "./llm_client";
 import type { Message } from "./llm_client";
 
 interface ChatTurn {
@@ -43,12 +43,21 @@ export class LlmChatView extends ItemView {
 	private refPaths: string[] = [];
 
 	private getActiveStory?: () => Promise<{ story: string; chapterNum: number; chapterTitle: string } | null>;
+	/** v0.2.0+：切换模型时写回 data.json 的 active_llm（由 main.ts 注入）——写作命令读的是同一个激活项，两边从此保持一致、下次启动按它加载 */
+	private setActiveModel?: (name: string) => void | Promise<void>;
 
-	constructor(leaf: WorkspaceLeaf, getConf: () => PluginConfig | undefined, getSystemPrompt?: () => Promise<{ text: string; hasStory: boolean }>, getActiveStory?: () => Promise<{ story: string; chapterNum: number; chapterTitle: string } | null>) {
+	constructor(
+		leaf: WorkspaceLeaf,
+		getConf: () => PluginConfig | undefined,
+		getSystemPrompt?: () => Promise<{ text: string; hasStory: boolean }>,
+		getActiveStory?: () => Promise<{ story: string; chapterNum: number; chapterTitle: string } | null>,
+		setActiveModel?: (name: string) => void | Promise<void>
+	) {
 		super(leaf);
 		this.getConf = getConf;
 		this.getSystemPrompt = getSystemPrompt;
 		this.getActiveStory = getActiveStory;
+		this.setActiveModel = setActiveModel;
 	}
 
 	getViewType(): string {
@@ -93,6 +102,8 @@ export class LlmChatView extends ItemView {
 		this.selectEl.addEventListener("change", () => {
 			this.activeIdx = parseInt(this.selectEl.value, 10) || 0;
 			this.updateModelLabel();
+			const name = this.cfgs[this.activeIdx]?.name;
+			if (name) void this.setActiveModel?.(name); // 同步为「激活模型」：写作命令/连接测试此后使用它，并落盘到 data.json
 		});
 		this.spLabelEl = root.createDiv({ cls: "aw-dim aw-chat-sp" });
 		this.spLabelEl.setText("提示词：加载中…");
@@ -148,17 +159,19 @@ export class LlmChatView extends ItemView {
 		this.setBusy(false);
 	}
 
-	private refreshModels(): void {
+	/**
+	 * 重建模型下拉。选中项**一律以持久化的 `active_llm` 为准**（不再"优先保持原选择"）：
+	 * 对话框切换时会写回 active_llm，所以保持原选择的效果自然成立，同时设置页改动激活模型也能在这里立刻体现——
+	 * 两处永远指向同一个模型（写作命令读的就是 active_llm）。public 供 main.ts 在设置变更后同步。
+	 */
+	refreshModels(): void {
 		if (!this.built) return;
 		const conf = this.getConf();
-		const prevName = this.cfgs[this.activeIdx]?.name;
 		this.cfgs = (conf?.llm_configs ?? []).length ? (conf!.llm_configs as LlmConfigDoc[]) : [{} as LlmConfigDoc];
 		let idx = 0;
-		if (prevName) {
-			const i = this.cfgs.findIndex((c) => c.name === prevName);
-			if (i >= 0) idx = i;
-		} else if (conf?.active_llm) {
-			const i = this.cfgs.findIndex((c) => c.name === conf.active_llm);
+		const want = conf?.active_llm;
+		if (want) {
+			const i = this.cfgs.findIndex((c) => c.name === want);
 			if (i >= 0) idx = i;
 		}
 		this.activeIdx = idx;
@@ -403,7 +416,7 @@ export class LlmChatView extends ItemView {
 			}, undefined, this.ctrl.signal);
 		} catch (e) {
 			const aborted = !!this.ctrl && this.ctrl.signal.aborted;
-			const msg = e instanceof Error ? e.message : String(e);
+			const msg = describeLlmError(e); // 带底层 cause/code/HTTP 状态，便于区分连接被拒、超时与 4xx
 			if (aborted) {
 				if (!full.trim()) el.parentElement?.remove(); // 空的中断轮次不留痕
 				else { failed = true; this.setStatus("已停止生成"); }

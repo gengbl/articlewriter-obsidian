@@ -34,15 +34,17 @@ It is the Obsidian port of the `articlewriter` Python CLI. Nothing depends on ex
 ├── 伏笔.md                  # Foreshadowing log
 ├── 笔记.md                  # Notes
 └── 第NN章-<标题>/           # One folder per chapter
-    ├── 章节.md              # Chapter body
-    ├── 章节大纲.md          # Chapter outline
-    ├── 人物.md              # Characters
-    ├── 人物关系.md          # Character relations
-    ├── 场景.md              # Scenes
-    └── 章节信息.md          # Chapter info
+    ├── NN-<标题>.md          # Chapter body (file prefix is the numeric chapter number)
+    ├── NN-<标题>-大纲.md      # Chapter outline
+    ├── NN-<标题>-人物.md      # Characters
+    ├── NN-<标题>-人物关系.md  # Character relations
+    ├── NN-<标题>-场景.md      # Scenes
+    └── NN-<标题>-信息.md      # Chapter info
 ```
 
-Missing documents are auto-created as "HTML comment example" templates when creating a new book/chapter; existing files are skipped and never overwrite user content. All file names are normalized through `safeFilename()` (mirrors `fsutil.safe_filename`).
+Volume-level template docs are named after the volume too (e.g. `<卷名>-大纲.md`, `<卷名>-人物.md`, `<卷名>-人物关系.md`, `<卷名>-场景.md`).
+
+Missing documents are auto-created as "HTML comment example" templates when creating a new book/chapter; existing files are skipped and never overwrite user content. All file names are normalized through `safeFilename()` (mirrors `fsutil.safe_filename`). Legacy documents (bare names like `章节.md`/`卷大纲.md`, or older prefix forms like `初见-章节.md`) are auto-detected when switching books and can be batch-migrated to the new names (rename only, content untouched).
 
 ## Commands
 
@@ -51,7 +53,7 @@ Search the command palette for "ArticleWriter" or the Chinese description.
 | Command | CLI equivalent | Implementation notes |
 | --- | --- | --- |
 | Create new story | `/new` | `vault.createFolder` + `vault.create` build the book folder and all template docs, then write the state doc |
-| New chapter | `/chapter add` | Creates the `第NN章-title/` directory with its 6 documents and updates the current chapter |
+| New chapter | `/chapter add` | Creates the `第NN章-title/` directory with its 6 documents (named `NN-title.md`, `NN-title-大纲.md`, …) and updates the current chapter |
 | Chapter list | `/chapter list` / `/open` | Scans chapter folders; picking one opens its body via `workspace.getLeaf("tab").openFile` and sets it as the current chapter |
 | Open outline / world-building / foreshadowing / notes | `/outline show`, etc. | Created from template first if missing, then opened |
 | Next / previous chapter | `/chapter next` / `prev` | With no current chapter: next → first, prev → last; at a boundary a notice is shown without switching |
@@ -65,6 +67,7 @@ Search the command palette for "ArticleWriter" or the Chinese description.
 | LLM connection test | `/llm test` | Uses the openai SDK against any OpenAI-compatible endpoint (DeepSeek/DashScope/Ollama/LM Studio/llama.cpp…); verifies the active config via GET /models |
 | LLM chat window | — (plugin addition) | **Persistent dockable panel** (custom view, draggable into any workspace area, position survives reloads; message icon in the sidebar as quick entry): multi-turn streaming chat, Enter sends / Shift+Enter newline, dropdown on top switches saved model configs, "Stop generating" only interrupts the current turn; every turn automatically carries a chat-specific prompt (friendly-assistant identity + writing guide + snapshot of the current story context, consistent with the CLI's `/llm` Q&A behavior), the current story·chapter is shown on top, history is not persisted |
 | Writing desk | — (plugin addition) | **Persistent dockable panel** (book icon in the sidebar as quick entry): work directory, list of all stories (click to switch the current book), genre / writing type / total word count / update time of the current story, chapter list (activating a chapter also syncs its volume), global docs and per-chapter files (click opens them in the editor); story/chapter/file lists all support folder-like expand/collapse (title row or the arrow before a chapter); **right-clicking** a story/chapter/file row shows a shortcut menu: create/delete story, create/delete chapter, create an article .md at the book root or inside a chapter dir / delete file (all destructive actions require a second confirmation; deletions go to the Obsidian trash so they are recoverable); manual reload via "Refresh" at the top right |
+| Relationship panel | — (plugin addition) | **Persistent dockable panel** (people icon in the sidebar as quick entry): aggregates the current story's relationship cards from the three tiers of 《人物关系.md》 (book / volume / chapter) — character pair, type badge (icon picked by relationship type), status dot (active green / pending yellow / ended grey) and description; click a card (or "Open document" on a group header) to open that tier's source md; the top offers a "Cards / Graph" toggle (kept for the session): Cards = grouped relationship cards, Graph = a circular node-link network (edge colour = relationship type with an in-graph legend, line style = active solid / pending dashed / ended dotted, thicker line = same pair registered in several places; hover a character to highlight its neighbours, hover an edge to highlight just that one, click a node or edge to open the source doc; a zoom bar above the graph (zoom out / zoom in / reset view) scales the whole drawing including character names, and **scrolling the mouse wheel over the graph also zooms** (the point under the mouse stays fixed across zoom; scroll down = zoom out, scroll up = zoom in). The part cropped by the pane can be reached by holding and dragging the graph itself — no scrollbars appear, dragging is clamped so the graph can never be lost off-view, and "Reset view" returns it to the initial fit-to-pane position), plus the filter box (character/type/status) and a "Refresh" button — no work-directory row and no story list (the panel shows relationships only; switch books via the "Switch current story" command or the Writing desk), groups collapse in card mode, and edits to relationship docs auto-refresh the panel |
 | LLM model configuration | (replaces `~/.articlewriter/config.json`) | Obsidian Settings → ArticleWriter, stored in the plugin data directory `.obsidian/plugins/articlewriter/data.json` (first run presets three standard templates local/deepseek/qwen-dashscope awaiting api_key/model name) |
 
 ## Workflow (work_dir)

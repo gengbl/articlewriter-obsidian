@@ -1,8 +1,10 @@
 import { App, Modal, Notice, Plugin, PluginSettingTab, TAbstractFile, TFile, TFolder, type SettingDefinitionItem, type SettingDefinitionPage } from "obsidian";
-import { ActionItem, ActionMenuModal, ChapterListModal, ConfirmModal, FolderPickerModal, MarkdownViewerModal, MultiFieldModal, NewFilePickerModal, NewStoryInput, NewStoryModal, PanelLine, StoryPickerModal, TextAreaPrompt, TextPanelModal, TextInputModal, VolumeBatchCreateModal } from "./modals";
+import { ActionItem, ActionMenuModal, AddCharacterModal, ChapterListModal, ConfirmModal, FolderPickerModal, MarkdownViewerModal, MultiFieldModal, NewFilePickerModal, NewStoryInput, NewStoryModal, PanelLine, StoryPickerModal, TextAreaPrompt, TextPanelModal, TextInputModal, VolumeBatchCreateModal } from "./modals";
+import type { AddCharacterResult, CharacterScopeOption } from "./modals";
 import { LlmChatView } from "./llm_chat_view";
 import { GenProgressView, type WritingStreamSink } from "./gen_progress_view";
 import { StatusView, type StatusAction, type StatusChapterEntry, type StatusDetail, type StatusSnapshot, type StatusStoryEntry } from "./status_view";
+import { RelationshipView, type RelCharInfo, type RelGroup, type RelRow, type RelSnapshot, type RelStoryEntry } from "./relationship_view";
 import { chapterOutlineTemplate, countPureWords, FORESHADOW_TEMPLATE, formatLocalDateTime, md5, NOTES_TEMPLATE, outlineTemplate, WORLD_TEMPLATE } from "./story_types";
 import { safeFilename } from "./story_types";
 import { StoryManager, NO_VOL_MODE_MSG } from "./story_manager";
@@ -12,11 +14,12 @@ import type { LlmConfigDoc, PluginConfig } from "./plugin_config";
 import { DEFAULT_SYSTEM_GUIDE } from "./system_guide_default";
 import { EMPTY_GUIDE_TEMPLATE } from "./guide_template_default";
 import { DEFAULT_USAGE_GUIDE } from "./usage_guide_default";
-import { assembleSystemPrompt, chatCompletion, chatStream, normalizeBaseURL, testConnection } from "./llm_client";
+import { assembleSystemPrompt, chatCompletion, chatStream, describeLlmError, isRetryableLlmError, normalizeBaseURL, testConnection } from "./llm_client";
 import type { Message } from "./llm_client";
 import { findAiWordHits, mergeGuideCategories } from "./banned_words";
 import { appendOutlineInstruction, buildChapterPrompt, buildChapterSummaryPrompt, buildContinuePrompt, buildPolishPrompt, buildReviewPrompt, buildRewritePrompt, buildStoryTypeSystemPrompt, buildVolRebuildPrompt, buildWritingContext, CHAPTER_SUMMARY_SYSTEM_PROMPT, checkOutlineCoverage, cleanAiText, embedAggHash, formatRetryNote, parseAggHash, serializeAggregateGuide, stripHeading, validateStoryTypeFormat, VOL_SUMMARY_SYSTEM_PROMPT, wordRangeFromGuides } from "./prompts";
-import { parseChapterSelection, splitList, stripComments } from "./md_docs";
+import { parseChapterSelection, parseRelationships, splitList, stripComments } from "./md_docs";
+import type { RelationshipEntry } from "./md_docs";
 
 interface ArticleWriterSettings {
 	workDir: string; // 写小说的文件夹（对齐 CLI --work_dir / /dir）；空=未初始化，首次用命令时弹选择器
@@ -34,10 +37,14 @@ const DEFAULT_SETTINGS: ArticleWriterSettings = {
 	prevChapters: 3,
 };
 
+/** 「添加人物」关系类型下拉的可选值：均能命中 relationship_view.ts 的类型正则（保证图视图边色/图标可识别），空值=未标注 */
+const RELATION_TYPE_OPTIONS = ["师徒", "同门", "朋友", "同伴", "恋人", "亲族", "主仆", "敌对", "对手", "盟友"];
+
 export default class ArticleWriterPlugin extends Plugin {
 	settings: ArticleWriterSettings = { ...DEFAULT_SETTINGS };
 	manager!: StoryManager;
 	private statusRefreshTimer: number | null = null; // 工作目录内文件变更 → 防抖刷新已打开状态面板的定时器
+	private relRefreshTimer: number | null = null; // 同上，人物关系面板（v0.1.9+）
 	private flatBlocked: string | null = null; // 仍为平面结构且整理失败的书名：章节/卷结构操作锁定，直至「按卷整理目录」成功
 
 	/** v0.1.4+：data.json settings.prevChapters → 有效窗口章数 N（缺省/非法回落 CLI 默认 3；0=不注入前文） */
@@ -142,6 +149,7 @@ export default class ArticleWriterPlugin extends Plugin {
 		this.addCommand({ id: "chapter-delete", name: "删除章节（移入回收站并清理元数据）", callback: () => this.cmdChapterDelete() });
 		this.addCommand({ id: "chapter-rename", name: "重命名章节标题（同步目录名与文档引用）", callback: () => this.cmdChapterRename() });
 		this.addCommand({ id: "chapter-renumber", name: "重排全部章节编号为连续序号（含交叉引用改写）", callback: () => this.cmdChapterRenumber() });
+		this.addCommand({ id: "rename-chapter-file", name: "重命名章节文件（将旧格式改为第NN章-章节名格式）", callback: () => this.cmdRenameChapterFile() });
 
 		this.addCommand({ id: "pack-chapters", name: "打包章节合集（/pack：正文合辑单 MD，留空=当前章，支持 all/区间 3-7/列表 1、4、5；输出路径可自定义）", callback: () => this.cmdPackChapters() });
 		this.addCommand({ id: "pack-volume", name: "导出卷合集（该卷全部章节正文合一 MD，默认 <书名>-<卷名>-合集.md；写字台卷节点右键同义入口）", callback: () => this.cmdPackVolume() });
@@ -162,17 +170,20 @@ export default class ArticleWriterPlugin extends Plugin {
 		this.addCommand({ id: "review-chapter", name: "审阅本章（/review：全局视角查逻辑/连贯性问题出报告）", callback: () => this.cmdReviewChapter() });
 		this.addCommand({ id: "llm-chat", name: "打开 LLM 对话窗口（常驻面板：多轮流式聊天，可停靠任意区域、切换已保存的模型配置）", callback: () => void this.openLlmPanel() });
 		this.addCommand({ id: "status-page", name: "打开写字台（当前书/章节/文件一览，点击小说或章节可切换激活）", callback: () => void this.openStatusPanel() });
+		this.addCommand({ id: "relationship-panel", name: "打开人物关系面板（汇总书/卷/章三层关系，按类型·状态带图标展示，点击打开来源文档）", callback: () => void this.openRelationshipPanel() });
 
-		this.registerView(LlmChatView.VIEW_TYPE, (leaf) => new LlmChatView(leaf, () => this.settings.llm, () => this.getChatSystemPrompt(), () => this.getActiveStoryInfo()));
+		this.registerView(LlmChatView.VIEW_TYPE, (leaf) => new LlmChatView(leaf, () => this.settings.llm, () => this.getChatSystemPrompt(), () => this.getActiveStoryInfo(), (name) => this.setActiveLlmFromChat(name)));
 		this.registerView(GenProgressView.VIEW_TYPE, (leaf) => new GenProgressView(leaf)); // v0.1.4+：摘要延迟生成的工作过程面板（notifyGenProgress 驱动）
 		this.registerView(StatusView.VIEW_TYPE, (leaf) => new StatusView(leaf, () => this.getStatusSnapshot(), (name) => this.statusSwitchStory(name), (story, key) => this.statusActivateChapter(story, key), (a) => this.handleStatusAction(a)));
+		this.registerView(RelationshipView.VIEW_TYPE, (leaf) => new RelationshipView(leaf, () => this.getRelationshipSnapshot(), () => this.openAddCharacterDialog())); // v0.1.9+：人物关系面板（展示只读，切书在写字台/命令里做；v0.2.0+ 头部「添加人物」注入写动作）
 		this.addRibbonIcon("message-square", "打开 LLM 对话窗口（常驻面板）", () => void this.openLlmPanel());
 		this.addRibbonIcon("book-open", "打开写字台（当前书/章节/文件）", () => void this.openStatusPanel());
+		this.addRibbonIcon("users", "打开人物关系面板（书/卷/章三层关系）", () => void this.openRelationshipPanel());
 		this.addSettingTab(new ArticleWriterSettingTab(this));
 
-		// 工作目录内文件变更（编辑器写作自动落盘等）→ 防抖刷新所有已打开状态面板，让章节字数实时跟进写作进度
+		// 工作目录内文件变更（编辑器写作自动落盘等）→ 防抖刷新所有已打开面板（写字台字数 + 人物关系），让改动实时跟进
 		const watchFile = (file: TAbstractFile) => {
-			if (file instanceof TFile && file.path.endsWith(".md") && this.pathUnderWorkDir(file.path)) this.scheduleStatusPanelRefresh();
+			if (file instanceof TFile && file.path.endsWith(".md") && this.pathUnderWorkDir(file.path)) this.schedulePanelRefresh();
 		};
 		this.registerEvent(this.app.vault.on("modify", watchFile));
 		this.registerEvent(this.app.vault.on("create", watchFile));
@@ -180,7 +191,7 @@ export default class ArticleWriterPlugin extends Plugin {
 		// 主窗口重命名/移动（文件列表右键改名、拖拽）：触发时 file.path 已是新路径，须同时看 oldPath 判断是否涉及工作目录（覆盖跨边界移入/移出 workDir），任一侧为 .md 即可能改变面板枚举
 		const watchRename = (file: TAbstractFile, oldPath: string) => {
 			if (!(file instanceof TFile)) return;
-			if ((this.pathUnderWorkDir(file.path) || this.pathUnderWorkDir(oldPath)) && (file.path.endsWith(".md") || oldPath.endsWith(".md"))) this.scheduleStatusPanelRefresh();
+			if ((this.pathUnderWorkDir(file.path) || this.pathUnderWorkDir(oldPath)) && (file.path.endsWith(".md") || oldPath.endsWith(".md"))) this.schedulePanelRefresh();
 		};
 		this.registerEvent(this.app.vault.on("rename", watchRename));
 	}
@@ -527,6 +538,34 @@ export default class ArticleWriterPlugin extends Plugin {
 	/** 切换书籍后调用：检测到平面结构则强制自动按卷整理（不可跳过）；**全书无卷时先弹批量建卷页**（VolumeBatchCreateModal：手动加名单、确定后按序创建；取消/空列表 = 跳过），覆盖两种残留——有卷但章留书根、或零卷却存在未识别章节目录；失败时锁定该书的结构操作 */
 	private async enforceVolumeLayoutOnSwitch(story: string): Promise<void> {
 		try {
+			// 修复历史缺陷：误建的「NN章-标题」目录（缺「第」）补回前缀
+			try {
+				const repaired = await this.manager.repairUnprefixedChapterFolders(story);
+				if (repaired > 0) new Notice(`已修复 ${repaired} 个章节目录名（补回「第」前缀）`, 8000);
+			} catch (e) {
+				this.notifyError("章节目录名修复失败", e);
+			}
+			// 旧格式模板文档检测与批量迁移（章节文件 → NN-标题-后缀.md；卷文件 → 卷名-后缀.md）
+			try {
+				const legacyDocs = await this.manager.detectOldFormatDocs(story);
+				if (legacyDocs.length > 0) {
+					const ok = await this.confirmBox(
+						"检测到《" + story + "》有 " + legacyDocs.length + " 处旧格式文档",
+						"旧格式模板文件名为裸名（如 章节.md / 卷大纲.md），新格式会在前面加上所属章节名/卷名（如 初见-章节.md / 风起-卷大纲.md）。是否立即批量更新？更新仅重命名文件，不改动内容。",
+						"批量更新"
+					);
+					if (ok) {
+						const result = await this.manager.migrateOldFormatDocs(legacyDocs);
+						let noticeText = "已更新 " + result.migrated + " 处旧格式文档";
+						if (result.errors.length) noticeText += "，失败 " + result.errors.length + " 处";
+						new Notice(noticeText, 8000);
+						if (result.errors.length) this.notifyError("部分文档迁移失败", new Error(result.errors.join("; ")));
+					}
+				}
+			} catch (e) {
+				this.notifyError("旧格式文档检测失败", e);
+			}
+
 			const st0 = await this.manager.loadState(story);
 			if (st0 && !st0.use_volumes) { // v0.0.16+：无卷模式的书刻意保持纯 书→章 扁平结构，跳过建卷/按卷整理引导
 				this.flatBlocked = null;
@@ -542,7 +581,11 @@ export default class ArticleWriterPlugin extends Plugin {
 				this.flatBlocked = null;
 				return;
 			}
-			await this.promptCreateVolumesIfEmpty(story); // 零卷 → 先弹建卷框（新建与遗留目录同名的卷，其内章节立即归属）
+			
+
+
+
+await this.promptCreateVolumesIfEmpty(story); // 零卷 → 先弹建卷框（新建与遗留目录同名的卷，其内章节立即归属）
 			new Notice(nums.length ? `《${story}》仍为平面结构（${nums.length} 章带卷归属），正在自动按卷整理…` : `《${story}》存在未识别章节目录，正在自动按卷整理…`, 5000);
 			await this.runOrganizeVolumes(story);
 			this.flatBlocked = (await this.manager.needsVolumeOrganize(story)).length ? story : null;
@@ -679,8 +722,8 @@ export default class ArticleWriterPlugin extends Plugin {
 			this.app,
 			chapters.map((c) => ({ num: c.num, key: c.key, title: c.title, path: c.dir.path, isCurrent: state?.current_chapter === c.key, display: this.keyLabel(c.key, volNames, c.title) })),
 			async (item) => {
-				await this.manager.switchChapter(story, item.key ?? String(item.num));
-				await this.manager.openMarkdown(`${item.path}/章节.md`);
+				const bodyPath = await this.manager.switchChapter(story, item.key ?? String(item.num));
+				if (bodyPath) await this.manager.openMarkdown(bodyPath);
 			}
 		).open();
 	}
@@ -775,7 +818,7 @@ export default class ArticleWriterPlugin extends Plugin {
 		const chapters = await this.manager.listChapters(story);
 		let total = 0;
 		for (const ch of chapters) {
-			const f = this.app.vault.getAbstractFileByPath(`${ch.dir.path}/章节.md`);
+			const f = await this.manager.chapterBodyFile(story, ch.key);
 			if (f instanceof TFile) total += countPureWords(await this.app.vault.read(f));
 		}
 		const lines: string[] = [
@@ -840,7 +883,7 @@ export default class ArticleWriterPlugin extends Plugin {
 	}
 
 	private notifyError(prefix: string, e: unknown): void {
-		new Notice(`${prefix}：${(e as Error)?.message || String(e)}`, 6000);
+		new Notice(`${prefix}：${describeLlmError(e)}`, 8000); // 带 cause/code/HTTP 状态，避免只有一句 "Connection error." 无法定位
 	}
 
 	private pickAction(title: string, items: ActionItem[]): Promise<number | null> {
@@ -1568,12 +1611,11 @@ export default class ArticleWriterPlugin extends Plugin {
 		const key = await this.requireChapterKey(story); // v0.0.15：复合键
 		if (key == null) return;
 		try {
-			const f = await this.manager.chapterBodyFile(story, key);
-			if (!f || !f.parent) {
-				new Notice(`${this.keyLabel(key)} 没有正文文档`);
+			const path = await this.manager.chapterDocPath(story, key, "章节大纲.md");
+			if (!path) {
+				new Notice(`${this.keyLabel(key)} 不存在`);
 				return;
 			}
-			const path = `${f.parent.path}/章节大纲.md`;
 			const num = parseChKey(key).num;
 			const t = (await this.manager.listChapters(story)).find((c) => c.key === key)?.title ?? "";
 			await this.manager.ensureDoc(path, chapterOutlineTemplate(num, t));
@@ -1652,6 +1694,36 @@ export default class ArticleWriterPlugin extends Plugin {
 			this.notifyError("重排失败", e);
 		}
 	}
+
+async cmdRenameChapterFile(): Promise<void> {
+    if (!(await this.ensureWorkDir())) return;
+    const story = await this.requireStory();
+    if (!story) return;
+    const chapters = await this.manager.listChapters(story);
+    if (!chapters.length) {
+        new Notice("该小说没有章节");
+        return;
+    }
+    const idx = await this.pickAction(
+        "选择要重命名的章节",
+        chapters.map((ch) => ({
+            label: (ch.vol ? "卷「" + ch.vol + "」" : "书根") + " 第" + String(ch.num).padStart(2, "0") + "章 " + ch.title,
+        })),
+    );
+    if (idx == null) return;
+    const chapter = chapters[idx];
+    if (!chapter) return;
+    const newTitle = await this.prompt("新章节标题", "输入新的章节标题（留空保持不变）", chapter.title);
+    if (newTitle == null) return;
+    const newSafe = safeFilename(newTitle.trim());
+    try {
+        const complexKey = chapter.vol ? chapter.vol + ":" + String(chapter.num) : String(chapter.num);
+        await this.manager.renameChapter(story, complexKey, newSafe);
+        new Notice("章节文件已重命名为：" + newSafe);
+    } catch (e) {
+        this.notifyError("重命名失败", e);
+    }
+}
 
 	// ---------- 打包合集（/pack）----------
 
@@ -2004,6 +2076,26 @@ export default class ArticleWriterPlugin extends Plugin {
 		return { cfg, systemPrompt: conf.system_prompt, descStyle: conf.desc_style };
 	}
 
+	/**
+	 * LLM 对话框顶部下拉切换模型 → 写回 data.json 的 `active_llm`（并即时保存）：
+	 * 写作命令 / 连接测试读的就是这个激活项，故选择后下一次「编写本章」等命令立刻使用新模型；
+	 * 该值随 data.json 持久化，Obsidian 重启后对话框下拉与写作命令都从它加载。
+	 */
+	async setActiveLlmFromChat(name: string): Promise<void> {
+		const conf = this.settings.llm;
+		if (!conf || !name || conf.active_llm === name) return;
+		conf.active_llm = name;
+		await this.saveSettings();
+		new Notice(`已切换激活模型：${name}（写作命令将使用它）`, 4000);
+	}
+
+	/** 让已打开的 LLM 对话框下拉与激活项同步（设置页改激活模型 / 新建删除配置后调用；对话框自身切换无需调用） */
+	syncChatModelSelect(): void {
+		for (const leaf of this.app.workspace.getLeavesOfType(LlmChatView.VIEW_TYPE)) {
+			if (leaf.view instanceof LlmChatView) leaf.view.refreshModels();
+		}
+	}
+
 	// ---------- LLM 连接测试（对齐 CLI /llm test，GET /models） ----------
 
 	async cmdLlmTest(): Promise<void> {
@@ -2064,6 +2156,100 @@ export default class ArticleWriterPlugin extends Plugin {
 			await leaf.setViewState({ type: StatusView.VIEW_TYPE, active: true });
 		} catch (e) {
 			this.notifyError("打开写字台失败", e);
+		}
+	}
+
+	/** 打开常驻人物关系面板（v0.1.9+）：已有则直接激活，否则复用右栏叶子承载（写字台占左栏，两者可同屏对照） */
+	private async openRelationshipPanel(): Promise<void> {
+		try {
+			const existing = this.app.workspace.getLeavesOfType(RelationshipView.VIEW_TYPE);
+			if (existing.length) {
+				this.app.workspace.setActiveLeaf(existing[0]);
+				return;
+			}
+			const leaf = this.app.workspace.getRightLeaf(false) ?? this.app.workspace.getRightLeaf(true) ?? this.app.workspace.getLeaf("split");
+			await leaf.setViewState({ type: RelationshipView.VIEW_TYPE, active: true });
+		} catch (e) {
+			this.notifyError("打开人物关系面板失败", e);
+		}
+	}
+
+	/**
+	 * 「添加人物」弹窗（v0.2.0+）：人物关系面板头部按钮的唯一实现。
+	 * 姓名 + 归属级别（书籍级／卷级／章级，决定写入哪份《人物.md》）+ 设定字段 + 动态关系行；
+	 * 提交后先 addCharacter 落人物，再按同一级别把关系条目追加进对应《人物关系.md》（书根／卷目录／章节目录）。
+	 */
+	async openAddCharacterDialog(): Promise<void> {
+		const story = await this.activeStory();
+		if (!story) {
+			new Notice("尚未选择当前小说：请先在写字台或命令里切换小说", 6000);
+			return;
+		}
+		const sortZh = (a: string, b: string): number => a.localeCompare(b, "zh");
+		let scopes: CharacterScopeOption[] = [];
+		let allNames: string[] = [];
+		try {
+			const all = Object.values(await this.manager.loadAllCharacters(story));
+			allNames = all.map((c) => c.name).sort(sortZh);
+			// 各层级「范围内」角色名：书级=书根全局条目，卷级=该卷卷目录条目，章级=该章目录条目（与 loadAllCharacters 的读取口径一致）
+			const inScope = (pred: (c: (typeof all)[number]) => boolean): string[] => all.filter(pred).map((c) => c.name).sort(sortZh);
+			scopes.push({ id: "book", kind: "book", label: "书籍级（书根《人物.md》）", localCandidates: inScope((c) => c.chapter <= 0 && !c.vol) });
+			for (const v of await this.manager.volumeList(story)) {
+				scopes.push({
+					id: `vol:${v.id}`,
+					kind: "volume",
+					label: `卷级 · ${v.name}`,
+					volId: v.id,
+					localCandidates: inScope((c) => c.chapter <= 0 && c.vol === v.id),
+				});
+			}
+			const volNames = await this.volNameMap(story);
+			for (const c of await this.manager.listChapters(story)) {
+				scopes.push({
+					id: `ch:${c.key}`,
+					kind: "chapter",
+					label: `章级 · ${this.keyLabel(c.key, volNames, c.title)}`,
+					chapterKey: c.key,
+					localCandidates: inScope((cc) => cc.chapter === c.num && (cc.vol ?? "") === (c.vol ?? "")),
+				});
+			}
+		} catch (e) {
+			this.notifyError("读取人物/章节失败", e);
+			return;
+		}
+		if (!scopes.length) scopes = [{ id: "book", kind: "book", label: "书籍级（书根《人物.md》）", localCandidates: [] }];
+		const state = await this.manager.loadState(story);
+		const curKey = state?.current_chapter ?? null;
+		const curVol = state?.current_volume ?? "";
+		const defScope = (curKey ? scopes.find((s) => s.chapterKey === curKey) : undefined) ?? (curVol ? scopes.find((s) => s.volId === curVol) : undefined) ?? scopes[0];
+		const ordered = [defScope, ...scopes.filter((s) => s !== defScope)]; // 默认项置顶：章级列表很长，默认落在当前写作位置免得翻找
+		const result = await new Promise<AddCharacterResult | null>((resolve) => {
+			new AddCharacterModal(this.app, ordered, allNames, RELATION_TYPE_OPTIONS, (r) => resolve(r), () => resolve(null)).open();
+		});
+		if (!result) return;
+		try {
+			const parsed = result.scope.kind === "chapter" && result.scope.chapterKey ? parseChKey(result.scope.chapterKey) : null;
+			await this.manager.addCharacter(story, {
+				name: result.name,
+				identity: result.fields.identity,
+				age: result.fields.age,
+				gender: result.fields.gender,
+				personality: result.fields.personality,
+				appearance: result.fields.appearance,
+				background: result.fields.background,
+				abilities: result.fields.abilities,
+				notes: result.fields.notes,
+				chapter: parsed ? parsed.num : 0, // 卷级/书籍级人物 chapter=0；卷级靠 vol 落卷实体目录、书籍级无 vol 落书根
+				vol: parsed ? parsed.vol ?? undefined : result.scope.volId,
+			});
+			if (result.relations.length) {
+				const entries: RelationshipEntry[] = result.relations.map((r) => ({ a: result.name, b: r.target, type: r.type, status: "active", desc: "" })); // 新建关系默认进行中
+				await this.manager.appendRelationships(story, result.scope.kind, entries, { volId: result.scope.volId, chapterKey: result.scope.chapterKey });
+			}
+			new Notice(`已添加人物「${result.name}」（${result.scope.label}）${result.relations.length ? `，并写入 ${String(result.relations.length)} 条关系` : ""}`, 8000);
+			this.schedulePanelRefresh(300);
+		} catch (e) {
+			this.notifyError("添加失败", e);
 		}
 	}
 
@@ -2146,6 +2332,24 @@ export default class ArticleWriterPlugin extends Plugin {
 		}, delayMs);
 	}
 
+	/** 防抖刷新所有已打开面板（写字台 + 人物关系）：同一批文件变更合并成一次重渲染 */
+	private schedulePanelRefresh(delayMs = 800): void {
+		this.scheduleStatusPanelRefresh(delayMs);
+		this.scheduleRelationshipPanelRefresh(delayMs);
+	}
+
+	/** 防抖刷新已打开的人物关系面板（v0.1.9+）：关系文档在编辑器里改动/新建同样实时跟进 */
+	private scheduleRelationshipPanelRefresh(delayMs = 800): void {
+		if (!this.app.workspace.getLeavesOfType(RelationshipView.VIEW_TYPE).length) return;
+		if (this.relRefreshTimer != null) window.clearTimeout(this.relRefreshTimer);
+		this.relRefreshTimer = window.setTimeout(() => {
+			this.relRefreshTimer = null;
+			for (const leaf of this.app.workspace.getLeavesOfType(RelationshipView.VIEW_TYPE)) {
+				if (leaf.view instanceof RelationshipView) void leaf.view.refresh();
+			}
+		}, delayMs);
+	}
+
 	/** 状态页数据快照：工作目录 + 全部小说概览 + 当前小说详情（章节/文件路径），全程非交互、逐段容错 */
 	async getStatusSnapshot(): Promise<StatusSnapshot> {
 		const root = this.settings.workDir.replace(/\/+$/, "");
@@ -2155,6 +2359,7 @@ export default class ArticleWriterPlugin extends Plugin {
 		const stories: StatusStoryEntry[] = [];
 		/** 逐书实时统计的章节字数（key→words）：状态文档里的 words/total_words 可能是过期值（旧数据、CLI 写入或建章后未同步），展示一律以磁盘 MD 为准（同 /count 口径）。**只为当前激活书做全量 countWords**——视图只渲染激活书的章节小节，非激活书仅用 state 值兜底（下拉框只显示书名），省掉多本书逐章读盘的 IO（手机上刷新明显卡顿的主因之一） */
 		let activeLiveWords: Record<string, number> | undefined;
+		let activeLiveChars: Record<string, number> | undefined; // 含标点的总字符数（同批 countWords 顺带产出，无额外 IO）
 		for (const name of names) {
 			let title = name;
 			let chapterCount = 0;
@@ -2175,8 +2380,10 @@ export default class ArticleWriterPlugin extends Plugin {
 				try {
 					const rows = await this.manager.countWords(name); // 读各章 章节.md 纯文字计数
 					const map: Record<string, number> = {};
-					for (const r of rows) map[r.key] = r.words;
+					const charMap: Record<string, number> = {};
+					for (const r of rows) { map[r.key] = r.words; charMap[r.key] = r.chars; }
 					activeLiveWords = map;
+					activeLiveChars = charMap;
 					words = rows.reduce((s, r) => s + r.words, 0); // 实时值优先，覆盖可能过期的 state 值
 				} catch {
 					/* 字数统计失败时保留 state 里的旧值兜底 */
@@ -2188,7 +2395,7 @@ export default class ArticleWriterPlugin extends Plugin {
 		const details: Record<string, StatusDetail> = {};
 		if (last && names.includes(last)) {
 			try {
-				details[last] = await this.buildStoryDetail(last, activeLiveWords);
+				details[last] = await this.buildStoryDetail(last, activeLiveWords, activeLiveChars);
 			} catch {
 				/* 详情缺失时视图显示「未能加载状态」提示 */
 			}
@@ -2196,8 +2403,53 @@ export default class ArticleWriterPlugin extends Plugin {
 		return { workDir: root, stories, details };
 	}
 
+	// ---------- 人物关系面板（RelationshipView，v0.1.9+） ----------
+
+	/**
+	 * 人物关系面板快照：工作目录 + 小说概览 + 当前书三层《人物关系.md》解析结果（书根 / 当前卷 / 当前章）。
+	 * 全程非交互只读：只读状态文档与 ≤3 份关系 md（不逐章统计），解析失败逐层降级为空列表。
+	 */
+	async getRelationshipSnapshot(): Promise<RelSnapshot> {
+		const root = this.settings.workDir.replace(/\/+$/, "");
+		if (!root) return { workDir: "", stories: [], activeStory: null, activeStoryTitle: "", groups: [], relCount: 0, chars: [] };
+		const names = await this.manager.listStories();
+		const last = this.settings.lastStory?.trim() ?? "";
+		const stories: RelStoryEntry[] = [];
+		for (const name of names) {
+			let title = name;
+			try {
+				const st = await this.manager.loadState(name); // 单文件读取，成本低；失败用书名兜底
+				if (st?.title) title = st.title;
+			} catch {
+				/* 单本状态读取失败不影响列表其余项 */
+			}
+			stories.push({ name, title, active: name === last });
+		}
+		const active = last && names.includes(last) ? last : null;
+		if (!active) return { workDir: root, stories, activeStory: null, activeStoryTitle: "", groups: [], relCount: 0, chars: [] };
+		const state = await this.manager.loadState(active);
+		const docs = await this.manager.readRelationshipDocs(active, state?.current_chapter ?? null); // 书/卷/章三层原文（只读）
+		const groups: RelGroup[] = [];
+		let relCount = 0;
+		for (const d of docs) {
+			let rows: RelRow[] = [];
+			try {
+				rows = parseRelationships(d.text).map((e) => ({ ...e, scope: d.scope, scopeLabel: d.label, sourcePath: d.path }));
+			} catch {
+				/* 单层解析失败不影响其余层（保留 hasText 提示用户检查格式） */
+			}
+			relCount += rows.length;
+			groups.push({ scope: d.scope, label: d.label, path: d.path, rows, hasText: d.text.trim().length > 0 });
+		}
+		let chars: RelCharInfo[] = [];
+		try {
+			chars = await this.manager.loadCharacterEntries(active); // 全部三层《人物.md》设定条目（「人物状态」区用；失败不阻断关系展示）
+		} catch { /* ignore */ }
+		return { workDir: root, stories, activeStory: active, activeStoryTitle: stories.find((s) => s.name === active)?.title ?? active, groups, relCount, chars };
+	}
+
 	/** 单本书的详情快照：状态字段 + 章节目录（含各章文件）+ 书根案头资料；字数优先用传入的实时磁盘统计 chWords，回退 state 值 */
-	private async buildStoryDetail(storyName: string, chWords?: Record<string, number>): Promise<StatusDetail> {
+	private async buildStoryDetail(storyName: string, chWords?: Record<string, number>, chChars?: Record<string, number>): Promise<StatusDetail> {
 		const state = await this.manager.loadState(storyName);
 		let vols: Array<{ id: string; name: string; description: string; order: number }> = [];
 		try {
@@ -2228,6 +2480,7 @@ export default class ArticleWriterPlugin extends Plugin {
 			currentChapter: state?.current_chapter ?? null,
 			currentVolume: curVolId,
 			totalWords: chWords ? Object.values(chWords).reduce((s, w) => s + w, 0) : (state?.total_words ?? 0),
+			totalChars: chChars ? Object.values(chChars).reduce((s, w) => s + w, 0) : undefined, // 含标点总字符数：仅实时统计可用时给出（state 无此字段，故缺失则不显示）
 			updatedAt: state?.updated_at || "",
 			volumes: vols.map((v) => ({ id: v.id, name: v.name, order: v.order, active: v.id === curVolId, docs: volDocs[v.id] ?? [] })),
 			chapters,
@@ -2260,8 +2513,8 @@ export default class ArticleWriterPlugin extends Plugin {
 				void leaf.view.updateSpLabel(); // 「提示词」标签（是否含小说上下文、约字数）
 			}
 		}
-		// lastStory/current_chapter 等元数据变更时同步刷新所有已打开的写字台：切书/切章后其它面板不再停留在旧书；scheduleStatusPanelRefresh 自带防抖合并突发
-		this.scheduleStatusPanelRefresh(200);
+		// lastStory/current_chapter 等元数据变更时同步刷新所有已打开面板（写字台 + 人物关系）：切书/切章后其它面板不再停留在旧书；防抖合并突发
+		this.schedulePanelRefresh(200);
 	}
 
 	/** 状态页右键快捷菜单动作执行器（语义与对应命令一致，但直接针对右键所在的小说/章节/目录，不再弹选择器） */
@@ -2627,7 +2880,9 @@ export default class ArticleWriterPlugin extends Plugin {
 					const parts: string[] = [];
 					if (curKey != null && curKey !== "") {
 						try {
-							const data = await this.manager.loadWritingData(lastStory, curKey, { includeCurrentSummary: false });
+							// ensureSummaries:false —— 这个调用只服务「对话框提示词/字数标签」这类**只读展示**：
+							// 触发摘要 LLM 生成会让切书/切章时凭空弹出「生成过程」面板并开始输出（用户视角就是"自动开始写"），必须禁掉
+							const data = await this.manager.loadWritingData(lastStory, curKey, { includeCurrentSummary: false, ensureSummaries: false });
 							const ctx = buildWritingContext(data);
 							if (ctx) parts.push(ctx);
 						} catch {
@@ -2657,16 +2912,35 @@ export default class ArticleWriterPlugin extends Plugin {
 		return { text, hasStory };
 	}
 
-	/** 单次流式调用：空流按「结果为空」处理（返回""），用户中断向上抛 AbortError，其余异常原样抛出 */
+	/**
+	 * 单次流式调用：空流按「结果为空」处理（返回""），用户中断向上抛 AbortError。
+	 * 网络层瞬时故障（fetch 的 `Failed to fetch` / Connection error / ETIMEDOUT / ECONNRESET / 5xx）自动退避重试 2 次
+	 * ——长 prompt 的首字节等待常达数十秒，连接被中间设备或服务端网关掐断是常见故障，重试一次多半即通；
+	 * 参数类 4xx（超长上下文、密钥错等）由 isRetryableLlmError 挡掉直接失败，避免白等。
+	 */
 	private async streamOnce(cfg: LlmConfigDoc, messages: Message[], sink: WritingStreamSink): Promise<string> {
-		try {
-			return await chatStream(cfg, messages, (d) => sink.append(d), undefined, sink.signal);
-		} catch (e) {
-			if (sink.signal.aborted || (e instanceof Error && e.name === "AbortError")) throw e;
-			const msg = e instanceof Error ? e.message : String(e);
-			if (msg.includes("输出为空") || msg.includes("未返回内容")) return "";
-			throw e;
+		const maxAttempts = 3;
+		for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+			try {
+				return await chatStream(cfg, messages, (d) => sink.append(d), undefined, sink.signal);
+			} catch (e) {
+				if (sink.signal.aborted || (e instanceof Error && e.name === "AbortError")) throw e;
+				const msg = e instanceof Error ? e.message : String(e);
+				if (msg.includes("输出为空") || msg.includes("未返回内容")) return "";
+				// 本地端点（localhost/127.0.0.1）的连接失败＝服务没起来，重试必然同样失败，直接报错让用户看到端点更省事
+				const localEndpoint = /^https?:\/\/(localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])/i.test(cfg.base_url || "");
+				if (attempt < maxAttempts && !localEndpoint && isRetryableLlmError(e)) {
+					const waitS = attempt * 2; // 2s、4s 退避
+					sink.setStatus(`连接中断，${String(waitS)} 秒后自动重试（第 ${String(attempt)}/${String(maxAttempts - 1)} 次）…`);
+					sink.reset(); // 丢弃半截输出，重试从零开始
+					await new Promise((r) => window.setTimeout(r, waitS * 1000));
+					if (sink.signal.aborted) throw e;
+					continue;
+				}
+				throw this.decorateLlmError(e, cfg);
+			}
 		}
+		throw new Error("生成重试后仍失败");
 	}
 
 	/** 生成失败统一提示：用户中断仅通知；其它错误额外在预览框内显示失败态 */
@@ -2676,7 +2950,7 @@ export default class ArticleWriterPlugin extends Plugin {
 			return;
 		}
 		this.notifyError(`${label}失败`, e);
-		sink?.fail((e as Error)?.message || String(e));
+		sink?.fail(describeLlmError(e));
 	}
 
 	/** 流式生成 + 结果为空自动重试 ×3（对应 cmd 层 max_attempts=3）；失败/中断/全空均返回"" */
@@ -2784,8 +3058,21 @@ export default class ArticleWriterPlugin extends Plugin {
 	private async beginWritingPanel(title: string): Promise<GenProgressView | null> {
 		const view = await this.getGenPanel(true);
 		if (!view) return null;
-		view.beginStream(title);
+		// 标题带上**写作命令实际使用的**激活模型：写作命令一律走设置页「激活模型」（getLlmSetup），
+		// 而 LLM 对话框顶部下拉可以另选配置——不显示出来时，用户极易误以为两处用的是同一个模型（本地/云端对不上就会连接失败）
+		const setup = this.getLlmSetup();
+		const modelLabel = setup ? `${setup.cfg.name || setup.cfg.model_name || "默认"}` : "";
+		view.beginStream(modelLabel ? `${title} · 模型 ${modelLabel}` : title);
 		return view;
+	}
+
+	/** 连接类失败时补上端点与模型，并给出最常见成因（本地服务未启动 / 激活模型与预期不符）——原样抛出时只有一句 "Connection error." */
+	private decorateLlmError(e: unknown, cfg: LlmConfigDoc): Error {
+		const msg = describeLlmError(e);
+		const err = e instanceof Error ? e : new Error(msg);
+		if (!/failed to fetch|connection error|econnrefused|etimedout|econnreset|econnaborted|socket hang up/i.test(msg)) return err;
+		const base = normalizeBaseURL(cfg.base_url) || "(未配置 base_url)";
+		return new Error(`${msg}｜端点 ${base}（模型 ${cfg.model_name || "默认"}）。若端点是本地地址，请确认本地模型服务已启动；写作命令用的是设置页「激活模型」，与 LLM 对话框顶部下拉所选可能不是同一个。`);
 	}
 
 	/** 生成后自动去AI味（对应 _auto_clean_ai）：命中 AI 常用词的句子打回 LLM 重写并原位替换；失败保留原文 */
@@ -2983,6 +3270,7 @@ export default class ArticleWriterPlugin extends Plugin {
 				storyType: state.writing_style,
 				prevOutlines: prevRefs,
 			});
+			console.debug("[articlewriter] 编写本章请求规模", { model: setup.cfg.model_name || "(默认)", systemLen: sp.length, promptLen: built.prompt.length }); // 排查连接失败是否与请求体量相关
 
 			// 流式生成（带编写类型格式校验重试）
 			const modal = await this.beginWritingPanel(`创作 ${this.keyLabel(targetKey, volNames, title)}`);
@@ -3598,7 +3886,7 @@ class ArticleWriterSettingTab extends PluginSettingTab {
 			return;
 		}
 		const c = this.conf();
-		if (key === "llm.active_llm") c.active_llm = str || undefined;
+		if (key === "llm.active_llm") { c.active_llm = str || undefined; this.plugin.syncChatModelSelect(); } // 设置页改激活模型 → 已打开的 LLM 对话框下拉同步跟随
 		else if (key === "llm.system_prompt") c.system_prompt = str.trim() || undefined;
 		else if (key === "llm.desc_style") c.desc_style = str || "normal";
 		else if (key.startsWith("cfg.")) {
@@ -3623,6 +3911,7 @@ class ArticleWriterSettingTab extends PluginSettingTab {
 		cfgs.push({ name, provider: "openai", api_key: "", base_url: "", model_name: "", temperature: 0.8, max_tokens: 65535, top_p: 0.9, repeat_penalty: 1.1, thinking: "", reasoning_effort: "high", openai_extras: [], api_style: "" });
 		if (!conf.active_llm) conf.active_llm = name;
 		await this.plugin.saveSettings();
+		this.plugin.syncChatModelSelect();
 		this.update();
 		new Notice("已新建模型配置，请填写服务地址/模型/API Key");
 	}
@@ -3634,6 +3923,7 @@ class ArticleWriterSettingTab extends PluginSettingTab {
 			const removed = cfgs.splice(i, 1)[0];
 			if (removed && conf.active_llm === removed.name) conf.active_llm = cfgs[0]?.name; // 删激活项则回落到第一个（可能为 undefined=空列表）
 			await this.plugin.saveSettings();
+			this.plugin.syncChatModelSelect();
 			this.update();
 		})();
 	}
@@ -3644,6 +3934,7 @@ class ArticleWriterSettingTab extends PluginSettingTab {
 			const [moved] = cfgs.splice(oldIndex, 1);
 			cfgs.splice(newIndex, 0, moved);
 			await this.plugin.saveSettings();
+			this.plugin.syncChatModelSelect();
 			this.update();
 		})();
 	}
@@ -3652,6 +3943,7 @@ class ArticleWriterSettingTab extends PluginSettingTab {
 		void (async () => {
 			this.conf().active_llm = name;
 			await this.plugin.saveSettings();
+			this.plugin.syncChatModelSelect(); // 设置页「设为激活」→ 对话框下拉同步
 			this.update();
 		})();
 	}

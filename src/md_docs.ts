@@ -571,6 +571,122 @@ export function formatChapterInfo(num: number, heading: string, info: ChapterInf
 	return lines.join("\n") + "\n";
 }
 
+// ---------- 人物关系（人物关系.md，书/卷/章三层通用；v0.1.9+ 人物关系面板解析器）----------
+
+/** 一条人物关系（书/卷/章三层通用；type/status 未标注时为空串） */
+export interface RelationshipEntry {
+	a: string; // 角色1（关系主体）
+	b: string; // 角色2（关系对象）
+	type: string; // 关系类型（如 师徒/队友），空=未标注
+	status: string; // 关系状态原文（如 active/进行中），空=未标注
+	desc: string; // 关系描述（多行原文，已去字段行与代码围栏）
+}
+
+/** 关系状态归一化类别：面板据此上色（active=进行中、pending=铺垫中、ended=已结束、unknown=未标注/未识别） */
+export function relationshipStatusKind(status: string): "active" | "pending" | "ended" | "unknown" {
+	const s = String(status || "").trim().toLowerCase();
+	if (!s) return "unknown";
+	if (/(end|over|close|done|finish|已结束|结束|终止|解除|断裂|决裂|反目|死亡|已死|逝|完结|失效|结束)/.test(s)) return "ended";
+	if (/(pending|plan|待定|待|计划|铺垫|未定|将来|未来|拟|筹划|萌芽|酝酿|伏笔)/.test(s)) return "pending";
+	if (/(active|on\b|进行中|生效|有效|持续|正在|当前|存续|进行|已建立|成立)/.test(s)) return "active";
+	return "unknown";
+}
+
+/** 关系条目字段行（- 角色1：X / - 类型：X / - 状态：X / - 描述：X） */
+const REL_FIELD_RE = /^\s*[-*+]?\s*([^：:]{1,8})[：:]\s*(.*)$/;
+
+/** 标题行拆角色对：支持 "林川 - 苏晚" / "林川 ↔ 苏晚" / "林川与苏晚"；无分隔符时整体作角色1（角色2 由字段行补） */
+function splitRelationshipTitle(title: string): { a: string; b: string } {
+	const t = title.trim();
+	const m = /^(.+?)\s*(?:[-–—~〜↔=]|与|\/|／|、)\s*(.+)$/.exec(t);
+	if (m) return { a: m[1].trim(), b: m[2].trim() };
+	return { a: t, b: "" };
+}
+
+/**
+ * 解析《人物关系.md》：按 `## ` 分块，每块一条关系。
+ * 兼容两种写法——①标题带角色对：`## 林川 - 苏晚` + 描述（旧模板）；②字段式：`## 关系1` + `- 角色1：…` `- 角色2：…`（可带 `- 类型：` `- 状态：` `- 描述：`）。
+ * 描述可为 `- 描述：` 后接正文、或 ```text 围栏内容、或块内剩余自由文本行（三者合并）。角色1/2 都解析不出的块整块忽略。
+ */
+export function parseRelationships(text: string): RelationshipEntry[] {
+	const body = stripComments(text || "");
+	const out: RelationshipEntry[] = [];
+	let cur: { a: string; b: string; type: string; status: string; descLines: string[] } | null = null;
+	let inFence = false;
+	const flush = (): void => {
+		if (!cur) return;
+		const { a, b, type, status, descLines } = cur;
+		cur = null;
+		if (!a.trim() && !b.trim()) return; // 非关系块（如「概述」）忽略
+		out.push({ a: a.trim(), b: b.trim(), type: type.trim(), status: status.trim(), desc: descLines.join("\n").trim() });
+	};
+	for (const rawLine of body.split("\n")) {
+		const line = rawLine.replace(/\s+$/, "");
+		if (/^\s*```/.test(line)) {
+			inFence = !inFence; // 围栏标记行本身不进正文
+			continue;
+		}
+		if (inFence) {
+			if (cur) cur.descLines.push(line);
+			continue;
+		}
+		if (/^##\s+/.test(line)) {
+			flush();
+			const { a, b } = splitRelationshipTitle(line.replace(/^##\s+/, ""));
+			cur = { a, b, type: "", status: "", descLines: [] };
+			continue;
+		}
+		if (/^#\s+/.test(line)) continue; // 文档 H1 标题行忽略
+		if (!cur) continue; // 尚未进入任何 ## 块的内容（如块外散文）忽略
+		const m = REL_FIELD_RE.exec(line);
+		if (m) {
+			const key = m[1].trim();
+			const val = m[2].trim();
+			if (/^(角色1|角色一|角色A|角色a|甲方|主体|角色名1|角色1名)$/.test(key)) {
+				if (val) cur.a = val;
+				continue;
+			}
+			if (/^(角色2|角色二|角色B|角色b|乙方|对象|角色名2|角色2名)$/.test(key)) {
+				if (val) cur.b = val;
+				continue;
+			}
+			if (/^(类型|关系类型|关系)$/.test(key)) {
+				cur.type = val;
+				continue;
+			}
+			if (/^(状态|关系状态)$/.test(key)) {
+				cur.status = val;
+				continue;
+			}
+			if (/^(描述|说明|详情|备注|简介)$/.test(key)) {
+				if (val) cur.descLines.push(val);
+				continue;
+			}
+			continue; // 其它字段（如「出场章节」）不并入描述
+		}
+		if (!line.trim()) continue;
+		cur.descLines.push(line.trim()); // 无字段前缀的自由文本行也算描述
+	}
+	flush();
+	return out;
+}
+
+/** 关系条目序列化为文档块（与 parseRelationships 往返一致；供模板/迁移使用） */
+export function formatRelationshipBlock(e: RelationshipEntry): string {
+	const head = e.b ? `${e.a} - ${e.b}` : e.a;
+	const lines = [`## ${head}`];
+	if (e.type) lines.push(`- 类型：${e.type}`);
+	if (e.status) lines.push(`- 状态：${e.status}`);
+	if (e.desc) lines.push("- 描述：", "```text", e.desc, "```");
+	lines.push("");
+	return lines.join("\n");
+}
+
+/** 关系列表序列化为完整文档（标题恒为 `# 人物关系`） */
+export function formatRelationships(items: RelationshipEntry[]): string {
+	return ["# 人物关系", "", ...items.map((e) => formatRelationshipBlock(e))].join("\n").replace(/\n+$/, "\n");
+}
+
 // ---------- 大纲读取辅助 ----------
 
 /** 去掉文档开头的 "# " 标题行，返回 [正文, 标题] */

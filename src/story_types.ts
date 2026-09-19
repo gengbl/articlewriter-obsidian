@@ -40,6 +40,17 @@ export function countPureWords(text: string): number {
 	return n;
 }
 
+/** 统计含标点符号的总字符数：计全部非空白字符（汉字/字母/数字 + 标点/符号），仅排除空格/换行/制表等空白（与纯文字字数的差额即标点符号数） */
+export function countCharsWithPunct(text: string): number {
+	if (!text) return 0;
+	let n = 0;
+	for (const ch of text) {
+		if (SPACE_RE.test(ch)) continue;
+		n++;
+	}
+	return n;
+}
+
 /** ISO 时间串 → 本地时间展示文本（存储恒为 UTC ISO，仅显示层换算；解析失败退回原串截断）。full=false: MM-DD HH:mm；full=true: YYYY-MM-DD HH:mm */
 export function formatLocalDateTime(iso: string, full = false): string {
 	const d = new Date(iso);
@@ -123,11 +134,15 @@ export const VOL_CHARACTERS_TEMPLATE = `# 人物
 export const VOL_RELATIONSHIPS_TEMPLATE = `# 人物关系
 
 <!--
-本卷涉及的人物关系。示例：
+本卷涉及的人物关系。格式固定为「## 角色A - 角色B」+ 类型/状态/描述三行（人物关系面板按此汇总展示）：
 ## 林川 - 苏晚
+- 类型：兄妹
+- 状态：active
+- 描述：
 \`\`\`text
-兄妹，因古玺失散多年
+因古玺失散多年
 \`\`\`
+状态建议用 active（进行中）/ pending（铺垫中）/ ended（已结束），也可写中文；类型如 师徒、朋友、队友、敌对、恋人等。
 -->
 `;
 
@@ -191,11 +206,15 @@ export const CHAPTER_CHARACTERS_TEMPLATE = `# 人物
 export const CHAPTER_RELATIONSHIPS_TEMPLATE = `# 人物关系
 
 <!--
-本章节涉及的人物关系。示例：
+本章节涉及的人物关系（本模板亦用于书籍级《人物关系.md》）。格式固定为「## 角色A - 角色B」+ 类型/状态/描述三行（人物关系面板按此汇总展示）：
 ## 林川 - 苏晚
+- 类型：兄妹
+- 状态：active
+- 描述：
 \`\`\`text
-兄妹，因古玺失散多年
+因古玺失散多年
 \`\`\`
+状态建议用 active（进行中）/ pending（铺垫中）/ ended（已结束），也可写中文；类型如 师徒、朋友、队友、敌对、恋人等。
 -->
 `;
 

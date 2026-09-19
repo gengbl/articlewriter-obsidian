@@ -14,7 +14,7 @@
 ## 代码提交流程（每次任务收尾）
 
 1. `npm run build && node --check release/main.js` 通过
-2. 部署：`release/` 下全部文件覆盖复制到 `/home/fosky/workspace/geng_bl/.obsidian/plugins/articlewriter/`
+2. 部署：`release/` 下全部文件覆盖复制到 `/home/fosky/.obsidian/geng_bl/.obsidian/plugins/articlewriter/`（vault 根 = `/home/fosky/.obsidian/geng_bl`；2026-09-16 实测修正旧路径）
 3. 按 AGENTS.md「工作更新写回约定」修订条目 + CHANGELOG.md 末尾追加一行摘要
 4. `git add <显式列出改动文件>`（不用 `git add .`）
 5. `git commit -m "vX.Y.Z：中文摘要"`（非发布的普通提交直接写功能描述即可）

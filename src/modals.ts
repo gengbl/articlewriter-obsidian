@@ -1,4 +1,4 @@
-import { App, Component, MarkdownRenderer, Modal, SuggestModal, Setting, TFolder } from "obsidian";
+import { App, Component, MarkdownRenderer, Modal, Notice, SuggestModal, Setting, TFolder } from "obsidian";
 
 /** 单行文本输入框；提交回调收到值（空串视为取消）。可选 hint：渲染在标题与输入框之间的说明文字（支持 \n 多行，样式 .aw-prompt-hint）；可选 initial：预填初始值（光标置于末尾） */
 export class TextInputModal extends Modal {
@@ -578,6 +578,7 @@ export class MultiFieldModal extends Modal {
 	}
 
 	onOpen(): void {
+		this.contentEl.addClass("aw-form-compact"); // 多字段表单统一紧凑行距（styles.css .aw-form-compact，人物属性等）
 		this.contentEl.createEl("h3", { text: this.title });
 		const values: Record<string, string> = {};
 		for (const field of this.fields) {
@@ -594,6 +595,162 @@ export class MultiFieldModal extends Modal {
 				await this.onSubmit(values);
 			})
 		);
+	}
+
+	override onClose(): void {
+		this.contentEl.empty();
+		if (!this.submitted && this.onCancel) this.onCancel();
+	}
+}
+
+// ---------- 添加人物（v0.2.0+：姓名 + 归属级别 + 设定字段 + 动态关系行）----------
+
+/** 「添加人物」可选的归属级别（书籍级 / 某卷 / 某章）及其范围内已有角色名 */
+export interface CharacterScopeOption {
+	id: string; // 唯一键：book / vol:<卷id> / ch:<复合键>
+	kind: "book" | "volume" | "chapter";
+	label: string; // 展示名：书籍级 / 卷 · 风起 / 章 · 第二卷·第03章 初见
+	volId?: string;
+	chapterKey?: string;
+	localCandidates: string[]; // 该级别**范围内**已有角色名（排在下拉最前，体现"在选中级别范围内选择人物"）
+}
+
+/** 一条待写入《人物关系.md》的关系（对象 + 类型） */
+export interface CharacterRelationInput {
+	target: string; // 关系对象角色名（空行不写入）
+	type: string; // 关系类型（空=未标注）
+}
+
+export interface AddCharacterResult {
+	name: string;
+	scope: CharacterScopeOption;
+	fields: Record<string, string>; // identity/age/gender/personality/appearance/background/abilities/notes
+	relations: CharacterRelationInput[];
+}
+
+/**
+ * 添加人物弹窗：单页表单——姓名 + 人物级别（书/卷/章，决定写入哪份《人物.md》）+ 设定字段 + 关系区。
+ * 关系区初始为空，点「+ 添加关系」在下方新增一行（关系对象下拉 = 该级别范围内人物优先 + 全书其余人物、关系类型下拉 = 预设类型），
+ * 每行可单独删除、可加多行；底部「确定」提交（姓名为空不提交）。关系条目由调用方写入同层级《人物关系.md》。
+ */
+export class AddCharacterModal extends Modal {
+	private submitted = false;
+	private name = "";
+	private fields: Record<string, string> = {};
+	private scopeId: string;
+	private relations: CharacterRelationInput[] = [];
+	private relHost!: HTMLElement;
+
+	constructor(
+		app: App,
+		private scopes: CharacterScopeOption[],
+		private allCandidates: string[], // 全书角色名（下拉里的补充候选，带层级标注由调用方拼进 label 传入亦可；此处仅名字）
+		private relationTypes: string[],
+		private onSubmit: (result: AddCharacterResult) => void | Promise<void>,
+		private onCancel?: () => void
+	) {
+		super(app);
+		this.scopeId = scopes[0]?.id ?? "";
+	}
+
+	onOpen(): void {
+		this.contentEl.addClass("aw-form-compact"); // 与 MultiFieldModal 同一紧凑行距类（styles.css .aw-form-compact）
+		this.contentEl.createEl("h3", { text: "添加人物" });
+		this.contentEl.createDiv({
+			text: "归属级别决定人物写入哪一份《人物.md》（书籍级=书根、卷级=卷目录、章级=章节目录）；关系条目写入同层级的《人物关系.md》。",
+			cls: "aw-prompt-hint",
+		});
+		new Setting(this.contentEl).setName("姓名（必填）").addText((t) => {
+			t.setPlaceholder("角色名");
+			t.inputEl.focus();
+			t.onChange((v) => (this.name = v.trim()));
+		});
+		new Setting(this.contentEl).setName("人物级别").addDropdown((d) => {
+			for (const s of this.scopes) d.addOption(s.id, s.label);
+			if (this.scopeId) d.setValue(this.scopeId);
+			d.onChange((v) => {
+				this.scopeId = v;
+				this.renderRelations(); // 换级别 → 候选顺序变化，重建关系区（已选对象尽量保留）
+			});
+		});
+		const FIELDS: Array<[string, string, string?]> = [
+			["identity", "身份"],
+			["age", "年龄"],
+			["gender", "性别"],
+			["personality", "性格"],
+			["appearance", "外貌"],
+			["background", "背景"],
+			["abilities", "能力/技能", "多个用「、」分隔"],
+			["notes", "备注"],
+		];
+		for (const [key, label, ph] of FIELDS) {
+			new Setting(this.contentEl).setName(label).addText((t) => {
+				if (ph) t.setPlaceholder(ph);
+				t.onChange((v) => (this.fields[key] = v.trim()));
+			});
+		}
+		this.contentEl.createEl("h4", { text: "人物关系" });
+		this.relHost = this.contentEl.createDiv({ cls: "aw-addchar-rels" });
+		this.renderRelations();
+		new Setting(this.contentEl).addButton((b) =>
+			b.setButtonText("+ 添加关系").onClick(() => {
+				this.relations.push({ target: "", type: "" });
+				this.renderRelations();
+			})
+		);
+		const actions = this.contentEl.createDiv({ cls: "aw-addchar-actions" });
+		actions.createEl("button", { text: "确定", cls: "mod-cta" }).addEventListener("click", () => this.submit());
+	}
+
+	/** 关系行列表：对象下拉（本级别范围内人物优先，其余全书人物追加在后）+ 类型下拉 + 删除 */
+	private renderRelations(): void {
+		this.relHost.empty();
+		if (!this.relations.length) {
+			this.relHost.createDiv({ text: "还没有关系条目：点下方「+ 添加关系」新增一行。", cls: "aw-dim aw-addchar-hint" });
+			return;
+		}
+		const local = this.scopes.find((s) => s.id === this.scopeId)?.localCandidates ?? [];
+		const seen = new Set(local);
+		const rest = this.allCandidates.filter((n) => !seen.has(n));
+		this.relations.forEach((rel, i) => {
+			const row = this.relHost.createDiv({ cls: "aw-addchar-rel" });
+			row.createSpan({ text: `关系 ${String(i + 1)}`, cls: "aw-dim aw-addchar-relidx" });
+			const selFrom = row.createEl("select", { cls: "dropdown aw-addchar-sel" });
+			selFrom.createEl("option", { text: "选择关系对象…", value: "" });
+			for (const n of local) selFrom.createEl("option", { text: n, value: n });
+			for (const n of rest) selFrom.createEl("option", { text: `${n}（其它层级）`, value: n });
+			if (rel.target && !seen.has(rel.target) && !rest.includes(rel.target)) selFrom.createEl("option", { text: rel.target, value: rel.target }); // 换级别后旧值不在候选里也保留，避免丢用户输入
+			selFrom.value = rel.target;
+			selFrom.addEventListener("change", () => { rel.target = selFrom.value; });
+			const selType = row.createEl("select", { cls: "dropdown aw-addchar-sel" });
+			selType.createEl("option", { text: "（未标注类型）", value: "" });
+			for (const t of this.relationTypes) selType.createEl("option", { text: t, value: t });
+			selType.value = rel.type;
+			selType.addEventListener("change", () => { rel.type = selType.value; });
+			row.createEl("button", { text: "✕", cls: "aw-addchar-relrm", attr: { "aria-label": "删除这条关系" } }).addEventListener("click", () => {
+				this.relations.splice(i, 1);
+				this.renderRelations();
+			});
+		});
+	}
+
+	private submit(): void {
+		if (this.submitted) return;
+		if (!this.name.trim()) {
+			new Notice("请填写姓名");
+			return;
+		}
+		const scope = this.scopes.find((s) => s.id === this.scopeId);
+		if (!scope) {
+			new Notice("请选择人物级别");
+			return;
+		}
+		this.submitted = true;
+		const relations = this.relations
+			.map((r) => ({ target: r.target.trim(), type: r.type.trim() }))
+			.filter((r) => r.target);
+		this.close();
+		void this.onSubmit({ name: this.name.trim(), scope, fields: this.fields, relations });
 	}
 
 	override onClose(): void {
