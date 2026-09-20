@@ -1,4 +1,4 @@
-import { App, Modal, Notice, Plugin, PluginSettingTab, TAbstractFile, TFile, TFolder, type SettingDefinitionItem, type SettingDefinitionPage } from "obsidian";
+import { App, Modal, Notice, Platform, Plugin, PluginSettingTab, TAbstractFile, TFile, TFolder, WorkspaceLeaf, type SettingDefinitionItem, type SettingDefinitionPage } from "obsidian";
 import { ActionItem, ActionMenuModal, AddCharacterModal, ChapterListModal, ConfirmModal, FolderPickerModal, MarkdownViewerModal, MultiFieldModal, NewFilePickerModal, NewStoryInput, NewStoryModal, PanelLine, StoryPickerModal, TextAreaPrompt, TextPanelModal, TextInputModal, VolumeBatchCreateModal } from "./modals";
 import type { AddCharacterResult, CharacterScopeOption } from "./modals";
 import { LlmChatView } from "./llm_chat_view";
@@ -46,6 +46,9 @@ export default class ArticleWriterPlugin extends Plugin {
 	private statusRefreshTimer: number | null = null; // 工作目录内文件变更 → 防抖刷新已打开状态面板的定时器
 	private relRefreshTimer: number | null = null; // 同上，人物关系面板（v0.1.9+）
 	private flatBlocked: string | null = null; // 仍为平面结构且整理失败的书名：章节/卷结构操作锁定，直至「按卷整理目录」成功
+	private wsSaveTimer: number | null = null; // v0.2.1+：layout-change → 防抖存档当前书工作区的定时器
+	private lastWorkspaceRestoreAt = 0; // v0.2.1+：最近一次 changeLayout 恢复的时间戳（抑制自身触发的 layout-change 回存）
+	private wsIoErrorNoticed = false; // v0.2.1+：工作区 IO 失败通知每会话只弹一次（防抖存档高频触发会刷屏），细节恒进 console
 
 	/** v0.1.4+：data.json settings.prevChapters → 有效窗口章数 N（缺省/非法回落 CLI 默认 3；0=不注入前文） */
 	private effectivePrevN(): number {
@@ -194,6 +197,26 @@ export default class ArticleWriterPlugin extends Plugin {
 			if ((this.pathUnderWorkDir(file.path) || this.pathUnderWorkDir(oldPath)) && (file.path.endsWith(".md") || oldPath.endsWith(".md"))) this.schedulePanelRefresh();
 		};
 		this.registerEvent(this.app.vault.on("rename", watchRename));
+		// v0.2.1+ 每本书独立工作区：布局任意变化（开/关/分栏/tab 切换等）→ 防抖把当前窗口状态存入「当前小说」的工作区文件；自身 changeLayout 恢复触发的回声事件被时间窗过滤
+		this.registerEvent(this.app.workspace.on("layout-change", () => {
+			if (Date.now() - this.lastWorkspaceRestoreAt < 3000) return; // 刚恢复过布局，跳过回存避免抖动
+			const s = (this.settings.lastStory || "").trim();
+			if (!s) return;
+			if (this.wsSaveTimer != null) window.clearTimeout(this.wsSaveTimer);
+			this.wsSaveTimer = window.setTimeout(() => { void this.captureBookWorkspace(s); }, 1500);
+		}));
+		void this.checkWorkspaceDirOnStartup(); // v0.2.1+ 启动自检：检测 workspaces/ 缺失则创建（仅 console 留痕，不落盘任何文件；原 .heartbeat.txt 诊断机制在 IO 通路验证后移除）
+	}
+
+	/** 插件加载时检测一次工作区存档目录：缺失则递归创建，console 留痕便于排障 */
+	private async checkWorkspaceDirOnStartup(): Promise<void> {
+		try {
+			const dir = `${this.app.vault.configDir}/plugins/${this.manifest.id}/workspaces`;
+			const r = await this.manager.ensureVaultDir(dir);
+			console.info(`[articlewriter] 工作区存档目录${r === "created" ? "原本缺失，已创建" : "已存在"}：${dir}`);
+		} catch (e) {
+			this.noteWsIoError("工作区目录检测", e);
+		}
 	}
 
 	async loadSettings(): Promise<void> {
@@ -217,6 +240,89 @@ export default class ArticleWriterPlugin extends Plugin {
 		this.notifyContextChanged(); // lastStory 等设置变更后同步刷新 LLM 面板顶部小说·章节行
 	}
 
+	// ---------- v0.2.1+ 每本书独立工作区：以书名命名的窗口布局存档，切书/加载书时恢复 ----------
+	// 载体为插件数据目录裸文件 <configDir>/plugins/<id>/workspaces/<书名>.json（同 WRITING_GUIDE.md 走 DataAdapter，不被索引收录）。
+	// 内容＝{ v, platform, layout }——layout 即 workspace.getLayout() 全量布局对象；捕获时机＝离开该书（统一切换入口）与布局防抖自动存档。
+	// Obsidian 自身启动时仍按全局会话恢复上次布局（不在此处干预），本功能只覆盖应用内的切书/加载书动作。
+
+	/** 工作区 IO 失败的统一上报：console.error 全量细节；Notice 带真实报错文本且每会话仅首次弹出 */
+	private noteWsIoError(where: string, e: unknown): void {
+		console.error(`[articlewriter] ${where}：`, e);
+		const msg = e instanceof Error ? `${e.name}: ${e.message}` : String(e);
+		if (!this.wsIoErrorNoticed) {
+			this.wsIoErrorNoticed = true;
+			new Notice(`ArticleWriter：工作区存档读写失败（${msg.slice(0, 160)}），本次按书工作区不可用——详见开发者工具控制台 [articlewriter] 日志`, 12000);
+		}
+	}
+
+	/** 「书名」的工作区存档路径（文件名=书籍名字本身，与顶层目录同名可互认） */
+	bookWorkspacePath(story: string): string {
+		return `${this.app.vault.configDir}/plugins/${this.manifest.id}/workspaces/${story}.json`;
+	}
+
+	/** 把当前窗口布局存入指定书的工作区文件；尽力而为，失败仅 console.warn 不阻断调用方流程 */
+	async captureBookWorkspace(story: string): Promise<void> {
+		const s = story.trim();
+		if (!s) return;
+		if (!this.app.workspace.layoutReady) { console.warn(`[articlewriter] 存档「${s}」工作区时布局尚未就绪，跳过`); return; }
+		try {
+			const doc = { v: 1, platform: Platform.isDesktopApp ? "desktop" : "mobile", layout: this.app.workspace.getLayout() };
+			await this.manager.writePluginFile(this.bookWorkspacePath(s), JSON.stringify(doc));
+			console.info(`[articlewriter] 已存档「${s}」的工作区 → ${this.bookWorkspacePath(s)}`);
+		} catch (e) {
+			this.noteWsIoError(`保存「${s}」的工作区`, e);
+		}
+	}
+
+	/** 关闭主编辑区内所有打开的文档页签（侧栏停靠与浮动窗口不动，与工作区 getLayout/changeLayout 的作用域一致），给新书留空编辑器 */
+	private closeOpenDocs(): void {
+		try {
+			const targets: WorkspaceLeaf[] = [];
+			this.app.workspace.iterateRootLeaves((leaf) => { if (leaf.getViewState().type === "markdown") targets.push(leaf); }); // 先收集再逐个 detach：detach 会改动容器结构
+			for (const leaf of targets) leaf.detach();
+			if (targets.length > 0) console.info(`[articlewriter] 目标书无存档工作区，已关闭 ${targets.length} 个打开的文档`);
+		} catch (e) {
+			console.warn("[articlewriter] 关闭打开文档失败：", e);
+		}
+	}
+
+	/** 加载指定书的已存工作区布局（若有且同端类型）。closeIfNoArchive=true 时无存档则先关闭主编辑区全部打开文档再返回 false（仅显式切书入口传 true；命令隐式解析当前书不关，避免误清用户会话）；跨端/损坏一律保持现状。成功恢复弹 Notice 反馈 */
+	async loadBookWorkspace(story: string, closeIfNoArchive = false): Promise<boolean> {
+		const s = story.trim();
+		if (!s) return false;
+		if (!this.app.workspace.layoutReady) { console.warn(`[articlewriter] 加载「${s}」工作区时布局尚未就绪，跳过`); return false; }
+		let text: string | null = null;
+		try { text = await this.manager.readPluginFile(this.bookWorkspacePath(s)); } catch (e) { this.noteWsIoError(`读取「${s}」的工作区`, e); return false; }
+		if (!text || !text.trim()) { if (closeIfNoArchive) this.closeOpenDocs(); return false; } // 显式切书且目标无存档：清掉旧书文档页签，空编辑器开始；隐式解析则保持现状
+		let env: { v?: number; platform?: string; layout?: Record<string, unknown> } | null = null;
+		try { env = JSON.parse(text); } catch { console.warn(`[articlewriter] 「${s}」的工作区存档损坏，忽略`); return false; } // 存档损坏不阻断切书
+		if (!env || typeof env !== "object" || Array.isArray(env)) { console.warn(`[articlewriter] 「${s}」的工作区存档格式异常，忽略`); return false; }
+		if (env.platform && env.platform !== (Platform.isDesktopApp ? "desktop" : "mobile")) { console.info(`[articlewriter] 「${s}」的工作区来自 ${env.platform}（当前 ${Platform.isDesktopApp ? "desktop" : "mobile"}），跨端不恢复`); return false; } // 桌面/移动布局结构不同，互不恢复
+		const layout = env.layout;
+		if (!layout || typeof layout !== "object" || Array.isArray(layout)) { console.warn(`[articlewriter] 「${s}」的工作区存档缺少 layout 段，忽略`); return false; }
+		this.lastWorkspaceRestoreAt = Date.now(); // 先打时间戳再换布局：changeLayout 引发的 layout-change 回声被过滤
+		try {
+			await this.app.workspace.changeLayout(layout);
+			new Notice(`已加载「${s}」的工作区`, 4000);
+			return true;
+		} catch (e) {
+			this.noteWsIoError(`恢复「${s}」的布局（changeLayout）`, e);
+			return false;
+		}
+	}
+
+	/** 切换/加载当前小说的统一入口（所有改 lastStory 的路径一律走这里）：先把旧书的窗口状态存进其工作区 → 写回 lastStory+saveSettings → 再恢复新书的工作区（若有）。closeIfNoArchive=true 时目标书无存档则关闭主编辑区全部打开文档（仅 /dir 选择器、写字台下拉框、新建书三个显式切书入口传 true；activeStory 等命令隐式解析不传，避免误清用户会话）。重选同一本书为无操作 */
+	async applyStorySwitch(next: string, closeIfNoArchive = false): Promise<void> {
+		const target = next.trim();
+		const cur = (this.settings.lastStory || "").trim();
+		if (!target || cur === target) return;
+		console.info(`[articlewriter] 切书工作区：「${cur || "(无当前书)"}」→「${target}」（先归档旧书再恢复新书）`);
+		await this.captureBookWorkspace(cur); // cur 为空时内部直接返回
+		this.settings.lastStory = target;
+		await this.saveSettings();
+		await this.loadBookWorkspace(target, closeIfNoArchive);
+	}
+
 	// ---------- work_dir（首次使用必须选定写小说的文件夹）----------
 
 	private async ensureWorkDir(): Promise<string | null> {
@@ -235,7 +341,9 @@ export default class ArticleWriterPlugin extends Plugin {
 			new FolderPickerModal(
 				this.app,
 				async (path) => {
+					const prevStory = (this.settings.lastStory || "").trim();
 					this.settings.workDir = path.replace(/\/+$/, "");
+					await this.captureBookWorkspace(prevStory); // v0.2.1+：作废旧小说记忆前，先把其窗口状态归档进该书工作区
 					this.settings.lastStory = ""; // 切换工作目录后清空旧小说记忆（对齐 CLI /dir）
 					await this.saveSettings();
 					let msg = firstUse ? `已初始化工作目录：${path || "vault 根"}` : `已切换工作目录：${path || "vault 根"}`;
@@ -245,8 +353,7 @@ export default class ArticleWriterPlugin extends Plugin {
 						if (stories.length === 0) {
 							msg += "；该目录下还没有书，请先用「创建新小说」建书";
 						} else if (stories.length === 1) {
-							this.settings.lastStory = stories[0]; // 唯一一本书时直接加载（对齐 CLI /dir 到已有小说目录）
-							await this.saveSettings();
+							await this.applyStorySwitch(stories[0]); // 唯一一本书时直接加载（对齐 CLI /dir 到已有小说目录），并恢复其工作区
 							msg += `；已加载唯一的小说：${stories[0]}`;
 						} else {
 							msg += `；共 ${stories.length} 本书，可用「切换当前小说」选择`;
@@ -292,8 +399,7 @@ export default class ArticleWriterPlugin extends Plugin {
 		}
 		const idx = await this.pickAction("切换当前小说（/dir）", items);
 		if (idx == null) return;
-		this.settings.lastStory = stories[idx];
-		await this.saveSettings();
+		await this.applyStorySwitch(stories[idx], true); // v0.2.1+：归档旧书工作区 + 写回 + 恢复所选书的工作区；显式切换→目标无存档则清空打开文档
 		new Notice(`已切换到：${stories[idx]}`, 6000);
 		await this.enforceVolumeLayoutOnSwitch(stories[idx]); // 平面结构 → 强制自动按卷整理（不可跳过）
 		await this.cmdStatus(); // /dir 加载该书后展示章节与当前状态
@@ -306,8 +412,7 @@ export default class ArticleWriterPlugin extends Plugin {
 		if (stories.length === 0) return null;
 		if (this.settings.lastStory && stories.includes(this.settings.lastStory)) return this.settings.lastStory;
 		if (stories.length === 1) {
-			this.settings.lastStory = stories[0];
-			await this.saveSettings();
+			await this.applyStorySwitch(stories[0]); // v0.2.1+：加载唯一书时一并恢复其工作区
 			return stories[0];
 		}
 		return new Promise((resolve) => {
@@ -315,8 +420,7 @@ export default class ArticleWriterPlugin extends Plugin {
 				this.app,
 				stories,
 				async (name) => {
-					this.settings.lastStory = name;
-					await this.saveSettings();
+					await this.applyStorySwitch(name); // v0.2.1+：选书即切书，归档旧书并恢复所选书的工作区
 					resolve(name);
 				},
 				() => resolve(null)
@@ -632,8 +736,7 @@ await this.promptCreateVolumesIfEmpty(story); // 零卷 → 先弹建卷框（�
 		if (!input) return null;
 		try {
 			const name = await this.manager.createStory(input.title, input.genre, input.style);
-			this.settings.lastStory = name;
-			await this.saveSettings();
+			await this.applyStorySwitch(name, true); // v0.2.1+：新书成为当前书——先归档原当前书的窗口状态；新书必无存档→关闭旧书打开的文档，空编辑器开始
 			new Notice(`已创建小说「${name}」：文件夹与模板文档就绪`);
 			if (this.settings.autoOpenOnCreate) {
 				await this.manager.openMarkdown(`${this.manager.storyPath(name)}/大纲.md`);
@@ -2489,11 +2592,10 @@ async cmdRenameChapterFile(): Promise<void> {
 		};
 	}
 
-	/** 状态页切换当前小说：写回 lastStory（对齐 switch-story 的持久化语义） */
+	/** 状态页切换当前小说：写回 lastStory（对齐 switch-story 的持久化语义）；v0.2.1+ 经统一入口归档旧书并恢复所选书的工作区（changeLayout 可能重建承载本视图的分栏，调用方 doSwitchStory 的后续 refresh 落在游离节点上无副作用） */
 	async statusSwitchStory(name: string): Promise<void> {
-		this.settings.lastStory = name;
-		await this.saveSettings();
 		new Notice(`已切换当前小说：${name}`, 4000);
+		await this.applyStorySwitch(name, true); // 显式下拉切书→目标无存档则关闭主编辑区打开的文档
 		await this.enforceVolumeLayoutOnSwitch(name); // 平面结构 → 强制自动按卷整理（不可跳过）
 	}
 
@@ -2529,6 +2631,17 @@ async cmdRenameChapterFile(): Promise<void> {
 				const t = await this.prompt(`改名「${a.name}」`, `新书名（当前：${cur || "无"}）`);
 				if (t == null || !t.trim() || t.trim() === cur) return; // 留空/未变更不执行
 				const r = await this.manager.renameStory(a.name, t.trim()); // title + 顶层目录同步改名 + 大纲起始标题行
+				try { // v0.2.1+：该书的工作区存档以书名命名，须随改名迁移否则丢失关联
+					const wsOld = this.bookWorkspacePath(a.name);
+					const wsNew = this.bookWorkspacePath(r.newName);
+					if (wsOld !== wsNew && (await this.manager.pluginFileExists(wsOld))) {
+						const text = await this.manager.readPluginFile(wsOld);
+						if (text != null) {
+							await this.manager.writePluginFile(wsNew, text);
+							await this.app.vault.adapter.remove(wsOld);
+						}
+					}
+				} catch (e) { console.warn("[articlewriter] 迁移工作区存档失败：", e); }
 				if ((this.settings.lastStory || "") === a.name) {
 					this.settings.lastStory = r.newName; // 当前书记忆随目录改名，同时触发 LLM 面板上下文行刷新
 					await this.saveSettings();
@@ -2542,6 +2655,7 @@ async cmdRenameChapterFile(): Promise<void> {
 				const ok = await this.confirmBox(`删除小说「${a.name}」？`, "整本书的文件夹（含全部章节与文档）将移入 Obsidian 回收站，可从中找回。", "删除");
 				if (!ok) return;
 				await this.app.fileManager.trashFile(folder);
+				try { const ws = this.bookWorkspacePath(a.name); if (await this.manager.pluginFileExists(ws)) await this.app.vault.adapter.remove(ws); } catch { /* v0.2.1+：清理该书工作区存档，失败不影响删书 */ }
 				if ((this.settings.lastStory || "") === a.name) {
 					this.settings.lastStory = "";
 					await this.saveSettings(); // 同时触发 LLM 面板上下文行刷新
@@ -2808,8 +2922,7 @@ async cmdRenameChapterFile(): Promise<void> {
 	private async statusRunWriting(kind: "llm-write" | "llm-continue" | "llm-polish", story: string, key: string): Promise<void> {
 		if (!(await this.ensureWorkDir())) return;
 		if ((this.settings.lastStory || "").trim() !== story) {
-			this.settings.lastStory = story;
-			await this.saveSettings(); // 切到目标书：持久化并广播刷新 LLM 面板上下文行
+			await this.applyStorySwitch(story); // v0.2.1+：统一入口——归档旧书 + 持久化 + 恢复目标书的工作区，并广播刷新 LLM 面板上下文行
 		}
 		await this.statusActivateChapter(story, key); // 写回 current_chapter + 同步所属卷
 		switch (kind) {
@@ -3864,7 +3977,9 @@ class ArticleWriterSettingTab extends PluginSettingTab {
 		const s = this.plugin.settings;
 		const str = typeof value === "string" ? value : "";
 		if (key === "workDir") {
+			const prevStory = (s.lastStory || "").trim(); // v0.2.1+：作废旧小说记忆前先把其窗口状态归档进该书工作区（与 pickWorkDir 同语义）
 			s.workDir = str.trim().replace(/^\/+|\/+$/g, "");
+			void this.plugin.captureBookWorkspace(prevStory);
 			s.lastStory = "";
 			await this.plugin.saveSettings();
 			return;

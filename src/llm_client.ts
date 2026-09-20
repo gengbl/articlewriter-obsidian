@@ -82,7 +82,7 @@ function sanitizeMessages(messages: Message[]): Message[] {
 			const i = firstLoneSurrogateIndex(content);
 			if (i >= 0) sample = JSON.stringify(content.slice(Math.max(0, i - 40), i + 40));
 		}
-		return { ...m, content: cleaned } as Message;
+		return { ...m, content: cleaned };
 	});
 	if (hit) {
 		console.warn(`[articlewriter] 提示词含非法字符（孤立代理码元），已在发送前清洗 ${String(hit)} 条消息——这类字符会让 fetch 直接抛 "Failed to fetch"。附近片段：${sample || "(无法取样)"}`);

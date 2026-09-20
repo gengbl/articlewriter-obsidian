@@ -1,4 +1,4 @@
-import { App, MarkdownView, TFile, TFolder, Vault } from "obsidian";
+import { App, MarkdownView, Platform, TFile, TFolder, Vault } from "obsidian";
 import * as doc from "./md_docs";
 import {
 	LEGACY_STATE_JSON,
@@ -893,6 +893,20 @@ private emptyState(storyName: string): StoryState {
 	async pluginFileExists(path: string): Promise<boolean> {
 		try { return await this.app.vault.adapter.exists(path); } catch { return false; }
 	}
+	/** 检测 vault 根下目录是否存在：缺失则递归创建（Obsidian mkdir 为 recursive 语义、幂等）；返回本次是否新建。失败原样抛出由调用方上报 */
+	async ensureVaultDir(dir: string): Promise<"exists" | "created"> {
+		if (await this.app.vault.adapter.exists(dir)) return "exists";
+		await this.app.vault.adapter.mkdir(dir);
+		return "created";
+	}
+
+	/** 确保目标路径的父目录存在（无父级段时直接跳过）——writePluginFile 写前自愈用 */
+	private async ensureParentDir(path: string): Promise<void> {
+		const i = path.lastIndexOf("/");
+		if (i <= 0) return; // 文件就在 vault 根，没有需要建的父目录
+		await this.ensureVaultDir(path.slice(0, i));
+	}
+
 	/** 读取插件目录内文件原文；不存在或失败返回 null */
 	async readPluginFile(path: string): Promise<string | null> {
 		const f = this.vault.getAbstractFileByPath(path);
@@ -902,9 +916,20 @@ private emptyState(storyName: string): StoryState {
 		} catch { /* ignore */ }
 		return null;
 	}
-	/** 写入/覆盖插件目录内文件（缺失自动建父目录） */
+	/** 写入/覆盖插件目录内文件：先检测并创建缺失的父目录，再落盘。相对路径被 adapter 拒绝时（部分 Obsidian 版本对 .obsidian 下相对写有限制），桌面端改用 vault 根绝对路径重试一次 */
 	async writePluginFile(path: string, text: string): Promise<void> {
-		await this.app.vault.adapter.write(path, text.endsWith("\n") ? text : text + "\n");
+		await this.ensureParentDir(path); // 父目录不存在就先建（recursive mkdir 幂等）
+		const data = text.endsWith("\n") ? text : text + "\n";
+		try {
+			await this.app.vault.adapter.write(path, data);
+		} catch (e) {
+			if (!Platform.isDesktopApp) throw e; // 移动端无桌面端同样的 .obsidian 写限制问题，原样抛出
+			const ad = this.app.vault.adapter as unknown as { getFullPath?: (p: string) => string }; // FileSystemAdapter 专有方法，基类类型未声明
+			if (typeof ad.getFullPath !== "function") throw e;
+			const abs = ad.getFullPath(path); // 相对路径 → vault 根下绝对路径
+			if (!abs || abs === path) throw e; // 解析不出新路径（如本就是绝对路径）：不二次尝试
+			await this.app.vault.adapter.write(abs, data);
+		}
 	}
 
 	// ---------- 通用文档工具 ----------
