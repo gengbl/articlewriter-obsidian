@@ -975,14 +975,22 @@
 
 /* 时间线面板（TimelineView，v0.2.x+）：容器/头部/滚动布局复用 .aw-status-view + .aw-st-top/.aw-st-tree/.aw-st-chap，筛选行复用 .aw-rel-filter-row/.aw-rel-filter；此处只定义时间轴专属部分 */
 
-.aw-tl-group {
-	margin-bottom: 4px;
+/* 来源层级标签（书籍级 / 卷 · <卷名> / 章 · 第N章 <标题>）：紧随时间点徽章的弱化小字，标识该条出自哪一层《时间线.md》 */
+.aw-tl-src {
+	display: inline-block;
+	margin-right: 6px;
+	font-size: 0.8em;
+	color: var(--text-faint);
 }
 
-/* 嵌套分组（卷内章节挂父组主体内）间距收紧一级；缩进与左侧指示线由外层复用的 .aw-st-kids 提供 */
-.aw-tl-d1,
-.aw-tl-d2 {
-	margin-bottom: 2px;
+/* 「有内容但无有效条目」提示行里的文档标签：可点击打开对应文件检查格式 */
+.aw-tl-unparsed {
+	cursor: pointer;
+	text-decoration: underline dotted;
+}
+
+.aw-tl-unparsed:hover {
+	color: var(--interactive-accent);
 }
 
 /* 纵向时间轴条目列表：左侧连续竖线 + 节点圆点，条目自上而下按时间点升序排列 */

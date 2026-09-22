@@ -54,7 +54,7 @@ export interface StatusVolumeEntry {
 	name: string;
 	order: number;
 	active: boolean; // 是否为当前卷（current_volume）
-	docs?: StatusFileEntry[]; // v0.1.3+：该卷实体目录下的直属 md 文件（非章节目录，含建卷时播种的设定四件套等），供写字台在卷节点下以「文档」子节点展示；缺失/空=无
+	docs?: StatusFileEntry[]; // v0.1.3+：该卷实体目录下的直属 md 文件（非章节目录，含建卷时播种的设定五件套等），供写字台在卷节点下以「文档」子节点展示；缺失/空=无
 }
 export interface StatusDetail {
 	storyName: string;
@@ -103,8 +103,8 @@ export type StatusAction =
 	| { kind: "new-file"; story: string; key: string | null } // key=null → 书根目录；否则该章节目录
 	| { kind: "delete-file"; path: string }
 	| { kind: "new-volume-doc"; story: string; volId: string } // 卷节点 / 卷内「文档」分组右键：在该卷实体目录下新建 .md（语义同 new-file，落点为卷目录而非章节目录）
-	| { kind: "complete-volume-docs"; story: string; volId: string } // 卷内「文档」命名头右键「补全卷文档」：检查该卷下缺失的设定模板（卷大纲/人物/人物关系/场景四件套）并创建，已存在不覆盖
-	| { kind: "complete-root-docs"; story: string } // 案头资料节点右键「补全资料」：检查书根缺失的默认资料文件（大纲/世界观/伏笔/笔记/人物/人物关系/场景七件套）并按模板创建，已存在不覆盖
+	| { kind: "complete-volume-docs"; story: string; volId: string } // 卷内「文档」命名头右键「补全卷文档」：检查该卷下缺失的设定模板（卷大纲/人物/人物关系/场景/时间线五件套）并创建，已存在不覆盖
+	| { kind: "complete-root-docs"; story: string } // 案头资料节点右键「补全资料」：检查书根缺失的默认资料文件（大纲/世界观/伏笔/笔记/人物/人物关系/场景/时间线八件套）并按模板创建，已存在不覆盖
 	| { kind: "insert-chapter"; story: string; key: string; pos: "before" | "after" } // 章节行右键在其之前/之后插入新空章（本容器内后续号自动顺延）
 	| { kind: "llm-write" | "llm-continue" | "llm-polish"; story: string; key: string }; // 章节行右键调用 LLM 写作命令（先激活该书/章，再走对应命令交互流程）
 
@@ -327,7 +327,7 @@ export class StatusView extends ItemView {
 	/** 「案头资料」「书稿」两个小节；isActive=该书是否为当前激活小说（仅其下章节/卷可被 Radio 选中激活）。书稿小节按归属卷渲染为树节点（卷名行 + 缩进章节），未归属章节平铺兜底 */
 	private renderStorySections(parent: HTMLElement, d: StatusDetail, isActive: boolean): void {
 		if (d.globalFiles.length) {
-			// 案头资料分组：标题行与组内空白右键=「补全资料」（书根默认资料七件套补缺、已存在不覆盖）+「新建资料…」（v0.1.6+：不再提供新建章节/新建卷——建章在书稿具体章节/卷节点上、建卷在书籍列表标题行或书稿小节标题）
+			// 案头资料分组：标题行与组内空白右键=「补全资料」（书根默认资料八件套补缺、已存在不覆盖）+「新建资料…」（v0.1.6+：不再提供新建章节/新建卷——建章在书稿具体章节/卷节点上、建卷在书籍列表标题行或书稿小节标题）
 			const gItems = (): Array<{ label: string; run: () => void } | { sep: true }> => [
 				{ label: "补全资料", run: () => this.runStatusAction({ kind: "complete-root-docs", story: d.storyName }) }, // 检查缺失的默认资料文件并创建，已存在保留不覆盖
 				{ sep: true },
@@ -436,7 +436,7 @@ export class StatusView extends ItemView {
 		}
 	}
 
-	/** 卷内「文档」子节点（v0.1.3+）：**恒存在**的可独立折叠子节点，列出该卷实体目录下的直属 md（非章节目录，含建卷播种的设定四件套等）；无文档时列表为空。命名头左有 ▾/▸ 箭头点它或整行切换开合（键 voldocs:<书>:<卷ID>，默认展开），文件行仅在展开且有文档时渲染；命名头右键=在本卷新建文档…，文件行点击在编辑器打开、右键可新建/删除。缩进由外层 .aw-st-kids 提供 */
+	/** 卷内「文档」子节点（v0.1.3+）：**恒存在**的可独立折叠子节点，列出该卷实体目录下的直属 md（非章节目录，含建卷播种的设定五件套等）；无文档时列表为空。命名头左有 ▾/▸ 箭头点它或整行切换开合（键 voldocs:<书>:<卷ID>，默认展开），文件行仅在展开且有文档时渲染；命名头右键=在本卷新建文档…，文件行点击在编辑器打开、右键可新建/删除。缩进由外层 .aw-st-kids 提供 */
 	private renderVolumeDocs(parent: HTMLElement, storyName: string, volId: string, volName: string, docs: StatusFileEntry[]): void {
 		const key = `voldocs:${storyName}:${volId}`; // v0.1.3+：与章节/卷各自互不连动；不在 collapsed 中=展开（默认展开）
 		const open = !this.collapsed.has(key);

@@ -32,6 +32,7 @@ import {
 	countPureWords,
 	md5,
 	safeFilename,
+	timelineTemplate,
 	stripAiWordMarks,
 } from "./story_types";
 import { buildChapterFolderDocs, cleanRelationshipsDoc } from "./prompts";
@@ -335,7 +336,7 @@ export class StoryManager {
 			updated_at: nowIso(),
 		};
 		await this.vault.createFolder(base);
-		for (const [fname, tpl] of [...this.rootDocTemplates(title), ["卷.md", VOLUME_TEMPLATE]]) { // 默认资料七件套 + 系统管理的《卷.md》（与 ensureRootDocs 同一清单来源）
+		for (const [fname, tpl] of [...this.rootDocTemplates(title), ["卷.md", VOLUME_TEMPLATE]]) { // 默认资料八件套 + 系统管理的《卷.md》（与 ensureRootDocs 同一清单来源）
 			await this.ensureDoc(`${base}/${fname}`, tpl);
 		}
 		await this.saveState(name, state);
@@ -420,17 +421,18 @@ export class StoryManager {
 		return paths;
 	}
 
-	/** 卷级设定四件套模板清单（建卷播种 / scan 补缺 / 写字台「补全卷文档」同一来源）；返回逻辑基名，物理名经 resolveVolumeDocPath 解析（如 风起-大纲.md） */
+	/** 卷级设定五件套模板清单（建卷播种 / scan 补缺 / 写字台「补全卷文档」同一来源）；返回逻辑基名，物理名经 resolveVolumeDocPath 解析（如 风起-大纲.md）。《时间线》为可选手写参考资料、不参与提示词注入 */
 	private volumeDocTemplates(vol: doc.VolumeInfo): Array<[string, string]> {
 		return [
 			["卷大纲.md", VOL_OUTLINE_TEMPLATE(vol.name)],
 			["人物.md", VOL_CHARACTERS_TEMPLATE],
 			["人物关系.md", VOL_RELATIONSHIPS_TEMPLATE],
 			["场景.md", VOL_SCENES_TEMPLATE(vol.name)],
+			["时间线.md", timelineTemplate(`${vol.name} 卷时间线`)],
 		];
 	}
 
-	/** 确保卷实体目录存在（并补建缺失的卷级设定四件套模板），返回其路径 */
+	/** 确保卷实体目录存在（并补建缺失的卷级设定五件套模板），返回其路径 */
 	private async ensureVolumeFolder(storyName: string, vol: doc.VolumeInfo): Promise<string> {
 		const p = `${this.storyPath(storyName)}/${this.volumeFolderName(vol)}`;
 		if (!this.vault.getAbstractFileByPath(p)) await this.createFolderPath(p);
@@ -454,7 +456,7 @@ export class StoryManager {
 		return created;
 	}
 
-	/** 书根默认资料七件套模板清单（建书播种 / 写字台「补全资料」同一来源；《故事状态.md》与系统管理的《卷.md》不在其内） */
+	/** 书根默认资料八件套模板清单（建书播种 / 写字台「补全资料」同一来源；《故事状态.md》与系统管理的《卷.md》不在其内）。《时间线》为可选手写参考资料、不参与提示词注入 */
 	private rootDocTemplates(title: string): Array<[string, string]> {
 		return [
 			["大纲.md", outlineTemplate(title)],
@@ -464,6 +466,7 @@ export class StoryManager {
 			["人物.md", CHAPTER_CHARACTERS_TEMPLATE],
 			["人物关系.md", CHAPTER_RELATIONSHIPS_TEMPLATE],
 			["场景.md", CHAPTER_SCENES_TEMPLATE],
+			["时间线.md", timelineTemplate(`${title.trim() || "未命名小说"} 时间线`)],
 		];
 	}
 
@@ -589,7 +592,7 @@ export class StoryManager {
 		});
 	}
 
-	/** v0.1.3+：各卷实体目录下的直属 md 文件（非章节目录，含建卷播种的设定四件套/卷摘要等），按卷 ID 归组；供写字台在卷节点下以「文档」子节点展示。无《卷.md》或某卷目录缺失则跳过该卷 */
+	/** v0.1.3+：各卷实体目录下的直属 md 文件（非章节目录，含建卷播种的设定五件套/卷摘要等），按卷 ID 归组；供写字台在卷节点下以「文档」子节点展示。无《卷.md》或某卷目录缺失则跳过该卷 */
 	async listVolumeDocsByVol(storyName: string): Promise<Record<string, Array<{ path: string; name: string }>>> {
 		const out: Record<string, Array<{ path: string; name: string }>> = {};
 		let vmap: Record<string, doc.VolumeInfo> = {};
@@ -635,8 +638,9 @@ export class StoryManager {
 		return this.createChapterAt(storyName, num, title, volId);
 	}
 
-	/** 章节目录六件套模板清单（建章播种 / scan 补缺 / 写字台「新建文章…」优先列表同一来源） */
+	/** 章节目录七件套模板清单（建章播种 / scan 补缺 / 写字台「新建文章…」优先列表同一来源）。《时间线》为可选手写参考资料、不参与提示词注入 */
 	chapterDocTemplates(num: number, title: string): Array<[string, string]> {
+		const heading = title.trim() ? `第${num}章 ${title}` : `第${num}章`; // H1 口径与章节大纲模板一致
 		return [
 			["章节.md", CHAPTER_BODY_TEMPLATE(num, title)],
 			["章节大纲.md", chapterOutlineTemplate(num, title)],
@@ -644,6 +648,7 @@ export class StoryManager {
 			["人物关系.md", CHAPTER_RELATIONSHIPS_TEMPLATE],
 			["场景.md", CHAPTER_SCENES_TEMPLATE],
 			["章节信息.md", CHAPTER_INFO_TEMPLATE(num)],
+			["时间线.md", timelineTemplate(`${heading} 时间线`)],
 		];
 	}
 
@@ -1645,7 +1650,7 @@ private emptyState(storyName: string): StoryState {
 			const r = await this.relocateChapterContainer(storyName, ch.key, null); // 位置即归属：物理回移+键重映射一次完成
 			movedKeys.push(r.newKey);
 		}
-		// v0.1.3+：拍平前先 salvaging 各卷残留的直属文件（设定四件套/卷摘要等）回书根保留；跨卷同名者加「<卷名>-」前缀避免覆盖，而非随目录一起进回收站
+		// v0.1.3+：拍平前先 salvaging 各卷残留的直属文件（设定五件套/卷摘要等）回书根保留；跨卷同名者加「<卷名>-」前缀避免覆盖，而非随目录一起进回收站
 		const movedDocs = await this.salvageVolumeDocsToRoot(storyName, vols);
 		// 清空各卷实体目录（连同其残留内容）进回收站，再移除 卷.md 元数据
 		let deletedVolumes = 0;
@@ -1664,7 +1669,7 @@ private emptyState(storyName: string): StoryState {
 		return { movedKeys, deletedVolumes, movedDocs };
 	}
 
-	/** v0.1.3+：拍平迁移前把各卷实体目录里剩余的直属文件（非章节目录，如建卷播种的设定四件套/卷摘要等）回移到书根保留；跨卷或书根已存在同名者加「<卷名>-」前缀避免覆盖。返回成功迁移的文件数 */
+	/** v0.1.3+：拍平迁移前把各卷实体目录里剩余的直属文件（非章节目录，如建卷播种的设定五件套/卷摘要等）回移到书根保留；跨卷或书根已存在同名者加「<卷名>-」前缀避免覆盖。返回成功迁移的文件数 */
 	private async salvageVolumeDocsToRoot(storyName: string, vols: Record<string, doc.VolumeInfo>): Promise<number> {
 		const base = this.storyPath(storyName);
 		let moved = 0;
@@ -1743,7 +1748,7 @@ private emptyState(storyName: string): StoryState {
 		const result: Record<string, doc.SceneDoc> = {};
 		const base = this.storyPath(storyName);
 		Object.assign(result, doc.parseScenes(await this.readDoc(`${base}/场景.md`), 0));
-		for (const [volId, vol] of Object.entries(await this.loadVolumes(storyName))) { // v0.0.15：卷级设定四件套并入（章节级同名条目优先级更高）
+		for (const [volId, vol] of Object.entries(await this.loadVolumes(storyName))) { // v0.0.15：卷级设定五件套并入（章节级同名条目优先级更高）
 			const parsed = doc.parseScenes(await this.readDoc(this.resolveVolumeDocPath(`${base}/${this.volumeFolderName(vol)}`, vol.name, "场景.md")), 0);
 			for (const s of Object.values(parsed)) s.vol = volId;
 			Object.assign(result, parsed);
@@ -1891,7 +1896,7 @@ private emptyState(storyName: string): StoryState {
 		const result: Record<string, doc.CharacterDoc> = {};
 		const base = this.storyPath(storyName);
 		Object.assign(result, doc.parseCharacters(await this.readDoc(`${base}/人物.md`), 0));
-		for (const [volId, vol] of Object.entries(await this.loadVolumes(storyName))) { // v0.0.15：卷级设定四件套并入（章节级同名条目优先级更高）
+		for (const [volId, vol] of Object.entries(await this.loadVolumes(storyName))) { // v0.0.15：卷级设定五件套并入（章节级同名条目优先级更高）
 			const parsed = doc.parseCharacters(await this.readDoc(this.resolveVolumeDocPath(`${base}/${this.volumeFolderName(vol)}`, vol.name, "人物.md")), 0);
 			for (const c of Object.values(parsed)) c.vol = volId;
 			Object.assign(result, parsed);
@@ -2755,7 +2760,7 @@ private emptyState(storyName: string): StoryState {
 		}
 		const diskChapters = await this.listChapters(storyName);
 		const vols = await this.loadVolumes(storyName);
-		// v0.0.15：既有卷实体目录的卷级设定四件套缺失补建（与建卷时同模板，同一清单来源 volumeDocTemplates）
+		// v0.0.15：既有卷实体目录的卷级设定五件套缺失补建（与建卷时同模板，同一清单来源 volumeDocTemplates）
 		for (const vol of Object.values(vols)) {
 			const volDir = `${base}/${this.volumeFolderName(vol)}`;
 			for (const [fname, tpl] of this.volumeDocTemplates(vol)) {

@@ -689,37 +689,64 @@ export function formatRelationships(items: RelationshipEntry[]): string {
 
 // ---------- 时间线（时间线.md，书/卷/章三层通用；v0.2.x+ 时间线面板解析器）----------
 
-/** 一条时间线事件（书/卷/章三层通用）：时间点为任意数字（整数/小数/负数/科学计数法均可），面板按数值升序自上而下渲染 */
+/** 一条时间线事件（书/卷/章三层通用）：时间点＝整年＋可选月日（如 -129 / -129-06 / -129-06-15），兼容旧版纯数字写法（小数/科学计数法按「仅年份」处理）；面板按 (年,月,日) 升序自上而下渲染 */
 export interface TimelineEntry {
-	time: number; // 时间点（任意数字；展示时升序排列）
+	time: number; // 年份（任意数字，负数/小数兼容旧数据）
+	month?: number; // 月份（1-12；未写则缺省）
+	day?: number; // 日期（1-31；未写则缺省）
 	chars: string[]; // 涉及人物（空数组=未标注）
 	event: string; // 事件描述（多行原文，已去字段前缀与代码围栏标记）
 }
 
-/** 纯数字时间点判定（支持 -3 / +2 / 1.5 / .5 / 1e4 等写法；带任何文字即非有效时间点） */
-const TL_TIME_RE = /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$/;
+/** 时间点结构化值（标题解析结果；序列化经 timelineTimeText 往返一致） */
+export type TimelinePoint = Pick<TimelineEntry, "time" | "month" | "day">;
 
-function parseTimelineTime(title: string): number | null {
+/** 纯数字时间点判定（支持 -3 / +2 / 1.5 / .5 / 1e4 等旧写法；带任何文字即非有效时间点） */
+const TL_TIME_RE = /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$/;
+/** 年-月[-日] 整数时间点判定（如 -129-06、120-03-07；月日必须成对出现于连字符后，小数/科学计数法不允许挂月日后缀） */
+const TL_DATE_MD_RE = /^([+-]?\d+)-(\d{1,2})(?:-(\d{1,2}))?$/;
+
+export function parseTimelineTime(title: string): TimelinePoint | null {
 	const t = title.trim();
+	if (!t) return null;
+	const dm = TL_DATE_MD_RE.exec(t); // 先试「年-月[-日]」：裸年份走下方纯数字分支，两路结果等价
+	if (dm) {
+		const mo = Number(dm[2]);
+		const da = dm[3] ? Number(dm[3]) : undefined;
+		if (mo < 1 || mo > 12) return null; // 非法月份整块视为非有效时间点
+		if (da !== undefined && (da < 1 || da > 31)) return null;
+		return { time: Number(dm[1]), month: mo, day: da };
+	}
 	if (!TL_TIME_RE.test(t)) return null;
 	const n = Number(t);
-	return Number.isFinite(n) ? n : null;
+	return Number.isFinite(n) ? { time: n } : null;
+}
+
+/** 时间点的规范文本（面板展示与写回标题共用）：纯数字原样；写了月/日则补零到两位（-129-06 / -129-06-15），可被 parseTimelineTime 原样解析回 */
+export function timelineTimeText(p: TimelinePoint): string {
+	let s = String(p.time);
+	if (p.month != null) s += `-${String(p.month).padStart(2, "0")}`;
+	if (p.day != null) s += `-${String(p.day).padStart(2, "0")}`;
+	return s;
 }
 
 /**
  * 解析《时间线.md》：按 `## ` 分块，每块一条事件。
- * 标题必须是纯数字时间点（`## 120`、`## -3.5`）——非数字标题的块（如「概述」）整块忽略。
+ * 标题必须是有效时间点——`年` / `年-月` / `年-月-日`（如 `## 120`、`## -3.5`〔旧纯数字写法〕、`## -129-06-15`），非法/非时间点标题的块（如「概述」、月份越界）整块忽略。
  * 块内字段行（复用 REL_FIELD_RE）：`- 人物：A、B`（别名 角色/登场人物/涉及人物/出场人物）、`- 事件：…`（别名 描述/说明/详情/备注/简介）。
  * 事件正文可为 `- 事件：` 后接文本、```text 围栏内容、或无字段前缀的自由文本行（三者合并）；其它字段（如「发生章节」）不并入。
  */
 export function parseTimelines(text: string): TimelineEntry[] {
 	const body = stripComments(text || "");
 	const out: TimelineEntry[] = [];
-	let cur: { time: number; chars: string[]; eventLines: string[] } | null = null;
+	let cur: (TimelinePoint & { chars: string[]; eventLines: string[] }) | null = null;
 	let inFence = false;
 	const flush = (): void => {
 		if (!cur) return;
-		out.push({ time: cur.time, chars: [...new Set(cur.chars)], event: cur.eventLines.join("\n").trim() });
+		const e: TimelineEntry = { time: cur.time, chars: [...new Set(cur.chars)], event: cur.eventLines.join("\n").trim() };
+		if (cur.month != null) e.month = cur.month; // 未写月/日的条目保持字段缺省（不显式落 undefined）
+		if (cur.day != null) e.day = cur.day;
+		out.push(e);
 		cur = null;
 	};
 	for (const rawLine of body.split("\n")) {
@@ -735,8 +762,8 @@ export function parseTimelines(text: string): TimelineEntry[] {
 		if (/^##\s+/.test(line)) {
 			flush();
 			const t = parseTimelineTime(line.replace(/^##\s+/, ""));
-			if (t === null) continue; // 非数字标题块整块忽略（cur 已被 flush 置空，其下内容自然丢弃）
-			cur = { time: t, chars: [], eventLines: [] };
+			if (t === null) continue; // 非有效时间点标题块整块忽略（cur 已被 flush 置空，其下内容自然丢弃）
+			cur = { ...t, chars: [], eventLines: [] };
 			continue;
 		}
 		if (/^#\s+/.test(line)) continue; // 文档 H1 标题行忽略
@@ -762,9 +789,9 @@ export function parseTimelines(text: string): TimelineEntry[] {
 	return out;
 }
 
-/** 时间线条目序列化为文档块（与 parseTimelines 往返一致；时间点用 String(number)，可被 TL_TIME_RE 原样解析回数值） */
+/** 时间线条目序列化为文档块（与 parseTimelines 往返一致；标题经 timelineTimeText 规范化，含月日时补零到两位） */
 export function formatTimelineBlock(e: TimelineEntry): string {
-	const lines = [`## ${String(e.time)}`];
+	const lines = [`## ${timelineTimeText(e)}`];
 	if (e.chars.length) lines.push(`- 人物：${joinList(e.chars)}`);
 	if (e.event) lines.push("- 事件：", "```text", e.event, "```");
 	lines.push("");

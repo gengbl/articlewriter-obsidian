@@ -5,7 +5,7 @@ import { LlmChatView } from "./llm_chat_view";
 import { GenProgressView, type WritingStreamSink } from "./gen_progress_view";
 import { StatusView, type StatusAction, type StatusChapterEntry, type StatusDetail, type StatusSnapshot, type StatusStoryEntry } from "./status_view";
 import { RelationshipView, type RelCharInfo, type RelGroup, type RelRow, type RelSnapshot, type RelStoryEntry } from "./relationship_view";
-import { TimelineView, type TlRow, type TlSection, type TlSnapshot, type TlStoryEntry } from "./timeline_view";
+import { TimelineView, type TlRow, type TlSnapshot, type TlStoryEntry } from "./timeline_view";
 import { chapterOutlineTemplate, countPureWords, FORESHADOW_TEMPLATE, formatLocalDateTime, md5, NOTES_TEMPLATE, outlineTemplate, WORLD_TEMPLATE } from "./story_types";
 import { safeFilename } from "./story_types";
 import { StoryManager, NO_VOL_MODE_MSG } from "./story_manager";
@@ -19,7 +19,7 @@ import { assembleSystemPrompt, chatCompletion, chatStream, describeLlmError, isR
 import type { Message } from "./llm_client";
 import { findAiWordHits, mergeGuideCategories } from "./banned_words";
 import { appendOutlineInstruction, buildChapterPrompt, buildChapterSummaryPrompt, buildContinuePrompt, buildPolishPrompt, buildReviewPrompt, buildRewritePrompt, buildStoryTypeSystemPrompt, buildVolRebuildPrompt, buildWritingContext, CHAPTER_SUMMARY_SYSTEM_PROMPT, checkOutlineCoverage, cleanAiText, embedAggHash, formatRetryNote, parseAggHash, serializeAggregateGuide, stripHeading, validateStoryTypeFormat, VOL_SUMMARY_SYSTEM_PROMPT, wordRangeFromGuides } from "./prompts";
-import { parseChapterSelection, parseRelationships, parseTimelines, splitList, stripComments } from "./md_docs";
+import { parseChapterSelection, parseRelationships, parseTimelines, splitList, stripComments, type TimelineEntry } from "./md_docs";
 import type { RelationshipEntry } from "./md_docs";
 
 interface ArticleWriterSettings {
@@ -263,11 +263,11 @@ export default class ArticleWriterPlugin extends Plugin {
 		return `${this.app.vault.configDir}/plugins/${this.manifest.id}/workspaces/${story}.json`;
 	}
 
-	/** 把当前窗口布局存入指定书的工作区文件；尽力而为，失败仅 console.warn 不阻断调用方流程 */
+	/** 把当前窗口布局存入指定书的工作区文件；尽力而为，失败走 noteWsIoError 统一上报、不阻断调用方流程 */
 	async captureBookWorkspace(story: string): Promise<void> {
 		const s = story.trim();
 		if (!s) return;
-		if (!this.app.workspace.layoutReady) { console.warn(`[articlewriter] 存档「${s}」工作区时布局尚未就绪，跳过`); return; }
+		if (!this.app.workspace.layoutReady) return; // 启动早期布局未就绪：静默跳过（后续防抖会再触发）
 		try {
 			const doc = { v: 1, platform: Platform.isDesktopApp ? "desktop" : "mobile", layout: this.app.workspace.getLayout() };
 			await this.manager.writePluginFile(this.bookWorkspacePath(s), JSON.stringify(doc)); // 高频防抖路径：成功不打日志，失败走 noteWsIoError
@@ -282,26 +282,27 @@ export default class ArticleWriterPlugin extends Plugin {
 			const targets: WorkspaceLeaf[] = [];
 			this.app.workspace.iterateRootLeaves((leaf) => { if (leaf.getViewState().type === "markdown") targets.push(leaf); }); // 先收集再逐个 detach：detach 会改动容器结构
 			for (const leaf of targets) leaf.detach();
-		} catch (e) {
-			console.warn("[articlewriter] 关闭打开文档失败：", e);
-		}
+		} catch { /* 尽力而为的辅助动作，失败不影响切书主流程 */ }
 	}
 
 	/** 加载指定书的已存工作区布局（若有且同端类型）。closeIfNoArchive=true 时无存档则先关闭主编辑区全部打开文档再返回 false（仅显式切书入口传 true；命令隐式解析当前书不关，避免误清用户会话）；跨端/损坏一律保持现状。成功恢复弹 Notice 反馈 */
 	async loadBookWorkspace(story: string, closeIfNoArchive = false): Promise<boolean> {
 		const s = story.trim();
 		if (!s) return false;
-		if (!this.app.workspace.layoutReady) { console.warn(`[articlewriter] 加载「${s}」工作区时布局尚未就绪，跳过`); return false; }
+		if (!this.app.workspace.layoutReady) return false; // 启动早期布局未就绪：静默跳过
 		let text: string | null = null;
 		try { text = await this.manager.readPluginFile(this.bookWorkspacePath(s)); } catch (e) { this.noteWsIoError(`读取「${s}」的工作区`, e); return false; }
 		if (!text || !text.trim()) { if (closeIfNoArchive) this.closeOpenDocs(); return false; } // 显式切书且目标无存档：清掉旧书文档页签，空编辑器开始；隐式解析则保持现状
-		let parsed: unknown;
-		try { parsed = JSON.parse(text); } catch { console.warn(`[articlewriter] 「${s}」的工作区存档损坏，忽略`); return false; } // 存档损坏不阻断切书
-		if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) { console.warn(`[articlewriter] 「${s}」的工作区存档格式异常，忽略`); return false; }
-		const env = parsed as { v?: number; platform?: string; layout?: Record<string, unknown> };
-		if (env.platform && env.platform !== (Platform.isDesktopApp ? "desktop" : "mobile")) { console.warn(`[articlewriter] 「${s}」的工作区来自 ${env.platform}（当前 ${Platform.isDesktopApp ? "desktop" : "mobile"}），跨端不恢复`); return false; } // 桌面/移动布局结构不同，互不恢复
+		// 存档损坏 / 格式异常 / 跨端 / 缺 layout 段：一律保持现状静默返回 false（不阻断切书主流程）
+		let env: { v?: number; platform?: string; layout?: Record<string, unknown> };
+		try {
+			const raw: unknown = JSON.parse(text) as unknown; // 先收敛为 unknown 再逐层收窄，避免 any 直赋
+			if (!raw || typeof raw !== "object" || Array.isArray(raw)) return false;
+			env = raw as { v?: number; platform?: string; layout?: Record<string, unknown> };
+		} catch { return false; }
+		if (env.platform && env.platform !== (Platform.isDesktopApp ? "desktop" : "mobile")) return false; // 桌面/移动布局结构不同，互不恢复
 		const layout = env.layout;
-		if (!layout || typeof layout !== "object" || Array.isArray(layout)) { console.warn(`[articlewriter] 「${s}」的工作区存档缺少 layout 段，忽略`); return false; }
+		if (!layout || typeof layout !== "object" || Array.isArray(layout)) return false;
 		this.lastWorkspaceRestoreAt = Date.now(); // 先打时间戳再换布局：changeLayout 引发的 layout-change 回声被过滤
 		try {
 			await this.app.workspace.changeLayout(layout);
@@ -520,7 +521,7 @@ export default class ArticleWriterPlugin extends Plugin {
 			if (!enabled && volCount > 0) { // 破坏性：拍平并删除全部卷 → 必须二次确认
 				const ok = await this.confirmBox(
 					`把《${story}》的全部 ${volCount} 个卷拍平回书根？`,
-					`${chInVols} 章将从各卷目录移回书根并在书内重新连续编号；各卷残留的直属文档（如卷大纲/人物等设定四件套）也将挪出到书根，跨卷同名者前面加「<卷名>-」前缀以免覆盖；随后 ${volCount} 个卷实体目录与卷.md 元数据清除进回收站。此操作不可撤销（可去 Obsidian 回收站找回）。`,
+					`${chInVols} 章将从各卷目录移回书根并在书内重新连续编号；各卷残留的直属文档（如卷大纲/人物等设定五件套）也将挪出到书根，跨卷同名者前面加「<卷名>-」前缀以免覆盖；随后 ${volCount} 个卷实体目录与卷.md 元数据清除进回收站。此操作不可撤销（可去 Obsidian 回收站找回）。`,
 					"确认切换为无卷"
 				);
 				if (!ok) return;
@@ -2584,12 +2585,12 @@ async cmdRenameChapterFile(): Promise<void> {
 
 	/**
 	 * 时间线面板快照：工作目录 + 小说概览 + 当前书**全部**《时间线.md》解析结果（书根 / 每一卷 / 每一章），全程非交互只读。
-	 * 单层解析失败降级为空列表不影响其余层；组内行按时间点数值升序（同值保持文档顺序）。
-	 * 分组沿用 manager.readTimelineDocs 的顺序约定——带 volId 的章条目挂到其所属卷节点下（有卷模式 书籍→卷→章 三层嵌套），未归卷章与无卷模式的章平铺在书籍级之下（两层）；useVolumes 判定口径与 readTimelineDocs 完全一致（state?.use_volumes===true）。
+	 * 各层条目合并为单一按时间点升序的行列表（年→月→日，同值保持文档枚举顺序）；每行带层级标签与来源路径供展示及双击定位。
+	 * 单层解析失败降级为空列表不影响其余层；原文非空但零条目的文档进 unparsedDocs 供展示侧给格式提示。
 	 */
 	async getTimelineSnapshot(): Promise<TlSnapshot> {
 		const root = this.settings.workDir.replace(/\/+$/, "");
-		if (!root) return { workDir: "", stories: [], activeStory: null, activeStoryTitle: "", useVolumes: false, sections: [], totalCount: 0 };
+		if (!root) return { workDir: "", stories: [], activeStory: null, activeStoryTitle: "", useVolumes: false, rows: [], totalCount: 0, unparsedDocs: [] };
 		const names = await this.manager.listStories();
 		const last = this.settings.lastStory?.trim() ?? "";
 		const stories: TlStoryEntry[] = [];
@@ -2602,30 +2603,21 @@ async cmdRenameChapterFile(): Promise<void> {
 			stories.push({ name, title, active: name === last });
 		}
 		const active = last && names.includes(last) ? last : null;
-		if (!active) return { workDir: root, stories, activeStory: null, activeStoryTitle: "", useVolumes: false, sections: [], totalCount: 0 };
+		if (!active) return { workDir: root, stories, activeStory: null, activeStoryTitle: "", useVolumes: false, rows: [], totalCount: 0, unparsedDocs: [] };
 		const state = await this.manager.loadState(active);
 		const docs = await this.manager.readTimelineDocs(active); // 各层原文（只读），顺序按 manager 约定（有卷模式每卷紧随其成员章）
-		const sections: TlSection[] = [];
-		let total = 0;
-		let curVol: TlSection | null = null; // 最近推入的卷节点——其后带 volId 的章条目挂到它下面
+		const rows: TlRow[] = [];
+		const unparsedDocs: Array<{ label: string; path: string }> = [];
 		for (const d of docs) {
-			let rows: TlRow[] = [];
+			let list: TimelineEntry[] = [];
 			try {
-				rows = parseTimelines(d.text).map((e) => ({ ...e, scope: d.scope, sourcePath: d.path }));
-			} catch { /* 单层解析失败不影响其余层（保留 hasText 提示用户检查格式） */ }
-			rows.sort((a, b) => a.time - b.time || 0); // 时间点数值稳定升序（同值保持文档顺序）
-			total += rows.length;
-			const hasText = d.text.trim().length > 0;
-			if (d.scope === "volume") {
-				curVol = { scope: d.scope, label: d.label, path: d.path, depth: 1, rows, hasText };
-				sections.push(curVol);
-			} else if (d.volId != null && curVol) {
-				(curVol.children ??= []).push({ scope: d.scope, label: d.label, path: d.path, depth: 2, rows, hasText });
-			} else {
-				sections.push({ scope: d.scope, label: d.label, path: d.path, depth: d.scope === "book" ? 0 : 1, rows, hasText });
-			}
+				list = parseTimelines(d.text);
+			} catch { /* 单层解析失败不影响其余层 */ }
+			if (!list.length && d.text.trim()) unparsedDocs.push({ label: d.label, path: d.path }); // 有内容但无有效条目 → 展示侧格式提示
+			for (const e of list) rows.push({ ...e, scope: d.scope, sourcePath: d.path, sourceLabel: d.label });
 		}
-		return { workDir: root, stories, activeStory: active, activeStoryTitle: stories.find((s) => s.name === active)?.title ?? active, useVolumes: state?.use_volumes === true, sections, totalCount: total };
+		rows.sort((a, b) => a.time - b.time || ((a.month ?? 0) - (b.month ?? 0)) || ((a.day ?? 0) - (b.day ?? 0))); // (年,月,日) 全局升序，稳定排序同值保持文档顺序
+		return { workDir: root, stories, activeStory: active, activeStoryTitle: stories.find((s) => s.name === active)?.title ?? active, useVolumes: state?.use_volumes === true, rows, totalCount: rows.length, unparsedDocs };
 	}
 
 	/** 单本书的详情快照：状态字段 + 章节目录（含各章文件）+ 书根案头资料；字数优先用传入的实时磁盘统计 chWords，回退 state 值 */
@@ -2718,7 +2710,7 @@ async cmdRenameChapterFile(): Promise<void> {
 							await this.app.vault.adapter.remove(wsOld);
 						}
 					}
-				} catch (e) { console.warn("[articlewriter] 迁移工作区存档失败：", e); }
+				} catch { /* v0.2.1+：旧名工作区存档改名迁移为尽力而为，失败不影响改名主流程 */ }
 				if ((this.settings.lastStory || "") === a.name) {
 					this.settings.lastStory = r.newName; // 当前书记忆随目录改名，同时触发 LLM 面板上下文行刷新
 					await this.saveSettings();
@@ -2947,7 +2939,7 @@ async cmdRenameChapterFile(): Promise<void> {
 				const vol = this.manager.findVolumeIn(vols, a.volId); // 按 id/名解析目标卷
 				if (!vol) throw new Error(`卷 ${a.volId} 不存在或已被删除`);
 				const target = { volId: vol.id };
-				const stds = await this.manager.standardDocs(a.story, target); // 设定四件套列出，已存在禁用
+				const stds = await this.manager.standardDocs(a.story, target); // 设定五件套列出，已存在禁用
 				const res = await this.pickNewDoc(`在卷「${vol.name}」新建文档`, stds); // v0.1.8+：全宽输入框+底部「确定」单视图，不再多窗
 				if (res == null) return;
 				if (res.kind === "std") {
@@ -2982,7 +2974,7 @@ async cmdRenameChapterFile(): Promise<void> {
 				return;
 			}
 			case "complete-root-docs": {
-				const created = await this.manager.ensureRootDocs(a.story); // 书根默认资料七件套补缺，已存在保留不覆盖
+				const created = await this.manager.ensureRootDocs(a.story); // 书根默认资料八件套补缺，已存在保留不覆盖
 				new Notice(created.length ? `已为「${a.story}」补全缺失资料：${created.join("、")}` : `「${a.story}」的默认资料文件已齐全（大纲/世界观/伏笔/笔记/人物/人物关系/场景），无需补全`, 8000);
 				return;
 			}

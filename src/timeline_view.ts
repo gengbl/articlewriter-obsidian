@@ -1,26 +1,14 @@
-import { ItemView, TFile, WorkspaceLeaf } from "obsidian";
-import type { TimelineEntry } from "./md_docs";
+import { ItemView, TFile, WorkspaceLeaf, type MarkdownView } from "obsidian";
+import { parseTimelineTime, timelineTimeText, type TimelineEntry } from "./md_docs";
 
 /** 时间线条目所属层级（书根 / 卷 / 章） */
 export type TlScope = "book" | "volume" | "chapter";
 
-const SCOPE_LABEL: Record<TlScope, string> = { book: "书籍级", volume: "卷级", chapter: "章级" };
-
-/** 面板展示用时间线条目：解析结果 + 层级归属与来源路径 */
+/** 面板展示用时间线条目：解析结果 + 层级归属、来源路径与层级标签 */
 export interface TlRow extends TimelineEntry {
 	scope: TlScope;
 	sourcePath: string; // 来源《时间线.md》的 vault 相对路径
-}
-
-/** 面板分组节点（可嵌套：有卷模式下卷节点携带其成员章节子组，自上而下构成 书→卷→章 三层树；无卷模式为 书→章 两层平铺） */
-export interface TlSection {
-	scope: TlScope;
-	label: string; // 书籍级 / 卷 · <卷名> / 章 · 第N章 <标题>
-	path: string; // 该层《时间线.md》的 vault 相对路径（文档尚不存在时为候选路径，点击静默忽略）
-	depth: number; // 缩进层级：0=书籍级、1=卷/平铺章节、2=有卷模式的卷内章节
-	rows: TlRow[]; // 已按时间点升序排列
-	hasText: boolean; // 原文非空但解析不出条目时给书写格式提示
-	children?: TlSection[]; // 仅卷节点携带（其成员章节）
+	sourceLabel: string; // 层级标签（书籍级 / 卷 · <卷名> / 章 · 第N章 <标题>），合并展示时随条目显示出处
 }
 
 export interface TlStoryEntry {
@@ -29,15 +17,16 @@ export interface TlStoryEntry {
 	active: boolean;
 }
 
-/** 时间线面板快照（main.ts 非交互读取构建，只含展示字段） */
+/** 时间线面板快照（main.ts 非交互读取构建，只含展示字段）：各层已合并为单一按时间点升序的行列表 */
 export interface TlSnapshot {
 	workDir: string;
 	stories: TlStoryEntry[];
 	activeStory: string | null;
 	activeStoryTitle: string;
 	useVolumes: boolean; // 有卷/无卷模式（空态文案据此给出对应的建文档位置提示）
-	sections: TlSection[]; // 顶层序列：书级 →（未归卷章…）→ 各卷(含子章)；无卷模式：书级 → 全部章
+	rows: TlRow[]; // 书/卷/章全部条目合并，(年,月,日) 升序；同值保持文档枚举顺序
 	totalCount: number; // 全部层解析出的事件总条数
+	unparsedDocs: Array<{ label: string; path: string }>; // 原文非空但零有效条目的文档（格式提示 + 可点开查看）
 }
 
 /** 某行是否命中筛选词（人物名 + 事件正文匹配） */
@@ -45,18 +34,11 @@ function matchRow(r: TlRow, q: string): boolean {
 	return (r.chars.join(" ") + " " + r.event).toLowerCase().includes(q);
 }
 
-/** 递归统计分组内（含子孙组）命中的条目数——筛选时整支为 0 的分支不渲染 */
-function visibleCount(sec: TlSection, q: string): number {
-	let n = sec.rows.filter((r) => matchRow(r, q)).length;
-	for (const c of sec.children ?? []) n += visibleCount(c, q);
-	return n;
-}
-
 /**
  * 时间线面板（自定义 ItemView，可停靠任意区域、重载保留位置）：
- * 自上而下纵向展示当前小说**全部**《时间线.md》的事件流——有卷模式按 书籍→卷→章节 三层嵌套缩进，无卷模式按 书籍→章节 两层平铺。
- * 每组内条目按时间点数值升序排列（时间点为文档标题里的任意数字），支持按人物/事件关键词筛选；分组可开合（会话内保持、不落盘）。
- * **双击**条目在编辑器打开来源文件（单击不触发，避免误触）。数据经构造注入的 getter 实时读取；文件变更由 main.ts 防抖调 refresh()。
+ * 把当前小说**书根 / 卷目录 / 章节目录三层《时间线.md》**合并成一条自上而下的纵向时间轴——条目按时间点（支持 年 / 年-月 / 年-月-日）升序排列，每条带来源层级标签。
+ * 顶部筛选框可按人物/事件关键词过滤。**双击**条目在编辑器打开来源文件并定位到该时间点的 `##` 标题行（单击不触发，避免误触）。
+ * 数据经构造注入的 getter 实时读取；文件变更由 main.ts 防抖调 refresh()。
  * 渲染陷阱同 StatusView / RelationshipView：UI 必须建在 onOpen 的 contentEl（本环境不调用 getEmptyStateElement）。
  */
 export class TimelineView extends ItemView {
@@ -70,8 +52,6 @@ export class TimelineView extends ItemView {
 	private busy = false;
 	private lastSnap: TlSnapshot | null = null;
 	private filterText = "";
-	/** 分组收起态（会话内保持，不落盘；键 "tl:<path>"） */
-	private collapsed = new Set<string>();
 
 	constructor(leaf: WorkspaceLeaf, getData: () => Promise<TlSnapshot>) {
 		super(leaf);
@@ -99,7 +79,7 @@ export class TimelineView extends ItemView {
 		this.built = true;
 		this.rootEl = parent.createDiv({ cls: "aw-status-view aw-tl-view" }); // 复用写字台的容器/字体/滚动布局样式
 		this.topEl = this.rootEl.createDiv({ cls: "aw-st-top" }); // 固定头部：筛选框 + 刷新按钮
-		this.treeEl = this.rootEl.createDiv({ cls: "aw-st-tree" }); // 滚动主体：纵向时间轴分组
+		this.treeEl = this.rootEl.createDiv({ cls: "aw-st-tree" }); // 滚动主体：合并后的纵向时间轴
 	}
 
 	/** 重新拉取快照并重渲染（「刷新」按钮与插件侧文件变更防抖都会调到这里） */
@@ -139,7 +119,7 @@ export class TimelineView extends ItemView {
 		btns.createEl("button", { text: "刷新" }).addEventListener("click", () => void this.refresh());
 	}
 
-	/** 主体区：汇总行 + 各层级分组（自上而下纵向时间轴，卷内章节嵌套缩进） */
+	/** 主体区：单一合并纵向时间轴（时间点升序、每条带来源标签）+ 无有效条目文档的格式提示 + 汇总行 */
 	private renderBody(snap: TlSnapshot): void {
 		const savedScroll = this.treeEl.scrollTop;
 		this.treeEl.empty();
@@ -150,26 +130,22 @@ export class TimelineView extends ItemView {
 			return;
 		}
 		const q = this.filterText.trim().toLowerCase();
-		let shown = 0;
-		for (const sec of snap.sections) {
-			const vc = q ? visibleCount(sec, q) : -1;
-			if (vc === 0) continue; // 筛选时整支无命中的分支不渲染
-			if (q) shown += vc;
-			this.renderSection(sec, q);
+		const rows = q ? snap.rows.filter((r) => matchRow(r, q)) : snap.rows;
+		if (rows.length) {
+			const list = this.treeEl.createDiv({ cls: "aw-tl-list" }); // 纵向时间轴（左侧竖线 + 节点圆点），自上而下按时间点升序
+			for (const row of rows) this.renderItem(list, row);
+		} else {
+			this.treeEl.createDiv({ text: `没有匹配「${this.filterText.trim()}」的时间线条目。`, cls: "aw-dim aw-st-hint" });
 		}
-		if (!q) shown = snap.totalCount;
+		if (snap.unparsedDocs.length) this.renderUnparsed(snap.unparsedDocs);
 		const summary = this.treeEl.createDiv({ cls: "aw-dim aw-rel-summary" });
-		if (q) summary.setText(`匹配 ${String(shown)} 条（共 ${String(snap.totalCount)} 条）`);
-		else {
+		if (q) {
+			summary.setText(`匹配 ${String(rows.length)} 条（共 ${String(snap.totalCount)} 条）`);
+		} else {
 			const perScope: Record<TlScope, number> = { book: 0, volume: 0, chapter: 0 };
-			const countAll = (sec: TlSection): void => {
-				perScope[sec.scope] += sec.rows.length;
-				for (const c of sec.children ?? []) countAll(c);
-			};
-			for (const s of snap.sections) countAll(s);
+			for (const r of snap.rows) perScope[r.scope]++;
 			summary.setText(`共 ${String(snap.totalCount)} 条：书籍级 ${String(perScope.book)} · 卷 ${String(perScope.volume)} · 章 ${String(perScope.chapter)}`);
 		}
-		if (q && !shown) this.treeEl.createDiv({ text: `没有匹配「${this.filterText.trim()}」的时间线条目。`, cls: "aw-dim aw-st-hint" });
 		this.treeEl.scrollTop = savedScroll;
 	}
 
@@ -184,53 +160,27 @@ export class TimelineView extends ItemView {
 			const where = snap.useVolumes
 				? "书根 `<书名>/时间线.md`、卷目录 `<卷名>-时间线.md`、章节目录 `<编号>-<标题>-时间线.md`"
 				: "书根 `<书名>/时间线.md` 或章节目录 `<编号>-<标题>-时间线.md`";
-			return `还没有时间线：在${where}记录——每条事件一个 \`## <时间点>\` 块 + \`- 人物：A、B\` + \`- 事件：…\`（时间点为任意数字）。`;
+			return `还没有时间线：在${where}记录——每条事件一个 \`## <时间点>\` 块（\`年\` / \`年-月\` / \`年-月-日\`，如 \`-129-06-15\`）+ \`- 人物：A、B\` + \`- 事件：…\`；面板会把三层合并成一条按时间排序的时间轴展示。`;
 		}
 		return null;
 	}
 
-	/** 单个分组节点：命名头（可开合，右侧「打开文档」）+ 纵向时间轴条目列表 + 嵌套子组；mount 缺省挂面板主体、卷内章节传父组主体实现缩进嵌套 */
-	private renderSection(sec: TlSection, q: string, mount?: HTMLElement): void {
-		const target = mount ?? this.treeEl;
-		const key = `tl:${sec.path}`;
-		const open = !this.collapsed.has(key);
-		const block = target.createDiv({ cls: `aw-tl-group aw-tl-d${String(Math.min(sec.depth, 2))}` });
-		const head = block.createDiv({ cls: "aw-st-chap" }); // 复用写字台章节名行样式
-		head.createSpan({ text: open ? "▾" : "▸", cls: "aw-st-caret" });
-		head.createSpan({ text: `${SCOPE_LABEL[sec.scope]}（${String(sec.rows.length)}）`, cls: "aw-rel-grouptitle" });
-		head.createSpan({ text: sec.label, cls: "aw-dim aw-rel-grouplabel" });
-		const openDoc = head.createSpan({ text: "打开文档", cls: "aw-rel-openfile" });
-		openDoc.addEventListener("click", (e) => {
-			e.stopPropagation(); // 点按钮不开合分组
-			void this.openFile(sec.path);
+	/** 有内容但零有效条目的文档提示行：列出层级标签（可点击打开对应《时间线.md》检查格式） */
+	private renderUnparsed(docs: Array<{ label: string; path: string }>): void {
+		const line = this.treeEl.createDiv({ cls: "aw-dim aw-st-hint" });
+		line.createSpan({ text: "以下《时间线.md》有内容但没有有效条目（需 ## <时间点> 标题）：" });
+		docs.forEach((d, i) => {
+			if (i) line.createSpan({ text: "、" });
+			const s = line.createSpan({ text: d.label, cls: "aw-tl-unparsed" });
+			s.addEventListener("click", () => void this.openFile(d.path));
 		});
-		head.addEventListener("click", () => {
-			if (this.collapsed.has(key)) this.collapsed.delete(key);
-			else this.collapsed.add(key);
-			if (this.lastSnap) this.renderBody(this.lastSnap);
-		});
-		if (!open) return;
-		const body = block.createDiv({ cls: "aw-st-kids aw-tl-listwrap" });
-		const kids = sec.children ?? [];
-		const rows = q ? sec.rows.filter((r) => matchRow(r, q)) : sec.rows;
-		if (!rows.length && !kids.length) {
-			body.createDiv({
-				text: sec.hasText ? "该文档暂无符合格式的时间线条目：需 `## <数字时间点>` 标题 + `- 人物：` / `- 事件：`。" : "该层还没有《时间线.md》内容。",
-				cls: "aw-dim aw-st-hint",
-			});
-			return;
-		}
-		if (rows.length) {
-			const list = body.createDiv({ cls: "aw-tl-list" }); // 纵向时间轴（左侧竖线 + 节点圆点，自上而下按时间点升序）
-			for (const row of rows) this.renderItem(list, row);
-		}
-		for (const c of kids) if (!q || visibleCount(c, q) > 0) this.renderSection(c, q, body);
 	}
 
-	/** 单条事件：时间点徽章 + 人物 chips + 事件正文；**双击**打开来源文档（单击不触发，避免误触） */
+	/** 单条事件：时间点徽章（年-月-日规范形式）+ 来源层级标签 + 人物 chips + 事件正文；**双击**在编辑器打开来源文档并定位到该时间点 */
 	private renderItem(parent: HTMLElement, row: TlRow): void {
 		const item = parent.createDiv({ cls: "aw-tl-item" });
-		item.createSpan({ text: String(row.time), cls: "aw-tl-time" });
+		item.createSpan({ text: timelineTimeText(row), cls: "aw-tl-time" });
+		if (row.sourceLabel) item.createSpan({ text: row.sourceLabel, cls: "aw-dim aw-tl-src" });
 		const wrap = item.createDiv({ cls: "aw-tl-evwrap" });
 		if (row.chars.length) {
 			const chars = wrap.createDiv({ cls: "aw-tl-chars" });
@@ -238,8 +188,39 @@ export class TimelineView extends ItemView {
 		}
 		if (row.event) wrap.createDiv({ text: row.event, cls: "aw-tl-event" });
 		else if (!row.chars.length) wrap.createDiv({ text: "（未填写事件与人物）", cls: "aw-dim aw-st-hint" });
-		item.setAttribute("title", `双击在编辑器中打开来源文档：${row.sourcePath}`);
-		item.addEventListener("dblclick", () => void this.openFile(row.sourcePath));
+		item.setAttribute("title", `双击在编辑器中打开并定位到该时间点：${row.sourcePath}`);
+		item.addEventListener("dblclick", () => void this.openAt(row));
+	}
+
+	/** 双击条目：在编辑器打开来源《时间线.md》并滚动定位到该事件的 ## 标题行 */
+	private async openAt(row: TlRow): Promise<void> {
+		const f = this.app.vault.getAbstractFileByPath(row.sourcePath);
+		if (!(f instanceof TFile)) return; // 候选路径（文档尚未创建）静默忽略
+		const leaf = await this.app.workspace.getLeaf();
+		await leaf.openFile(f);
+		this.locateHeading(leaf, row);
+	}
+
+	/** 在已打开的 Markdown 视图内定位匹配的时间点标题行（按解析后的值比对，兼容未补零的原始写法；移动端/内容未就绪则降级为仅打开文档）。首次尝试可能早于编辑器装载完成，250ms 后重试一次 */
+	private locateHeading(leaf: WorkspaceLeaf, row: TlRow): void {
+		for (const delay of [0, 250]) {
+			window.setTimeout(() => {
+				const ed = (leaf.view as MarkdownView | null)?.editor;
+				if (!ed) return;
+				let lines: string[] = [];
+				try { lines = ed.getValue().split("\n"); } catch { return; }
+				const idx = lines.findIndex((l) => {
+					const m = /^##\s+(.*)$/.exec(l.trim());
+					if (!m) return false;
+					const p = parseTimelineTime(m[1]);
+					return !!p && p.time === row.time && (p.month ?? 0) === (row.month ?? 0) && (p.day ?? 0) === (row.day ?? 0);
+				});
+				if (idx < 0) return;
+				const pos = { line: idx, ch: 0 };
+				ed.setCursor(pos);
+				ed.scrollIntoView({ from: pos, to: pos }, true); // center=true：定位行滚到视口中央
+			}, delay);
+		}
 	}
 
 	private async openFile(path: string): Promise<void> {
