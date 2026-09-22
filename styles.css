@@ -973,6 +973,96 @@
 	border-top-color: #4f9b8e;
 }
 
+/* 时间线面板（TimelineView，v0.2.x+）：容器/头部/滚动布局复用 .aw-status-view + .aw-st-top/.aw-st-tree/.aw-st-chap，筛选行复用 .aw-rel-filter-row/.aw-rel-filter；此处只定义时间轴专属部分 */
+
+.aw-tl-group {
+	margin-bottom: 4px;
+}
+
+/* 嵌套分组（卷内章节挂父组主体内）间距收紧一级；缩进与左侧指示线由外层复用的 .aw-st-kids 提供 */
+.aw-tl-d1,
+.aw-tl-d2 {
+	margin-bottom: 2px;
+}
+
+/* 纵向时间轴条目列表：左侧连续竖线 + 节点圆点，条目自上而下按时间点升序排列 */
+.aw-tl-list {
+	position: relative;
+	margin: 4px 0 6px 5px;
+	padding-left: 14px;
+}
+
+.aw-tl-list::before {
+	content: "";
+	position: absolute;
+	left: 3px;
+	top: 4px;
+	bottom: 4px;
+	width: 2px;
+	background: var(--background-modifier-border);
+}
+
+.aw-tl-item {
+	position: relative;
+	padding: 2px 6px 8px 10px;
+	border-radius: 4px;
+}
+
+.aw-tl-item:hover {
+	background: var(--background-modifier-hover);
+}
+
+/* 节点圆点：圆心对齐竖线中轴（list padding-left 14px，dot 左缘贴 list 内边） */
+.aw-tl-item::before {
+	content: "";
+	position: absolute;
+	left: -14px;
+	top: 7px;
+	width: 8px;
+	height: 8px;
+	border-radius: 50%;
+	background: var(--interactive-accent);
+}
+
+/* 时间点徽章（任意数字；等宽数字避免不同长度跳动） */
+.aw-tl-time {
+	display: inline-block;
+	margin-right: 6px;
+	padding: 0 6px;
+	font-size: 0.9em;
+	font-weight: 600;
+	font-variant-numeric: tabular-nums;
+	color: var(--text-normal);
+	background: var(--background-secondary);
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 4px;
+}
+
+/* 涉及人物 chips */
+.aw-tl-chars {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 3px;
+	margin-top: 3px;
+}
+
+.aw-tl-char {
+	padding: 0 5px;
+	font-size: 0.85em;
+	border-radius: 3px;
+	background: var(--background-modifier-hover);
+	color: var(--text-muted);
+}
+
+/* 事件正文：保留原文换行，长词/长串可断行不撑破窄面板 */
+.aw-tl-event {
+	margin-top: 3px;
+	font-size: 0.95em;
+	white-space: pre-wrap;
+	word-break: break-word;
+	color: var(--text-normal);
+}
+
 /* 多字段表单统一紧凑行距（MultiFieldModal「新增/编辑人物」等 + AddCharacterModal「添加人物」）：
    Obsidian .setting-item 默认 padding 0.75em≈12px 且带行间分隔线、input 高度约 32px，十几行叠加就非常占纵向空间；
    这里把 padding/分隔线/标签行高/控件高度一起压，并限定作用域不外溢到设置页与其它 Modal */

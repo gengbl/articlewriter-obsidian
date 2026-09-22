@@ -5,6 +5,7 @@ import { LlmChatView } from "./llm_chat_view";
 import { GenProgressView, type WritingStreamSink } from "./gen_progress_view";
 import { StatusView, type StatusAction, type StatusChapterEntry, type StatusDetail, type StatusSnapshot, type StatusStoryEntry } from "./status_view";
 import { RelationshipView, type RelCharInfo, type RelGroup, type RelRow, type RelSnapshot, type RelStoryEntry } from "./relationship_view";
+import { TimelineView, type TlRow, type TlSection, type TlSnapshot, type TlStoryEntry } from "./timeline_view";
 import { chapterOutlineTemplate, countPureWords, FORESHADOW_TEMPLATE, formatLocalDateTime, md5, NOTES_TEMPLATE, outlineTemplate, WORLD_TEMPLATE } from "./story_types";
 import { safeFilename } from "./story_types";
 import { StoryManager, NO_VOL_MODE_MSG } from "./story_manager";
@@ -18,7 +19,7 @@ import { assembleSystemPrompt, chatCompletion, chatStream, describeLlmError, isR
 import type { Message } from "./llm_client";
 import { findAiWordHits, mergeGuideCategories } from "./banned_words";
 import { appendOutlineInstruction, buildChapterPrompt, buildChapterSummaryPrompt, buildContinuePrompt, buildPolishPrompt, buildReviewPrompt, buildRewritePrompt, buildStoryTypeSystemPrompt, buildVolRebuildPrompt, buildWritingContext, CHAPTER_SUMMARY_SYSTEM_PROMPT, checkOutlineCoverage, cleanAiText, embedAggHash, formatRetryNote, parseAggHash, serializeAggregateGuide, stripHeading, validateStoryTypeFormat, VOL_SUMMARY_SYSTEM_PROMPT, wordRangeFromGuides } from "./prompts";
-import { parseChapterSelection, parseRelationships, splitList, stripComments } from "./md_docs";
+import { parseChapterSelection, parseRelationships, parseTimelines, splitList, stripComments } from "./md_docs";
 import type { RelationshipEntry } from "./md_docs";
 
 interface ArticleWriterSettings {
@@ -45,6 +46,7 @@ export default class ArticleWriterPlugin extends Plugin {
 	manager!: StoryManager;
 	private statusRefreshTimer: number | null = null; // 工作目录内文件变更 → 防抖刷新已打开状态面板的定时器
 	private relRefreshTimer: number | null = null; // 同上，人物关系面板（v0.1.9+）
+	private tlRefreshTimer: number | null = null; // 同上，时间线面板（v0.2.x+）
 	private flatBlocked: string | null = null; // 仍为平面结构且整理失败的书名：章节/卷结构操作锁定，直至「按卷整理目录」成功
 	private wsSaveTimer: number | null = null; // v0.2.1+：layout-change → 防抖存档当前书工作区的定时器
 	private lastWorkspaceRestoreAt = 0; // v0.2.1+：最近一次 changeLayout 恢复的时间戳（抑制自身触发的 layout-change 回存）
@@ -174,17 +176,20 @@ export default class ArticleWriterPlugin extends Plugin {
 		this.addCommand({ id: "llm-chat", name: "打开 LLM 对话窗口（常驻面板：多轮流式聊天，可停靠任意区域、切换已保存的模型配置）", callback: () => void this.openLlmPanel() });
 		this.addCommand({ id: "status-page", name: "打开写字台（当前书/章节/文件一览，点击小说或章节可切换激活）", callback: () => void this.openStatusPanel() });
 		this.addCommand({ id: "relationship-panel", name: "打开人物关系面板（汇总书/卷/章三层关系，按类型·状态带图标展示，点击打开来源文档）", callback: () => void this.openRelationshipPanel() });
+		this.addCommand({ id: "timeline-panel", name: "打开时间线面板（汇总书/卷/章三层《时间线.md》事件流，按时间点数值升序自上而下展示）", callback: () => void this.openTimelinePanel() });
 
 		this.registerView(LlmChatView.VIEW_TYPE, (leaf) => new LlmChatView(leaf, () => this.settings.llm, () => this.getChatSystemPrompt(), () => this.getActiveStoryInfo(), (name) => this.setActiveLlmFromChat(name)));
 		this.registerView(GenProgressView.VIEW_TYPE, (leaf) => new GenProgressView(leaf)); // v0.1.4+：摘要延迟生成的工作过程面板（notifyGenProgress 驱动）
 		this.registerView(StatusView.VIEW_TYPE, (leaf) => new StatusView(leaf, () => this.getStatusSnapshot(), (name) => this.statusSwitchStory(name), (story, key) => this.statusActivateChapter(story, key), (a) => this.handleStatusAction(a)));
 		this.registerView(RelationshipView.VIEW_TYPE, (leaf) => new RelationshipView(leaf, () => this.getRelationshipSnapshot(), () => this.openAddCharacterDialog())); // v0.1.9+：人物关系面板（展示只读，切书在写字台/命令里做；v0.2.0+ 头部「添加人物」注入写动作）
+		this.registerView(TimelineView.VIEW_TYPE, (leaf) => new TimelineView(leaf, () => this.getTimelineSnapshot())); // v0.2.x+：时间线面板（展示只读，切书在写字台/命令里做）
 		this.addRibbonIcon("message-square", "打开 LLM 对话窗口（常驻面板）", () => void this.openLlmPanel());
 		this.addRibbonIcon("book-open", "打开写字台（当前书/章节/文件）", () => void this.openStatusPanel());
 		this.addRibbonIcon("users", "打开人物关系面板（书/卷/章三层关系）", () => void this.openRelationshipPanel());
+		this.addRibbonIcon("history", "打开时间线面板（书/卷/章三层《时间线.md》事件流）", () => void this.openTimelinePanel());
 		this.addSettingTab(new ArticleWriterSettingTab(this));
 
-		// 工作目录内文件变更（编辑器写作自动落盘等）→ 防抖刷新所有已打开面板（写字台字数 + 人物关系），让改动实时跟进
+		// 工作目录内文件变更（编辑器写作自动落盘等）→ 防抖刷新所有已打开面板（写字台字数 + 人物关系 + 时间线），让改动实时跟进
 		const watchFile = (file: TAbstractFile) => {
 			if (file instanceof TFile && file.path.endsWith(".md") && this.pathUnderWorkDir(file.path)) this.schedulePanelRefresh();
 		};
@@ -208,12 +213,10 @@ export default class ArticleWriterPlugin extends Plugin {
 		void this.checkWorkspaceDirOnStartup(); // v0.2.1+ 启动自检：检测 workspaces/ 缺失则创建（仅 console 留痕，不落盘任何文件；原 .heartbeat.txt 诊断机制在 IO 通路验证后移除）
 	}
 
-	/** 插件加载时检测一次工作区存档目录：缺失则递归创建，console 留痕便于排障 */
+	/** 插件加载时检测一次工作区存档目录：缺失则递归创建；失败走统一上报（noteWsIoError），成功不打日志避免噪音 */
 	private async checkWorkspaceDirOnStartup(): Promise<void> {
 		try {
-			const dir = `${this.app.vault.configDir}/plugins/${this.manifest.id}/workspaces`;
-			const r = await this.manager.ensureVaultDir(dir);
-			console.info(`[articlewriter] 工作区存档目录${r === "created" ? "原本缺失，已创建" : "已存在"}：${dir}`);
+			await this.manager.ensureVaultDir(`${this.app.vault.configDir}/plugins/${this.manifest.id}/workspaces`);
 		} catch (e) {
 			this.noteWsIoError("工作区目录检测", e);
 		}
@@ -267,8 +270,7 @@ export default class ArticleWriterPlugin extends Plugin {
 		if (!this.app.workspace.layoutReady) { console.warn(`[articlewriter] 存档「${s}」工作区时布局尚未就绪，跳过`); return; }
 		try {
 			const doc = { v: 1, platform: Platform.isDesktopApp ? "desktop" : "mobile", layout: this.app.workspace.getLayout() };
-			await this.manager.writePluginFile(this.bookWorkspacePath(s), JSON.stringify(doc));
-			console.info(`[articlewriter] 已存档「${s}」的工作区 → ${this.bookWorkspacePath(s)}`);
+			await this.manager.writePluginFile(this.bookWorkspacePath(s), JSON.stringify(doc)); // 高频防抖路径：成功不打日志，失败走 noteWsIoError
 		} catch (e) {
 			this.noteWsIoError(`保存「${s}」的工作区`, e);
 		}
@@ -280,7 +282,6 @@ export default class ArticleWriterPlugin extends Plugin {
 			const targets: WorkspaceLeaf[] = [];
 			this.app.workspace.iterateRootLeaves((leaf) => { if (leaf.getViewState().type === "markdown") targets.push(leaf); }); // 先收集再逐个 detach：detach 会改动容器结构
 			for (const leaf of targets) leaf.detach();
-			if (targets.length > 0) console.info(`[articlewriter] 目标书无存档工作区，已关闭 ${targets.length} 个打开的文档`);
 		} catch (e) {
 			console.warn("[articlewriter] 关闭打开文档失败：", e);
 		}
@@ -294,10 +295,11 @@ export default class ArticleWriterPlugin extends Plugin {
 		let text: string | null = null;
 		try { text = await this.manager.readPluginFile(this.bookWorkspacePath(s)); } catch (e) { this.noteWsIoError(`读取「${s}」的工作区`, e); return false; }
 		if (!text || !text.trim()) { if (closeIfNoArchive) this.closeOpenDocs(); return false; } // 显式切书且目标无存档：清掉旧书文档页签，空编辑器开始；隐式解析则保持现状
-		let env: { v?: number; platform?: string; layout?: Record<string, unknown> } | null = null;
-		try { env = JSON.parse(text); } catch { console.warn(`[articlewriter] 「${s}」的工作区存档损坏，忽略`); return false; } // 存档损坏不阻断切书
-		if (!env || typeof env !== "object" || Array.isArray(env)) { console.warn(`[articlewriter] 「${s}」的工作区存档格式异常，忽略`); return false; }
-		if (env.platform && env.platform !== (Platform.isDesktopApp ? "desktop" : "mobile")) { console.info(`[articlewriter] 「${s}」的工作区来自 ${env.platform}（当前 ${Platform.isDesktopApp ? "desktop" : "mobile"}），跨端不恢复`); return false; } // 桌面/移动布局结构不同，互不恢复
+		let parsed: unknown;
+		try { parsed = JSON.parse(text); } catch { console.warn(`[articlewriter] 「${s}」的工作区存档损坏，忽略`); return false; } // 存档损坏不阻断切书
+		if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) { console.warn(`[articlewriter] 「${s}」的工作区存档格式异常，忽略`); return false; }
+		const env = parsed as { v?: number; platform?: string; layout?: Record<string, unknown> };
+		if (env.platform && env.platform !== (Platform.isDesktopApp ? "desktop" : "mobile")) { console.warn(`[articlewriter] 「${s}」的工作区来自 ${env.platform}（当前 ${Platform.isDesktopApp ? "desktop" : "mobile"}），跨端不恢复`); return false; } // 桌面/移动布局结构不同，互不恢复
 		const layout = env.layout;
 		if (!layout || typeof layout !== "object" || Array.isArray(layout)) { console.warn(`[articlewriter] 「${s}」的工作区存档缺少 layout 段，忽略`); return false; }
 		this.lastWorkspaceRestoreAt = Date.now(); // 先打时间戳再换布局：changeLayout 引发的 layout-change 回声被过滤
@@ -316,8 +318,7 @@ export default class ArticleWriterPlugin extends Plugin {
 		const target = next.trim();
 		const cur = (this.settings.lastStory || "").trim();
 		if (!target || cur === target) return;
-		console.info(`[articlewriter] 切书工作区：「${cur || "(无当前书)"}」→「${target}」（先归档旧书再恢复新书）`);
-		await this.captureBookWorkspace(cur); // cur 为空时内部直接返回
+		await this.captureBookWorkspace(cur); // cur 为空时内部直接返回；正常流程不打日志（失败走 noteWsIoError）
 		this.settings.lastStory = target;
 		await this.saveSettings();
 		await this.loadBookWorkspace(target, closeIfNoArchive);
@@ -2277,6 +2278,21 @@ async cmdRenameChapterFile(): Promise<void> {
 		}
 	}
 
+	/** 打开常驻时间线面板（v0.2.x+）：已有则直接激活，否则复用右栏叶子承载（写字台占左栏，两者可同屏对照） */
+	private async openTimelinePanel(): Promise<void> {
+		try {
+			const existing = this.app.workspace.getLeavesOfType(TimelineView.VIEW_TYPE);
+			if (existing.length) {
+				this.app.workspace.setActiveLeaf(existing[0]);
+				return;
+			}
+			const leaf = this.app.workspace.getRightLeaf(false) ?? this.app.workspace.getRightLeaf(true) ?? this.app.workspace.getLeaf("split");
+			await leaf.setViewState({ type: TimelineView.VIEW_TYPE, active: true });
+		} catch (e) {
+			this.notifyError("打开时间线面板失败", e);
+		}
+	}
+
 	/**
 	 * 「添加人物」弹窗（v0.2.0+）：人物关系面板头部按钮的唯一实现。
 	 * 姓名 + 归属级别（书籍级／卷级／章级，决定写入哪份《人物.md》）+ 设定字段 + 动态关系行；
@@ -2435,10 +2451,11 @@ async cmdRenameChapterFile(): Promise<void> {
 		}, delayMs);
 	}
 
-	/** 防抖刷新所有已打开面板（写字台 + 人物关系）：同一批文件变更合并成一次重渲染 */
+	/** 防抖刷新所有已打开面板（写字台 + 人物关系 + 时间线）：同一批文件变更合并成一次重渲染 */
 	private schedulePanelRefresh(delayMs = 800): void {
 		this.scheduleStatusPanelRefresh(delayMs);
 		this.scheduleRelationshipPanelRefresh(delayMs);
+		this.scheduleTimelinePanelRefresh(delayMs);
 	}
 
 	/** 防抖刷新已打开的人物关系面板（v0.1.9+）：关系文档在编辑器里改动/新建同样实时跟进 */
@@ -2449,6 +2466,18 @@ async cmdRenameChapterFile(): Promise<void> {
 			this.relRefreshTimer = null;
 			for (const leaf of this.app.workspace.getLeavesOfType(RelationshipView.VIEW_TYPE)) {
 				if (leaf.view instanceof RelationshipView) void leaf.view.refresh();
+			}
+		}, delayMs);
+	}
+
+	/** 防抖刷新已打开的时间线面板（v0.2.x+）：《时间线.md》在编辑器里改动/新建同样实时跟进 */
+	private scheduleTimelinePanelRefresh(delayMs = 800): void {
+		if (!this.app.workspace.getLeavesOfType(TimelineView.VIEW_TYPE).length) return;
+		if (this.tlRefreshTimer != null) window.clearTimeout(this.tlRefreshTimer);
+		this.tlRefreshTimer = window.setTimeout(() => {
+			this.tlRefreshTimer = null;
+			for (const leaf of this.app.workspace.getLeavesOfType(TimelineView.VIEW_TYPE)) {
+				if (leaf.view instanceof TimelineView) void leaf.view.refresh();
 			}
 		}, delayMs);
 	}
@@ -2549,6 +2578,54 @@ async cmdRenameChapterFile(): Promise<void> {
 			chars = await this.manager.loadCharacterEntries(active); // 全部三层《人物.md》设定条目（「人物状态」区用；失败不阻断关系展示）
 		} catch { /* ignore */ }
 		return { workDir: root, stories, activeStory: active, activeStoryTitle: stories.find((s) => s.name === active)?.title ?? active, groups, relCount, chars };
+	}
+
+	// ---------- 时间线面板（TimelineView，v0.2.x+） ----------
+
+	/**
+	 * 时间线面板快照：工作目录 + 小说概览 + 当前书**全部**《时间线.md》解析结果（书根 / 每一卷 / 每一章），全程非交互只读。
+	 * 单层解析失败降级为空列表不影响其余层；组内行按时间点数值升序（同值保持文档顺序）。
+	 * 分组沿用 manager.readTimelineDocs 的顺序约定——带 volId 的章条目挂到其所属卷节点下（有卷模式 书籍→卷→章 三层嵌套），未归卷章与无卷模式的章平铺在书籍级之下（两层）；useVolumes 判定口径与 readTimelineDocs 完全一致（state?.use_volumes===true）。
+	 */
+	async getTimelineSnapshot(): Promise<TlSnapshot> {
+		const root = this.settings.workDir.replace(/\/+$/, "");
+		if (!root) return { workDir: "", stories: [], activeStory: null, activeStoryTitle: "", useVolumes: false, sections: [], totalCount: 0 };
+		const names = await this.manager.listStories();
+		const last = this.settings.lastStory?.trim() ?? "";
+		const stories: TlStoryEntry[] = [];
+		for (const name of names) {
+			let title = name;
+			try {
+				const st = await this.manager.loadState(name); // 单文件读取，成本低；失败用书名兜底
+				if (st?.title) title = st.title;
+			} catch { /* 单本状态读取失败不影响列表其余项 */ }
+			stories.push({ name, title, active: name === last });
+		}
+		const active = last && names.includes(last) ? last : null;
+		if (!active) return { workDir: root, stories, activeStory: null, activeStoryTitle: "", useVolumes: false, sections: [], totalCount: 0 };
+		const state = await this.manager.loadState(active);
+		const docs = await this.manager.readTimelineDocs(active); // 各层原文（只读），顺序按 manager 约定（有卷模式每卷紧随其成员章）
+		const sections: TlSection[] = [];
+		let total = 0;
+		let curVol: TlSection | null = null; // 最近推入的卷节点——其后带 volId 的章条目挂到它下面
+		for (const d of docs) {
+			let rows: TlRow[] = [];
+			try {
+				rows = parseTimelines(d.text).map((e) => ({ ...e, scope: d.scope, sourcePath: d.path }));
+			} catch { /* 单层解析失败不影响其余层（保留 hasText 提示用户检查格式） */ }
+			rows.sort((a, b) => a.time - b.time || 0); // 时间点数值稳定升序（同值保持文档顺序）
+			total += rows.length;
+			const hasText = d.text.trim().length > 0;
+			if (d.scope === "volume") {
+				curVol = { scope: d.scope, label: d.label, path: d.path, depth: 1, rows, hasText };
+				sections.push(curVol);
+			} else if (d.volId != null && curVol) {
+				(curVol.children ??= []).push({ scope: d.scope, label: d.label, path: d.path, depth: 2, rows, hasText });
+			} else {
+				sections.push({ scope: d.scope, label: d.label, path: d.path, depth: d.scope === "book" ? 0 : 1, rows, hasText });
+			}
+		}
+		return { workDir: root, stories, activeStory: active, activeStoryTitle: stories.find((s) => s.name === active)?.title ?? active, useVolumes: state?.use_volumes === true, sections, totalCount: total };
 	}
 
 	/** 单本书的详情快照：状态字段 + 章节目录（含各章文件）+ 书根案头资料；字数优先用传入的实时磁盘统计 chWords，回退 state 值 */

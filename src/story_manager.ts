@@ -54,6 +54,15 @@ export interface CharacterInfoEntry extends doc.CharacterDoc {
 	sourcePath: string; // 所在《人物.md》的 vault 相对路径
 }
 
+/** 时间线面板数据源（v0.2.x+）：一份《时间线.md》的归属层级、展示标签、实际探测到的路径与原文；文件缺失时 text 为空串。volId 仅有卷模式下归入某卷的章条目携带（供面板嵌套分组） */
+export interface TimelineDocSource {
+	scope: "book" | "volume" | "chapter";
+	label: string; // 书籍级 / 卷 · <卷名> / 章 · 第N章 <标题>
+	path: string; // vault 相对路径（面板点击据此打开文件；文档尚不存在时为新格式候选路径）
+	text: string;
+	volId?: string; // 该章所属卷 ID（仅「有卷模式」下归卷章节携带）
+}
+
 /** 章节目录内的标准模板文档「逻辑基名」（代码内部一律用逻辑基名读写，物理名经 chapterDocPhysicalName 解析） */
 const CHAPTER_TEMPLATE_BASES = new Set(["章节.md", "章节大纲.md", "人物.md", "人物关系.md", "场景.md", "章节信息.md", "章节摘要.md"]);
 
@@ -997,6 +1006,61 @@ private emptyState(storyName: string): StoryState {
 		for (const ch of await this.listChapters(storyName)) {
 			const path = this.resolveChapterDocPath(`${ch.dir.path}/人物.md`);
 			collect(await this.readDoc(path), ch.num, "chapter", `章 · 第${ch.num}章 ${ch.title}`.trim(), path);
+		}
+		return out;
+	}
+
+	/** 章节目录内探测《时间线.md》物理名：新格式 `<NN-标题>-时间线.md` → 裸 `时间线.md`；都不存在时返回新格式候选路径 + 空文本 */
+	private async probeTimelineInDir(dirPath: string, folder: string): Promise<{ path: string; text: string }> {
+		const prefixed = `${dirPath}/${chapterFilePrefix(folder)}-时间线.md`; // 如 01-初见-时间线.md
+		if (this.vault.getAbstractFileByPath(prefixed)) return { path: prefixed, text: await this.readDoc(prefixed) };
+		const bare = `${dirPath}/时间线.md`;
+		if (this.vault.getAbstractFileByPath(bare)) return { path: bare, text: await this.readDoc(bare) };
+		return { path: prefixed, text: "" };
+	}
+
+	/**
+	 * v0.2.x+ 时间线面板：只读枚举某书**全部**《时间线.md》来源（书根 + 每一卷 + 每一章），自上而下的完整时间轴概览。
+	 * 顺序——有卷模式：书籍级 → 书根未归卷章节(num升序) → 各卷按阅读序、每卷紧随其成员章节(num升序，条目带 volId)；无卷模式：书籍级 → 全部章节(num升序)。
+	 * 物理命名兼容新格式(`<NN-标题>-时间线.md` / `<卷名>-时间线.md`)与裸 `时间线.md`，探测次序 新→裸；缺失层记候选路径 + 空文本（展示侧按空态处理）。全程非交互、不写盘。
+	 */
+	async readTimelineDocs(storyName: string): Promise<TimelineDocSource[]> {
+		const out: TimelineDocSource[] = [];
+		const base = this.storyPath(storyName);
+		out.push({ scope: "book", label: "书籍级", path: `${base}/时间线.md`, text: await this.readDoc(`${base}/时间线.md`) });
+		const chLabel = (ch: { num: number; title: string }): string => `章 · 第${ch.num}章 ${ch.title}`.trim();
+		const all = await this.listChapters(storyName); // 阅读序：书根未归卷在前，其后各卷章节依次(num升序)
+		if ((await this.loadState(storyName))?.use_volumes !== true) {
+			for (const ch of all) {
+				const p = await this.probeTimelineInDir(ch.dir.path, ch.dir.name);
+				out.push({ scope: "chapter", label: chLabel(ch), path: p.path, text: p.text });
+			}
+			return out;
+		}
+		for (const ch of all) if (!ch.vol) {
+			const p = await this.probeTimelineInDir(ch.dir.path, ch.dir.name);
+			out.push({ scope: "chapter", label: chLabel(ch), path: p.path, text: p.text });
+		}
+		for (const vol of await this.volumeList(storyName)) {
+			const volDir = `${base}/${this.volumeFolderName(vol)}`;
+			const prefixed = `${volDir}/${safeFilename(vol.name)}-时间线.md`; // 新格式：风起-时间线.md
+			let vpath = prefixed;
+			let vtext = "";
+			if (this.vault.getAbstractFileByPath(prefixed)) {
+				vpath = prefixed;
+				vtext = await this.readDoc(prefixed);
+			} else {
+				const bare = `${volDir}/时间线.md`; // 裸基名兜底
+				if (this.vault.getAbstractFileByPath(bare)) {
+					vpath = bare;
+					vtext = await this.readDoc(bare);
+				}
+			}
+			out.push({ scope: "volume", label: `卷 · ${vol.name}`, path: vpath, text: vtext });
+			for (const ch of all) if (ch.vol === vol.id) {
+				const p = await this.probeTimelineInDir(ch.dir.path, ch.dir.name);
+				out.push({ scope: "chapter", label: chLabel(ch), path: p.path, text: p.text, volId: vol.id });
+			}
 		}
 		return out;
 	}

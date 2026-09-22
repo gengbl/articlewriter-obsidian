@@ -687,6 +687,95 @@ export function formatRelationships(items: RelationshipEntry[]): string {
 	return ["# 人物关系", "", ...items.map((e) => formatRelationshipBlock(e))].join("\n").replace(/\n+$/, "\n");
 }
 
+// ---------- 时间线（时间线.md，书/卷/章三层通用；v0.2.x+ 时间线面板解析器）----------
+
+/** 一条时间线事件（书/卷/章三层通用）：时间点为任意数字（整数/小数/负数/科学计数法均可），面板按数值升序自上而下渲染 */
+export interface TimelineEntry {
+	time: number; // 时间点（任意数字；展示时升序排列）
+	chars: string[]; // 涉及人物（空数组=未标注）
+	event: string; // 事件描述（多行原文，已去字段前缀与代码围栏标记）
+}
+
+/** 纯数字时间点判定（支持 -3 / +2 / 1.5 / .5 / 1e4 等写法；带任何文字即非有效时间点） */
+const TL_TIME_RE = /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$/;
+
+function parseTimelineTime(title: string): number | null {
+	const t = title.trim();
+	if (!TL_TIME_RE.test(t)) return null;
+	const n = Number(t);
+	return Number.isFinite(n) ? n : null;
+}
+
+/**
+ * 解析《时间线.md》：按 `## ` 分块，每块一条事件。
+ * 标题必须是纯数字时间点（`## 120`、`## -3.5`）——非数字标题的块（如「概述」）整块忽略。
+ * 块内字段行（复用 REL_FIELD_RE）：`- 人物：A、B`（别名 角色/登场人物/涉及人物/出场人物）、`- 事件：…`（别名 描述/说明/详情/备注/简介）。
+ * 事件正文可为 `- 事件：` 后接文本、```text 围栏内容、或无字段前缀的自由文本行（三者合并）；其它字段（如「发生章节」）不并入。
+ */
+export function parseTimelines(text: string): TimelineEntry[] {
+	const body = stripComments(text || "");
+	const out: TimelineEntry[] = [];
+	let cur: { time: number; chars: string[]; eventLines: string[] } | null = null;
+	let inFence = false;
+	const flush = (): void => {
+		if (!cur) return;
+		out.push({ time: cur.time, chars: [...new Set(cur.chars)], event: cur.eventLines.join("\n").trim() });
+		cur = null;
+	};
+	for (const rawLine of body.split("\n")) {
+		const line = rawLine.replace(/\s+$/, "");
+		if (/^\s*```/.test(line)) {
+			inFence = !inFence; // 围栏标记行本身不进正文
+			continue;
+		}
+		if (inFence) {
+			if (cur) cur.eventLines.push(line);
+			continue;
+		}
+		if (/^##\s+/.test(line)) {
+			flush();
+			const t = parseTimelineTime(line.replace(/^##\s+/, ""));
+			if (t === null) continue; // 非数字标题块整块忽略（cur 已被 flush 置空，其下内容自然丢弃）
+			cur = { time: t, chars: [], eventLines: [] };
+			continue;
+		}
+		if (/^#\s+/.test(line)) continue; // 文档 H1 标题行忽略
+		if (!cur) continue; // 尚未进入任何有效 ## 块的内容（如块外散文）忽略
+		const m = REL_FIELD_RE.exec(line);
+		if (m) {
+			const key = m[1].trim();
+			const val = m[2].trim();
+			if (/^(人物|角色|登场人物|涉及人物|出场人物)$/.test(key)) {
+				for (const c of splitList(val)) if (c && !cur.chars.includes(c)) cur.chars.push(c);
+				continue;
+			}
+			if (/^(事件|描述|说明|详情|备注|简介)$/.test(key)) {
+				if (val) cur.eventLines.push(val);
+				continue;
+			}
+			continue; // 其它字段（如「发生章节」）不并入事件正文
+		}
+		if (!line.trim()) continue;
+		cur.eventLines.push(line.trim()); // 无字段前缀的自由文本行也算事件正文
+	}
+	flush();
+	return out;
+}
+
+/** 时间线条目序列化为文档块（与 parseTimelines 往返一致；时间点用 String(number)，可被 TL_TIME_RE 原样解析回数值） */
+export function formatTimelineBlock(e: TimelineEntry): string {
+	const lines = [`## ${String(e.time)}`];
+	if (e.chars.length) lines.push(`- 人物：${joinList(e.chars)}`);
+	if (e.event) lines.push("- 事件：", "```text", e.event, "```");
+	lines.push("");
+	return lines.join("\n");
+}
+
+/** 时间线列表序列化为完整文档（标题恒为 `# 时间线`） */
+export function formatTimelines(items: TimelineEntry[]): string {
+	return ["# 时间线", "", ...items.map((e) => formatTimelineBlock(e))].join("\n").replace(/\n+$/, "\n");
+}
+
 // ---------- 大纲读取辅助 ----------
 
 /** 去掉文档开头的 "# " 标题行，返回 [正文, 标题] */
