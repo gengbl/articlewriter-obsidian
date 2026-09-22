@@ -296,7 +296,7 @@ export default class ArticleWriterPlugin extends Plugin {
 		// 存档损坏 / 格式异常 / 跨端 / 缺 layout 段：一律保持现状静默返回 false（不阻断切书主流程）
 		let env: { v?: number; platform?: string; layout?: Record<string, unknown> };
 		try {
-			const raw: unknown = JSON.parse(text) as unknown; // 先收敛为 unknown 再逐层收窄，避免 any 直赋
+			const raw: unknown = JSON.parse(text); // 声明为 unknown 后逐层收窄，避免 any 直赋（any→unknown 赋值被规则豁免）
 			if (!raw || typeof raw !== "object" || Array.isArray(raw)) return false;
 			env = raw as { v?: number; platform?: string; layout?: Record<string, unknown> };
 		} catch { return false; }

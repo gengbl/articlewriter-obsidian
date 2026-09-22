@@ -975,6 +975,43 @@
 
 /* 时间线面板（TimelineView，v0.2.x+）：容器/头部/滚动布局复用 .aw-status-view + .aw-st-top/.aw-st-tree/.aw-st-chap，筛选行复用 .aw-rel-filter-row/.aw-rel-filter；此处只定义时间轴专属部分 */
 
+/* 画布模式主体（同关系面板图面交互）：裁剪不出滚动条——滚轮以鼠标位置为不动点缩放、左键按住拖动平移查看超出部分。
+   transform 加在内部 .aw-tl-zoom 上（transform-origin 左上角），不改布局故永不产生滚动条 */
+.aw-st-tree.aw-tl-body {
+	overflow: hidden;
+	cursor: grab; /* 提示可按住拖动 */
+	user-select: none; /* 拖动时不选中条目文字 */
+	touch-action: none; /* 触屏单指拖动走 pointer 事件平移，不连带页面滚动 */
+}
+
+.aw-st-tree.aw-tl-body.is-panning {
+	cursor: grabbing;
+}
+
+.aw-tl-zoom {
+	width: 100%;
+	transform-origin: 0 0; /* 缩放围绕内容左上角，pan 由 js 按"鼠标不动点"换算补偿 */
+}
+
+/* 底部固定汇总行：不参与缩放/平移，始终可见 */
+.aw-tl-sumrow {
+	flex: 0 0 auto;
+	margin-top: 2px;
+	padding-top: 4px;
+	border-top: 1px solid var(--background-modifier-border);
+}
+
+/* 头部倍率标签：缩放 ≠100% 时显示，点击复位为 100% */
+.aw-tl-zoomlbl {
+	cursor: pointer;
+	font-size: 0.9em;
+	margin-right: 6px;
+}
+
+.aw-tl-zoomlbl:hover {
+	color: var(--interactive-accent);
+}
+
 /* 来源层级标签（书籍级 / 卷 · <卷名> / 章 · 第N章 <标题>）：紧随时间点徽章的弱化小字，标识该条出自哪一层《时间线.md》 */
 .aw-tl-src {
 	display: inline-block;
@@ -983,14 +1020,15 @@
 	color: var(--text-faint);
 }
 
-/* 「有内容但无有效条目」提示行里的文档标签：可点击打开对应文件检查格式 */
+/* 「有内容但无有效条目」提示行里的文档标签：可点击打开对应文件检查格式（不用 text-decoration——Obsidian 1.11.4 对 dotted 等值仅部分支持，lint 报警） */
 .aw-tl-unparsed {
 	cursor: pointer;
-	text-decoration: underline dotted;
+	color: var(--text-normal);
 }
 
 .aw-tl-unparsed:hover {
 	color: var(--interactive-accent);
+	font-weight: bold;
 }
 
 /* 纵向时间轴条目列表：左侧连续竖线 + 节点圆点，条目自上而下按时间点升序排列 */

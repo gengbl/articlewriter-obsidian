@@ -34,10 +34,15 @@ function matchRow(r: TlRow, q: string): boolean {
 	return (r.chars.join(" ") + " " + r.event).toLowerCase().includes(q);
 }
 
+const TL_ZOOM_MIN = 0.4; // 画布模式缩放上下限（同关系面板图面量级，防缩到看不见/大到无意义）
+const TL_ZOOM_MAX = 3;
+const clampNum = (v: number, lo: number, hi: number): number => (v < lo ? lo : v > hi ? hi : v);
+
 /**
  * 时间线面板（自定义 ItemView，可停靠任意区域、重载保留位置）：
  * 把当前小说**书根 / 卷目录 / 章节目录三层《时间线.md》**合并成一条自上而下的纵向时间轴——条目按时间点（支持 年 / 年-月 / 年-月-日）升序排列，每条带来源层级标签。
  * 顶部筛选框可按人物/事件关键词过滤。**双击**条目在编辑器打开来源文件并定位到该时间点的 `##` 标题行（单击不触发，避免误触）。
+ * **画布交互**（同关系面板图面）：主体区 overflow:hidden 不出滚动条——滚轮以鼠标位置为不动点缩放（0.4×–3×），左键按住拖动平移查看超出部分，头部倍率标签点击复位。
  * 数据经构造注入的 getter 实时读取；文件变更由 main.ts 防抖调 refresh()。
  * 渲染陷阱同 StatusView / RelationshipView：UI 必须建在 onOpen 的 contentEl（本环境不调用 getEmptyStateElement）。
  */
@@ -48,10 +53,17 @@ export class TimelineView extends ItemView {
 	private built = false;
 	private rootEl!: HTMLElement;
 	private topEl!: HTMLElement;
-	private treeEl!: HTMLElement;
+	private bodyEl!: HTMLElement; // 画布容器：overflow:hidden 裁剪、不出滚动条
+	private zoomEl!: HTMLElement; // 缩放/平移载体（内联 transform，transform-origin 左上角）
+	private sumEl!: HTMLElement; // 底部固定汇总行（不参与缩放/平移）
+	private zoomLbl!: HTMLElement; // 头部倍率标签（==100% 时隐藏，点击复位）
 	private busy = false;
 	private lastSnap: TlSnapshot | null = null;
 	private filterText = "";
+	// 画布视图状态：缩放倍率 + 屏幕像素平移量（重渲染不清零——筛选切换后视野保持）
+	private tlZ = 1;
+	private tlX = 0;
+	private tlY = 0;
 
 	constructor(leaf: WorkspaceLeaf, getData: () => Promise<TlSnapshot>) {
 		super(leaf);
@@ -78,8 +90,67 @@ export class TimelineView extends ItemView {
 	private buildUI(parent: HTMLElement): void {
 		this.built = true;
 		this.rootEl = parent.createDiv({ cls: "aw-status-view aw-tl-view" }); // 复用写字台的容器/字体/滚动布局样式
-		this.topEl = this.rootEl.createDiv({ cls: "aw-st-top" }); // 固定头部：筛选框 + 刷新按钮
-		this.treeEl = this.rootEl.createDiv({ cls: "aw-st-tree" }); // 滚动主体：合并后的纵向时间轴
+		this.topEl = this.rootEl.createDiv({ cls: "aw-st-top" }); // 固定头部：倍率标签 + 筛选框 + 刷新按钮
+		this.bodyEl = this.rootEl.createDiv({ cls: "aw-st-tree aw-tl-body" }); // 画布主体：裁剪不出滚动条，滚轮缩放＋左键拖动平移
+		this.zoomEl = this.bodyEl.createDiv({ cls: "aw-tl-zoom" }); // 内容载体（重渲染只清空它，transform 与事件监听常驻）
+		this.sumEl = this.rootEl.createDiv({ cls: "aw-dim aw-rel-summary aw-tl-sumrow" }); // 底部固定汇总行
+		this.setupCanvas();
+	}
+
+	/** 画布交互（建 UI 时挂一次，元素常驻不随 render 重建）：滚轮以鼠标位置为不动点缩放、左键按住拖动平移——同关系面板图面模式 */
+	private setupCanvas(): void {
+		this.bodyEl.addEventListener("wheel", (ev: WheelEvent) => {
+			ev.preventDefault(); // 防止滚轮冒泡触发 Obsidian 主滚动条跳
+			const d = ev.deltaMode === 1 ? ev.deltaY * 32 : ev.deltaY; // 行模式换算成像素量级
+			const nz = clampNum(this.tlZ * Math.exp(-d * 0.0015), TL_ZOOM_MIN, TL_ZOOM_MAX);
+			if (nz === this.tlZ) return;
+			// 以鼠标位置为不动点：鼠标下的内容点在缩放前后屏幕坐标不变——newPan = m − (m−pan)/z·z′（transform-origin 左上角）
+			const rect = this.bodyEl.getBoundingClientRect();
+			const mx = ev.clientX - rect.left;
+			const my = ev.clientY - rect.top;
+			this.tlX = mx - ((mx - this.tlX) / this.tlZ) * nz;
+			this.tlY = my - ((my - this.tlY) / this.tlZ) * nz;
+			this.tlZ = nz;
+			this.applyTlView();
+		}, { passive: false });
+
+		let dragFrom: { x: number; y: number; tx: number; ty: number } | null = null;
+		let dragged = false; // 本次手势是否真的拖过：用于吃掉松手时紧随的 click/dblclick，避免拖完误打开文档
+		const onDragMove = (ev: PointerEvent): void => {
+			if (!dragFrom) return;
+			this.tlX = dragFrom.tx + (ev.clientX - dragFrom.x);
+			this.tlY = dragFrom.ty + (ev.clientY - dragFrom.y);
+			if (!dragged && Math.abs(ev.clientX - dragFrom.x) + Math.abs(ev.clientY - dragFrom.y) > 3) {
+				dragged = true;
+				this.bodyEl.classList.add("is-panning");
+			}
+			this.applyTlView();
+		};
+		const endDrag = (): void => {
+			dragFrom = null;
+			this.bodyEl.classList.remove("is-panning");
+			document.removeEventListener("pointermove", onDragMove);
+			document.removeEventListener("pointerup", endDrag);
+			window.setTimeout(() => { dragged = false; }, 0); // 等紧随其后的 click 先被拦下再复位
+		};
+		this.bodyEl.addEventListener("pointerdown", (ev: PointerEvent) => {
+			if (ev.button !== 0) return; // 只响应左键（触屏 pointer 的 button=0，一并支持单指平移）
+			dragFrom = { x: ev.clientX, y: ev.clientY, tx: this.tlX, ty: this.tlY };
+			dragged = false;
+			document.addEventListener("pointermove", onDragMove);
+			document.addEventListener("pointerup", endDrag);
+			ev.preventDefault(); // 拖动期间不选中文字
+		});
+		for (const type of ["click", "dblclick"] as const) {
+			this.bodyEl.addEventListener(type, (ev: MouseEvent) => {
+				if (!dragged) return;
+				ev.stopPropagation(); // 捕获阶段拦下：拖到一半松手不该被当成点击/双击打开文档
+				ev.preventDefault();
+				dragged = false;
+			}, true);
+		}
+
+		if (this.built) this.applyTlView(); // 首帧兜底（zoomLbl 在首次 renderTop 才建，内部已判空）
 	}
 
 	/** 重新拉取快照并重渲染（「刷新」按钮与插件侧文件变更防抖都会调到这里） */
@@ -93,7 +164,8 @@ export class TimelineView extends ItemView {
 		} catch (e) {
 			this.lastSnap = null;
 			this.topEl.empty();
-			this.treeEl.empty();
+			this.zoomEl.empty();
+			this.sumEl.empty();
 			this.topEl.createDiv({ text: `加载失败：${e instanceof Error ? e.message : String(e)}`, cls: "aw-st-error" });
 		} finally {
 			this.busy = false;
@@ -106,9 +178,12 @@ export class TimelineView extends ItemView {
 		this.renderBody(snap);
 	}
 
-	/** 固定头部：筛选输入框 + 刷新按钮（不展示工作目录与小说列表，面板只呈现时间线本身） */
+	/** 固定头部：倍率标签（缩放≠100% 时出现、点击复位）+ 筛选输入框 + 刷新按钮（不展示工作目录与小说列表，面板只呈现时间线本身） */
 	private renderTop(): void {
 		const filterRow = this.topEl.createDiv({ cls: "aw-rel-filter-row" }); // 复用关系面板的头部行布局
+		this.zoomLbl = filterRow.createSpan({ text: "", cls: "aw-dim aw-tl-zoomlbl", title: "滚轮缩放 / 左键拖动平移；点击复位为 100%" });
+		this.zoomLbl.style.display = "none";
+		this.zoomLbl.addEventListener("click", () => { this.tlZ = 1; this.applyTlView(); });
 		const input = filterRow.createEl("input", { type: "text", cls: "aw-rel-filter aw-tl-filter", placeholder: "筛选人物 / 事件…" });
 		input.value = this.filterText;
 		input.addEventListener("input", () => {
@@ -117,36 +192,49 @@ export class TimelineView extends ItemView {
 		});
 		const btns = filterRow.createSpan({ cls: "aw-st-actions" });
 		btns.createEl("button", { text: "刷新" }).addEventListener("click", () => void this.refresh());
+		this.applyTlView(); // 头部重建后按当前缩放状态恢复倍率标签显示
 	}
 
-	/** 主体区：单一合并纵向时间轴（时间点升序、每条带来源标签）+ 无有效条目文档的格式提示 + 汇总行 */
+	/** 应用画布视图状态：限位 + transform + 倍率标签（setupCanvas 的 applyView 逻辑外提，供「点击复位」复用） */
+	private applyTlView(): void {
+		const w = this.bodyEl.clientWidth;
+		const h = this.bodyEl.clientHeight;
+		const vw = this.zoomEl.clientWidth * this.tlZ;
+		const vh = this.zoomEl.clientHeight * this.tlZ;
+		this.tlX = clampNum(this.tlX, Math.min(0, w - vw), Math.max(0, w - vw));
+		this.tlY = clampNum(this.tlY, Math.min(0, h - vh), Math.max(0, h - vh));
+		this.zoomEl.style.transform = `translate(${this.tlX.toFixed(1)}px, ${this.tlY.toFixed(1)}px) scale(${String(this.tlZ)})`;
+		if (!this.zoomLbl) return; // setupCanvas 首帧调用时头部尚未渲染（zoomLbl 在首次 renderTop 创建）
+		const pct = Math.round(this.tlZ * 100);
+		this.zoomLbl.setText(`${pct}%`);
+		this.zoomLbl.style.display = pct === 100 ? "none" : "";
+	}
+
+	/** 主体区：单一合并纵向时间轴（时间点升序、每条带来源标签）+ 无有效条目文档的格式提示；汇总行固定显示在底部 sumEl。重渲染只清 zoomEl——缩放/平移状态保持 */
 	private renderBody(snap: TlSnapshot): void {
-		const savedScroll = this.treeEl.scrollTop;
-		this.treeEl.empty();
+		this.zoomEl.empty();
 		const ph = this.placeholderFor(snap);
 		if (ph) {
-			this.treeEl.createDiv({ text: ph, cls: "aw-dim aw-st-hint" });
-			this.treeEl.scrollTop = savedScroll;
+			this.sumEl.empty();
+			this.zoomEl.createDiv({ text: ph, cls: "aw-dim aw-st-hint" });
 			return;
 		}
 		const q = this.filterText.trim().toLowerCase();
 		const rows = q ? snap.rows.filter((r) => matchRow(r, q)) : snap.rows;
 		if (rows.length) {
-			const list = this.treeEl.createDiv({ cls: "aw-tl-list" }); // 纵向时间轴（左侧竖线 + 节点圆点），自上而下按时间点升序
+			const list = this.zoomEl.createDiv({ cls: "aw-tl-list" }); // 纵向时间轴（左侧竖线 + 节点圆点），自上而下按时间点升序
 			for (const row of rows) this.renderItem(list, row);
 		} else {
-			this.treeEl.createDiv({ text: `没有匹配「${this.filterText.trim()}」的时间线条目。`, cls: "aw-dim aw-st-hint" });
+			this.zoomEl.createDiv({ text: `没有匹配「${this.filterText.trim()}」的时间线条目。`, cls: "aw-dim aw-st-hint" });
 		}
 		if (snap.unparsedDocs.length) this.renderUnparsed(snap.unparsedDocs);
-		const summary = this.treeEl.createDiv({ cls: "aw-dim aw-rel-summary" });
 		if (q) {
-			summary.setText(`匹配 ${String(rows.length)} 条（共 ${String(snap.totalCount)} 条）`);
+			this.sumEl.setText(`匹配 ${String(rows.length)} 条（共 ${String(snap.totalCount)} 条）`);
 		} else {
 			const perScope: Record<TlScope, number> = { book: 0, volume: 0, chapter: 0 };
 			for (const r of snap.rows) perScope[r.scope]++;
-			summary.setText(`共 ${String(snap.totalCount)} 条：书籍级 ${String(perScope.book)} · 卷 ${String(perScope.volume)} · 章 ${String(perScope.chapter)}`);
+			this.sumEl.setText(`共 ${String(snap.totalCount)} 条：书籍级 ${String(perScope.book)} · 卷 ${String(perScope.volume)} · 章 ${String(perScope.chapter)}`);
 		}
-		this.treeEl.scrollTop = savedScroll;
 	}
 
 	/** 空态/引导文案：无可展示数据时返回文案，否则 null */
@@ -167,7 +255,7 @@ export class TimelineView extends ItemView {
 
 	/** 有内容但零有效条目的文档提示行：列出层级标签（可点击打开对应《时间线.md》检查格式） */
 	private renderUnparsed(docs: Array<{ label: string; path: string }>): void {
-		const line = this.treeEl.createDiv({ cls: "aw-dim aw-st-hint" });
+		const line = this.zoomEl.createDiv({ cls: "aw-dim aw-st-hint" });
 		line.createSpan({ text: "以下《时间线.md》有内容但没有有效条目（需 ## <时间点> 标题）：" });
 		docs.forEach((d, i) => {
 			if (i) line.createSpan({ text: "、" });
@@ -196,7 +284,7 @@ export class TimelineView extends ItemView {
 	private async openAt(row: TlRow): Promise<void> {
 		const f = this.app.vault.getAbstractFileByPath(row.sourcePath);
 		if (!(f instanceof TFile)) return; // 候选路径（文档尚未创建）静默忽略
-		const leaf = await this.app.workspace.getLeaf();
+		const leaf = this.app.workspace.getLeaf(); // getLeaf() 同步返回既有/新建叶子（dts：WorkspaceLeaf），await 非 Promise 会触发 lint
 		await leaf.openFile(f);
 		this.locateHeading(leaf, row);
 	}
