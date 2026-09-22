@@ -974,6 +974,7 @@
 }
 
 /* 时间线面板（TimelineView，v0.2.x+）：容器/头部/滚动布局复用 .aw-status-view + .aw-st-top/.aw-st-tree/.aw-st-chap，筛选行复用 .aw-rel-filter-row/.aw-rel-filter；此处只定义时间轴专属部分 */
+.aw-tl-view .is-hidden { display: none; }
 
 /* 画布模式主体（同关系面板图面交互）：裁剪不出滚动条——滚轮以鼠标位置为不动点缩放、左键按住拖动平移查看超出部分。
    transform 加在内部 .aw-tl-zoom 上（transform-origin 左上角），不改布局故永不产生滚动条 */
@@ -991,6 +992,7 @@
 .aw-tl-zoom {
 	width: 100%;
 	transform-origin: 0 0; /* 缩放围绕内容左上角，pan 由 js 按"鼠标不动点"换算补偿 */
+	transform: var(--tl-transform, none); /* JS 通过 setProperty("--tl-transform", ...) 更新（no-static-styles-assignment） */
 }
 
 /* 底部固定汇总行：不参与缩放/平移，始终可见 */

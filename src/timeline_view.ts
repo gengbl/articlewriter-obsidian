@@ -92,7 +92,7 @@ export class TimelineView extends ItemView {
 		this.rootEl = parent.createDiv({ cls: "aw-status-view aw-tl-view" }); // 复用写字台的容器/字体/滚动布局样式
 		this.topEl = this.rootEl.createDiv({ cls: "aw-st-top" }); // 固定头部：倍率标签 + 筛选框 + 刷新按钮
 		this.bodyEl = this.rootEl.createDiv({ cls: "aw-st-tree aw-tl-body" }); // 画布主体：裁剪不出滚动条，滚轮缩放＋左键拖动平移
-		this.zoomEl = this.bodyEl.createDiv({ cls: "aw-tl-zoom" }); // 内容载体（重渲染只清空它，transform 与事件监听常驻）
+		this.zoomEl = this.bodyEl.createDiv({ cls: "aw-tl-zoom" }); // 内容载体（重渲染只清空它，transform 通过 CSS var 更新、事件监听常驻）
 		this.sumEl = this.rootEl.createDiv({ cls: "aw-dim aw-rel-summary aw-tl-sumrow" }); // 底部固定汇总行
 		this.setupCanvas();
 	}
@@ -181,8 +181,7 @@ export class TimelineView extends ItemView {
 	/** 固定头部：倍率标签（缩放≠100% 时出现、点击复位）+ 筛选输入框 + 刷新按钮（不展示工作目录与小说列表，面板只呈现时间线本身） */
 	private renderTop(): void {
 		const filterRow = this.topEl.createDiv({ cls: "aw-rel-filter-row" }); // 复用关系面板的头部行布局
-		this.zoomLbl = filterRow.createSpan({ text: "", cls: "aw-dim aw-tl-zoomlbl", title: "滚轮缩放 / 左键拖动平移；点击复位为 100%" });
-		this.zoomLbl.style.display = "none";
+		this.zoomLbl = filterRow.createSpan({ text: "", cls: "aw-dim aw-tl-zoomlbl is-hidden", title: "滚轮缩放 / 左键拖动平移；点击复位为 100%" });
 		this.zoomLbl.addEventListener("click", () => { this.tlZ = 1; this.applyTlView(); });
 		const input = filterRow.createEl("input", { type: "text", cls: "aw-rel-filter aw-tl-filter", placeholder: "筛选人物 / 事件…" });
 		input.value = this.filterText;
@@ -195,7 +194,7 @@ export class TimelineView extends ItemView {
 		this.applyTlView(); // 头部重建后按当前缩放状态恢复倍率标签显示
 	}
 
-	/** 应用画布视图状态：限位 + transform + 倍率标签（setupCanvas 的 applyView 逻辑外提，供「点击复位」复用） */
+	/** 应用画布视图状态：限位 + transform via CSS var + 倍率标签 class；setupCanvas / 点击复位共用 */
 	private applyTlView(): void {
 		const w = this.bodyEl.clientWidth;
 		const h = this.bodyEl.clientHeight;
@@ -203,11 +202,11 @@ export class TimelineView extends ItemView {
 		const vh = this.zoomEl.clientHeight * this.tlZ;
 		this.tlX = clampNum(this.tlX, Math.min(0, w - vw), Math.max(0, w - vw));
 		this.tlY = clampNum(this.tlY, Math.min(0, h - vh), Math.max(0, h - vh));
-		this.zoomEl.style.transform = `translate(${this.tlX.toFixed(1)}px, ${this.tlY.toFixed(1)}px) scale(${String(this.tlZ)})`;
+		this.zoomEl.style.setProperty("--tl-transform", `translate(${this.tlX.toFixed(1)}px, ${this.tlY.toFixed(1)}px) scale(${String(this.tlZ)})`); // 通过 CSS var 更新 transform（no-static-styles-assignment）
 		if (!this.zoomLbl) return; // setupCanvas 首帧调用时头部尚未渲染（zoomLbl 在首次 renderTop 创建）
 		const pct = Math.round(this.tlZ * 100);
 		this.zoomLbl.setText(`${pct}%`);
-		this.zoomLbl.style.display = pct === 100 ? "none" : "";
+		this.zoomLbl.toggleClass("is-hidden", pct === 100); // toggle class 替代直接设 style.display
 	}
 
 	/** 主体区：单一合并纵向时间轴（时间点升序、每条带来源标签）+ 无有效条目文档的格式提示；汇总行固定显示在底部 sumEl。重渲染只清 zoomEl——缩放/平移状态保持 */

@@ -298,6 +298,7 @@ export default class ArticleWriterPlugin extends Plugin {
 		try {
 			const raw: unknown = JSON.parse(text); // 声明为 unknown 后逐层收窄，避免 any 直赋（any→unknown 赋值被规则豁免）
 			if (!raw || typeof raw !== "object" || Array.isArray(raw)) return false;
+			// eslint-disable-next-line @typescript-eslint/no-unsafe-type-cast -- TS 需要断言将 object 窄化到具体接口形状（运行时已通过类型守卫）
 			env = raw as { v?: number; platform?: string; layout?: Record<string, unknown> };
 		} catch { return false; }
 		if (env.platform && env.platform !== (Platform.isDesktopApp ? "desktop" : "mobile")) return false; // 桌面/移动布局结构不同，互不恢复
