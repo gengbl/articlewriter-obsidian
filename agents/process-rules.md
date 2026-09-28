@@ -8,6 +8,7 @@
 
 # 验证要求
 
+- **每次代码变化只检查本次改动的新增/修改行有无冗余类型断言**（no-unnecessary-type-assertion 同类问题；不扫全库、不回溯 git 历史）：对本次改动的每处 `as T` / `as {…}` / `as unknown as …` 判断必要性——若删掉断言仍编译通过且语义不变（接收方已接受原始窄化后的类型），直接赋值、删除断言及关联的 eslint-disable 注释。合法保留场景：从 `unknown`/`any` 收窄（catch 变量 `e as Error`、`JSON.parse(…) as T`）、联合→成员（`.pop() as string`、`string|string[]` 取其一）、向下转型（ItemView→具体视图子类）、直转不重叠须经 `unknown` 双 cast（基类未声明的专有方法）、对象字面量补必填字段报错抑制（`{} as LlmConfigDoc`）。删除断言后重跑 `npm run build` 确认 tsc 零错误。
 - 每次任务完成必须：`npm run build` 通过 + 复制部署到 vault + 在 Obsidian 中重载并对改动路径做实际冒烟（建一个临时测试小说跑通新增/修改的命令，验完删除——**不要在真实书籍目录里试错**）。
 - 构建部署通过后按「工作更新写回约定」同步对应的 `agents/*.md` 子文件，再算任务结束。
 - 修复类任务需说明根因与验证结果。

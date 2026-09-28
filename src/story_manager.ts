@@ -65,10 +65,10 @@ export interface TimelineDocSource {
 }
 
 /** 章节目录内的标准模板文档「逻辑基名」（代码内部一律用逻辑基名读写，物理名经 chapterDocPhysicalName 解析） */
-const CHAPTER_TEMPLATE_BASES = new Set(["章节.md", "章节大纲.md", "人物.md", "人物关系.md", "场景.md", "章节信息.md", "章节摘要.md"]);
+const CHAPTER_TEMPLATE_BASES = new Set(["章节.md", "章节大纲.md", "人物.md", "人物关系.md", "场景.md", "章节信息.md", "章节摘要.md", "时间线.md"]);
 
 /** 卷目录内的标准模板文档「逻辑基名」 */
-const VOLUME_TEMPLATE_BASES = new Set(["卷大纲.md", "人物.md", "人物关系.md", "场景.md", "卷摘要.md"]);
+const VOLUME_TEMPLATE_BASES = new Set(["卷大纲.md", "人物.md", "人物关系.md", "场景.md", "卷摘要.md", "时间线.md"]);
 
 /** 章节逻辑基名 → 新格式后缀（""=正文，物理名直接用 <章节目录名>.md；其余 = <章节目录名>-<后缀>） */
 const CHAPTER_DOC_SUFFIX: Record<string, string> = {
@@ -79,6 +79,7 @@ const CHAPTER_DOC_SUFFIX: Record<string, string> = {
 	"场景.md": "场景.md",
 	"章节信息.md": "信息.md",
 	"章节摘要.md": "摘要.md",
+	"时间线.md": "时间线.md",
 };
 /** 新格式后缀 → 章节逻辑基名（反查，用于识别已有文件） */
 const CHAPTER_SUFFIX_TO_BASE: Record<string, string> = {
@@ -88,6 +89,7 @@ const CHAPTER_SUFFIX_TO_BASE: Record<string, string> = {
 	"人物关系.md": "人物关系.md",
 	"场景.md": "场景.md",
 	"摘要.md": "章节摘要.md",
+	"时间线.md": "时间线.md",
 };
 /** 卷逻辑基名 → 新格式后缀（物理名 = <卷目录名>-<后缀>） */
 const VOLUME_DOC_SUFFIX: Record<string, string> = {
@@ -96,6 +98,7 @@ const VOLUME_DOC_SUFFIX: Record<string, string> = {
 	"人物关系.md": "人物关系.md",
 	"场景.md": "场景.md",
 	"卷摘要.md": "摘要.md",
+	"时间线.md": "时间线.md",
 };
 /** 新格式后缀 → 卷逻辑基名（反查） */
 const VOLUME_SUFFIX_TO_BASE: Record<string, string> = {
@@ -104,6 +107,7 @@ const VOLUME_SUFFIX_TO_BASE: Record<string, string> = {
 	"人物关系.md": "人物关系.md",
 	"场景.md": "场景.md",
 	"摘要.md": "卷摘要.md",
+	"时间线.md": "时间线.md",
 };
 
 /** 章节内某逻辑基名对应的新格式物理文件名（folder=章节目录名，如 第01章-初见 → 文件前缀取纯数字 01-初见） */
@@ -696,6 +700,7 @@ export class StoryManager {
 				const target = chapterDocPhysicalName(folder, base);
 				if (child.name === target) continue; // 已是新格式
 				claimed.add(base);
+				if (ch.dir.children.some((x) => x.name === target)) continue; // 目标名已被同目录另一文件占用（如正确新格式与 -undefined 残留并存）→ 跳过避免重命名冲突，残留留待用户手动清理
 				renames.push({ from: `${ch.dir.path}/${child.name}`, to: `${ch.dir.path}/${target}` });
 			}
 			if (renames.length) items.push({ kind: "chapter", label: `第${String(ch.num).padStart(2, "0")}章 ${ch.title}`, renames });
@@ -717,6 +722,7 @@ export class StoryManager {
 				const target = volumeDocPhysicalName(folder, base);
 				if (child.name === target) continue;
 				claimed.add(base);
+				if (volFolder.children.some((x) => x.name === target)) continue; // 目标名已被同目录另一文件占用（如正确新格式与 -undefined 残留并存）→ 跳过避免重命名冲突，残留留待用户手动清理
 				renames.push({ from: `${volDir}/${child.name}`, to: `${volDir}/${target}` });
 			}
 			if (renames.length) items.push({ kind: "volume", label: `卷「${vol.name}」`, renames });
@@ -1153,6 +1159,7 @@ private emptyState(storyName: string): StoryState {
 			if (VOLUME_SUFFIX_TO_BASE[rest]) return VOLUME_SUFFIX_TO_BASE[rest]; // 新格式：风起-大纲.md
 			if (VOLUME_TEMPLATE_BASES.has(rest)) return rest; // 旧前缀：风起-卷大纲.md
 		}
+		if (name === `${folder}-undefined`) return "时间线.md"; // 历史缺陷残留：后缀映射缺《时间线》曾误建为 <卷名>-undefined（无扩展名）
 		if (VOLUME_TEMPLATE_BASES.has(name)) return name; // 裸基名
 		return null;
 	}
@@ -1165,6 +1172,7 @@ private emptyState(storyName: string): StoryState {
 			const base = CHAPTER_SUFFIX_TO_BASE[name.slice(prefix.length + 1)];
 			if (base) return base; // 新格式：01-初见-大纲.md
 		}
+		if (name === `${prefix}-undefined` || name === `${folder}-undefined`) return "时间线.md"; // 历史缺陷残留：后缀映射缺《时间线》曾误建为 <NN-标题>-undefined（无扩展名）
 		if (name === `${folder}.md`) return "章节.md"; // 旧文件夹前缀正文：第01章-初见.md
 		if (name.startsWith(`${folder}-`)) {
 			const base = CHAPTER_SUFFIX_TO_BASE[name.slice(folder.length + 1)];
