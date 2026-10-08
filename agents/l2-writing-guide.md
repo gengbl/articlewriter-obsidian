@@ -12,7 +12,7 @@
 - **改动根 WRITING_GUIDE.md 段落结构后须用 prompts.ts `buildEmptyGuideTemplate` 重生成 `docs/WRITING_GUIDE_template.md`**（空模板再导出层，「生成写作指南」投放用）。
 - 使用说明《使用说明.md》（work_dir 根）由 seedUsageDoc 在设置/切换工作目录后自动投放（仅缺失或为空写入），手动重建走 `cmdGenerateUsageDoc()`。
 
-## 相关文件
+## 引用索引（相关文档）
 
 | 层 | 文件 | 承载内容 |
 | --- | --- | --- |

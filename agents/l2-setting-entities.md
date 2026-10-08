@@ -13,7 +13,7 @@
 - 多行内容（场景正文、世界观历史/力量体系等）用 ```text 围栏包裹，解析按围栏进行。
 - 人物关系是独立面板模块，见 [l2-relationship-panel.md](./l2-relationship-panel.md)；时间线同理见 [l2-timeline-panel.md](./l2-timeline-panel.md)。
 
-## 相关文件
+## 引用索引（相关文档）
 
 | 层 | 文件 | 承载内容 |
 | --- | --- | --- |

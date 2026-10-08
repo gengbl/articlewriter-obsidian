@@ -2,38 +2,26 @@
 
 本文件只做路由，不含具体约定。本插件是独立维护的 Obsidian 小说创作工具（确定性文件操作 + LLM 写作命令），行为约定自成体系、见各 `agents/*.md` 子文件。
 
-**执行任务前**：先按下方导航表判断要改哪个功能域，加载对应的 `agents/*.md` 子文件并遵循其中内容后再动手；跨多个功能域就都加载。收尾时按 `process-rules.md` 写回对应子文件 + CHANGELOG.md。
+**执行任务前**：先加载 [agents/l1-overview.md](./agents/l1-overview.md)（项目概述 + 功能地图），按功能地图定位到对应 **L2 模块文档**并遵循其中内容；需要动代码时再按 L2「引用索引（相关文档）」表下钻到对应 **L3 实现细节**。跨多个功能域就都加载。收尾时按 `process-rules.md` 写回对应子文件 + CHANGELOG.md。
 
-## 三层文档体系
+## 三层文档体系（上层 = 说明 + 向下的引用索引）
 
-- **L1 整体功能**（`l1-*.md`）：项目定位、设计决策、功能边界与术语——先读它建立全局认知。
-- **L2 模块功能**（`l2-*.md`）：每个功能模块的行为约定与交互语义，一模块一文件。
-- **L3 实现细节**（`l3-*.md`）：源文件职责、数据格式、管线与流程细节，改动代码前必读对应条目。
+- **L1 整体功能**（`l1-*.md`）：进一步的功能说明——项目定位、设计决策、功能边界与术语 + 功能地图（L2/L3 的引用索引）。
+- **L2 模块功能**（`l2-*.md`）：模块级别说明——每个功能模块的行为约定与交互语义，一模块一文件 + 引用索引表（L3 的引用索引）。
+- **L3 实现细节**（`l3-*.md`）：实现说明——源文件职责、数据格式、管线与流程细节，改动代码前必读对应条目。
 
-## 导航表
+## L1 索引
 
-| 你要做的事 | 加载文件 | 覆盖范围 |
-| --- | --- | --- |
-| 判断项目定位 / 功能边界 / 术语 / 找功能入口 | [agents/l1-overview.md](./agents/l1-overview.md) | 项目概述与范围、设计决策、明确不做清单、「小说」术语约定、功能地图 |
-| 书/章/卷结构操作（建书/建章/卷管理/重排/整理/打包/重扫描） | [agents/l2-story-structure.md](./agents/l2-story-structure.md) | 结构命令行为约定、位置即归属、无卷模式、平面迁移门禁 |
-| 设定实体（人物/场景/世界观/伏笔/大纲） | [agents/l2-setting-entities.md](./agents/l2-setting-entities.md) | 三层归属口径、卷级人物、伏笔复合键、大纲标记、字段命名陷阱 |
-| 写字台（StatusView 常驻面板） | [agents/l2-writing-desk.md](./agents/l2-writing-desk.md) | 树节点约定、书稿/章节行右键动作、引言入口、状态展示 |
-| LLM 对话面板 | [agents/l2-llm-chat-panel.md](./agents/l2-llm-chat-panel.md) | 常驻视图交互、模型切换、流式输出 |
-| 人物关系面板 | [agents/l2-relationship-panel.md](./agents/l2-relationship-panel.md) | 卡片/图表双模式、缩放平移、添加人物写动作、数据入口与接线 |
-| 时间线面板 | [agents/l2-timeline-panel.md](./agents/l2-timeline-panel.md) | 只读时间轴、画布缩放、双击定位、三层文档枚举 |
-| LLM 写作命令（/write /continue /rewrite /polish /review /deai 等） | [agents/l2-llm-writing-commands.md](./agents/l2-llm-writing-commands.md) | 命令语义、生成过程面板、提示词组装分工 |
-| 写作指南（创作规范三层） | [agents/l2-writing-guide.md](./agents/l2-writing-guide.md) | 三层优先级、聚合文件唯一注入源、空模板重生成规则 |
-| 设置页与 LLM 配置 | [agents/l2-settings-llm-config.md](./agents/l2-settings-llm-config.md) | 声明式设置实现、data.json 约定、激活项双向同步 |
-| work_dir 初始化 / 切换小说 / 每本书独立工作区 | [agents/l2-workdir-story-switch.md](./agents/l2-workdir-story-switch.md) | 工作目录等价语义、lastStory 记忆、强制迁移、布局存档 |
-| 动 MD 文档格式 / 解析器 / 模板 | [agents/l3-md-docs-parsing.md](./agents/l3-md-docs-parsing.md) | md_docs 全部类型与 parse/format、人物关系/时间线格式、围栏与 safeFilename |
-| 动状态文档 / 卷语义 / 章节身份 | [agents/l3-state-and-volumes.md](./agents/l3-state-and-volumes.md) | 目录树、复合键、引言、frontmatter 字段、删除约定、卷/激活语义 |
-| 动摘要管线 / 写作上下文窗口 | [agents/l3-summary-pipeline.md](./agents/l3-summary-pipeline.md) | 卷摘要、三层上下文结构、v0.1.4+ 延迟生成与角色范围收窄 |
-| 动创作规范三层 / 汇总文件生命周期 | [agents/l3-guide-lifecycle.md](./agents/l3-guide-lifecycle.md) | 三层结构条款、agg-hash 变更检测、空段注释、相关源文件 |
-| 新增或修改交互 UI（Modal / 常驻视图） | [agents/l3-view-rendering.md](./agents/l3-view-rendering.md) | Modal 选型表、submitted/resolved 模式、常驻 ItemView 渲染陷阱、文案风格 |
-| 改 main.ts / 新增命令 / 查通用辅助方法 | [agents/l3-main-ts-flow.md](./agents/l3-main-ts-flow.md) | 插件入口、新增命令标准流程 7 步、handler 复用清单 |
-| 构建 / 打包 / 部署 / Git 提交发布 / CI | [agents/l3-build-deploy.md](./agents/l3-build-deploy.md) | npm run build、release/ 产出、Gitea+GitHub 镜像同步、esbuild/正则/API 兼容坑位 |
-| 查各命令的语义 / 参数 / 坑位速查 | [agents/command-reference.md](./agents/command-reference.md) | 命令速查表、移动语义陷阱（updateScene/updateCharacter） |
-| 任务收尾（写回 + 验证） | [agents/process-rules.md](./agents/process-rules.md) | 工作更新写回约定、验证要求、CHANGELOG 引用 |
+| L1 文档 | 覆盖范围 |
+| --- | --- |
+| [agents/l1-overview.md](./agents/l1-overview.md) | 项目概述与范围、设计决策、明确不做清单、「小说」术语约定、功能地图（L2 模块 → L3 实现细节的入口索引） |
+
+## 横切参考（不属于三层）
+
+| 文档 | 覆盖范围 |
+| --- | --- |
+| [agents/command-reference.md](./agents/command-reference.md) | 各命令语义/参数/坑位速查表、移动语义陷阱（updateScene/updateCharacter） |
+| [agents/process-rules.md](./agents/process-rules.md) | 任务收尾：工作更新写回约定、验证要求、CHANGELOG 引用 |
 
 ## 推送指南（主仓 → GitHub 镜像，强制）
 
