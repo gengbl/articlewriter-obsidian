@@ -263,9 +263,9 @@ export class TimelineView extends ItemView {
 		});
 	}
 
-	/** 单条事件：时间点徽章（年-月-日规范形式）+ 来源层级标签 + 人物 chips + 事件正文；**双击**在编辑器打开来源文档并定位到该时间点 */
+	/** 单条事件：时间点徽章（年-月-日规范形式）+ 来源层级标签 + 人物 chips + 事件正文；条目带 `is-<scope>` 类按来源层级区分重要性（书 > 卷 > 章，样式见 styles.css `.aw-tl-item.is-*`）；**双击**在编辑器打开来源文档并定位到该时间点 */
 	private renderItem(parent: HTMLElement, row: TlRow): void {
-		const item = parent.createDiv({ cls: "aw-tl-item" });
+		const item = parent.createDiv({ cls: `aw-tl-item is-${row.scope}` });
 		item.createSpan({ text: timelineTimeText(row), cls: "aw-tl-time" });
 		if (row.sourceLabel) item.createSpan({ text: row.sourceLabel, cls: "aw-dim aw-tl-src" });
 		const wrap = item.createDiv({ cls: "aw-tl-evwrap" });

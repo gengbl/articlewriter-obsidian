@@ -1060,7 +1060,7 @@
 	background: var(--background-modifier-hover);
 }
 
-/* 节点圆点：圆心对齐竖线中轴（list padding-left 14px，dot 左缘贴 list 内边） */
+/* 节点圆点：圆心对齐竖线中轴（list padding-left 14px，dot 左缘贴 list 内边）；默认 8px 强调色＝卷级基准 */
 .aw-tl-item::before {
 	content: "";
 	position: absolute;
@@ -1070,6 +1070,30 @@
 	height: 8px;
 	border-radius: 50%;
 	background: var(--interactive-accent);
+}
+
+/* 按事件来源层级区分重要性（书 > 卷 > 章）：节点圆点尺寸 + 事件正文强调。
+   书籍级＝最大圆点＋加粗正文（全书主线事件最醒目）；卷级＝基准样式（不另写规则）；
+   章级＝最小圆点＋弱化文字（章节细节退后）。top 随尺寸调整保持圆心同轴（距条目顶 11px） */
+.aw-tl-item.is-book::before {
+	top: 6px;
+	width: 10px;
+	height: 10px;
+}
+
+.aw-tl-item.is-chapter::before {
+	top: 8px;
+	width: 6px;
+	height: 6px;
+	background: var(--text-faint);
+}
+
+.aw-tl-item.is-book .aw-tl-event {
+	font-weight: 600;
+}
+
+.aw-tl-item.is-chapter .aw-tl-event {
+	color: var(--text-muted);
 }
 
 /* 时间点徽章（任意数字；等宽数字避免不同长度跳动） */
