@@ -2644,6 +2644,7 @@ async cmdRenameChapterFile(): Promise<void> {
 				? storyDir.children.filter((f): f is TFile => f instanceof TFile).map((f) => ({ path: f.path, name: f.name })).sort((a, b) => a.name.localeCompare(b.name, "zh"))
 				: [];
 		const volDocs = await this.manager.listVolumeDocsByVol(storyName); // v0.1.3+：各卷实体目录直属 md（非章节目录），供写字台「文档」子节点展示
+		const prologueFiles = this.manager.listPrologueDocs(storyName); // v0.2.x+：书根「引言」文件夹直属 md（全书唯一），供写字台「引言」节点展示
 		return {
 			storyName,
 			title: state?.title || storyName,
@@ -2657,6 +2658,7 @@ async cmdRenameChapterFile(): Promise<void> {
 			volumes: vols.map((v) => ({ id: v.id, name: v.name, order: v.order, active: v.id === curVolId, docs: volDocs[v.id] ?? [] })),
 			chapters,
 			globalFiles,
+			prologueFiles,
 			useVolumes: state?.use_volumes ?? true, // v0.0.16+：无卷模式时写字台隐藏全部「新建卷」入口；状态缺失按有卷兜底不擅藏功能
 		};
 	}
@@ -2978,6 +2980,38 @@ async cmdRenameChapterFile(): Promise<void> {
 			case "complete-root-docs": {
 				const created = await this.manager.ensureRootDocs(a.story); // 书根默认资料八件套补缺，已存在保留不覆盖
 				new Notice(created.length ? `已为「${a.story}」补全缺失资料：${created.join("、")}` : `「${a.story}」的默认资料文件已齐全（大纲/世界观/伏笔/笔记/人物/人物关系/场景），无需补全`, 8000);
+				return;
+			}
+			case "new-prologue": {
+				const created = await this.manager.ensurePrologue(a.story); // 幂等：已有「引言」文件夹则不覆盖
+				new Notice(created ? `已在「${a.story}」书根创建「引言」文件夹并播种正文《引言.md》` : `「${a.story}」已有「引言」文件夹，未改动`);
+				return;
+			}
+			case "delete-prologue": {
+				const ok = await this.confirmBox(`删除「${a.story}」的引言？`, `整个书根「引言」文件夹将移入 Obsidian 回收站，可从中找回。`, "删除");
+				if (!ok) return;
+				await this.manager.deletePrologue(a.story);
+				new Notice(`引言已删除（可在回收站找回）`);
+				return;
+			}
+			case "new-prologue-doc": {
+				const folder = this.manager.prologuePath(a.story);
+				if (!(this.app.vault.getAbstractFileByPath(folder) instanceof TFolder)) throw new Error("「引言」文件夹不存在，请先在「书稿」标题右键「新建引言…」创建");
+				const res = await this.pickNewDoc("在引言新建文档", []); // 仅自定义文件名（无标准文档清单）
+				if (res == null) return;
+				let base = safeFilename(res.name);
+				if (!base.toLowerCase().endsWith(".md")) base += ".md";
+				const path = `${folder}/${base}`;
+				if (this.app.vault.getAbstractFileByPath(path)) throw new Error(`同名文件已存在：${path}`);
+				await this.app.vault.create(path, "");
+				new Notice(`已在「引言」创建 ${base}`);
+				return;
+			}
+			case "complete-chapter-docs": {
+				const created = await this.manager.ensureChapterDocs(a.story, a.key); // 该章节目录缺失的标准模板文档补缺，已存在保留不覆盖
+				const ch = (await this.manager.listChapters(a.story)).find((c) => c.key === a.key); // chapterDirOf 为私有，经公开列表解析展示标签
+				const label = ch ? `第${String(ch.num).padStart(2, "0")}章 ${ch.title}` : a.key;
+				new Notice(created.length ? `已为${label}补全缺失文档：${created.join("、")}` : `${label}的模板文档已齐全（章节/章节大纲/人物/人物关系/场景/章节信息），无需补全`, 8000);
 				return;
 			}
 			case "llm-write":

@@ -20,6 +20,7 @@ import {
 	CHAPTER_SCENES_TEMPLATE,
 	FORESHADOW_TEMPLATE,
 	NOTES_TEMPLATE,
+	PROLOGUE_TEMPLATE,
 	outlineTemplate,
 	VOL_CHARACTERS_TEMPLATE,
 	VOL_OUTLINE_TEMPLATE,
@@ -39,6 +40,9 @@ import { buildChapterFolderDocs, cleanRelationshipsDoc } from "./prompts";
 import type { ChapterFolderDocEntry, PrevChapterRef } from "./prompts";
 
 const CHAPTER_DIR_RE = /^第(\d{1,6})章-(.+)$/;
+
+/** 引言实体目录名（书根唯一；保留名——卷名不得占用，避免与引言文件夹物理冲突） */
+const PROLOGUE_DIR_NAME = "引言";
 
 /** 人物关系面板数据源（v0.1.9+）：一层《人物关系.md》的归属层级、展示标签、实际路径与原文（文件缺失时 text 为空串） */
 export interface RelationshipDocSource {
@@ -343,6 +347,7 @@ export class StoryManager {
 		for (const [fname, tpl] of [...this.rootDocTemplates(title), ["卷.md", VOLUME_TEMPLATE]]) { // 默认资料八件套 + 系统管理的《卷.md》（与 ensureRootDocs 同一清单来源）
 			await this.ensureDoc(`${base}/${fname}`, tpl);
 		}
+		await this.ensurePrologue(name).catch(() => {}); // 引言播种（best-effort：失败不影响建书主流程）
 		await this.saveState(name, state);
 		return name;
 	}
@@ -506,6 +511,36 @@ export class StoryManager {
 			if ((await this.ensureDoc(`${base}/${fname}`, tpl)) === "created") created.push(fname);
 		}
 		return created;
+	}
+
+	/** 书根「引言」文件夹路径（全书唯一，有卷/无卷模式均在书根；不参与章节编号与提示词注入） */
+	prologuePath(storyName: string): string {
+		return `${this.storyPath(storyName)}/${PROLOGUE_DIR_NAME}`;
+	}
+
+	/** 确保「引言」文件夹与正文《引言.md》存在（幂等，已存在不覆盖）；返回是否本次新建。建书/建卷/建章播种调用，失败由调用方兜底不影响主流程 */
+	async ensurePrologue(storyName: string): Promise<boolean> {
+		const p = this.prologuePath(storyName);
+		if (this.vault.getAbstractFileByPath(p)) return false;
+		await this.createFolderPath(p);
+		try {
+			await this.ensureDoc(`${p}/引言.md`, PROLOGUE_TEMPLATE);
+		} catch { /* 正文文档创建失败不影响文件夹建立 */ }
+		return true;
+	}
+
+	/** 「引言」文件夹直属 md 文件清单（写字台「引言」节点展示；空数组=尚无引言），按文件名 zh 序 */
+	listPrologueDocs(storyName: string): Array<{ path: string; name: string }> {
+		const dir = this.vault.getAbstractFileByPath(this.prologuePath(storyName));
+		if (!(dir instanceof TFolder)) return [];
+		return dir.children.filter((f): f is TFile => f instanceof TFile).map((f) => ({ path: f.path, name: f.name })).sort((a, b) => a.name.localeCompare(b.name, "zh"));
+	}
+
+	/** 删除整个「引言」文件夹（移入 Obsidian 回收站） */
+	async deletePrologue(storyName: string): Promise<void> {
+		const dir = this.vault.getAbstractFileByPath(this.prologuePath(storyName));
+		if (!(dir instanceof TFolder)) throw new Error(`「${PROLOGUE_DIR_NAME}」文件夹不存在`);
+		await this.app.fileManager.trashFile(dir);
 	}
 
 	/** 指定节点容器的标准模板文档清单+存在性（写字台「新建…文档/文章…」优先列出参与提示词的标准文档）：chKey=章节目录、volId=卷实体目录、皆无=书根——与各级播种同一来源 */
@@ -677,6 +712,17 @@ export class StoryManager {
 		];
 	}
 
+	/** 检查指定章节目录下的标准模板文档，缺失者按模板创建（已存在一律保留不覆盖）；返回本次新建的文件名列表（全齐则为空数组）。供写字台章节行右键「补全文档」 */
+	async ensureChapterDocs(storyName: string, chKey: string): Promise<string[]> {
+		const ch = await this.chapterDirOf(storyName, chKey);
+		if (!ch) throw new Error(`章节 ${chKey} 不存在或已被删除`);
+		const created: string[] = [];
+		for (const [fname, tpl] of this.chapterDocTemplates(ch.num, ch.title)) { // 与建章播种 / scan 补缺同一清单来源
+			if ((await this.ensureDoc(`${ch.dir.path}/${chapterDocPhysicalName(ch.dir.name, fname)}`, tpl)) === "created") created.push(fname);
+		}
+		return created;
+	}
+
 	private async createChapterAt(storyName: string, num: number, rawTitle: string, volId: string): Promise<string> {
 		const safe = safeFilename(rawTitle.trim() || `第${num}章`);
 		let base = this.storyPath(storyName);
@@ -696,6 +742,7 @@ export class StoryManager {
 		for (const [base, tpl] of this.chapterDocTemplates(num, safe)) {
 			await this.ensureDoc(`${dirPath}/${chapterDocPhysicalName(folderName, base)}`, tpl);
 		}
+		await this.ensurePrologue(storyName).catch(() => {}); // 引言播种（best-effort：失败不影响建章主流程）
 		const state = (await this.loadState(storyName)) ?? this.emptyState(storyName);
 		state.current_chapter = chKey(volId || null, num);
 		state.chapters[chKey(volId || null, num)] = volId ? { title: safe, words: 0, volume: volId } : { title: safe, words: 0 };
@@ -1342,6 +1389,7 @@ private emptyState(storyName: string): StoryState {
 		const n = name.trim();
 		if (!n) throw new Error("卷名不能为空");
 		if (!((await this.loadState(storyName))?.use_volumes)) throw new Error(NO_VOL_MODE_MSG); // v0.0.16+ 无卷模式禁止建卷
+		if (n === PROLOGUE_DIR_NAME) throw new Error(`卷名不可为「${PROLOGUE_DIR_NAME}」（保留名：书根「引言」文件夹占用该名）`);
 		const vols = await this.loadVolumes(storyName);
 		for (const v of Object.values(vols)) if (v.name === n) throw new Error(`已有同名卷：${n}（卷实体目录以卷名命名，须唯一）`);
 		let id = String(volumeId).trim();
@@ -1362,6 +1410,7 @@ private emptyState(storyName: string): StoryState {
 		vols[id] = vol;
 		await this.saveVolumes(storyName, vols);
 		await this.ensureVolumeFolder(storyName, vol); // 同步建卷实体目录；失败直接抛出由调用方提示
+		await this.ensurePrologue(storyName).catch(() => {}); // 引言播种（best-effort：失败不影响建卷主流程）
 		return vol;
 	}
 
@@ -1373,6 +1422,7 @@ private emptyState(storyName: string): StoryState {
 		let newName = oldName;
 		if (patch.name !== undefined && patch.name.trim()) {
 			newName = patch.name.trim();
+			if (newName === PROLOGUE_DIR_NAME) throw new Error(`卷名不可改为「${PROLOGUE_DIR_NAME}」（保留名：书根「引言」文件夹占用该名）`);
 			for (const v of Object.values(vols)) if (v.id !== vol.id && v.name === newName) throw new Error(`已有同名卷：${newName}`);
 		}
 		if (patch.description !== undefined) vol.description = String(patch.description).trim();

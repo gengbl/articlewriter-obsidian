@@ -69,6 +69,7 @@ export interface StatusDetail {
 	volumes: StatusVolumeEntry[];
 	chapters: StatusChapterEntry[];
 	globalFiles: StatusFileEntry[];
+	prologueFiles: StatusFileEntry[]; // 书根「引言」文件夹直属 md（全书唯一）；空数组=尚无引言
 	useVolumes?: boolean; // v0.0.16+：false=无卷模式（纯 书→章），隐藏全部「新建卷」入口；缺省/true=有卷
 }
 export interface StatusStoryEntry {
@@ -105,6 +106,10 @@ export type StatusAction =
 	| { kind: "new-volume-doc"; story: string; volId: string } // 卷节点 / 卷内「文档」分组右键：在该卷实体目录下新建 .md（语义同 new-file，落点为卷目录而非章节目录）
 	| { kind: "complete-volume-docs"; story: string; volId: string } // 卷内「文档」命名头右键「补全卷文档」：检查该卷下缺失的设定模板（卷大纲/人物/人物关系/场景/时间线五件套）并创建，已存在不覆盖
 	| { kind: "complete-root-docs"; story: string } // 案头资料节点右键「补全资料」：检查书根缺失的默认资料文件（大纲/世界观/伏笔/笔记/人物/人物关系/场景/时间线八件套）并按模板创建，已存在不覆盖
+	| { kind: "new-prologue"; story: string } // 「书稿」标题行右键「新建引言…」：书根建「引言」文件夹 + 正文《引言.md》（幂等；已存在仅提示）
+	| { kind: "delete-prologue"; story: string } // 引言节点右键「删除引言」：整个「引言」文件夹移入回收站（先确认框）
+	| { kind: "new-prologue-doc"; story: string } // 引言节点 / 其文件行右键「新建引言内文档…」：在「引言」文件夹内新建 .md（仅自定义文件名）
+	| { kind: "complete-chapter-docs"; story: string; key: string } // 章节行右键「补全文档」：检查该章节目录缺失的标准模板文档（章节/章节大纲/人物/人物关系/场景/章节信息/时间线七件套）并按模板创建，已存在不覆盖
 	| { kind: "insert-chapter"; story: string; key: string; pos: "before" | "after" } // 章节行右键在其之前/之后插入新空章（本容器内后续号自动顺延）
 	| { kind: "llm-write" | "llm-continue" | "llm-polish"; story: string; key: string }; // 章节行右键调用 LLM 写作命令（先激活该书/章，再走对应命令交互流程）
 
@@ -350,15 +355,17 @@ export class StatusView extends ItemView {
 				...(d.useVolumes === false
 					? [{ label: "新建章节…", run: () => this.runStatusAction({ kind: "new-chapter", story: d.storyName }) }]
 					: [{ label: "新建卷…", run: () => this.runStatusAction({ kind: "create-volume", story: d.storyName }) }]),
+				...(!d.prologueFiles.length ? [{ label: "新建引言…", run: () => this.runStatusAction({ kind: "new-prologue", story: d.storyName }) }] : []), // 书根建「引言」文件夹+正文（尚无引言时才显示）
 				{ label: "导出书稿…", run: () => this.runStatusAction({ kind: "export-story", story: d.storyName }) }, // 全部/所选范围章节《章节.md》正文合一 MD，有卷模式带卷号+卷名标题行
 			]),
 		);
 		if (!chBody) return;
 		chBody.addClass("aw-st-kids"); // 与「案头资料」同款：子节点（卷/平铺章）整体缩进并带左侧指示线，体现与标题的包含关系
-		if (!d.chapters.length && !d.volumes.length) {
+		if (!d.chapters.length && !d.volumes.length && !d.prologueFiles.length) {
 			chBody.createDiv({ text: d.useVolumes === false ? "还没有章节，可用「新建章节」创建。" : "还没有章节，可用「新建章节」「新建卷」创建。", cls: "aw-dim aw-st-hint" });
 			return;
 		}
+		this.renderPrologue(chBody, d); // 「引言」节点恒置顶（尚无引言时显示淡色提示行；存在时为可折叠文档列表）
 		const volIds = new Set(d.volumes.map((v) => v.id));
 		let shown = 0;
 		d.volumes.forEach((v, i) => {
@@ -479,6 +486,56 @@ export class StatusView extends ItemView {
 		}
 	}
 
+	/** 「引言」节点（v0.2.x+）：「书稿」小节恒置顶，列书根「引言」文件夹直属 md；尚无引言时显示淡色提示行（可经「书稿」标题右键创建）；存在时为可独立折叠的命名头（key prologue:<书>，默认展开），文件行仅展开时渲染。命名头与块内空白右键=新建引言内文档…/删除引言；文件行点击在编辑器打开、右键可新建/删除 */
+	private renderPrologue(parent: HTMLElement, d: StatusDetail): void {
+		if (!d.prologueFiles.length) {
+			parent.createDiv({ text: "尚无引言，可在「书稿」标题右键「新建引言…」创建。", cls: "aw-dim aw-st-hint" });
+			return;
+		}
+		const key = `prologue:${d.storyName}`; // 每书唯一；不在 collapsed 中=展开（默认展开）
+		const open = !this.collapsed.has(key);
+		const docs = d.prologueFiles;
+		const items = (): Array<{ label: string; danger?: boolean; run: () => void } | { sep: true }> => [
+			{ label: "新建引言内文档…", run: () => this.runStatusAction({ kind: "new-prologue-doc", story: d.storyName }) },
+			{ sep: true },
+			{ label: "删除引言", danger: true, run: () => this.runStatusAction({ kind: "delete-prologue", story: d.storyName }) },
+		];
+		const block = parent.createDiv({ cls: "aw-st-vol-block" }); // 块内空白右键=引言菜单（与卷/章块同款模式）
+		block.addEventListener("contextmenu", (e) => {
+			e.stopPropagation();
+			this.showContextMenu(e, items());
+		});
+		const head = block.createDiv({ cls: "aw-st-chap" }); // 命名头复用章节名行同款类（同一显示风格，不重复定义样式）；整行可点击开合
+		head.createSpan({ text: open ? "▾" : "▸", cls: "aw-st-caret" });
+		head.appendText(`引言（${String(docs.length)}）`);
+		head.addEventListener("click", () => {
+			this.toggleCollapse(key);
+			this.rerenderLocal();
+		});
+		head.addEventListener("contextmenu", (e) => {
+			e.stopPropagation(); // 不透传到书稿小节兜底菜单
+			this.showContextMenu(e, items());
+		});
+		if (!open) return;
+		const list = block.createDiv({ cls: "aw-st-kids" }); // 缩进 + 左侧指示线，与卷文档下的文件行对齐
+		for (const f of docs) {
+			const el = list.createDiv({ cls: "aw-st-file" });
+			el.setText(f.name);
+			el.addEventListener("click", (e) => {
+				e.stopPropagation(); // 点文件不触发所在引言行的开合
+				void this.openFile(f.path);
+			});
+			el.addEventListener("contextmenu", (e) => {
+				e.stopPropagation(); // 不透传到块菜单
+				this.showContextMenu(e, [
+					{ label: "新建引言内文档…", run: () => this.runStatusAction({ kind: "new-prologue-doc", story: d.storyName }) },
+					{ sep: true },
+					{ label: `删除 ${f.name}`, danger: true, run: () => this.runStatusAction({ kind: "delete-file", path: f.path }) },
+				]);
+			});
+		}
+	}
+
 	private renderChapter(parent: HTMLElement, storyName: string, c: StatusChapterEntry, isActiveStory: boolean): void {
 		const key = `c:${storyName}:${c.key}`; // v0.0.15：复合键含卷归属——不同书/卷的同号章节互不连动
 		// 章节的文件列表默认折叠（expanded 记手动展开态）
@@ -507,6 +564,7 @@ export class StatusView extends ItemView {
 			e.stopPropagation(); // 不透传到所在章节块/面板空白处菜单；右键永不触发切换/激活
 				this.showContextMenu(e, [
 					...this.createItems(storyName, c.key, c.volumeId || undefined),
+					{ label: "补全文档", run: () => this.runStatusAction({ kind: "complete-chapter-docs", story: storyName, key: c.key }) }, // 检查该章节目录缺失的标准模板文档并按模板创建，已存在不覆盖
 					{ label: `在本章前插入章节…（成为第${String(c.num)}章）`, run: () => this.runStatusAction({ kind: "insert-chapter", story: storyName, key: c.key, pos: "before" }) }, // 本容器内≥本号的各章 +1、引用同步
 					{ label: `在本章后插入章节…（成为第${String(c.num + 1)}章）`, run: () => this.runStatusAction({ kind: "insert-chapter", story: storyName, key: c.key, pos: "after" }) },
 					{ sep: true },

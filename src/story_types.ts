@@ -187,6 +187,14 @@ export const NOTES_TEMPLATE = `# 笔记
 export const CHAPTER_BODY_TEMPLATE = (num: number, title: string) =>
 	`# 第${num}章 ${title}\n\n`;
 
+/** 引言正文模板（书根「引言」文件夹内的主文文件；引言为全书级实体，与卷/章无关，不参与章节编号与提示词注入） */
+export const PROLOGUE_TEMPLATE = `# 引言
+
+<!--
+引言正文写在这里。引言位于全书最前、所有章节之前，不计入章节编号。
+-->
+`;
+
 /** 章节大纲模板（对齐 CLI create_chapter_dir：标题行「第N章 标题 大纲」+ 示例注释 + 文末大纲详略标记帮助） */
 export const chapterOutlineTemplate = (num: number, title: string): string => {
 	const heading = title.trim() ? `第${num}章 ${title}` : `第${num}章`;
