@@ -1066,7 +1066,7 @@
 	background: var(--background-modifier-hover);
 }
 
-/* 节点圆点（真实元素 .aw-tl-dot，替代旧 ::before 伪元素以便点击）：圆心对齐竖线中轴（list/kids padding-left 14px，dot 左缘贴容器内边）；默认 8px 强调色＝二级基准 */
+/* 节点圆点（真实元素 .aw-tl-dot，替代旧 ::before 伪元素以便点击）：圆心对齐竖线中轴（list/kids padding-left 14px，dot 左缘贴容器内边）；默认 8px＝二级基准。颜色＝同级标题色（Obsidian 核心 --hN-color 变量、主题可覆写；经 color＋currentColor 实现，核心默认值 inherit 时正常继承文本色而非透明；变量未定义的旧版 Obsidian 回落旧配色） */
 .aw-tl-dot {
 	position: absolute;
 	left: -14px;
@@ -1074,7 +1074,8 @@
 	width: 8px;
 	height: 8px;
 	border-radius: 50%;
-	background: var(--interactive-accent);
+	color: var(--h2-color, var(--interactive-accent));
+	background: currentColor;
 }
 
 /* 有子事件的圆点可点击切换折叠状态 */
@@ -1082,35 +1083,35 @@
 	cursor: pointer;
 }
 
-/* 按事件级别区分（标题深度 #=一级 … ######=六级，lv-5 覆盖 ≥5 级）：圆点尺寸 + 颜色 + 正文强调。
+/* 按事件级别区分（标题深度 #=一级 … ######=六级，lv-5 覆盖 ≥5 级）：圆点尺寸 + 颜色（＝同级标题色 --hN-color）+ 正文强调。
    一级＝最大圆点＋加粗正文（顶层主线事件最醒目）；二级＝基准样式（不另写规则）；
-   三级起逐级缩小换色、五级弱化文字（深层子事件退后）。top 随尺寸调整保持圆心同轴（距条目顶 11px） */
+   三级起逐级缩小、五级弱化文字（深层子事件退后）。top 随尺寸调整保持圆心同轴（距条目顶 11px） */
 .aw-tl-item.lv-1 .aw-tl-dot {
 	top: 5px;
 	width: 12px;
 	height: 12px;
-	background: var(--color-red);
+	color: var(--h1-color, var(--color-red));
 }
 
 .aw-tl-item.lv-3 .aw-tl-dot {
 	top: 7.5px;
 	width: 7px;
 	height: 7px;
-	background: var(--color-green);
+	color: var(--h3-color, var(--color-green));
 }
 
 .aw-tl-item.lv-4 .aw-tl-dot {
 	top: 8px;
 	width: 6px;
 	height: 6px;
-	background: var(--color-yellow);
+	color: var(--h4-color, var(--color-yellow));
 }
 
 .aw-tl-item.lv-5 .aw-tl-dot {
 	top: 8.5px;
 	width: 5px;
 	height: 5px;
-	background: var(--text-faint);
+	color: var(--h5-color, var(--text-faint));
 }
 
 .aw-tl-item.lv-1 .aw-tl-event {
