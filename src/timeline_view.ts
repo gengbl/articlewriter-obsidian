@@ -324,7 +324,7 @@ export class TimelineView extends ItemView {
 
 	/** 渲染一个轮廓节点：条目行 + （未折叠时）子容器 .aw-tl-kids 递归。
 	 * 条目带 `lv-<级别>` 类（级别＝标题深度，≥5 归入 lv-5）——圆点大小/颜色与正文强调按级别区分（样式见 styles.css `.aw-tl-item.lv-*`）。
-	 * **圆点**为真实元素 .aw-tl-dot：**悬停显示 Tip＝该条目的描述内容**（事件文本，可多行；有子事件时附「点击折叠/展开 N 条子事件」提示行）、有子事件时可点击切换折叠状态；**双击**条目在编辑器打开来源文档并定位到该时间点。
+	 * **悬停条目任意位置（含圆点）显示 Tip＝该条目的描述内容**（事件文本，可多行；有子事件时附「点击折叠/展开 N 条子事件」提示行）——条目与圆点挂同一份 title，避免小圆点悬停落空回退到别的提示；圆点为真实元素 .aw-tl-dot、有子事件时可点击切换折叠状态；**双击**条目在编辑器打开来源文档并定位到该时间点。
 	 * 筛选模式（q 非空）显示整条祖先链且忽略折叠状态，保证命中条目可见 */
 	private renderNode(parent: HTMLElement, node: TlNode, q: string): void {
 		const row = node.row;
@@ -340,7 +340,11 @@ export class TimelineView extends ItemView {
 				if (this.lastSnap) this.renderBody(this.lastSnap);
 			});
 		}
-		if (tipParts.length) dot.setAttribute("title", tipParts.join("\n"));
+		if (tipParts.length) {
+			const tip = tipParts.join("\n");
+			dot.setAttribute("title", tip);
+			item.setAttribute("title", tip); // 条目整体同挂描述 Tip：圆点仅 5–12px，悬停稍有偏差即落到条目上，两处一致保证看到的都是描述
+		}
 		item.createSpan({ text: timelineTimeText(row), cls: "aw-tl-time" });
 		if (row.sourceLabel) item.createSpan({ text: row.sourceLabel, cls: "aw-dim aw-tl-src" });
 		const wrap = item.createDiv({ cls: "aw-tl-evwrap" });
@@ -350,8 +354,7 @@ export class TimelineView extends ItemView {
 		}
 		if (row.event) wrap.createDiv({ text: row.event, cls: "aw-tl-event" });
 		else if (!row.chars.length) wrap.createDiv({ text: "（未填写事件与人物）", cls: "aw-dim aw-st-hint" });
-		item.setAttribute("title", `双击在编辑器中打开并定位到该时间点：${row.sourcePath}`);
-		item.addEventListener("dblclick", () => void this.openAt(row));
+		item.addEventListener("dblclick", () => void this.openAt(row)); // 双击定位功能保留；提示文字不再占用 Tip（Tip 专显描述内容）
 		if (node.children.length) {
 			if (q === "" && this.collapsedIds.has(row.id)) {
 				item.createSpan({ text: `（已折叠 ${String(this.descendantCount(node))} 条子事件）`, cls: "aw-dim aw-tl-collapsed-hint" });
