@@ -347,8 +347,8 @@ export class StoryManager {
 		return name;
 	}
 
-	/** 改书名：更新状态文档 title + 顶层目录改名（净化后同名则仅改标题不动目录）+ 同步《大纲.md》起始标题行；返回新目录名 */
-	async renameStory(oldName: string, newTitle: string): Promise<{ newName: string }> {
+	/** 改书名：更新状态文档 title + 顶层目录改名（净化后同名则仅改标题不动目录）+ 全书 MD 文档内旧书名整体替换为新书名（含《大纲/卷/伏笔/世界观》等标题行与正文；原文件备份 _backup/改书名_时间戳/，同角色改名口径）；返回新目录名与替换统计 */
+	async renameStory(oldName: string, newTitle: string): Promise<{ newName: string; hits: number; files: number }> {
 		const st = await this.loadState(oldName);
 		if (!st) throw new Error(`小说 ${oldName} 的状态文档缺失`);
 		const folder = this.vault.getAbstractFileByPath(this.storyPath(oldName));
@@ -367,17 +367,38 @@ export class StoryManager {
 			await this.vault.rename(folder, target); // 整树搬移，vault 索引与链接随之更新
 			newName = safeNew;
 		}
-		// 《大纲.md》起始行 `# <旧书名> 大纲` → 新书名（仅精确匹配文件开头的首个标题行，不动正文用户内容）
-		try {
-			const outlinePath = `${this.storyPath(newName)}/大纲.md`;
-			const f = this.vault.getAbstractFileByPath(outlinePath);
-			if (f instanceof TFile && oldTitle.trim()) {
+		// 全书 MD 文档内旧书名 → 新书名（《大纲.md》`# <书名> 大纲`、卷/伏笔/世界观标题行及正文一并覆盖）：先备份原文件到 _backup/改书名_时间戳/ 再替换（同角色改名口径）；状态文档已回盘新标题不会被再次命中
+		let hits = 0;
+		let files = 0;
+		const oldT = (oldTitle || "").trim();
+		const nf = this.storyFolder(newName);
+		if (oldT && oldT !== trimmed && nf) {
+			const changed: Array<{ file: TFile; text: string }> = [];
+			for (const f of await this.listMarkdownFiles(nf)) {
 				const text = await this.vault.read(f);
-				const head = `# ${oldTitle.trim()} 大纲`;
-				if (text.startsWith(head)) await this.vault.modify(f, `# ${trimmed} 大纲` + text.slice(head.length));
+				const c = text.split(oldT).length - 1;
+				if (c > 0) {
+					hits += c;
+					files += 1;
+					changed.push({ file: f, text });
+				}
 			}
-		} catch { /* 大纲缺失/不可读不阻断改名 */ }
-		return { newName };
+			if (changed.length) {
+				const d = new Date();
+				const pad = (n: number) => String(n).padStart(2, "0");
+				const ts = `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}_${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
+				const storyBase = this.storyPath(newName);
+				const backupDir = `${storyBase}/_backup/改书名_${ts}`;
+				for (const item of changed) {
+					const rel = item.file.path.substring(storyBase.length + 1);
+					await this.writeDoc(`${backupDir}/${rel}`, item.text);
+				}
+				for (const item of changed) {
+					await this.vault.modify(item.file, item.text.split(oldT).join(trimmed));
+				}
+			}
+		}
+		return { newName, hits, files };
 	}
 
 	// ---------- 章节扫描与创建 ----------

@@ -2699,7 +2699,7 @@ async cmdRenameChapterFile(): Promise<void> {
 				const cur = (await this.manager.loadState(a.name))?.title ?? a.name;
 				const t = await this.prompt(`改名「${a.name}」`, `新书名（当前：${cur || "无"}）`);
 				if (t == null || !t.trim() || t.trim() === cur) return; // 留空/未变更不执行
-				const r = await this.manager.renameStory(a.name, t.trim()); // title + 顶层目录同步改名 + 大纲起始标题行
+				const r = await this.manager.renameStory(a.name, t.trim()); // title + 顶层目录同步改名 + 全书 MD 文档内旧书名整体替换（原件备份 _backup/改书名_时间戳/）
 				try { // v0.2.1+：该书的工作区存档以书名命名，须随改名迁移否则丢失关联
 					const wsOld = this.bookWorkspacePath(a.name);
 					const wsNew = this.bookWorkspacePath(r.newName);
@@ -2715,7 +2715,9 @@ async cmdRenameChapterFile(): Promise<void> {
 					this.settings.lastStory = r.newName; // 当前书记忆随目录改名，同时触发 LLM 面板上下文行刷新
 					await this.saveSettings();
 				}
-				new Notice(r.newName !== a.name ? `已改名为「${t.trim()}」，顶层目录已同步移动为 ${r.newName}` : `已改名为「${t.trim()}」（目录名不变）`, 6000);
+				let msg = r.newName !== a.name ? `已改名为「${t.trim()}」，顶层目录已同步移动为 ${r.newName}` : `已改名为「${t.trim()}」（目录名不变）`;
+				if (r.hits > 0) msg += `；书中文档里的旧书名已替换 ${String(r.hits)} 处（${String(r.files)} 个文件，原件备份至 _backup/改书名_…）`;
+				new Notice(msg, 6000);
 				return;
 			}
 			case "delete-story": {
