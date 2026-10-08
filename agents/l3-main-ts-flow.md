@@ -4,7 +4,7 @@
 
 | 文件 | 职责 |
 | --- | --- |
-| `src/main.ts` | 插件入口：设置、命令注册（`addCommand`）、每个命令一个 `cmdXxx()` handler、通用交互辅助方法。人物关系面板接线见 [l2-relationship-panel.md](./l2-relationship-panel.md)、时间线面板接线见 [l2-timeline-panel.md](./l2-timeline-panel.md)、设置页声明式实现见 [l2-settings-llm-config.md](./l2-settings-llm-config.md)、每本书独立工作区见 [l2-workdir-story-switch.md](./l2-workdir-story-switch.md)、引言写字台动作见 [l2-writing-desk.md](./l2-writing-desk.md) |
+| `src/main.ts` | 插件入口：设置、命令注册（`addCommand`）、每个命令一个 `cmdXxx()` handler、通用交互辅助方法。人物关系面板接线见 [l3-relationship-view.md](./l3-relationship-view.md)、时间线面板接线见 [l3-timeline-view.md](./l3-timeline-view.md)、设置页声明式实现见 [l3-settings-page.md](./l3-settings-page.md)、每本书独立工作区见 [l3-workdir-workspace.md](./l3-workdir-workspace.md)、引言写字台动作见 [l3-status-view.md](./l3-status-view.md) |
 
 ## 新增命令的标准流程
 

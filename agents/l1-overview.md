@@ -14,12 +14,12 @@
 | --- | --- | --- |
 | 故事结构（目录树 / 卷 / 章节 / 引言 / 状态文档 / 章节身份） | [l2-story-structure.md](./l2-story-structure.md) | [l3-state-and-volumes.md](./l3-state-and-volumes.md)、[l3-md-docs-parsing.md](./l3-md-docs-parsing.md) |
 | 设定实体（大纲 / 场景 / 人物 / 世界观 / 伏笔 / 笔记） | [l2-setting-entities.md](./l2-setting-entities.md) | [l3-md-docs-parsing.md](./l3-md-docs-parsing.md) |
-| 写字台（StatusView：书籍列表 / 树节点 / 右键菜单 / 新建文档流程） | [l2-writing-desk.md](./l2-writing-desk.md) | [l3-view-rendering.md](./l3-view-rendering.md) |
-| LLM 对话面板 | [l2-llm-chat-panel.md](./l2-llm-chat-panel.md) | [l3-view-rendering.md](./l3-view-rendering.md) |
-| 人物关系面板 | [l2-relationship-panel.md](./l2-relationship-panel.md) | [l3-md-docs-parsing.md](./l3-md-docs-parsing.md) |
-| 时间线面板 | [l2-timeline-panel.md](./l2-timeline-panel.md) | [l3-md-docs-parsing.md](./l3-md-docs-parsing.md) |
-| LLM 写作命令（含「生成过程」面板） | [l2-llm-writing-commands.md](./l2-llm-writing-commands.md) | [l3-summary-pipeline.md](./l3-summary-pipeline.md)、[l3-main-ts-flow.md](./l3-main-ts-flow.md) |
+| 写字台（StatusView：书籍列表 / 树节点 / 右键菜单 / 新建文档流程） | [l2-writing-desk.md](./l2-writing-desk.md) | [l3-status-view.md](./l3-status-view.md)、[l3-view-rendering.md](./l3-view-rendering.md) |
+| LLM 对话面板 | [l2-llm-chat-panel.md](./l2-llm-chat-panel.md) | [l3-llm-chat-view.md](./l3-llm-chat-view.md)、[l3-view-rendering.md](./l3-view-rendering.md) |
+| 人物关系面板 | [l2-relationship-panel.md](./l2-relationship-panel.md) | [l3-relationship-view.md](./l3-relationship-view.md)、[l3-md-docs-parsing.md](./l3-md-docs-parsing.md) |
+| 时间线面板 | [l2-timeline-panel.md](./l2-timeline-panel.md) | [l3-timeline-view.md](./l3-timeline-view.md)、[l3-md-docs-parsing.md](./l3-md-docs-parsing.md) |
+| LLM 写作命令（含「生成过程」面板） | [l2-llm-writing-commands.md](./l2-llm-writing-commands.md) | [l3-writing-commands-impl.md](./l3-writing-commands-impl.md)、[l3-summary-pipeline.md](./l3-summary-pipeline.md)、[l3-main-ts-flow.md](./l3-main-ts-flow.md) |
 | 写作指南（三层生命周期） | [l2-writing-guide.md](./l2-writing-guide.md) | [l3-guide-lifecycle.md](./l3-guide-lifecycle.md) |
-| 设置页 / LLM 配置 | [l2-settings-llm-config.md](./l2-settings-llm-config.md) | — |
-| work_dir 初始化 / 切换小说 | [l2-workdir-story-switch.md](./l2-workdir-story-switch.md) | — |
+| 设置页 / LLM 配置 | [l2-settings-llm-config.md](./l2-settings-llm-config.md) | [l3-settings-page.md](./l3-settings-page.md) |
+| work_dir 初始化 / 切换小说 | [l2-workdir-story-switch.md](./l2-workdir-story-switch.md) | [l3-workdir-workspace.md](./l3-workdir-workspace.md) |
 | 构建 / 打包 / 部署 / 发布 | — | [l3-build-deploy.md](./l3-build-deploy.md) |
