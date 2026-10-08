@@ -1127,6 +1127,12 @@
 	font-size: 0.8em;
 }
 
+/* 时间线描述 Tip（Obsidian 自绘 .tooltip，setTooltip/aria-label 触发、挂 body 下）：比默认更窄更小（默认 --tooltip-max-width 300px / --font-ui-small） */
+.tooltip.aw-tl-tip {
+	max-width: 220px;
+	font-size: var(--font-ui-smaller);
+}
+
 /* 子事件容器：嵌套再缩进一级 + 自己的竖线（几何与父级 .aw-tl-list 相同，整体右移 margin-left） */
 .aw-tl-kids {
 	position: relative;

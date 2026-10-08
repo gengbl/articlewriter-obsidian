@@ -696,7 +696,8 @@ export interface TimelineEntry {
 	month?: number; // 月份（1-12；未写则缺省）
 	day?: number; // 日期（1-31；未写则缺省）
 	chars: string[]; // 涉及人物（空数组=未标注）
-	event: string; // 事件描述（多行原文，已去字段前缀与代码围栏标记）
+	event: string; // 事件（简短，面板内联显示；多行原文，已去字段前缀与代码围栏标记）
+	desc?: string; // 描述（详细，仅面板悬停 Tip 显示、不内联渲染；未写则缺省）
 }
 
 /** 时间点结构化值（标题解析结果；序列化经 timelineTimeText 往返一致） */
@@ -734,17 +735,19 @@ export function timelineTimeText(p: TimelinePoint): string {
 /**
  * 解析《时间线.md》：按 ATX 标题（`# `–`###### `，任意深度）分块，每块一条事件，标题深度即事件级别（#=一级、##=二级、###=三级，可更深）。
  * 标题必须是有效时间点——`年` / `年-月` / `年-月-日`（如 `# 120`、`## -3.5`〔旧纯数字写法〕、`### -129-06-15`），非法/非时间点标题的块（文档标题 `# 时间线`、「概述」、月份越界等）整块忽略。
- * 块内字段行（复用 REL_FIELD_RE）：`- 人物：A、B`（别名 角色/登场人物/涉及人物/出场人物）、`- 事件：…`（别名 描述/说明/详情/备注/简介）。
- * 事件正文可为 `- 事件：` 后接文本、```text 围栏内容、或无字段前缀的自由文本行（三者合并）；其它字段（如「发生章节」）不并入。
+ * 块内字段行（复用 REL_FIELD_RE）：`- 人物：A、B`（别名 角色/登场人物/涉及人物/出场人物）、`- 事件：…`（简短，面板内联显示；别名 说明/详情/备注/简介）、`- 描述：…`（详细，仅面板悬停 Tip 显示）。
+ * 正文归属：`- 事件：`/`- 描述：` 行后接的文本、```text 围栏内容、无字段前缀的自由文本行，均并入**最近出现**的事件/描述字段（块内尚未出现二者时归事件）；其它字段（如「发生章节」）不并入。
  */
 export function parseTimelines(text: string): TimelineEntry[] {
 	const body = stripComments(text || "");
 	const out: TimelineEntry[] = [];
-	let cur: (TimelinePoint & { level: number; chars: string[]; eventLines: string[] }) | null = null;
+	let cur: (TimelinePoint & { level: number; chars: string[]; eventLines: string[]; descLines: string[]; target: "event" | "desc" }) | null = null;
 	let inFence = false;
 	const flush = (): void => {
 		if (!cur) return;
 		const e: TimelineEntry = { level: cur.level, time: cur.time, chars: [...new Set(cur.chars)], event: cur.eventLines.join("\n").trim() };
+		const d = cur.descLines.join("\n").trim();
+		if (d) e.desc = d; // 未写描述的条目保持字段缺省（面板不挂 Tip）
 		if (cur.month != null) e.month = cur.month; // 未写月/日的条目保持字段缺省（不显式落 undefined）
 		if (cur.day != null) e.day = cur.day;
 		out.push(e);
@@ -757,7 +760,7 @@ export function parseTimelines(text: string): TimelineEntry[] {
 			continue;
 		}
 		if (inFence) {
-			if (cur) cur.eventLines.push(line);
+			if (cur) (cur.target === "desc" ? cur.descLines : cur.eventLines).push(line); // 围栏内容归最近出现的事件/描述字段
 			continue;
 		}
 		const hm = /^(#{1,6})\s+(.*)$/.exec(line);
@@ -765,7 +768,7 @@ export function parseTimelines(text: string): TimelineEntry[] {
 			flush();
 			const t = parseTimelineTime(hm[2]);
 			if (t === null) continue; // 非有效时间点标题块整块忽略（含文档 H1 标题；cur 已被 flush 置空，其下内容自然丢弃）
-			cur = { ...t, level: hm[1].length, chars: [], eventLines: [] };
+			cur = { ...t, level: hm[1].length, chars: [], eventLines: [], descLines: [], target: "event" };
 			continue;
 		}
 		if (!cur) continue; // 尚未进入任何有效时间点块的内容（如块外散文）忽略
@@ -777,24 +780,31 @@ export function parseTimelines(text: string): TimelineEntry[] {
 				for (const c of splitList(val)) if (c && !cur.chars.includes(c)) cur.chars.push(c);
 				continue;
 			}
-			if (/^(事件|描述|说明|详情|备注|简介)$/.test(key)) {
+			if (/^(事件|说明|详情|备注|简介)$/.test(key)) {
 				if (val) cur.eventLines.push(val);
+				cur.target = "event"; // 后续自由文本/围栏归事件
 				continue;
 			}
-			continue; // 其它字段（如「发生章节」）不并入事件正文
+			if (/^描述$/.test(key)) {
+				if (val) cur.descLines.push(val);
+				cur.target = "desc"; // 后续自由文本/围栏归描述（支持 `- 描述：`＋```text 围栏多行写法）
+				continue;
+			}
+			continue; // 其它字段（如「发生章节」）不并入正文
 		}
 		if (!line.trim()) continue;
-		cur.eventLines.push(line.trim()); // 无字段前缀的自由文本行也算事件正文
+		(cur.target === "desc" ? cur.descLines : cur.eventLines).push(line.trim()); // 无字段前缀的自由文本行归最近出现的事件/描述字段
 	}
 	flush();
 	return out;
 }
 
-/** 时间线条目序列化为文档块（与 parseTimelines 往返一致；标题深度＝事件级别，时间点经 timelineTimeText 规范化，含月日时补零到两位） */
+/** 时间线条目序列化为文档块（与 parseTimelines 往返一致；标题深度＝事件级别，时间点经 timelineTimeText 规范化，含月日时补零到两位；描述非空时以 `- 描述：`＋围栏输出） */
 export function formatTimelineBlock(e: TimelineEntry): string {
 	const lines = [`${"#".repeat(Math.max(1, Math.min(6, e.level)))} ${timelineTimeText(e)}`];
 	if (e.chars.length) lines.push(`- 人物：${joinList(e.chars)}`);
 	if (e.event) lines.push("- 事件：", "```text", e.event, "```");
+	if (e.desc) lines.push("- 描述：", "```text", e.desc, "```");
 	lines.push("");
 	return lines.join("\n");
 }

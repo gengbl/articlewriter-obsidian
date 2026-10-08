@@ -1,4 +1,4 @@
-import { ItemView, TFile, WorkspaceLeaf, type MarkdownView } from "obsidian";
+import { ItemView, setTooltip, TFile, WorkspaceLeaf, type MarkdownView } from "obsidian";
 import { parseTimelineTime, timelineTimeText, type TimelineEntry } from "./md_docs";
 
 /** 时间线条目所属层级（书根 / 卷 / 章） */
@@ -324,26 +324,23 @@ export class TimelineView extends ItemView {
 
 	/** 渲染一个轮廓节点：条目行 + （未折叠时）子容器 .aw-tl-kids 递归。
 	 * 条目带 `lv-<级别>` 类（级别＝标题深度，≥5 归入 lv-5）——圆点大小/颜色与正文强调按级别区分（样式见 styles.css `.aw-tl-item.lv-*`）。
-	 * **悬停条目任意位置（含圆点）显示 Tip＝该条目的描述内容**（事件文本，可多行；有子事件时附「点击折叠/展开 N 条子事件」提示行）——条目与圆点挂同一份 title，避免小圆点悬停落空回退到别的提示；圆点为真实元素 .aw-tl-dot、有子事件时可点击切换折叠状态；**双击**条目在编辑器打开来源文档并定位到该时间点。
+	 * **描述内容（row.desc）只经悬停 Tip 显示、不内联渲染**：desc 非空时用 setTooltip（aria-label 驱动 Obsidian 自绘 .tooltip，可 CSS 定制）给条目与圆点挂同一份 Tip（类 aw-tl-tip，样式见 styles.css）——圆点仅 5–12px，悬停稍有偏差落到条目上也能看到描述；无描述则不挂 Tip。圆点为真实元素 .aw-tl-dot、有子事件时可点击切换折叠状态；**双击**条目在编辑器打开来源文档并定位到该时间点。
 	 * 筛选模式（q 非空）显示整条祖先链且忽略折叠状态，保证命中条目可见 */
 	private renderNode(parent: HTMLElement, node: TlNode, q: string): void {
 		const row = node.row;
 		const item = parent.createDiv({ cls: `aw-tl-item lv-${String(Math.min(row.level, 5))}` });
-		const dot = item.createSpan({ cls: "aw-tl-dot" }); // 节点圆点（替代旧 ::before 伪元素，悬停 Tip 显示描述、可点击）
-		const tipParts: string[] = [];
-		if (row.event) tipParts.push(row.event); // 描述内容＝事件文本（合并自原《情节节点》的描述，可多行）
+		const dot = item.createSpan({ cls: "aw-tl-dot" }); // 节点圆点（替代旧 ::before 伪元素，可点击）
 		if (node.children.length) {
-			tipParts.push(`点击${this.collapsedIds.has(row.id) ? "展开" : "折叠"} ${String(this.descendantCount(node))} 条子事件`);
 			dot.addClass("has-kids");
 			dot.addEventListener("click", () => {
 				this.toggleCollapse(row.id);
 				if (this.lastSnap) this.renderBody(this.lastSnap);
 			});
 		}
-		if (tipParts.length) {
-			const tip = tipParts.join("\n");
-			dot.setAttribute("title", tip);
-			item.setAttribute("title", tip); // 条目整体同挂描述 Tip：圆点仅 5–12px，悬停稍有偏差即落到条目上，两处一致保证看到的都是描述
+		if (row.desc) {
+			// 描述内容只经悬停 Tip 显示（不内联）：条目与圆点同挂一份——圆点仅 5–12px，悬停稍有偏差即落到条目上，两处一致保证看到的都是描述；无描述则不挂 Tip
+			setTooltip(item, row.desc, { classes: ["aw-tl-tip"] });
+			setTooltip(dot, row.desc, { classes: ["aw-tl-tip"] });
 		}
 		item.createSpan({ text: timelineTimeText(row), cls: "aw-tl-time" });
 		if (row.sourceLabel) item.createSpan({ text: row.sourceLabel, cls: "aw-dim aw-tl-src" });
