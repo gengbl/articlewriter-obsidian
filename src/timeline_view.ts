@@ -324,20 +324,23 @@ export class TimelineView extends ItemView {
 
 	/** 渲染一个轮廓节点：条目行 + （未折叠时）子容器 .aw-tl-kids 递归。
 	 * 条目带 `lv-<级别>` 类（级别＝标题深度，≥5 归入 lv-5）——圆点大小/颜色与正文强调按级别区分（样式见 styles.css `.aw-tl-item.lv-*`）。
-	 * **圆点**为真实元素 .aw-tl-dot：有子事件时可点击、切换该条目的折叠状态；**双击**条目在编辑器打开来源文档并定位到该时间点。
+	 * **圆点**为真实元素 .aw-tl-dot：**悬停显示 Tip＝该条目的描述内容**（事件文本，可多行；有子事件时附「点击折叠/展开 N 条子事件」提示行）、有子事件时可点击切换折叠状态；**双击**条目在编辑器打开来源文档并定位到该时间点。
 	 * 筛选模式（q 非空）显示整条祖先链且忽略折叠状态，保证命中条目可见 */
 	private renderNode(parent: HTMLElement, node: TlNode, q: string): void {
 		const row = node.row;
 		const item = parent.createDiv({ cls: `aw-tl-item lv-${String(Math.min(row.level, 5))}` });
-		const dot = item.createSpan({ cls: "aw-tl-dot" }); // 节点圆点（替代旧 ::before 伪元素，可点击）
+		const dot = item.createSpan({ cls: "aw-tl-dot" }); // 节点圆点（替代旧 ::before 伪元素，悬停 Tip 显示描述、可点击）
+		const tipParts: string[] = [];
+		if (row.event) tipParts.push(row.event); // 描述内容＝事件文本（合并自原《情节节点》的描述，可多行）
 		if (node.children.length) {
+			tipParts.push(`点击${this.collapsedIds.has(row.id) ? "展开" : "折叠"} ${String(this.descendantCount(node))} 条子事件`);
 			dot.addClass("has-kids");
-			dot.setAttribute("title", `点击${this.collapsedIds.has(row.id) ? "展开" : "折叠"} ${String(this.descendantCount(node))} 条子事件`);
 			dot.addEventListener("click", () => {
 				this.toggleCollapse(row.id);
 				if (this.lastSnap) this.renderBody(this.lastSnap);
 			});
 		}
+		if (tipParts.length) dot.setAttribute("title", tipParts.join("\n"));
 		item.createSpan({ text: timelineTimeText(row), cls: "aw-tl-time" });
 		if (row.sourceLabel) item.createSpan({ text: row.sourceLabel, cls: "aw-dim aw-tl-src" });
 		const wrap = item.createDiv({ cls: "aw-tl-evwrap" });
