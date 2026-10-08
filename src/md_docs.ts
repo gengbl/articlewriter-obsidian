@@ -689,8 +689,9 @@ export function formatRelationships(items: RelationshipEntry[]): string {
 
 // ---------- 时间线（时间线.md，书/卷/章三层通用；v0.2.x+ 时间线面板解析器）----------
 
-/** 一条时间线事件（书/卷/章三层通用）：时间点＝整年＋可选月日（如 -129 / -129-06 / -129-06-15），兼容旧版纯数字写法（小数/科学计数法按「仅年份」处理）；面板按 (年,月,日) 升序自上而下渲染 */
+/** 一条时间线事件（书/卷/章三层通用）：时间点＝整年＋可选月日（如 -129 / -129-06 / -129-06-15），兼容旧版纯数字写法（小数/科学计数法按「仅年份」处理）；level＝标题深度（#=一级、##=二级、###=三级，最深 ######）决定事件层级；面板按 (年,月,日) 升序自上而下渲染并按级别嵌套折叠 */
 export interface TimelineEntry {
+	level: number; // 事件级别＝标题深度（1–6）：决定嵌套层级与圆点大小/颜色
 	time: number; // 年份（任意数字，负数/小数兼容旧数据）
 	month?: number; // 月份（1-12；未写则缺省）
 	day?: number; // 日期（1-31；未写则缺省）
@@ -731,19 +732,19 @@ export function timelineTimeText(p: TimelinePoint): string {
 }
 
 /**
- * 解析《时间线.md》：按 `## ` 分块，每块一条事件。
- * 标题必须是有效时间点——`年` / `年-月` / `年-月-日`（如 `## 120`、`## -3.5`〔旧纯数字写法〕、`## -129-06-15`），非法/非时间点标题的块（如「概述」、月份越界）整块忽略。
+ * 解析《时间线.md》：按 ATX 标题（`# `–`###### `，任意深度）分块，每块一条事件，标题深度即事件级别（#=一级、##=二级、###=三级，可更深）。
+ * 标题必须是有效时间点——`年` / `年-月` / `年-月-日`（如 `# 120`、`## -3.5`〔旧纯数字写法〕、`### -129-06-15`），非法/非时间点标题的块（文档标题 `# 时间线`、「概述」、月份越界等）整块忽略。
  * 块内字段行（复用 REL_FIELD_RE）：`- 人物：A、B`（别名 角色/登场人物/涉及人物/出场人物）、`- 事件：…`（别名 描述/说明/详情/备注/简介）。
  * 事件正文可为 `- 事件：` 后接文本、```text 围栏内容、或无字段前缀的自由文本行（三者合并）；其它字段（如「发生章节」）不并入。
  */
 export function parseTimelines(text: string): TimelineEntry[] {
 	const body = stripComments(text || "");
 	const out: TimelineEntry[] = [];
-	let cur: (TimelinePoint & { chars: string[]; eventLines: string[] }) | null = null;
+	let cur: (TimelinePoint & { level: number; chars: string[]; eventLines: string[] }) | null = null;
 	let inFence = false;
 	const flush = (): void => {
 		if (!cur) return;
-		const e: TimelineEntry = { time: cur.time, chars: [...new Set(cur.chars)], event: cur.eventLines.join("\n").trim() };
+		const e: TimelineEntry = { level: cur.level, time: cur.time, chars: [...new Set(cur.chars)], event: cur.eventLines.join("\n").trim() };
 		if (cur.month != null) e.month = cur.month; // 未写月/日的条目保持字段缺省（不显式落 undefined）
 		if (cur.day != null) e.day = cur.day;
 		out.push(e);
@@ -759,15 +760,15 @@ export function parseTimelines(text: string): TimelineEntry[] {
 			if (cur) cur.eventLines.push(line);
 			continue;
 		}
-		if (/^##\s+/.test(line)) {
+		const hm = /^(#{1,6})\s+(.*)$/.exec(line);
+		if (hm) {
 			flush();
-			const t = parseTimelineTime(line.replace(/^##\s+/, ""));
-			if (t === null) continue; // 非有效时间点标题块整块忽略（cur 已被 flush 置空，其下内容自然丢弃）
-			cur = { ...t, chars: [], eventLines: [] };
+			const t = parseTimelineTime(hm[2]);
+			if (t === null) continue; // 非有效时间点标题块整块忽略（含文档 H1 标题；cur 已被 flush 置空，其下内容自然丢弃）
+			cur = { ...t, level: hm[1].length, chars: [], eventLines: [] };
 			continue;
 		}
-		if (/^#\s+/.test(line)) continue; // 文档 H1 标题行忽略
-		if (!cur) continue; // 尚未进入任何有效 ## 块的内容（如块外散文）忽略
+		if (!cur) continue; // 尚未进入任何有效时间点块的内容（如块外散文）忽略
 		const m = REL_FIELD_RE.exec(line);
 		if (m) {
 			const key = m[1].trim();
@@ -789,9 +790,9 @@ export function parseTimelines(text: string): TimelineEntry[] {
 	return out;
 }
 
-/** 时间线条目序列化为文档块（与 parseTimelines 往返一致；标题经 timelineTimeText 规范化，含月日时补零到两位） */
+/** 时间线条目序列化为文档块（与 parseTimelines 往返一致；标题深度＝事件级别，时间点经 timelineTimeText 规范化，含月日时补零到两位） */
 export function formatTimelineBlock(e: TimelineEntry): string {
-	const lines = [`## ${timelineTimeText(e)}`];
+	const lines = [`${"#".repeat(Math.max(1, Math.min(6, e.level)))} ${timelineTimeText(e)}`];
 	if (e.chars.length) lines.push(`- 人物：${joinList(e.chars)}`);
 	if (e.event) lines.push("- 事件：", "```text", e.event, "```");
 	lines.push("");

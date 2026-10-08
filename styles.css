@@ -976,23 +976,29 @@
 /* 时间线面板（TimelineView，v0.2.x+）：容器/头部/滚动布局复用 .aw-status-view + .aw-st-top/.aw-st-tree/.aw-st-chap，筛选行复用 .aw-rel-filter-row/.aw-rel-filter；此处只定义时间轴专属部分 */
 .aw-tl-view .is-hidden { display: none; }
 
-/* 画布模式主体（同关系面板图面交互）：裁剪不出滚动条——滚轮以鼠标位置为不动点缩放、左键按住拖动平移查看超出部分。
-   transform 加在内部 .aw-tl-zoom 上（transform-origin 左上角），不改布局故永不产生滚动条 */
+/* 画布主体：overflow:auto——普通滚轮/滚动条/触屏原生滚动（内容放得下时事件冒泡滚动页面），Ctrl|Shift＋滚轮以鼠标位置为不动点缩放、左键按住拖动平移（驱动容器滚动位置）。
+   transform scale 加在内部绝对定位的 .aw-tl-zoom 上（transform-origin 左上角，不影响布局）；.aw-tl-sizer 宽高＝内容×缩放（JS 设置）撑出可滚动范围 */
 .aw-st-tree.aw-tl-body {
-	overflow: hidden;
+	overflow: auto;
 	cursor: grab; /* 提示可按住拖动 */
 	user-select: none; /* 拖动时不选中条目文字 */
-	touch-action: none; /* 触屏单指拖动走 pointer 事件平移，不连带页面滚动 */
+	touch-action: pan-x pan-y; /* 触屏单指走原生滚动（浏览器接管后 pointer 手势不再触发我们的拖拽逻辑） */
 }
 
 .aw-st-tree.aw-tl-body.is-panning {
 	cursor: grabbing;
 }
 
+.aw-tl-sizer {
+	position: relative; /* .aw-tl-zoom 的定位包含块；宽高由 JS 设为 内容×缩放 */
+}
+
 .aw-tl-zoom {
-	width: 100%;
-	transform-origin: 0 0; /* 缩放围绕内容左上角，pan 由 js 按"鼠标不动点"换算补偿 */
-	transform: var(--tl-transform, none); /* JS 通过 setProperty("--tl-transform", ...) 更新（no-static-styles-assignment） */
+	position: absolute;
+	left: 0;
+	top: 0;
+	transform-origin: 0 0; /* 缩放围绕内容左上角，不动点由 js 换算滚动位置补偿 */
+	transform: var(--tl-transform, none); /* JS 通过 setProperty("--tl-transform", ...) 更新（no-static-styles-assignment）；宽度也由 JS 设为视口宽（transform 不影响布局，须显式给定） */
 }
 
 /* 底部固定汇总行：不参与缩放/平移，始终可见 */
@@ -1060,9 +1066,8 @@
 	background: var(--background-modifier-hover);
 }
 
-/* 节点圆点：圆心对齐竖线中轴（list padding-left 14px，dot 左缘贴 list 内边）；默认 8px 强调色＝卷级基准 */
-.aw-tl-item::before {
-	content: "";
+/* 节点圆点（真实元素 .aw-tl-dot，替代旧 ::before 伪元素以便点击）：圆心对齐竖线中轴（list/kids padding-left 14px，dot 左缘贴容器内边）；默认 8px 强调色＝二级基准 */
+.aw-tl-dot {
 	position: absolute;
 	left: -14px;
 	top: 7px;
@@ -1072,28 +1077,71 @@
 	background: var(--interactive-accent);
 }
 
-/* 按事件来源层级区分重要性（书 > 卷 > 章）：节点圆点尺寸 + 事件正文强调。
-   书籍级＝最大圆点＋加粗正文（全书主线事件最醒目）；卷级＝基准样式（不另写规则）；
-   章级＝最小圆点＋弱化文字（章节细节退后）。top 随尺寸调整保持圆心同轴（距条目顶 11px） */
-.aw-tl-item.is-book::before {
-	top: 6px;
-	width: 10px;
-	height: 10px;
+/* 有子事件的圆点可点击切换折叠状态 */
+.aw-tl-dot.has-kids {
+	cursor: pointer;
 }
 
-.aw-tl-item.is-chapter::before {
+/* 按事件级别区分（标题深度 #=一级 … ######=六级，lv-5 覆盖 ≥5 级）：圆点尺寸 + 颜色 + 正文强调。
+   一级＝最大圆点＋加粗正文（顶层主线事件最醒目）；二级＝基准样式（不另写规则）；
+   三级起逐级缩小换色、五级弱化文字（深层子事件退后）。top 随尺寸调整保持圆心同轴（距条目顶 11px） */
+.aw-tl-item.lv-1 .aw-tl-dot {
+	top: 5px;
+	width: 12px;
+	height: 12px;
+	background: var(--color-red);
+}
+
+.aw-tl-item.lv-3 .aw-tl-dot {
+	top: 7.5px;
+	width: 7px;
+	height: 7px;
+	background: var(--color-green);
+}
+
+.aw-tl-item.lv-4 .aw-tl-dot {
 	top: 8px;
 	width: 6px;
 	height: 6px;
+	background: var(--color-yellow);
+}
+
+.aw-tl-item.lv-5 .aw-tl-dot {
+	top: 8.5px;
+	width: 5px;
+	height: 5px;
 	background: var(--text-faint);
 }
 
-.aw-tl-item.is-book .aw-tl-event {
+.aw-tl-item.lv-1 .aw-tl-event {
 	font-weight: 600;
 }
 
-.aw-tl-item.is-chapter .aw-tl-event {
+.aw-tl-item.lv-5 .aw-tl-event {
 	color: var(--text-muted);
+}
+
+/* 折叠状态提示：条目折叠后紧随其后的弱化小字，标明隐藏了多少条子事件 */
+.aw-tl-collapsed-hint {
+	margin-left: 6px;
+	font-size: 0.8em;
+}
+
+/* 子事件容器：嵌套再缩进一级 + 自己的竖线（几何与父级 .aw-tl-list 相同，整体右移 margin-left） */
+.aw-tl-kids {
+	position: relative;
+	margin-left: 8px;
+	padding-left: 14px;
+}
+
+.aw-tl-kids::before {
+	content: "";
+	position: absolute;
+	left: 3px;
+	top: 0;
+	bottom: 4px;
+	width: 2px;
+	background: var(--background-modifier-border);
 }
 
 /* 时间点徽章（任意数字；等宽数字避免不同长度跳动） */

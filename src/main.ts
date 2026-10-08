@@ -2614,7 +2614,7 @@ async cmdRenameChapterFile(): Promise<void> {
 				list = parseTimelines(d.text);
 			} catch { /* 单层解析失败不影响其余层 */ }
 			if (!list.length && d.text.trim()) unparsedDocs.push({ label: d.label, path: d.path }); // 有内容但无有效条目 → 展示侧格式提示
-			for (const e of list) rows.push({ ...e, scope: d.scope, sourcePath: d.path, sourceLabel: d.label });
+			list.forEach((e, i) => rows.push({ ...e, id: `${d.path}#${i}`, scope: d.scope, sourcePath: d.path, sourceLabel: d.label })); // id＝来源路径#文档内序号：稳定标识供折叠状态跨刷新保持
 		}
 		rows.sort((a, b) => a.time - b.time || ((a.month ?? 0) - (b.month ?? 0)) || ((a.day ?? 0) - (b.day ?? 0))); // (年,月,日) 全局升序，稳定排序同值保持文档顺序
 		return { workDir: root, stories, activeStory: active, activeStoryTitle: stories.find((s) => s.name === active)?.title ?? active, useVolumes: state?.use_volumes === true, rows, totalCount: rows.length, unparsedDocs };
