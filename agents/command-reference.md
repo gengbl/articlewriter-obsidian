@@ -6,7 +6,7 @@
 | `switch-story` | 列出全部小说（含各章数/当前章、◀ 当前标记），选中设为当前并弹出该书状态 |
 | `new-story` | 标题+题材+编写类型三问，建书与全套模板文档 |
 | `new-chapter` / `list-chapters` | 建章后自动激活；列表选择打开正文并切当前章 |
-| `insert-chapter` | 在当前激活章（无则先选参照章）之前/之后插入新空章节：**v0.0.15 起编号在容器内**——仅参照章所在容器（卷/书根）中 ≥插入位的各章整体 +1（两阶段临时迁移防目录冲突；**全部改名走真实文件系统层 adapter.rename+adapter.exists 逐步强校验（不走会滞后的元数据索引），源目录按复合键定位带原始 FS 兜底，检测到重复号残留目录立即中止**——防连续快速重命名下索引滞后误判产生大号幽灵章节；操作前/后自动隔离空心残骸），同步重写各章文档「第N章」/「章节：N」引用与伏笔.md（引用为复合键语义、跨卷同号不再歧义）；插入位是断档空位时直接落位不挪动他人；完成后 current_chapter 指向新章（manager.insertChapter）。注：listChapters 一律忽略无「章节.md」的空心目录（外部插件如 make-md 会在迁移窗口期往新建目录写 .space/*.mdb 造成残骸），故面板永不显示此类幽灵章 |
+| `insert-chapter` | 在当前激活章（无则先选参照章）之前/之后插入新空章节：**v0.0.15 起编号在容器内**——仅参照章所在容器（卷/书根）中 ≥插入位的各章整体 +1（**降序单遍顺延：最高号章先移、目标位必空、无临时槽——中断只留断档、不留大号幽灵章**；**全部改名走真实文件系统层 adapter.rename+adapter.exists 逐步强校验（不走会滞后的元数据索引），源目录按复合键定位带原始 FS 兜底，检测到重复号残留目录立即中止；开始前 assertSnapshotCoversDisk 校验快照覆盖磁盘全部章节目录、索引滞后即拒绝启动**——防顺延目标撞上未入快照的存活章），同步重写各章文档「第N章」/「章节：N」引用与伏笔.md（引用为复合键语义、跨卷同号不再歧义）；插入位是断档空位时直接落位不挪动他人；完成后 current_chapter 指向新章（manager.insertChapter）。注：v0.1.4+ 起 listChapters 把磁盘上存在的章节目录一律视为存活章节（无「章节.md」的空正文章照常列出、可被写作命令补写正文） |
 | `next-chapter` / `prev-chapter` | 无当前章时 next→第一章、prev→最后一章；到边界提示不切 |
 | `count-current` / `count-all` | 纯文字字数统计（逐章 + 合计） |
 | `save-current` | 聚焦编辑器内容强制落盘 |
@@ -20,7 +20,7 @@
 | `world-show` / `world-set` | 世界/类型/规则/势力/地点/历史/力量体系 |
 | `outline-append-current` | 追加当前章大纲：去重合并 + `[伏]...[/]` 标记解析入库伏笔记录 |
 | `open-chapter-outline` | 打开当前章 `章节大纲.md`（缺失先建模板） |
-| `chapter-delete` / `chapter-rename` / `chapter-renumber` | 删除=回收站+清理元数据与归属引用，**被删号之后仍有章节时自动补洞重新排号**（复用 renumberChapters：后续各章 -1、文档/伏笔引用重写，保持 1..N 连续；返回 resequenced 供提示）；重命名同步目录名与文档内引用；renumber 手动连续化并改写交叉引用。三者迁移路径共用防幽灵章机制：真实 FS 层 adapter.rename+exists 逐步强校验、重复号残留即中止（assertUniqueKeys 拒绝并要求手工清理）；listChapters 仅过滤元数据索引陈旧条目——v0.1.4+ 起磁盘上存在的章节目录一律视为存活章节（无「章节.md」的空正文章照常列出、可被写作命令补写正文），旧 quarantineHollowChapters 预隔离/收尾清扫机制已整体移除（用户约定「有文件夹即正常」） |
+| `chapter-delete` / `chapter-rename` / `chapter-renumber` | 删除=回收站+清理元数据与归属引用，**被删号之后仍有章节时自动补洞重新排号**（复用 renumberChapters：后续各章 -1、文档/伏笔引用重写，保持 1..N 连续；返回 resequenced 供提示）；重命名同步目录名与文档内引用；renumber 手动连续化并改写交叉引用。三者迁移路径共用防幽灵章机制：**renumberChapters 升序单遍 / insertChapter 降序单遍顺延（目标位必空、无临时槽——中断只留断档、不留大号幽灵章，下次重排幂等补齐）**；真实 FS 层 adapter.rename+exists 逐步强校验、重复号残留即中止（assertUniqueKeys 拒绝并要求手工清理）、开始前 assertSnapshotCoversDisk 校验快照覆盖磁盘全部章节目录（索引滞后即拒绝启动）；listChapters 仅过滤元数据索引陈旧条目——v0.1.4+ 起磁盘上存在的章节目录一律视为存活章节（无「章节.md」的空正文章照常列出、可被写作命令补写正文），旧 quarantineHollowChapters 预隔离/收尾清扫机制已整体移除（用户约定「有文件夹即正常」） |
 | `pack-chapters` | 正文打包单 MD：章标题行「## 第N章 章节名」（中文章节号带「第」前缀）+ `---` 分隔；支持范围/列表/all（表达式解析在 `md_docs.parseChapterSelection`）；默认输出 `<书名>-第X-Y章-合集.md`。与导出卷共用私有装配 buildPackParts（逐章读《章节.md》去 H1、空正文章跳过计入 skipped）+ writePackFile（outputPath 带扩展名=完整文件名、不带当目录拼 fileName）——改合辑格式只动这两处 |
 | `pack-volume` | 选卷→该卷实体目录下全部章节（按位置判归属，入口先过 ensureVolumeLayout 门禁保证位置==归属）正文合一 MD；无章报错提示先「按卷整理目录」归位；默认输出 `<书名>-<卷名>-合集.md`；管理卷菜单亦有同款项。**写字台面板卷节点右键已改为「导出…」**（StatusAction export-volume）：只问范围〔留空/all=该卷全章、区间/列表按卷内本地号〕、不问输出路径且不支持自定义文件名——经 manager.packStory 以 forcedVolId 锁定本卷（与导出书稿共用装配引擎，文件首行带「# 第N卷 · 卷名」标题行），默认名 `<书名>-<卷名>-范围.md`——**不再与本命令同义**（本命令固定整卷+`-合集`命名） |
 | `rescan-story` | 从现有 MD 重建故事状态.md（只初始化，不切小说不改 work_dir） |

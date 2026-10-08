@@ -1210,7 +1210,7 @@ private emptyState(storyName: string): StoryState {
 	/**
 	 * 目录改名后，按**真实文件系统**把章节目录内模板文件重命名为新目录名前缀（兼容旧前缀/裸名）。
 	 * 刻意用 adapter.list/adapter.exists/adapter.rename（而非 vault.getAbstractFileByPath/vault.rename）：adapter.rename 后 Obsidian 索引会滞后，
-	 * 用索引会把旧文件名/旧路径当作现状，重命名失败进而中断两阶段重排、留下临时目录（表现为「多出后面的章节」）。全程非致命，单个失败即跳过。
+	 * 用索引会把旧文件名/旧路径当作现状，重命名失败进而中断有序重排、留下断档残留。全程非致命，单个失败即跳过。
 	 */
 	private async syncChapterDocFileNames(dirPath: string, oldFolder: string, newFolder: string, title: string): Promise<void> {
 		let files: string[] = [];
@@ -2237,7 +2237,7 @@ private emptyState(storyName: string): StoryState {
 
 	// ---------- 章节删除 / 改名 / 重编号（对齐 chapters.py）----------
 
-	/** 删除章节：移入回收站、清理元数据；当前章回退到同容器最后一章。**被删号之后（同容器内）仍有章节时自动补洞**——复用 renumberChapters 把后续各章整体 -1（两阶段迁移+文档/伏笔引用重写），保持容器内 1..N 连续 */
+	/** 删除章节：移入回收站、清理元数据；当前章回退到同容器最后一章。**被删号之后（同容器内）仍有章节时自动补洞**——复用 renumberChapters 把后续各章整体 -1（升序单遍顺延+文档/伏笔引用重写），保持容器内 1..N 连续 */
 	async deleteChapter(storyName: string, chapterKey: string): Promise<{ title: string; resequenced: boolean }> {
 		const ch = await this.chapterDirOf(storyName, chapterKey);
 		if (!ch) throw new Error(`章节不存在：${chapterKey}`);
@@ -2307,7 +2307,7 @@ private emptyState(storyName: string): StoryState {
 	/**
 	 * 等待真实文件系统达到期望状态——用 adapter.exists 直接查磁盘，不走 Obsidian 元数据索引。
 	 * 连续快速重命名时索引会滞后：按索引校验会把「实际已完成」的重命名误判为未生效而中途抛错中止，
-	 * 留下半套临时目录残留，后续操作再把它们当章节迁移，最终产生大号幽灵章节。超时返回 false。
+	 * 留下半套重排（断档残留）。超时返回 false。
 	 */
 	private async settleTree(checks: Array<{ path: string; expect: boolean }>, timeoutMs = 5000): Promise<boolean> {
 		const probe = async (): Promise<boolean> => {
@@ -2383,12 +2383,29 @@ private emptyState(storyName: string): StoryState {
 		return files;
 	}
 
-	/** 中断残留可能造成同容器同号双目录（复合键重复）——两阶段迁移遇到会错移，直接拒绝并提示手动清理 */
+	/** 中断残留可能造成同容器同号双目录（复合键重复）——有序迁移遇到会错移，直接拒绝并提示手动清理 */
 	private assertUniqueKeys(keys: string[]): void {
 		const seen = new Set<string>();
 		for (const k of keys) {
 			if (seen.has(k)) throw new Error(`检测到重复章节目录：${k}（可能是上次操作中断的残留），请手动清理后重试`);
 			seen.add(k);
+		}
+	}
+
+	/** 快照完整性校验：listChapters 经元数据索引枚举子目录，索引滞后（刚手动建/改过章节目录）时可能漏掉磁盘上的存活章——迁移开始前发现即拒绝，避免改名目标撞上未入快照的存活章而中途报错中止 */
+	private async assertSnapshotCoversDisk(storyName: string, chapters: Array<{ dir: TFolder }>): Promise<void> {
+		const known = new Set(chapters.map((c) => c.dir.path));
+		for (const contPath of await this.containerPaths(storyName)) {
+			let listed: { folders?: string[] };
+			try {
+				listed = await this.vault.adapter.list(contPath);
+			} catch {
+				continue; // 不可读容器忽略（与 listChapters 口径一致）
+			}
+			for (const p of listed.folders ?? []) {
+				if (!CHAPTER_DIR_RE.test(p.split("/").pop() ?? "")) continue;
+				if (!known.has(p)) throw new Error(`Obsidian 索引尚未同步章节目录 ${p}（索引滞后），请等待片刻后重试`);
+			}
 		}
 	}
 
@@ -2415,7 +2432,7 @@ private emptyState(storyName: string): StoryState {
 	}
 
 	/**
-	 * 重编号：每个容器（书根/各卷实体目录）独立压缩为连续 1..N（两阶段临时迁移；以磁盘为准）。
+	 * 重编号：每个容器（书根/各卷实体目录）独立压缩为连续 1..N（升序单遍有序迁移、无临时槽，中断不留大号幽灵章；以磁盘为准）。
 	 * v0.0.15：执行前把全书 md 备份到 _backup/卷内重排_<时间戳>/（角色改名同款 file-level copy，老书卷内迁移入口）；
 	 * 裸「第X章」引用只在受影响容器的文件里按其局部映射重写——跨卷显式写法（「第二卷·第5章」「章节：<卷名>第5章」）不识别、不改写；
 	 * 伏笔.md 条目按复合键结构化重映射。
@@ -2425,7 +2442,8 @@ private emptyState(storyName: string): StoryState {
 		if (!folder) return { ok: false, msg: "没有章节" };
 		const chapters = await this.listChapters(storyName);
 		if (chapters.length === 0) return { ok: false, msg: "没有章节" };
-		this.assertUniqueKeys(chapters.map((c) => c.key)); // 中断残留的重复键会令两阶段迁移错移，直接拒绝
+		this.assertUniqueKeys(chapters.map((c) => c.key)); // 中断残留的重复键会令有序迁移错移，直接拒绝
+		await this.assertSnapshotCoversDisk(storyName, chapters); // 索引滞后于磁盘时开始前即拒绝，避免改名目标撞上未入快照的存活章
 
 		type ScopeEntry = { volId: string | null; list: Array<(typeof chapters)[number]> };
 		const scopes = new Map<string, ScopeEntry>();
@@ -2455,16 +2473,15 @@ private emptyState(storyName: string): StoryState {
 		const scopeMaps = new Map<string | null, Record<number, number>>(); // volId → 局部号映射（仅留洞的容器参与改写）
 		const vols = await this.loadVolumes(storyName).catch((): Record<string, doc.VolumeInfo> => ({}));
 		for (const s of [...scopes.values()].sort((a, b) => (a.volId ?? "").localeCompare(b.volId ?? ""))) {
-			const nums = s.list.map((c) => c.num);
 			const map: Record<number, number> = {};
 			s.list.forEach((c, i) => (map[c.num] = i + 1));
 			const moving = s.list.filter((c, i) => c.num !== i + 1).map((c) => c.key); // 只移动真正变号的章——减少重命名次数即减少出错面
 			if (!moving.length) continue;
 			scopeMaps.set(s.volId, map);
-			const tmpBase = Math.max(...nums) + nums.length + 1;
-			for (let i = 0; i < moving.length; i++) await this.moveChapterDir(storyName, moving[i], tmpBase + i); // 旧 → 临时（每步校验生效）
-			for (let i = 0; i < moving.length; i++) {
-				await this.moveChapterDir(storyName, chKey(s.volId, tmpBase + i), map[parseChKey(moving[i]).num]); // 临时 → 新号
+			// 升序单遍：位置 i 的章目标位 i+1 必空（洞，或刚被前一步从该位移走时腾出）——无临时槽，中断也不会留下大号幽灵章
+			for (let i = 0; i < s.list.length; i++) {
+				if (s.list[i].num === i + 1) continue;
+				await this.moveChapterDir(storyName, s.list[i].key, i + 1);
 			}
 			movedTotal += moving.length;
 		}
@@ -2496,13 +2513,14 @@ private emptyState(storyName: string): StoryState {
 	}
 
 	/**
-	 * 在 refKey 之前/之后插入新空章节：继承参照章所在容器的局部空间——该位置被占时，同容器内所有号 ≥ 插入号的章整体 +1（两阶段临时迁移防目录冲突），
+	 * 在 refKey 之前/之后插入新空章节：继承参照章所在容器的局部空间——该位置被占时，同容器内所有号 ≥ 插入号的章整体 +1（降序单遍顺延，目标位必空、无临时槽），
 	 * 并同步重写该容器文档内「第N章」引用与伏笔.md；插入点为空位（如插到断档处）则直接落位不挪动他人。
 	 * createChapterAt 会把 current_chapter 设为新章——插入后自然聚焦到新章。返回新章复合键、本地号与其正文路径。
 	 */
 	async insertChapter(storyName: string, refKey: string, pos: "before" | "after", title: string): Promise<{ key: string; newNum: number; path: string }> {
 		const chapters = await this.listChapters(storyName);
 		this.assertUniqueKeys(chapters.map((c) => c.key));
+		await this.assertSnapshotCoversDisk(storyName, chapters); // 索引滞后于磁盘时开始前即拒绝，避免顺延目标撞上未入快照的存活章
 		const ref = chapters.find((c) => c.key === refKey);
 		if (!ref) throw new Error(`章节不存在：${refKey}`);
 		const scopeVol = ref.vol ?? null; // 新章继承参照章所在容器（同卷插入）
@@ -2515,10 +2533,11 @@ private emptyState(storyName: string): StoryState {
 			path = await this.createChapterAt(storyName, newNum, title, scopeVol ?? ""); // 空位直插，无需顺延
 		} else {
 			affectedKeys = inScope.filter((c) => c.num >= newNum).map((c) => c.key); // 这些章都要 +1
-			const tmpBase = Math.max(...nums) + nums.length + 1;
-			for (let i = 0; i < affectedKeys.length; i++) await this.moveChapterDir(storyName, affectedKeys[i], tmpBase + i); // 旧 → 临时
-			path = await this.createChapterAt(storyName, newNum, title, scopeVol ?? "");
-			for (let i = 0; i < affectedKeys.length; i++) await this.moveChapterDir(storyName, chKey(scopeVol, tmpBase + i), parseChKey(affectedKeys[i]).num + 1); // 临时 → 新号（每步落盘可恢复）
+			// 降序单遍：最高号章先移，目标位 num+1 必空（最高章之上无章；其下各章的目标位刚被上一步腾出）——无临时槽，中断也不会留下大号幽灵章
+			for (let i = affectedKeys.length - 1; i >= 0; i--) {
+				await this.moveChapterDir(storyName, affectedKeys[i], parseChKey(affectedKeys[i]).num + 1);
+			}
+			path = await this.createChapterAt(storyName, newNum, title, scopeVol ?? ""); // 插入位已腾空
 		}
 		const newKey = chKey(scopeVol, newNum);
 		// 引用重写：仅被挪动的章参与映射、且只在该容器文件内执行；新建章自身目录跳过（其文档里的「第N章」是自指，不能改）
