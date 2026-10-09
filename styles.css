@@ -1066,9 +1066,9 @@
 	background: var(--background-modifier-hover);
 }
 
-/* 拖动更新时间点（仅非筛选比例视图挂载）：可拖条目行给 grab 光标提示，拖动中整块子树高亮置顶 */
+/* 拖动更新时间点（仅非筛选比例视图挂载）：可拖条目行给 move（四向箭头）光标提示，拖动中整块子树高亮置顶 */
 .aw-tl-item.aw-tl-movable {
-	cursor: grab;
+	cursor: move;
 }
 
 .aw-tl-item.is-dragging {
@@ -1079,7 +1079,7 @@
 }
 
 .aw-tl-item.is-dragging * {
-	cursor: grabbing; /* 覆盖圆点的 pointer，拖动全程统一抓取手型 */
+	cursor: move; /* 覆盖圆点的 pointer，拖动全程统一 move 光标（不用手形） */
 }
 
 .aw-tl-item.is-dragging .aw-tl-time {
