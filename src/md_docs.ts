@@ -698,6 +698,8 @@ export interface TimelineEntry {
 	chars: string[]; // 涉及人物（空数组=未标注）
 	event: string; // 事件（简短，面板内联显示；多行原文，已去字段前缀与代码围栏标记）
 	desc?: string; // 描述（详细，仅面板悬停 Tip 显示、不内联渲染；未写则缺省）
+	srcHeading?: string; // 来源文档中标题行的原样全文（尾部空白已去）：面板拖动更新时间点时据此在原文中定位本条目
+	srcOrdinal?: number; // 同文本标题行在该文档内的出现序号（0 起）：同名重复标题的消歧定位
 }
 
 /** 时间点结构化值（标题解析结果；序列化经 timelineTimeText 往返一致） */
@@ -741,8 +743,9 @@ export function timelineTimeText(p: TimelinePoint): string {
 export function parseTimelines(text: string): TimelineEntry[] {
 	const body = stripComments(text || "");
 	const out: TimelineEntry[] = [];
-	let cur: (TimelinePoint & { level: number; chars: string[]; eventLines: string[]; descLines: string[]; target: "event" | "desc" }) | null = null;
+	let cur: (TimelinePoint & { level: number; chars: string[]; eventLines: string[]; descLines: string[]; target: "event" | "desc"; rawHead: string; ordinal: number }) | null = null;
 	let inFence = false;
+	const headSeen = new Map<string, number>(); // 各标题行文本的出现计数（拖动写回时同名重复标题消歧）
 	const flush = (): void => {
 		if (!cur) return;
 		const e: TimelineEntry = { level: cur.level, time: cur.time, chars: [...new Set(cur.chars)], event: cur.eventLines.join("\n").trim() };
@@ -750,6 +753,8 @@ export function parseTimelines(text: string): TimelineEntry[] {
 		if (d) e.desc = d; // 未写描述的条目保持字段缺省（面板不挂 Tip）
 		if (cur.month != null) e.month = cur.month; // 未写月/日的条目保持字段缺省（不显式落 undefined）
 		if (cur.day != null) e.day = cur.day;
+		e.srcHeading = cur.rawHead; // 写回定位信息：标题行原样全文＋文档内出现序号（面板拖动更新时间点时用）
+		e.srcOrdinal = cur.ordinal;
 		out.push(e);
 		cur = null;
 	};
@@ -768,7 +773,9 @@ export function parseTimelines(text: string): TimelineEntry[] {
 			flush();
 			const t = parseTimelineTime(hm[2]);
 			if (t === null) continue; // 非有效时间点标题块整块忽略（含文档 H1 标题；cur 已被 flush 置空，其下内容自然丢弃）
-			cur = { ...t, level: hm[1].length, chars: [], eventLines: [], descLines: [], target: "event" };
+			const ordinal = headSeen.get(line) ?? 0; // 本标题行文本出现序号（拖动写回定位用，同名重复标题消歧）
+			headSeen.set(line, ordinal + 1);
+			cur = { ...t, level: hm[1].length, chars: [], eventLines: [], descLines: [], target: "event", rawHead: line, ordinal };
 			continue;
 		}
 		if (!cur) continue; // 尚未进入任何有效时间点块的内容（如块外散文）忽略
@@ -797,6 +804,46 @@ export function parseTimelines(text: string): TimelineEntry[] {
 	}
 	flush();
 	return out;
+}
+
+/** HTML 注释内容逐字符替换为空格（保留换行 → 行号与原文一一对应）：用于在**原文**中定位「可见」标题行——模板示例等注释里的同名标题不得误命中 */
+function maskCommentSpans(text: string): string {
+	let out = "";
+	let inC = false;
+	for (let i = 0; i < text.length; i++) {
+		if (!inC && text.startsWith("<!--", i)) { inC = true; out += "    "; i += 3; continue; } // "<!--" 整体掩掉
+		if (inC && text.startsWith("-->", i)) { inC = false; out += "   "; i += 2; continue; } // "-->" 整体掩掉
+		out += inC ? (text[i] === "\n" ? "\n" : " ") : text[i];
+	}
+	return out;
+}
+
+/** 改写《时间线.md》原文中单条目的时间点（时间线面板拖动更新的写回路径）：先用 maskCommentSpans 掩去注释区，再按 srcHeading 全文精确匹配＋文档内出现序号 srcOrdinal 定位目标标题行；校验该行能反解出 expectOld 后，把标题号之后的整段替换为 timelineTimeText(newPoint) 规范值（保留原标题深度）。任一环节不满足返回 null——调用方应提示用户刷新重试而非继续。标题行内含行内注释不支持（整行替换会将其丢失），同样返回 null */
+export function rewriteTimelineEntryTime(
+	text: string,
+	srcHeading: string,
+	srcOrdinal: number,
+	expectOld: TimelinePoint,
+	newPoint: TimelinePoint,
+): string | null {
+	const mLines = maskCommentSpans(text).split("\n");
+	let seen = -1;
+	let idx = -1;
+	for (let i = 0; i < mLines.length; i++) {
+		if (mLines[i].trim() !== srcHeading) continue;
+		seen++;
+		if (seen === srcOrdinal) { idx = i; break; }
+	}
+	if (idx < 0) return null; // 原文自解析后已变化（对应标题不存在/位置改变）→ 放弃防误写
+	const oLines = text.split("\n");
+	const target = oLines[idx];
+	if (/<!--|-->/ .test(target)) return null; // 标题行带行内注释：不做有损替换
+	const hm = /^(#{1,6})\s+(.*)$/.exec(target.trim());
+	if (!hm) return null;
+	const p = parseTimelineTime(hm[2]);
+	if (!p || p.time !== expectOld.time || (p.month ?? 0) !== (expectOld.month ?? 0) || (p.day ?? 0) !== (expectOld.day ?? 0)) return null; // 快照过期：该处时间点与本条目旧值不符
+	oLines[idx] = `${hm[1]} ${timelineTimeText(newPoint)}`;
+	return oLines.join("\n");
 }
 
 /** 时间线条目序列化为文档块（与 parseTimelines 往返一致；标题深度＝事件级别，时间点经 timelineTimeText 规范化，含月日时补零到两位；描述非空时以 `- 描述：`＋围栏输出） */
