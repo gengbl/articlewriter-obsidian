@@ -489,7 +489,7 @@ export class TimelineView extends ItemView {
 		d.els.forEach((el) => el.removeClass("is-dragging"));
 		if (!this.tlDragLive) return; // 点击级手势 → click/dblclick 语义完全不动
 		this.tlSuppressClickUntil = Date.now() + 400; // 吞掉紧随的 click/dblclick（zoomEl 捕获阶段判定）
-		d.els.forEach((el) => { el.style.transform = ""; }); // 拖动中的平移只是手势预览：一律先还原——Δ≠0 且写回成功后由 refresh 按新间隔重建布局；Δ==0 或写回失败则保持原位不留残影
+		d.els.forEach((el) => el.style.removeProperty("transform")); // 拖动中的平移只是手势预览：一律先还原（removeProperty 而非赋空串，no-static-styles-assignment）——Δ≠0 且写回成功后由 refresh 按新间隔重建布局；Δ==0 或写回失败则保持原位不留残影
 		d.badge?.setText(timelineTimeText(d.row)); // 徽章同步还原原值（写回成功时 refresh 会整体重建，此处保证失败路径显示正确）
 		const dd = this.tlDragDd;
 		this.tlDragDd = 0;
