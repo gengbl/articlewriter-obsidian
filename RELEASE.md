@@ -39,9 +39,9 @@ PAGE=$B/geng_bl/articlewritter-obsidian/releases/new
 # ② 取新建页及其 _csrf
 curl -s -b $CJ $PAGE -o /tmp/opencode/relnew.html
 CSRF=$(grep '_csrf' /tmp/opencode/relnew.html | grep -o 'value="[^"]*"' | head -1 | cut -d'"' -f2)
-# ③ 上传临时文件 → uuid（字段名是 file，不是 attachment！）
+# ③ 上传临时文件 → uuid（字段名是 file，不是 attachment！实测坑位：不要给 part 写显式 ;type=，无需指定 MIME）
 UUID=$(curl -s -b $CJ --referer "$PAGE" -X POST $B/geng_bl/articlewritter-obsidian/releases/attachments \
-  -F "_csrf=$CSRF" -F "file=@articlewriter-v<版本>.zip;type=application/zip" \
+  -F "_csrf=$CSRF" -F "file=@articlewriter-v<版本>.zip" \
   | python3 -c "import json,sys;print(json.load(sys.stdin)['uuid'])")
 # ④ 提交表单创建 Release（隐藏域 files=<uuid> 关联附件；期望 303）
 curl -s -b $CJ --referer "$PAGE" -X POST $PAGE -F "_csrf=$CSRF" -F "tag_name=v<版本>" \
