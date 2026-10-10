@@ -1,4 +1,4 @@
-import { App, Modal, Notice, Platform, Plugin, PluginSettingTab, TAbstractFile, TFile, TFolder, WorkspaceLeaf, type SettingDefinitionItem, type SettingDefinitionPage } from "obsidian";
+import { App, Modal, Notice, Platform, Plugin, PluginSettingTab, TAbstractFile, TFile, TFolder, WorkspaceLeaf, WorkspaceSidedock, type SettingDefinitionItem, type SettingDefinitionPage } from "obsidian";
 import { ActionItem, ActionMenuModal, AddCharacterModal, ChapterListModal, ConfirmModal, FolderPickerModal, MarkdownViewerModal, MultiFieldModal, NewFilePickerModal, NewStoryInput, NewStoryModal, PanelLine, StoryPickerModal, TextAreaPrompt, TextPanelModal, TextInputModal, VolumeBatchCreateModal } from "./modals";
 import type { AddCharacterResult, CharacterScopeOption } from "./modals";
 import { LlmChatView } from "./llm_chat_view";
@@ -2270,34 +2270,41 @@ async cmdRenameChapterFile(): Promise<void> {
 		return this.app.workspace.getRightLeaf(false) ?? this.app.workspace.getRightLeaf(true) ?? this.app.workspace.getLeaf("split");
 	}
 
-	/** 打开常驻人物关系面板（v0.1.9+）：已有则直接激活，否则由 getPanelHostLeaf 取承载叶子 */
-	private async openRelationshipPanel(): Promise<void> {
+	/** 打开常驻面板（人物关系／时间线）：移动端先丢弃仍滞留右栏的旧面板（旧版本/桌面端工作区持久化而来——移动端右栏无 UI 入口，激活它没有任何可见效果），主区域已有则直接激活，否则由 getPanelHostLeaf 取承载叶子新建 */
+	private async openResidentPanel(viewType: string, failMsg: string): Promise<void> {
 		try {
-			const existing = this.app.workspace.getLeavesOfType(RelationshipView.VIEW_TYPE);
+			if (Platform.isMobileApp) {
+				const stale = this.app.workspace.getLeavesOfType(viewType).filter((l) => l.parent instanceof WorkspaceSidedock);
+				for (const l of stale) l.detach();
+				if (stale.length) {
+					// 丢弃后活动叶子可能为空或仍指向右栏，先切到主区域的笔记，保证 getLeaf("split") 分割的是主区域
+					const active = this.app.workspace.activeLeaf;
+					if (!active || active.parent instanceof WorkspaceSidedock) {
+						const anchor = this.app.workspace.getLeavesOfType("markdown").find((l) => !(l.parent instanceof WorkspaceSidedock));
+						if (anchor) this.app.workspace.setActiveLeaf(anchor);
+					}
+				}
+			}
+			const existing = this.app.workspace.getLeavesOfType(viewType);
 			if (existing.length) {
 				this.app.workspace.setActiveLeaf(existing[0]);
 				return;
 			}
 			const leaf = this.getPanelHostLeaf();
-			await leaf.setViewState({ type: RelationshipView.VIEW_TYPE, active: true });
+			await leaf.setViewState({ type: viewType, active: true });
 		} catch (e) {
-			this.notifyError("打开人物关系面板失败", e);
+			this.notifyError(failMsg, e);
 		}
 	}
 
-	/** 打开常驻时间线面板（v0.2.x+）：已有则直接激活，否则由 getPanelHostLeaf 取承载叶子 */
+	/** 打开常驻人物关系面板（v0.1.9+） */
+	private async openRelationshipPanel(): Promise<void> {
+		await this.openResidentPanel(RelationshipView.VIEW_TYPE, "打开人物关系面板失败");
+	}
+
+	/** 打开常驻时间线面板（v0.2.x+） */
 	private async openTimelinePanel(): Promise<void> {
-		try {
-			const existing = this.app.workspace.getLeavesOfType(TimelineView.VIEW_TYPE);
-			if (existing.length) {
-				this.app.workspace.setActiveLeaf(existing[0]);
-				return;
-			}
-			const leaf = this.getPanelHostLeaf();
-			await leaf.setViewState({ type: TimelineView.VIEW_TYPE, active: true });
-		} catch (e) {
-			this.notifyError("打开时间线面板失败", e);
-		}
+		await this.openResidentPanel(TimelineView.VIEW_TYPE, "打开时间线面板失败");
 	}
 
 	/**
