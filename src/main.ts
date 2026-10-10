@@ -2264,7 +2264,13 @@ async cmdRenameChapterFile(): Promise<void> {
 		}
 	}
 
-	/** 打开常驻人物关系面板（v0.1.9+）：已有则直接激活，否则复用右栏叶子承载（写字台占左栏，两者可同屏对照） */
+	/** 常驻面板（人物关系／时间线）的承载叶子：桌面端复用右栏叶子（写字台占左栏，两者可同屏对照），依次回退新建右栏→分割主区域；移动端右栏无 UI 入口（视图调不出来），改分割主区域承载（与 LLM 对话窗口相同） */
+	private getPanelHostLeaf(): WorkspaceLeaf {
+		if (Platform.isMobileApp) return this.app.workspace.getLeaf("split");
+		return this.app.workspace.getRightLeaf(false) ?? this.app.workspace.getRightLeaf(true) ?? this.app.workspace.getLeaf("split");
+	}
+
+	/** 打开常驻人物关系面板（v0.1.9+）：已有则直接激活，否则由 getPanelHostLeaf 取承载叶子 */
 	private async openRelationshipPanel(): Promise<void> {
 		try {
 			const existing = this.app.workspace.getLeavesOfType(RelationshipView.VIEW_TYPE);
@@ -2272,14 +2278,14 @@ async cmdRenameChapterFile(): Promise<void> {
 				this.app.workspace.setActiveLeaf(existing[0]);
 				return;
 			}
-			const leaf = this.app.workspace.getRightLeaf(false) ?? this.app.workspace.getRightLeaf(true) ?? this.app.workspace.getLeaf("split");
+			const leaf = this.getPanelHostLeaf();
 			await leaf.setViewState({ type: RelationshipView.VIEW_TYPE, active: true });
 		} catch (e) {
 			this.notifyError("打开人物关系面板失败", e);
 		}
 	}
 
-	/** 打开常驻时间线面板（v0.2.x+）：已有则直接激活，否则复用右栏叶子承载（写字台占左栏，两者可同屏对照） */
+	/** 打开常驻时间线面板（v0.2.x+）：已有则直接激活，否则由 getPanelHostLeaf 取承载叶子 */
 	private async openTimelinePanel(): Promise<void> {
 		try {
 			const existing = this.app.workspace.getLeavesOfType(TimelineView.VIEW_TYPE);
@@ -2287,7 +2293,7 @@ async cmdRenameChapterFile(): Promise<void> {
 				this.app.workspace.setActiveLeaf(existing[0]);
 				return;
 			}
-			const leaf = this.app.workspace.getRightLeaf(false) ?? this.app.workspace.getRightLeaf(true) ?? this.app.workspace.getLeaf("split");
+			const leaf = this.getPanelHostLeaf();
 			await leaf.setViewState({ type: TimelineView.VIEW_TYPE, active: true });
 		} catch (e) {
 			this.notifyError("打开时间线面板失败", e);
