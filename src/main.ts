@@ -1,4 +1,4 @@
-import { App, Modal, Notice, Platform, Plugin, PluginSettingTab, TAbstractFile, TFile, TFolder, WorkspaceLeaf, WorkspaceSidedock, type SettingDefinitionItem, type SettingDefinitionPage } from "obsidian";
+import { App, Modal, Notice, Platform, Plugin, PluginSettingTab, TAbstractFile, TFile, TFolder, View, WorkspaceLeaf, WorkspaceSidedock, type SettingDefinitionItem, type SettingDefinitionPage } from "obsidian";
 import { ActionItem, ActionMenuModal, AddCharacterModal, ChapterListModal, ConfirmModal, FolderPickerModal, MarkdownViewerModal, MultiFieldModal, NewFilePickerModal, NewStoryInput, NewStoryModal, PanelLine, StoryPickerModal, TextAreaPrompt, TextPanelModal, TextInputModal, VolumeBatchCreateModal } from "./modals";
 import type { AddCharacterResult, CharacterScopeOption } from "./modals";
 import { LlmChatView } from "./llm_chat_view";
@@ -2278,7 +2278,8 @@ async cmdRenameChapterFile(): Promise<void> {
 				for (const l of stale) l.detach();
 				if (stale.length) {
 					// 丢弃后活动叶子可能为空或仍指向右栏，先切到主区域的笔记，保证 getLeaf("split") 分割的是主区域
-					const active = this.app.workspace.activeLeaf;
+					// （workspace.activeLeaf 已废弃：改用推荐替代 getActiveViewOfType(View) 再取 View.leaf）
+					const active = this.app.workspace.getActiveViewOfType(View)?.leaf ?? null;
 					if (!active || active.parent instanceof WorkspaceSidedock) {
 						const anchor = this.app.workspace.getLeavesOfType("markdown").find((l) => !(l.parent instanceof WorkspaceSidedock));
 						if (anchor) this.app.workspace.setActiveLeaf(anchor);

@@ -128,7 +128,7 @@ export class GenProgressView extends ItemView implements WritingStreamSink {
 		this.reasoningText = "";
 		const head = this.bodyEl.createDiv({ cls: "aw-gen-line aw-gen-div", text: `—— ${this.stamp()} · ${title} ——` });
 		this.reasoningEl = this.bodyEl.createDiv({ cls: "aw-stream-reasoning" });
-		this.reasoningEl.style.display = "none"; // 非思考模型无增量，保持隐藏
+		this.reasoningEl.addClass("hidden"); // 非思考模型无增量，保持隐藏（Obsidian 内置 .hidden 类，勿直接赋 style）
 		this.preEl = this.bodyEl.createDiv({ cls: "aw-stream-pre" });
 		this.statusEl = this.bodyEl.createDiv({ cls: "aw-dim aw-gen-status" });
 		this.footerEl = this.bodyEl.createDiv({ cls: "aw-gen-footer" });
@@ -151,7 +151,7 @@ export class GenProgressView extends ItemView implements WritingStreamSink {
 		if (this.submitted || this.streamState !== "streaming") return;
 		this.reasoningText += delta;
 		if (this.reasoningEl) {
-			this.reasoningEl.style.display = "";
+			this.reasoningEl.removeClass("hidden");
 			this.reasoningEl.textContent = this.reasoningText;
 		}
 		this.updateStatus();
