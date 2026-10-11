@@ -1,12 +1,14 @@
 import { ItemView, Setting, WorkspaceLeaf } from "obsidian";
 
 /** LLM 写作命令流式预览的写入端契约（v0.1.4+ 统一生成面板实现；此前由 StreamingPreviewModal 承担）：
- * signal=中断信号 / fullText=当前累积全文 / done=finish() 后用户点「保存/不保存」resolve(keep)，中断或关面板 resolve(false) */
+ * signal=中断信号 / fullText=当前累积全文 / done=finish() 后用户点「保存/不保存」resolve(keep)，中断或关面板 resolve(false)。
+ * appendReasoning=思考型模型的思考增量（delta.reasoning_content），仅展示不落盘，避免正文未开始时面板看似卡死 */
 export interface WritingStreamSink {
 	readonly signal: AbortSignal;
 	fullText: string;
 	done: Promise<boolean>;
 	append(delta: string): void;
+	appendReasoning(delta: string): void;
 	reset(): void;
 	setStatus(text: string): void;
 	finish(): void;
@@ -33,6 +35,8 @@ export class GenProgressView extends ItemView implements WritingStreamSink {
 	done: Promise<boolean> = new Promise(() => {}); // beginStream 前占位；每次 beginStream 换新 Promise
 	private resolveDone!: (keep: boolean) => void;
 	private preEl?: HTMLElement;
+	private reasoningEl?: HTMLElement; // 思考过程展示区（思考型模型；默认隐藏，首个思考增量到达时显示）
+	private reasoningText = "";
 	private statusEl?: HTMLElement;
 	private footerEl?: HTMLElement;
 	private streamEls: HTMLElement[] = []; // 当前流式小节创建的元素，下一轮 beginStream 时移除（日志行保留为历史）
@@ -121,11 +125,14 @@ export class GenProgressView extends ItemView implements WritingStreamSink {
 		this.ctrl = new AbortController();
 		this.done = new Promise<boolean>((res) => (this.resolveDone = res));
 		this.streamState = "streaming";
+		this.reasoningText = "";
 		const head = this.bodyEl.createDiv({ cls: "aw-gen-line aw-gen-div", text: `—— ${this.stamp()} · ${title} ——` });
+		this.reasoningEl = this.bodyEl.createDiv({ cls: "aw-stream-reasoning" });
+		this.reasoningEl.style.display = "none"; // 非思考模型无增量，保持隐藏
 		this.preEl = this.bodyEl.createDiv({ cls: "aw-stream-pre" });
 		this.statusEl = this.bodyEl.createDiv({ cls: "aw-dim aw-gen-status" });
 		this.footerEl = this.bodyEl.createDiv({ cls: "aw-gen-footer" });
-		this.streamEls.push(head, this.preEl, this.statusEl, this.footerEl);
+		this.streamEls.push(head, this.reasoningEl, this.preEl, this.statusEl, this.footerEl);
 		new Setting(this.footerEl).addButton((b) => b.setButtonText("停止生成").onClick(() => this.abortStream()));
 		this.updateStatus();
 		this.scrollBottom();
@@ -139,10 +146,24 @@ export class GenProgressView extends ItemView implements WritingStreamSink {
 		this.scrollBottom();
 	}
 
+	/** 思考增量（delta.reasoning_content）：仅展示不落盘；正文开始后思考区保留为诊断参考 */
+	appendReasoning(delta: string): void {
+		if (this.submitted || this.streamState !== "streaming") return;
+		this.reasoningText += delta;
+		if (this.reasoningEl) {
+			this.reasoningEl.style.display = "";
+			this.reasoningEl.textContent = this.reasoningText;
+		}
+		this.updateStatus();
+		this.scrollBottom();
+	}
+
 	reset(): void {
 		if (!this.submitted && this.streamState === "streaming") {
 			this.fullText = "";
 			if (this.preEl) this.preEl.textContent = "";
+			this.reasoningText = "";
+			if (this.reasoningEl) this.reasoningEl.textContent = "";
 			this.setStatus("");
 			this.updateStatus();
 		}
@@ -191,9 +212,11 @@ export class GenProgressView extends ItemView implements WritingStreamSink {
 
 	private updateStatus(): void {
 		if (!this.statusEl) return;
-		if (this.streamState === "streaming")
-			this.statusEl.setText(this.fullText.trim() ? `生成中…（已 ${String(this.fullText.length)} 字，Esc/停止可中断）` : "等待模型输出…");
-		else if (this.streamState === "done") this.statusEl.setText(`完成（共 ${String(this.fullText.length)} 字），请选择是否保存。`);
+		if (this.streamState === "streaming") {
+			if (this.fullText.trim()) this.statusEl.setText(`生成中…（已 ${String(this.fullText.length)} 字，Esc/停止可中断）`);
+			else if (this.reasoningText.trim()) this.statusEl.setText(`模型思考中…（思考已 ${String(this.reasoningText.length)} 字，正文未开始，Esc/停止可中断）`);
+			else this.statusEl.setText("等待模型输出…");
+		} else if (this.streamState === "done") this.statusEl.setText(`完成（共 ${String(this.fullText.length)} 字），请选择是否保存。`);
 	}
 
 	private scrollBottom(): void {

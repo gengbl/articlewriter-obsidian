@@ -3145,6 +3145,8 @@ async cmdRenameChapterFile(): Promise<void> {
 
 	/**
 	 * 单次流式调用：空流按「结果为空」处理（返回""），用户中断向上抛 AbortError。
+	 * 思考型模型的 reasoning_content 增量经 sink.appendReasoning 实时透出到面板（仅展示不落盘）；
+	 * 「正文为空但思考非空」由 chatStream 抛针对性错误（不走空结果重试——那会再白等数轮思考）。
 	 * 网络层瞬时故障（fetch 的 `Failed to fetch` / Connection error / ETIMEDOUT / ECONNRESET / 5xx）自动退避重试 2 次
 	 * ——长 prompt 的首字节等待常达数十秒，连接被中间设备或服务端网关掐断是常见故障，重试一次多半即通；
 	 * 参数类 4xx（超长上下文、密钥错等）由 isRetryableLlmError 挡掉直接失败，避免白等。
@@ -3153,7 +3155,7 @@ async cmdRenameChapterFile(): Promise<void> {
 		const maxAttempts = 3;
 		for (let attempt = 1; attempt <= maxAttempts; attempt++) {
 			try {
-				return await chatStream(cfg, messages, (d) => sink.append(d), undefined, sink.signal);
+				return await chatStream(cfg, messages, (d) => sink.append(d), undefined, sink.signal, (d) => sink.appendReasoning(d));
 			} catch (e) {
 				if (sink.signal.aborted || (e instanceof Error && e.name === "AbortError")) throw e;
 				const msg = e instanceof Error ? e.message : String(e);

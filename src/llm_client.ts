@@ -207,18 +207,42 @@ export async function chatCompletion(cfg: LlmConfigDoc, messages: Message[], ext
 	return content;
 }
 
-/** 流式补全：逐块回调 onChunk，返回累积全文（供 UI 打字机效果 / 落盘前预览） */
-export async function chatStream(cfg: LlmConfigDoc, messages: Message[], onChunk: (text: string) => void, extra?: Record<string, unknown>, signal?: AbortSignal): Promise<string> {
+/** 流式补全：逐块回调 onChunk，返回累积全文（供 UI 打字机效果 / 落盘前预览）。
+ * 思考型模型（llama-server --reasoning-format deepseek 等）的思考过程走 delta.reasoning_content、
+ * 正文在思考结束后才进 delta.content——只收 content 时「思考挤占 max_tokens」或「思考块未闭合」
+ * 都会表现为空结果且无从诊断。故并行经 onReasoning（可选）透出思考增量；流结束正文为空但思考非空时
+ * 抛针对性错误（消息刻意不含「输出为空/未返回内容」，避免被调用方按普通空结果重试白等）。 */
+export async function chatStream(
+	cfg: LlmConfigDoc,
+	messages: Message[],
+	onChunk: (text: string) => void,
+	extra?: Record<string, unknown>,
+	signal?: AbortSignal,
+	onReasoning?: (text: string) => void
+): Promise<string> {
 	const client = createClient(cfg, GENERATE_TIMEOUT_MS); // 流式放宽超时（默认 60s 会掐断长章节生成）
 	const stream = await client.chat.completions.create(buildParams(cfg, messages, true, extra) as OpenAI.ChatCompletionCreateParamsStreaming, { signal });
 	let full = "";
+	let reasoning = "";
 	for await (const chunk of stream) {
-		const delta = chunk.choices?.[0]?.delta?.content ?? "";
+		const choice = chunk.choices?.[0];
+		const delta = choice?.delta?.content ?? "";
 		if (delta) {
 			full += delta;
 			onChunk(delta);
 		}
+		const rDelta = (choice?.delta as { reasoning_content?: string } | undefined)?.reasoning_content ?? "";
+		if (rDelta) {
+			reasoning += rDelta;
+			onReasoning?.(rDelta);
+		}
 	}
-	if (!full.trim()) throw new Error("LLM 流式输出为空");
+	if (!full.trim()) {
+		if (reasoning.trim())
+			throw new Error(
+				`思考型模型正文为空（已产生 ${String(reasoning.length)} 字思考）：思考未结束即达到 max_tokens 上限，或思考块未正常闭合。可尝试：调小上下文/前文窗口、换非思考模型，或在提示词末尾加 /no_think 关闭思考（需服务端模板支持）`
+			);
+		throw new Error("LLM 流式输出为空");
+	}
 	return full;
 }

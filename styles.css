@@ -1449,6 +1449,24 @@
 	white-space: pre-wrap;
 }
 
+/* 思考型模型的思考过程展示区（仅展示不落盘；默认隐藏，首个思考增量到达时显示） */
+.aw-stream-reasoning {
+	white-space: pre-wrap;
+	color: var(--text-faint);
+	font-size: var(--font-smallest);
+	border-left: 2px solid var(--background-modifier-border);
+	padding-left: var(--size-2-3);
+	margin-bottom: var(--size-2-2);
+	max-height: 12em;
+	overflow-y: auto;
+}
+.aw-stream-reasoning::before {
+	content: "💭 思考过程（不写入正文）";
+	display: block;
+	font-family: var(--font-interface);
+	margin-bottom: var(--size-2-1);
+}
+
 /* 状态统计弹窗的 pre 换行 */
 .aw-status-pre {
 	white-space: pre-wrap;
