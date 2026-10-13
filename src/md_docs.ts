@@ -186,13 +186,14 @@ export interface VolOutlineSegment {
 
 /**
  * 按章号切分卷大纲文本（v0.2.10+「从卷大纲生成章节」核心解析）：
- * 同时识别 H2 标题 `## 第N章 <标题>` 与行首纯段落 `第N章`（N 为阿拉伯数字，可带「：/:」分隔）；
+ * 同时识别 H2 标题 `## 第N章 <标题>` 与行首纯段落 `第N章`（N 为阿拉伯数字或中文数字一~九十九，可带「：/:」分隔；
+ * AI 拆分输出偶发以中文数字写章号（如「## 第一章」），解析侧兼容以免整次拆分被判为无标记而白跑一次 LLM）；
  * 首个章标记之前的内容视为卷级前言（不分发到任何章节）；
  * 重复章号合并为一段（正文按文档顺序拼接，后出现的标题标记补空标题）；
  * ``` / ~~~ 围栏内的行不作为标记（仍计入当前段正文）。返回按文档顺序的 segments。
  */
 export function splitVolOutlineByChapter(text: string): { segments: VolOutlineSegment[]; preamble: string } {
-	const CH_RE = /^(#{1,6}\s*)?第\s*(\d+)\s*章\s*[:：]?\s*(.*)$/;
+	const CH_RE = /^(#{1,6}\s*)?第\s*(\d+|[零一二两三四五六七八九十百]+)\s*章\s*[:：]?\s*(.*)$/;
 	interface SegAcc { num: number; title: string; lines: string[] }
 	const accs: SegAcc[] = [];
 	const byNum = new Map<number, SegAcc>();
@@ -201,12 +202,12 @@ export function splitVolOutlineByChapter(text: string): { segments: VolOutlineSe
 	for (const line of String(text ?? "").split("\n")) {
 		if (/^\s*(```|~~~)/.test(line)) inFence = !inFence; // 围栏开关行只计正文、不作标记
 		const m = inFence ? null : CH_RE.exec(line);
-		if (!m) {
+		const num = m ? (/^\d+$/.test(m[2]) ? parseInt(m[2], 10) : cnToNum(m[2])) : null; // 阿拉伯数字直转；中文数字走 cnToNum（防御性判空：理论上字符类内必可转换）
+		if (!m || num == null) {
 			if (accs.length === 0) preambleLines.push(line);
 			else accs[accs.length - 1].lines.push(line);
 			continue;
 		}
-		const num = parseInt(m[2], 10);
 		const rest = (m[3] || "").trim();
 		const isHeading = !!m[1];
 		let seg = byNum.get(num);
@@ -224,6 +225,18 @@ export function splitVolOutlineByChapter(text: string): { segments: VolOutlineSe
 		segments: accs.map((a) => ({ num: a.num, title: a.title, content: trimEnd(a.lines.join("\n")) })),
 		preamble: trimEnd(preambleLines.join("\n")),
 	};
+}
+
+/**
+ * 提取卷大纲中声明的目标章数（v0.2.10+「从卷大纲生成章节」AI 兜底拆分用）：
+ * 匹配「共N章 / 合计N章 / 总计N章 / 总共N章 / 最多N章 / 分为N章 / 拆成N章 / 分成N单 / 分N章 / 计划写N章 / 预计N章 / 约N章」等常见写法（N 为阿拉伯数字，量词「章」或「单」）；
+ * 无匹配或超出 1–99 范围返回 null（调用方回落弹窗收集）。取文档顺序首个匹配。
+ */
+export function extractPlannedChapterCount(text: string): number | null {
+	const m = /(?:共|合计|总计|总共|最多|(?:拆分|分割|划分|分|拆)\s*[为成]?|(?:计划|预计|约|打算|准备)\s*(?:写|创作|安排)?)\s*(\d{1,3})\s*[章单]/.exec(String(text ?? ""));
+	if (!m) return null;
+	const n = parseInt(m[1], 10);
+	return n >= 1 && n <= 99 ? n : null;
 }
 
 // ---------- 场景（场景.md，全局或章节内）----------
