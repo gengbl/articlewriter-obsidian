@@ -2,7 +2,7 @@
 
 ## 模块概要
 
-LLM 写作类命令（`write-chapter`/`continue-writing`/`rewrite-chapter`/`polish-text`/`deai-clean`/`review-chapter`）共用统一流程：prompt 组装在 `src/prompts.ts`，调用层在 `src/llm_client.ts`，结果落盘+场景同步走 `story_manager.ts`；所有生成结果先在统一「生成过程」面板内流式预览并经「保存/不保存」确认才写盘（设计决策见 [l1-overview.md](./l1-overview.md)）。各命令语义/参数/坑位速查见 [command-reference.md](./command-reference.md)；摘要延迟生成管线见 [l3-summary-pipeline.md](./l3-summary-pipeline.md)，新增命令标准流程与 main.ts 辅助方法见 [l3-main-ts-flow.md](./l3-main-ts-flow.md)。
+LLM 写作类命令（`write-chapter`/`continue-writing`/`rewrite-chapter`/`polish-text`/`deai-clean`/`review-chapter`/`write-chapters-consecutive`）共用统一流程：prompt 组装在 `src/prompts.ts`，调用层在 `src/llm_client.ts`，结果落盘+场景同步走 `story_manager.ts`；所有生成结果先在统一「生成过程」面板内流式预览并经「保存/不保存」确认才写盘（设计决策见 [l1-overview.md](./l1-overview.md)）——**唯一例外是 `write-chapters-consecutive`（连续编写，v0.2.10+）**：逐章自动保存免确认，面板经 `GenProgressView.finishAuto(message?)` 直接收尾（submitted 置真、resolveDone(true)、追加一行 ok 日志），失败态（streamState≠streaming）finishAuto 空操作、由命令侧 Notice 停止。各命令语义/参数/坑位速查见 [command-reference.md](./command-reference.md)；摘要延迟生成管线见 [l3-summary-pipeline.md](./l3-summary-pipeline.md)，新增命令标准流程与 main.ts 辅助方法见 [l3-main-ts-flow.md](./l3-main-ts-flow.md)。
 
 - **「生成过程」面板双阶段复用同一实例**（常驻 ItemView，可停靠任意区域）：①摘要延迟生成日志阶段——每个 LLM 任务追加一行带时间戳日志并自动滚底、本轮结束追加「✓ 摘要就绪」；②章节/报告流式阶段——流式预览正文 + 「保存/不保存」CTA；思考型模型的思考过程在灰色区块实时显示（不写入正文），正文为空但思考非空时给出针对性报错而非盲目重试。Esc 或「停止生成」＝abort 当前会话；关面板未决会话按放弃收尾；重试前清屏。
 

@@ -698,6 +698,14 @@ export class StoryManager {
 		return this.createChapterAt(storyName, num, title, volId);
 	}
 
+	/** v0.2.10+「从卷大纲生成章节」：确保目标容器（volId="" 为书根）内指定本地号的章节存在——已存在原样返回，缺失则按 createChapterAt 语义创建（含模板播种与状态登记）。返回 { key, created } */
+	async ensureChapterAt(storyName: string, num: number, rawTitle: string, volId: string): Promise<{ key: string; created: boolean }> {
+		const key = chKey(volId || null, num);
+		if (await this.chapterDirOf(storyName, key)) return { key, created: false };
+		await this.createChapterAt(storyName, num, rawTitle, volId);
+		return { key, created: true };
+	}
+
 	/** 章节目录七件套模板清单（建章播种 / scan 补缺 / 写字台「新建文章…」优先列表同一来源）。《时间线》为可选手写参考资料、不参与提示词注入 */
 	chapterDocTemplates(num: number, title: string): Array<[string, string]> {
 		const heading = title.trim() ? `第${num}章 ${title}` : `第${num}章`; // H1 口径与章节大纲模板一致
@@ -2924,6 +2932,17 @@ private emptyState(storyName: string): StoryState {
 		const raw = await this.readDoc(`${ch.dir.path}/章节大纲.md`);
 		let lines = doc.stripComments(raw.trim()).trim().split("\n");
 		while (lines.length && /^#\s*第\s*\d+\s*章.*大纲\s*$/.test(lines[0])) lines.shift();
+		return lines.join("\n").trim();
+	}
+
+	/** v0.2.10+「从卷大纲生成章节」：读指定卷《卷大纲.md》清洗文本（去注释 + 去首部 H1 标题行，与 loadWritingData 注入口径一致）；卷不存在或文件缺失返回空串 */
+	async readVolumeOutline(storyName: string, volId: string): Promise<string> {
+		const vols = await this.loadVolumes(storyName);
+		const vol = this.findVolumeIn(vols, volId);
+		if (!vol) return "";
+		const volDir = `${this.storyPath(storyName)}/${this.volumeFolderName(vol)}`;
+		const lines = doc.stripComments((await this.readDoc(this.resolveVolumeDocPath(volDir, vol.name, "卷大纲.md"))).trim()).split("\n");
+		while (lines.length && /^#\s/.test(lines[0])) lines.shift(); // 去 H1 标题行
 		return lines.join("\n").trim();
 	}
 

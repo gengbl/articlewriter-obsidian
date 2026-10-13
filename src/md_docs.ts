@@ -177,6 +177,55 @@ export function formatVolumes(title: string, vols: Record<string, VolumeInfo>): 
 	return lines.join("\n");
 }
 
+/** 卷大纲按章切分出的段落（v0.2.10+「从卷大纲生成章节」用） */
+export interface VolOutlineSegment {
+	num: number; // 卷内本地章号
+	title: string; // 章标题（纯段落标记时为空 → 建章时回落「第N章」）
+	content: string; // 段正文（标题标记不含标题行本身；纯段落标记含标记行剩余部分）
+}
+
+/**
+ * 按章号切分卷大纲文本（v0.2.10+「从卷大纲生成章节」核心解析）：
+ * 同时识别 H2 标题 `## 第N章 <标题>` 与行首纯段落 `第N章`（N 为阿拉伯数字，可带「：/:」分隔）；
+ * 首个章标记之前的内容视为卷级前言（不分发到任何章节）；
+ * 重复章号合并为一段（正文按文档顺序拼接，后出现的标题标记补空标题）；
+ * ``` / ~~~ 围栏内的行不作为标记（仍计入当前段正文）。返回按文档顺序的 segments。
+ */
+export function splitVolOutlineByChapter(text: string): { segments: VolOutlineSegment[]; preamble: string } {
+	const CH_RE = /^(#{1,6}\s*)?第\s*(\d+)\s*章\s*[:：]?\s*(.*)$/;
+	interface SegAcc { num: number; title: string; lines: string[] }
+	const accs: SegAcc[] = [];
+	const byNum = new Map<number, SegAcc>();
+	const preambleLines: string[] = [];
+	let inFence = false;
+	for (const line of String(text ?? "").split("\n")) {
+		if (/^\s*(```|~~~)/.test(line)) inFence = !inFence; // 围栏开关行只计正文、不作标记
+		const m = inFence ? null : CH_RE.exec(line);
+		if (!m) {
+			if (accs.length === 0) preambleLines.push(line);
+			else accs[accs.length - 1].lines.push(line);
+			continue;
+		}
+		const num = parseInt(m[2], 10);
+		const rest = (m[3] || "").trim();
+		const isHeading = !!m[1];
+		let seg = byNum.get(num);
+		if (!seg) {
+			seg = { num, title: isHeading ? rest : "", lines: [] };
+			byNum.set(num, seg);
+			accs.push(seg);
+		} else if (isHeading && rest && !seg.title) {
+			seg.title = rest; // 重复章号以标题形式出现 → 补标题
+		}
+		if (!isHeading && rest) seg.lines.push(rest); // 纯段落标记：同行剩余部分计入正文
+	}
+	const trimEnd = (s: string) => s.replace(/^\s+/, "").replace(/\s+$/, "");
+	return {
+		segments: accs.map((a) => ({ num: a.num, title: a.title, content: trimEnd(a.lines.join("\n")) })),
+		preamble: trimEnd(preambleLines.join("\n")),
+	};
+}
+
 // ---------- 场景（场景.md，全局或章节内）----------
 
 export function parseScenes(text: string, defaultChapter: number): Record<string, SceneDoc> {

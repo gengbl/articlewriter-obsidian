@@ -196,6 +196,16 @@ export class GenProgressView extends ItemView implements WritingStreamSink {
 		this.scrollBottom();
 	}
 
+	/** v0.2.10+「连续编写」自动保存收尾：等价于点「保存」（resolve done(true)、正文保留展示、按钮区换结果行），无需用户确认；仅在流式进行中生效 */
+	finishAuto(message?: string): void {
+		if (this.submitted || this.streamState !== "streaming") return;
+		this.submitted = true;
+		this.resolveDone?.(true);
+		this.streamState = "idle";
+		if (this.footerEl) this.footerEl.empty();
+		this.appendLine(message ?? "✓ 已自动保存", "ok");
+	}
+
 	private abortStream(): void {
 		if (!this.submitted && this.streamState === "streaming") this.ctrl.abort();
 	}
