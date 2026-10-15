@@ -3264,11 +3264,11 @@ async cmdRenameChapterFile(): Promise<void> {
 	 * ——长 prompt 的首字节等待常达数十秒，连接被中间设备或服务端网关掐断是常见故障，重试一次多半即通；
 	 * 参数类 4xx（超长上下文、密钥错等）由 isRetryableLlmError 挡掉直接失败，避免白等。
 	 */
-	private async streamOnce(cfg: LlmConfigDoc, messages: Message[], sink: WritingStreamSink): Promise<string> {
+	private async streamOnce(cfg: LlmConfigDoc, messages: Message[], sink: WritingStreamSink, extra?: Record<string, unknown>): Promise<string> {
 		const maxAttempts = 3;
 		for (let attempt = 1; attempt <= maxAttempts; attempt++) {
 			try {
-				return await chatStream(cfg, messages, (d) => sink.append(d), undefined, sink.signal, (d) => sink.appendReasoning(d));
+				return await chatStream(cfg, messages, (d) => sink.append(d), extra, sink.signal, (d) => sink.appendReasoning(d));
 			} catch (e) {
 				if (sink.signal.aborted || (e instanceof Error && e.name === "AbortError")) throw e;
 				const msg = e instanceof Error ? e.message : String(e);
@@ -3304,12 +3304,13 @@ async cmdRenameChapterFile(): Promise<void> {
 		cfg: LlmConfigDoc,
 		buildMessages: () => Message[],
 		sink: WritingStreamSink,
-		label: string
+		label: string,
+		extra?: Record<string, unknown>
 	): Promise<string> {
 		for (let attempt = 1; attempt <= 3; attempt++) {
 			let content: string;
 			try {
-				content = await this.streamOnce(cfg, buildMessages(), sink);
+				content = await this.streamOnce(cfg, buildMessages(), sink, extra);
 			} catch (e) {
 				this.genFailure(e, label, sink);
 				return "";
@@ -3737,7 +3738,7 @@ async cmdRenameChapterFile(): Promise<void> {
 
 	// ---------- v0.2.10+ 从卷大纲生成章节 (/vol-outline-to-chapters) ----------
 
-	/** 按章号解析拆分源（H2 标题 `## 第N章 <标题>` 或「第N章」开头的普通段落），缺失章节自动创建，各段内容写入对应章节的《章节大纲.md》（空大纲直接写入；非空去重合并追加）；一个「第N章」标记都识别不到时调 LLM 自动拆分（目标章数优先取大纲内声明如「共N章」，未声明弹窗收集、取消即中止；输出同格式再走同一解析器，失败提示并中止）。收尾：有原当前章则恢复，否则指向该容器首章（供「连续编写」从第 1 章起步）。可选参 volId＝写字台卷节点右键入口：锁定被点卷、不弹选择器（找不到该卷则提示中止）。v0.2.x+ 平铺（无卷）模式：拆书级《大纲.md》、章节落书根（空 volId）——「生成书籍大纲」平铺形态的配套拆章步骤 */
+	/** 按章号解析拆分源（H2 标题 `## 第N章 <标题>` 或「第N章」开头的普通段落），缺失章节自动创建，各段内容写入对应章节的《章节大纲.md》（空大纲直接写入；非空去重合并追加）；一个「第N章」标记都识别不到时调 LLM 自动拆分（目标章数优先取大纲内声明如「共N章」，未声明弹窗收集、取消即中止；v0.2.x+ 走统一「生成过程」面板流式预览、Esc/关面板中止；输出同格式再走同一解析器，失败提示并中止）。收尾：有原当前章则恢复，否则指向该容器首章（供「连续编写」从第 1 章起步）。可选参 volId＝写字台卷节点右键入口：锁定被点卷、不弹选择器（找不到该卷则提示中止）。v0.2.x+ 平铺（无卷）模式：拆书级《大纲.md》、章节落书根（空 volId）——「生成书籍大纲」平铺形态的配套拆章步骤 */
 	async cmdVolumeOutlineToChapters(volId?: string): Promise<void> {
 		if (!(await this.ensureWorkDir())) return;
 		const story = await this.requireStory();
@@ -3776,7 +3777,7 @@ async cmdRenameChapterFile(): Promise<void> {
 			let aiSplit = false;
 			let aiCount = 0;
 			if (!segments.length) {
-				// 一个章节标记都没有 → 交给 AI 拆分（v0.2.10+）
+				// 一个章节标记都没有 → 交给 AI 拆分（v0.2.10+；v0.2.x+ 改走统一「生成过程」面板流式预览——原非流式 chatCompletion + 小通知，期间无任何面板）
 				const setup = await this.loadWriterSetup();
 				if (!setup) return;
 				const cleaned = stripComments(raw);
@@ -3785,20 +3786,26 @@ async cmdRenameChapterFile(): Promise<void> {
 					? await this.promptChapterCountInput("AI 拆分书级大纲", `书级《大纲.md》未检测到「第N章」标记，将调用 AI 自动拆分。\n请输入要拆分的章数（1–99 整数），输入后回车确认、Esc 取消：`, "已取消 AI 拆分书级大纲")
 					: await this.promptChapterCount(vol.name));
 				if (count == null) return;
-				const notice = new Notice(`未在${sourceLabel}中检测到「第N章」标记，正在调用 AI 拆分为 ${count} 章…`, 0);
-				let aiText: string | null = null;
-				try {
-					aiText = await this.aiSplitVolOutline(setup.cfg, cleaned, count);
-				} finally {
-					notice.hide();
-				}
-				if (aiText == null) return;
+				const view = await this.beginWritingPanel(`AI 拆分${sourceLabel}`);
+				if (!view) return; // 面板打开失败 → 中止（与其他写作命令一致）
+				const label = `AI 拆分${sourceLabel}为 ${count} 章`;
+				const sp = `你是小说章节规划助手。请把用户给出的卷大纲文字拆分成恰好 ${count} 章。要求：\n` +
+					`1. 每章以一行「## 第N章 <标题>」开头，N 必须用阿拉伯数字、从 1 连续递增到 ${count}（如「## 第1章」，不要写成「第一章」），<标题> 为该章简短标题；\n` +
+					"2. 标记行之后写该章的大纲内容：尽量保留原文表述，只做切分与必要的衔接整理，不要新增剧情、不要删减关键情节；\n" +
+					"3. 只输出拆分结果本身，不要任何解释、前言或代码块包裹。";
+				const aiText = await this.streamWithEmptyRetry(setup.cfg, () => [
+					{ role: "system", content: sp },
+					{ role: "user", content: cleaned },
+				], view, label, { max_tokens: Math.max(setup.cfg.max_tokens ?? 4096, 8192) }); // 拆分输出≈整段大纲原文，强制至少 8192 防配置小值截断（与原非流式路径同语义）
+				if (view.signal.aborted) return; // 用户 Esc / 关面板 → 中止（streamWithEmptyRetry 已按中断提示）
+				if (!aiText.trim()) return; // 失败/连续空：streamWithEmptyRetry 已 notifyError + sink.fail，不重复提示
 				const reparsed = splitVolOutlineByChapter(aiText);
-				if (!reparsed.segments.length) { new Notice(`AI 拆分结果中未识别到「第N章」标记，请重试或在${sourceLabel}中手动添加章节标记\nAI 输出开头：${aiText.slice(0, 80)}…`, 15000); return; } // 带输出预览便于用户反馈时定位（纯提示 Notice 易被错过）
+				if (!reparsed.segments.length) { new Notice(`AI 拆分结果中未识别到「第N章」标记，请重试或在${sourceLabel}中手动添加章节标记\nAI 输出开头：${aiText.slice(0, 80)}…`, 15000); view.fail("AI 拆分结果中未识别到「第N章」标记"); return; } // 带输出预览便于用户反馈时定位（纯提示 Notice 易被错过）；面板同步收尾为失败态，避免滞留流式中
 				segments = reparsed.segments;
 				preamble = "";
 				aiSplit = true;
 				aiCount = count;
+				view.finishAuto(`✓ AI 拆分完成（识别到 ${String(segments.length)} 个章标记）`, "拆分用时"); // 后续建章为秒级本地操作，最终汇总仍走 Notice
 			}
 
 			const prevCurrent = state.current_chapter ?? "";
@@ -3831,23 +3838,6 @@ async cmdRenameChapterFile(): Promise<void> {
 			new Notice(lines.join("\n"), 12000);
 		} catch (e) {
 			this.notifyError("从卷大纲生成章节失败", e);
-		}
-	}
-
-	/** 卷大纲无「第N章」标记时的 AI 兜底拆分（v0.2.10+）：让 LLM 按「## 第N章 <标题>」格式把整段文字重新切分为恰好 chapterCount 章的各章大纲，返回拆分文本（失败返回 null 并已提示）。输出刻意复用既有标记格式，落盘仍走同一解析器 */
-	private async aiSplitVolOutline(cfg: LlmConfigDoc, outlineText: string, chapterCount: number): Promise<string | null> {
-		const sp = `你是小说章节规划助手。请把用户给出的卷大纲文字拆分成恰好 ${chapterCount} 章。要求：\n` +
-			`1. 每章以一行「## 第N章 <标题>」开头，N 必须用阿拉伯数字、从 1 连续递增到 ${chapterCount}（如「## 第1章」，不要写成「第一章」），<标题> 为该章简短标题；\n` +
-			"2. 标记行之后写该章的大纲内容：尽量保留原文表述，只做切分与必要的衔接整理，不要新增剧情、不要删减关键情节；\n" +
-			"3. 只输出拆分结果本身，不要任何解释、前言或代码块包裹。";
-		try {
-			return await chatCompletion(cfg, [
-				{ role: "system", content: sp },
-				{ role: "user", content: outlineText },
-			], { max_tokens: Math.max(cfg.max_tokens ?? 4096, 8192) });
-		} catch (e) {
-			this.notifyError("AI 拆分卷大纲失败", e);
-			return null;
 		}
 	}
 
