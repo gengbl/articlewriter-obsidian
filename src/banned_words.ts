@@ -51,6 +51,7 @@ export const WEB_NOVEL_BANNED_WORDS: Record<string, Array<[string, string]>> = {
 		["众所周知", "AI论证腔"],
 		["值得一提的是", "AI过渡腔"],
 		["不难发现", "AI论证腔"],
+		["不对劲", "AI腔高频吐槽词，改为具体写出哪里不对"],
 	],
 };
 
@@ -158,12 +159,17 @@ export const WEB_NOVEL_BANNED_PATTERNS: BannedPattern[] = [
 /** 生成禁用词提示块（注入网文类型模板） */
 export function buildBannedWordsBlock(): string {
 	const lines = ["【网文高频禁用词（必须遵守）】", "以下词汇/句式属于高频AI腔，生成正文时**禁止使用**："];
+	const shown = new Set<string>(); // 组内已列出的精确词——变体表中再出现同一字符串即跳过（纯展示层去重，不影响检测）
 	for (const [group, words] of Object.entries(WEB_NOVEL_BANNED_WORDS)) {
 		lines.push(`\n${group}：`);
 		lines.push(words.map(([w]) => `「${w}」`).join("、"));
+		for (const [w] of words) shown.add(w);
 	}
-	lines.push("\n\n同时警惕以下AI腔变体（出现同样不合格）：");
-	lines.push(WEB_NOVEL_BANNED_PATTERNS.map((p) => `「${p.word}」`).join("、"));
+	const variants = WEB_NOVEL_BANNED_PATTERNS.map((p) => p.word).filter((w, i, arr) => !shown.has(w) && arr.indexOf(w) === i);
+	if (variants.length) {
+		lines.push("\n\n同时警惕以下AI腔变体（出现同样不合格）：");
+		lines.push(variants.map((w) => `「${w}」`).join("、"));
+	}
 	lines.push(
 		"\n要求：如出现以上任一词汇/句式或其变体，即为不合格；用具体动作、细节或大白话替代。"
 	);
@@ -389,7 +395,7 @@ export const GUIDE_CATEGORY_NAMES = ["禁用词", "故事风格", "个人特色"
 const CAT_BLOCK_SOURCE = "<!--\\s*写作指南分类\\s*[:：]\\s*([^>]+?)\\s*-->(.*?)<!--\\s*/?\\s*写作指南分类\\s*-->";
 const CAT_TYPE_BLOCK_RE = () => /<!--\s*编写类型\s*[:：].*?<!--\s*\/\s*编写类型\s*-->/gs;
 const HTML_COMMENT_RE = () => /<!--.*?-->/g;
-const BANNED_TOKEN_RE = () => /[「`]([^」`]+)[»`]/g;
+const BANNED_TOKEN_RE = () => /[「`]([^」`]+)[」`]/g; // 闭合类必须含 CJK 直角引号 」——曾误写为 »(U+00BB)，致对代码内置块（「」书写）提取 0 token、buildMergedBannedBlock 纯列表行过滤全程失效
 
 /**
  * 按分类块拆分写作指南，返回 {通用, 禁用词, 故事风格, 个人特色} 的文本。

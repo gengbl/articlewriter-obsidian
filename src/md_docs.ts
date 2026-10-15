@@ -51,6 +51,8 @@ export interface WorldSettingDoc {
 	locations: string[];
 	history?: string;
 	magic_system?: string;
+	/** v0.2.x+：清洗后（去 HTML 注释）的《世界观.md》全文——自由格式设定（人物/时间线/自定义小节等 parseWorld 不识别的内容）也由此注入提示词；由 readWorldDoc 填充，parseWorld 不产生 */
+	fullText?: string;
 }
 
 export interface ChapterInfoDoc {
@@ -184,6 +186,9 @@ export interface VolOutlineSegment {
 	content: string; // 段正文（标题标记不含标题行本身；纯段落标记含标记行剩余部分）
 }
 
+/** 卷大纲章标记行（H2 `## 第N章 <标题>` 或行首纯段落 `第N章`，N 为阿拉伯数字或中文数字一~九十九，可带「：/:」分隔）；splitVolOutlineByChapter / splitVolOutlineRawBlocks 共用 */
+const CH_RE = /^(#{1,6}\s*)?第\s*(\d+|[零一二两三四五六七八九十百]+)\s*章\s*[:：]?\s*(.*)$/;
+
 /**
  * 按章号切分卷大纲文本（v0.2.10+「从卷大纲生成章节」核心解析）：
  * 同时识别 H2 标题 `## 第N章 <标题>` 与行首纯段落 `第N章`（N 为阿拉伯数字或中文数字一~九十九，可带「：/:」分隔；
@@ -193,7 +198,6 @@ export interface VolOutlineSegment {
  * ``` / ~~~ 围栏内的行不作为标记（仍计入当前段正文）。返回按文档顺序的 segments。
  */
 export function splitVolOutlineByChapter(text: string): { segments: VolOutlineSegment[]; preamble: string } {
-	const CH_RE = /^(#{1,6}\s*)?第\s*(\d+|[零一二两三四五六七八九十百]+)\s*章\s*[:：]?\s*(.*)$/;
 	interface SegAcc { num: number; title: string; lines: string[] }
 	const accs: SegAcc[] = [];
 	const byNum = new Map<number, SegAcc>();
@@ -237,6 +241,89 @@ export function extractPlannedChapterCount(text: string): number | null {
 	if (!m) return null;
 	const n = parseInt(m[1], 10);
 	return n >= 1 && n <= 99 ? n : null;
+}
+
+/** 卷大纲原始块（围栏感知切分）：blocks[0] 为前言（num=null），其后各块按文档顺序；全部块的行拼回即原文（逐字节保留，含注释与标记行本身） */
+export interface VolOutlineRawBlock {
+	num: number | null; // null = 前言
+	lines: string[];
+}
+
+/** 按章号切分卷大纲为原始行块（v0.2.x+「从书级大纲生成卷」合并落盘用）：与 splitVolOutlineByChapter 同一 CH_RE、同样围栏感知（``` / ~~~ 内不作标记），但逐行原样保留——标记行计入其所属块首行，不做标题/正文拆分与去空白 */
+export function splitVolOutlineRawBlocks(text: string): VolOutlineRawBlock[] {
+	const blocks: VolOutlineRawBlock[] = [{ num: null, lines: [] }];
+	let inFence = false;
+	for (const line of String(text ?? "").split("\n")) {
+		if (/^\s*(```|~~~)/.test(line)) inFence = !inFence; // 围栏开关行只计正文、不作标记
+		const m = inFence ? null : CH_RE.exec(line);
+		const num = m ? (/^\d+$/.test(m[2]) ? parseInt(m[2], 10) : cnToNum(m[2])) : null; // 阿拉伯数字直转；中文数字走 cnToNum（防御性判空：理论上字符类内必可转换）
+		if (!m || num == null) {
+			blocks[blocks.length - 1].lines.push(line);
+			continue;
+		}
+		blocks.push({ num, lines: [line] }); // 标记行归入其所属块的首行
+	}
+	return blocks;
+}
+
+/**
+ * 把新生成的章块合并进现有卷大纲（v0.2.x+「从书级大纲生成卷」按章补全落盘）：
+ * oldBody 为现有《卷大纲.md》剥去首部 H1 的原始文本（保留注释），newContent 为 LLM 新产出；
+ * 两侧各按章标记切分为原始行块，新内容中每个章号——已存在于旧内容（或新内容自身重复）→ 丢弃并计入 dropped（已有章原样保留、绝不重写）；
+ * 其余按章号升序插入到首个章号更大的旧块之前（无更大旧块则追加末尾），旧内容逐字节保留（含前言与注释）；
+ * 返回合并后正文（尾部空白已去）与新增/丢弃的章号列表。
+ */
+export function mergeVolOutlineChapters(oldBody: string, newContent: string): { body: string; added: number[]; dropped: number[] } {
+	const newBlocks = splitVolOutlineRawBlocks(newContent);
+	const oldBlocks = String(oldBody ?? "").trim() ? splitVolOutlineRawBlocks(oldBody) : [{ num: null, lines: [] }];
+	const preamble = oldBlocks[0];
+	const result: VolOutlineRawBlock[] = oldBlocks.slice(1);
+	const taken = new Set<number>(result.map((b) => b.num as number));
+	const added: number[] = [];
+	const dropped: number[] = [];
+	for (const b of newBlocks.slice(1)) {
+		if (b.num == null || taken.has(b.num)) { dropped.push(b.num ?? 0); continue; } // 与已有章重复 / 新内容自身重复 → 丢弃
+		taken.add(b.num);
+		added.push(b.num);
+	}
+	added.sort((a, b) => a - b);
+	for (const num of added) {
+		const blk = newBlocks.find((b) => b.num === num)!; // added 中的号必来自 newBlocks（上方 find 取首个同号角）
+		const idx = result.findIndex((b) => (b.num ?? 0) > num); // 升序插入到首个更大旧块之前
+		if (idx < 0) result.push(blk);
+		else result.splice(idx, 0, blk);
+	}
+	return { body: [...preamble.lines, ...result.flatMap((b) => b.lines)].join("\n").replace(/\s+$/, ""), added, dropped };
+}
+
+/** 书级《大纲.md》中解析出的卷声明（v0.2.x+「从书级大纲生成卷」） */
+export interface VolumeDeclaration {
+	name: string;
+	description: string;
+}
+
+/**
+ * 解析书级大纲中的卷声明（v0.2.x+「从书级大纲生成卷」）：
+ * 只认 bullet 行（`-`/`*` 前缀、可缩进）且以「第X卷」开头（X 为阿拉伯或中文数字），形如 `第X卷[·・、\-—]<名>[（第A-B章）][:：]<描述>`；
+ * 要求 bullet 前缀以防正文里「第一卷……」之类叙述误报；章号区间注记（如「（第1-8章）」）仅展示、不作章数来源，从卷名中剥除；
+ * 无名（冒号前为空）或无冒号的行跳过；按名去重留首个，返回文档序。
+ */
+export function parseVolumeDeclarations(text: string): VolumeDeclaration[] {
+	const out: VolumeDeclaration[] = [];
+	const seen = new Set<string>();
+	for (const line of String(text ?? "").split("\n")) {
+		const m = /^\s*[-*]\s*第\s*(?:\d+|[零一二两三四五六七八九十百]+)\s*卷\s*[·・、\-—]?\s*(.+)$/.exec(line);
+		if (!m) continue;
+		const rest = m[1].trim();
+		const ci = rest.search(/[:：]/);
+		if (ci < 0) continue; // 无冒号 → 不是声明行
+		const name = rest.slice(0, ci).replace(/[（(]\s*第\s*\d+\s*[-–—~～至到]\s*\d+\s*章\s*[)）]/g, "").trim(); // 剥「（第A-B章）」区间注记
+		const description = rest.slice(ci + 1).trim();
+		if (!name || seen.has(name)) continue; // 无名跳过 / 重名留首个
+		seen.add(name);
+		out.push({ name, description });
+	}
+	return out;
 }
 
 // ---------- 场景（场景.md，全局或章节内）----------

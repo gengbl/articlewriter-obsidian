@@ -409,6 +409,24 @@ export function chapterKeyLabel(key: string, volumeNames?: Record<string, string
 	return `${volumeNames?.[volId] || volId}·第${key.slice(i + 1)}章`;
 }
 
+/** v0.2.x+ 世界观块（含前导换行）：优先注入《世界观.md》清洗后全文（fullText，自由格式设定——人物/时间线/自定义小节等 parseWorld 不识别的内容——也原样进上下文）；fullText 缺失时回退结构化字段渲染 */
+export function worldBlock(ws: WorldSettingDoc | null | undefined): string {
+	const ft = (ws?.fullText ?? "").trim();
+	if (ft) return `\n【世界观设定】\n${ft}`;
+	if (ws && (ws.name || ws.world_type || (ws.rules?.length) || (ws.factions?.length) || (ws.locations?.length) || ws.history || ws.magic_system)) {
+		const w: string[] = ["【世界观设定】"];
+		if (ws.name) w.push(`  世界：${ws.name}`);
+		if (ws.world_type) w.push(`  类型：${ws.world_type}`);
+		if (ws.rules?.length) w.push(`  规则：${ws.rules.join("；")}`);
+		if (ws.factions?.length) w.push(`  势力/社会组成：${ws.factions.join("；")}`);
+		if (ws.locations?.length) w.push(`  地点：${ws.locations.join("；")}`);
+		if (ws.history) w.push(`  历史：${ws.history}`);
+		if (ws.magic_system) w.push(`  力量体系：${ws.magic_system}`);
+		return `\n${w.join("\n")}`;
+	}
+	return "";
+}
+
 /**
  * 纯函数版 get_context_for_writing：所有磁盘读取由调用方完成。
  * v0.0.15 三层结构——故事情况分「书籍级 / 卷级 / 章级」小节渲染：
@@ -515,17 +533,8 @@ export function buildWritingContext(input: WritingContextInput): string {
 		}
 	}
 
-	const ws = input.world;
-	if (ws && (ws.name || ws.world_type || (ws.rules?.length) || (ws.factions?.length) || (ws.locations?.length) || ws.history || ws.magic_system)) {
-		parts.push("\n【世界观设定】");
-		if (ws.name) parts.push(`  世界：${ws.name}`);
-		if (ws.world_type) parts.push(`  类型：${ws.world_type}`);
-		if (ws.rules?.length) parts.push(`  规则：${ws.rules.join("；")}`);
-		if (ws.factions?.length) parts.push(`  势力：${ws.factions.join("；")}`);
-		if (ws.locations?.length) parts.push(`  地点：${ws.locations.join("；")}`);
-		if (ws.history) parts.push(`  历史：${ws.history}`);
-		if (ws.magic_system) parts.push(`  力量体系：${ws.magic_system}`);
-	}
+	const wb = worldBlock(input.world); // v0.2.x+：优先清洗后全文（自由格式设定也注入），缺失回退结构化字段
+	if (wb) parts.push(wb);
 
 	const allScenes = new Map(input.scenes.map((s) => [s.scene_id, s]));
 	const exclScenes = new Set(input.excludeSceneIds || []); // 本章目录《场景.md》归属者已由 folderDocs【本章场景】原文渲染
@@ -760,11 +769,21 @@ export function buildChapterPrompt(input: ChapterPromptInput): { prompt: string;
 	if (storyType) {
 		parts.push("\n" + storyTypeConfirmLine(storyType));
 	}
+	// v0.2.11+：要求清单升级为故事情节设计工艺版——卷内位置意识/结构化大纲字段落地/章末钩子/场景工艺/知识状态/章内因果链/伏笔条款（替代原泛化的「情节合理推进」「章节结尾自然收束」）；v0.2.12+ 第4条章末收束改为「自然终点＋有大纲钩子才落钩子」（与写作指南十二节对齐，原「必须落在钩子悬念点、禁平静收尾」过刚），并新增第12条「通顺与逻辑优先」兜底（原11条工艺项）
 	parts.push(
 		"\n请创作本章内容，要求：" +
-		`\n1. 严格按【章节大纲】创作：大纲中的每个情节要点都必须写到，顺序遵循大纲，不得遗漏、不得偏离主线，不得自行添加大段无关情节\n` +
+		`\n1. 严格按【章节大纲】及上方【大纲约束】执行：要点全部写到、顺序遵循、不偏离主线、不添加大段无关情节\n` +
 		`2. 总字数严格控制在${wordHigh}字以内（目标${wordLow}-${wordHigh}字）：不足${wordLow}字继续充实，达到${wordHigh}字必须收尾，严禁超限\n` +
-		"3. 与前后文保持连贯\n4. 人物性格一致\n5. 情节合理推进\n6. 适当使用对话、描写、心理活动\n7. 章节结尾自然收束\n8. 文风自然平实，画面感来自具体细节，避免华丽形容词堆砌\n9. 不要使用常见的比喻（如\"像……一样\"\"如……般\"\"仿佛……\"），表达方式要普通，能直说就直说\n\n请直接输出正文内容，不要包含任何标题或额外说明。"
+		"3. 先判断本章在卷结构中的位置与功能（铺垫/升级/反转/高潮/收束——参照【本卷大纲】及其【卷设计】），强度与叙事重心与之匹配：反转前的章节持续加压，反转章必须把转折写成具体场景，反转后的章节体现主角状态变化\n" +
+		"4. 若大纲含「升级反转」「人物变化」「章末钩子」条目，必须写成具体的场景、转折或变化，不得一笔带过；章节结尾以本章情节的自然终点收束——大纲给出「章末钩子」时落在钩子的悬念点上，未给时不强求爆点，但禁止以总结段或感悟段收尾\n" +
+		"5. 每个场景有明确的目标与障碍；对话承载冲突或信息增量，不写寒暄注水；关键转折用动作、对话和细节演出来，不用叙述概括\n" +
+		"6. 人物的行动与决定只能依赖其在前文中已知悉的信息，不得使用其不可能知道的信息；配角按其自身目标与逻辑行动，不做主角的工具\n" +
+		"7. 章内场景之间以「因此/但是」因果衔接，而非按时间顺序排列；主角的目标、认知或关系较章初至少推进一步（除非大纲明确说明）\n" +
+		"8. 若本章大纲明确要求埋设或回收某伏笔，必须具体写出；不要主动提及与之无关的未完成伏笔\n" +
+		"9. 与前后文保持连贯，人物性格一致\n" +
+		"10. 文风自然平实，画面感来自具体细节，避免华丽形容词堆砌\n" +
+		"11. 不要使用常见的比喻（如\"像……一样\"\"如……般\"\"仿佛……\"），表达方式要普通，能直说就直说\n" +
+		"12. 通顺与逻辑优先于一切风格手法：每句话成分完整、语序正常，读一遍就懂；每个行动都有动机和缘由，前后信息不断链——不得为追求风格写出病句、乱序或逻辑断裂的段落\n\n请直接输出正文内容，不要包含任何标题或额外说明。"
 	);
 	return { prompt: parts.join("\n"), foreshadows: prepared.foreshadows };
 }
@@ -825,7 +844,11 @@ ${input.userInstruction ? `【续写要求】${input.userInstruction}` : "请按
 2. 与前文自然衔接
 3. 保持人物性格一致
 4. 适当使用对话和描写
-5. 不要使用常见的比喻，表达方式要普通，直接说`;
+5. 继续推进大纲的下一个情节要点，不要提前收束本章（除非大纲已写完）；大纲含「章末钩子」且字数允许时，为其留出落点
+6. 人物的行动与决定只能依赖其在前文中已知悉的信息
+7. 若本章大纲明确要求埋设或回收某伏笔，必须具体写出；不要主动提及与之无关的未完成伏笔
+8. 不要使用常见的比喻，表达方式要普通，直接说
+9. 通顺与逻辑优先于一切风格手法：每句话成分完整、语序正常，读一遍就懂；每个行动都有动机和缘由，前后信息不断链——不得为追求风格写出病句、乱序或逻辑断裂的段落`;
 	const foreshadows = [...globalPrep.foreshadows, ...chapterPrep.foreshadows];
 	return { prompt, foreshadows };
 }
@@ -852,6 +875,276 @@ export function buildVolRebuildPrompt(volumeName: string, chapterLines: Array<Vo
 
 【各章摘要 · 阅读序】
 ${blocks}`;
+}
+
+// ---------- v0.2.11+ 自动生成卷大纲 (/vol-outline-generate) ----------
+
+export const VOL_OUTLINE_GEN_SYSTEM_PROMPT = `你是资深小说策划，擅长卷级情节设计。你的大纲将作为后续逐章写作的依据，必须具体可执行。
+你产出的每份大纲都要满足四条硬标准：
+1. 因果——每一章由上一章「因此/但是」推出，而非按时间顺序「然后」排列；禁止巧合推动剧情。
+2. 升级——赌注与代价逐章抬升，张力有松有紧；最大反转落在本卷中段附近，高潮落在后三分之一。
+3. 转变——卷末主角的目标、认知或关系必须较卷初发生实质变化，且变化由其在压力下的选择驱动，而非纯外部事件。
+4. 新意——先想这个剧情最可预测的版本，再在 1–2 个关键处刻意打破它；所有反转须在前文埋过伏笔（回收），禁止机械降神。`;
+
+export interface VolOutlineGenInput {
+	bookTitle: string; // 书名
+	genre?: string; // 题材
+	writingStyle?: string; // 编写类型/故事基调
+	world?: WorldSettingDoc | null; // 全局世界观设定（世界/规则/势力/地点/历史/力量体系）
+	globalOutline?: string; // 全书《大纲.md》清洗文本
+	planningGuide?: string; // v0.2.13+ 书级《策划指南.md》清洗文本（本书既定规划约束，注入【策划规范】块）
+	volumes: Array<{ name: string; description?: string }>; // 全部卷（阅读序）
+	targetVolumeName: string; // 目标卷名
+	prevVolumeOutline?: string; // 前一卷卷大纲清洗文本（只读参考）
+	existingOutline?: string; // 目标卷现有大纲清洗文本（避免重复）
+	chapterCount: number; // 目标章数（恰好 N 章）
+}
+
+/** v0.2.x+ 卷大纲提示词共享上下文块（书籍信息 / 世界观 / 全书大纲 / 卷列表 / 前一卷卷大纲 / 目标卷现有大纲），供增量分段生成的各步提示词复用 */
+function volOutlineContextParts(input: VolOutlineGenInput, existingLabel: string): string[] {
+	const parts: string[] = [];
+	const info: string[] = [`书名：${input.bookTitle}`];
+	const genre = (input.genre ?? "").trim();
+	const style = (input.writingStyle ?? "").trim();
+	if (genre) info.push(`题材：${genre}`);
+	if (style) info.push(`基调/风格：${style}`);
+	parts.push(`\n【书籍信息】\n${info.join("\n")}`);
+
+	const pg = (input.planningGuide ?? "").trim(); // v0.2.13+ 策划指南：本书既定规划约束，设计步与每章步都须遵循
+	if (pg) parts.push(`\n【策划规范 · 本书既定规划（生成大纲时必须遵循、不得违背）】\n${pg}`);
+
+	const wb = worldBlock(input.world); // v0.2.x+：优先清洗后全文（自由格式设定也注入），缺失回退结构化字段
+	if (wb) parts.push(wb);
+
+	const globalOutline = (input.globalOutline ?? "").trim();
+	if (globalOutline) parts.push(`\n【全书大纲】\n${globalOutline}`);
+
+	if (input.volumes.length) {
+		const lines = input.volumes.map((v, i) => {
+			const desc = (v.description ?? "").trim();
+			return `${i + 1}. ${v.name}${desc ? `（${desc}）` : ""}${v.name === input.targetVolumeName ? " ← 目标卷" : ""}`;
+		});
+		parts.push(`\n【卷列表 · 阅读序】\n${lines.join("\n")}`);
+	}
+
+	const prevOutline = (input.prevVolumeOutline ?? "").trim();
+	if (prevOutline) parts.push(`\n【前一卷卷大纲 · 仅参考】\n${prevOutline}`);
+
+	const existing = (input.existingOutline ?? "").trim();
+	if (existing) parts.push(`\n【目标卷现有大纲 · ${existingLabel}】\n${existing}`);
+
+	return parts;
+}
+
+/** v0.2.x+ 增量生成卷大纲 · 第 0 步：只生成【卷设计】段（≤8 行），不输出任何章标记；后续每章提示词会带上本段作为设计依据 */
+export function buildVolOutlineDesignPrompt(input: VolOutlineGenInput): string {
+	const n = input.chapterCount;
+	const reqs: string[] = [
+		`不要输出任何章标记或章节内容，只写一段【卷设计】（不超过 8 行），覆盖：核心冲突；升级路径（赌注如何一步步抬高）；主角转变（卷初状态 → 卷末状态，由哪个选择驱动）；最大反转（大致在第几章、伏笔埋在哪几章）；新意点（本卷如何以不同于该题材最可预测版本的方式兑现其核心爽点/情感核）`,
+		"本卷整体走向须承接全书大纲与前卷进展：本卷开头主角状态须接住前卷结尾状态；前卷遗留的未解线头或伏笔，本卷至少推进或回收其一；不得违背世界观设定（世界规则 / 势力 / 力量体系）",
+	];
+	const existing = (input.existingOutline ?? "").trim();
+	if (existing) reqs.push("目标卷已有现有大纲内容（见【目标卷现有大纲】），新章节不得与其剧情重复，应承接或补充");
+	reqs.push("只输出大纲正文本身，不要解释、前言说明或代码块包裹");
+	const parts: string[] = [`请根据下面的书籍设定，为「${input.targetVolumeName}」（共 ${n} 章）生成【卷设计】段。\n\n要求：\n${reqs.map((r, i) => `${i + 1}. ${r}`).join("\n")}`];
+	parts.push(...volOutlineContextParts(input, "避免重复"));
+	return parts.join("\n");
+}
+
+/** v0.2.x+ 增量生成卷大纲 · 第 1..N 步：每次恰好生成一个 `## 第N章` 小节 */
+export interface VolOutlineChapterInput extends VolOutlineGenInput {
+	chapterNum: number; // 本次生成的章号（阿拉伯数字）
+	volumeDesign?: string; // 第 0 步生成的【卷设计】段（完整模式）
+	generatedSoFar?: string; // 本轮已生成的各段拼接文本（供因果衔接参考）
+	supplementMode?: boolean; // 补全模式（从书级大纲生成卷）：无设计步、承接已有章
+}
+
+/** v0.2.x+ 增量生成卷大纲 · 单章提示词：恰好输出一个章标记 + 固定五项结构；带共享书籍上下文 + 本轮【卷设计】与已生成章节，保证跨段因果链 */
+export function buildVolOutlineChapterPrompt(input: VolOutlineChapterInput): string {
+	const n = input.chapterCount;
+	const num = input.chapterNum;
+	const supplement = !!input.supplementMode;
+	const isFirst = num === 1;
+	const reqs: string[] = [
+		`恰好输出一个章标记「## 第${num}章 <标题>」（N 为阿拉伯数字 ${num}，不要写成「第一章」这类中文序号），<标题> 是该章的简短标题`,
+		"每个章标记之后按固定结构写本章大纲（每项一行、简洁具体、避免空话）：\n   - 主线：本章发生什么（具体场景与行动）\n   - 因果衔接：上一章如何导致本章（一句话）\n   - 升级/反转：本章引入的新代价、风险或转折\n   - 人物变化：某角色处境或认知/关系的改变\n   - 章末钩子：章末留下的悬念或新问题\n   （主线与章末钩子每章必写；其余三项视情况覆盖）",
+		supplement
+			? "节奏：本章张力松紧须与现有章的节奏一致，不连续堆叠高强度章；若本章恰处本卷高潮或收束位置，按其位置要求落位"
+			: `节奏：全卷张力松紧交替，不连续堆叠高强度章；高潮落在后三分之一，末章收束到卷级目标${isFirst ? "；开篇章须接住前卷结尾状态（无前卷则接全书开篇）" : ""}`,
+		supplement
+			? "承接：若本章之前存在已有章，须因果衔接自最近的前序已有章的章末；若本章之后存在已有章，章末钩子须能接住其后最近的已有章"
+			: isFirst
+				? "承接：本章为本卷开篇，主角状态须接住前卷结尾状态（无前卷则接全书开篇），不得凭空开场"
+				: "承接：本章须由上一章「因此/但是」推出，而非按时间顺序「然后」排列；禁止巧合推动剧情",
+		"反套路：反派/阻碍按其自身目标与逻辑行动，不是主角的道具；主角的挫折须源于其自身选择或性格缺陷，而非纯运气差",
+	];
+	const existing = (input.existingOutline ?? "").trim();
+	if (existing) {
+		reqs.push(supplement
+			? "已有章的内容是既定事实、不可改写；本章的剧情须与已有章严格一致（人物状态、已埋伏笔、因果链），不得重复或矛盾"
+			: "目标卷已有现有大纲内容（见【目标卷现有大纲】），本章不得与其剧情重复，应承接或补充");
+	}
+	reqs.push("只输出大纲正文本身，不要解释、前言说明或代码块包裹");
+	const parts: string[] = [`${supplement ? "补全" : "生成"}「${input.targetVolumeName}」（共 ${n} 章）的第 ${num} 章章节小节。\n\n要求：\n${reqs.map((r, i) => `${i + 1}. ${r}`).join("\n")}`];
+	parts.push(...volOutlineContextParts(input, supplement ? "续写参考" : "避免重复"));
+	const design = (input.volumeDesign ?? "").trim();
+	if (design) parts.push(`\n【卷设计 · 本轮】\n${design}`);
+	const soFar = (input.generatedSoFar ?? "").trim();
+	if (soFar) parts.push(`\n【已生成章节 · 本轮】\n${soFar}`);
+	return parts.join("\n");
+}
+
+// ---------- v0.2.x+ 生成书籍大纲 (/book-outline-generate) ----------
+
+export const BOOK_OUTLINE_GEN_SYSTEM_PROMPT = `你是资深小说策划，擅长全书结构设计。你产出的书级大纲是整部作品的主蓝图，必须具体可执行。
+你产出的每份大纲都要满足四条硬标准：
+1. 因果——每一卷/每一章由前文「因此/但是」推出，而非按时间顺序「然后」排列；禁止巧合推动剧情。
+2. 升级——赌注与代价在全书范围内逐步抬升，张力有松有紧；最大反转落在全书中段附近，高潮落在后三分之一。
+3. 转变——全书结束时主角的目标、认知或关系必须较开篇发生实质变化，且变化由其在压力下的选择驱动，而非纯外部事件。
+4. 新意——先想这个故事最可预测的版本，再在 1–2 个关键处刻意打破它；所有反转须在前文埋过伏笔（回收），禁止机械降神。`;
+
+export interface BookOutlineGenInput {
+	bookTitle: string; // 书名
+	genre?: string; // 题材
+	writingStyle?: string; // 编写类型/故事基调
+	world?: WorldSettingDoc | null; // 全局世界观设定（世界/规则/势力/地点/历史/力量体系）
+	flatMode: boolean; // 平铺（无卷）模式 → 逐章规划（## 第N章 标记）；有卷模式 → 卷声明格式
+	volumes?: Array<{ name: string; description?: string }>; // 全部卷（仅非平铺模式，阅读序）
+	chapters?: Array<{ label: string; summary?: string }>; // 已有章节（阅读序）+ 已存摘要；label 为展示标签（跨卷时含卷名前缀）
+	existingOutline?: string; // 现有书级《大纲.md》清洗文本（避免重复）
+	planningGuide?: string; // v0.2.13+ 书级《策划指南.md》清洗文本（本书既定规划约束，注入【策划规范】块）
+	chapterCount: number; // 目标章数（平铺=恰好 N 章；有卷=全书规划总章数参考）
+}
+
+/** v0.2.x+「生成书籍大纲」prompt：依据全局设定与已有章节（及其已存摘要）生成书级《大纲.md》。两种输出形态：
+ * - 平铺（无卷）模式：先写【全书设计】块，再逐章规划恰好 N 章、每章以 `## 第N章 <标题>` 标记（阿拉伯数字 1..N，与「从卷大纲生成章节」同一解析器兼容），其后按固定结构写各章大纲；
+ * - 有卷模式：写全书主线 + 分卷分章（每卷一行 `- 第X卷·卷名（第A-B章）：描述`，可被「从书级大纲生成卷」解析）+ 结局，不写逐章标记。 */
+export function buildBookOutlineGenPrompt(input: BookOutlineGenInput): string {
+	const n = input.chapterCount;
+	const reqs: string[] = [];
+	if (input.flatMode) {
+		reqs.push(`恰好输出 ${n} 个章标记，每行一个、形如「## 第N章 <标题>」，N 为阿拉伯数字从 1 连续递增到 ${n}（如「## 第1章」，不要写成「第一章」）；<标题> 是该章的简短标题`);
+		reqs.push("在首个章标记之前先写一段【全书设计】（不超过 8 行），覆盖：全书主线；升级路径（赌注如何一步步抬高）；主角转变（开篇状态 → 结局状态，由哪个选择驱动）；最大反转（大致在第几章、伏笔埋在哪几章）；新意点（本书如何以不同于该题材最可预测版本的方式兑现其核心爽点/情感核）");
+		reqs.push("每个章标记之后按固定结构写本章大纲（每项一行、简洁具体、避免空话）：\n   - 主线：本章发生什么（具体场景与行动）\n   - 因果衔接：上一章如何导致本章（一句话）\n   - 升级/反转：本章引入的新代价、风险或转折\n   - 人物变化：某角色处境或认知/关系的改变\n   - 章末钩子：章末留下的悬念或新问题\n   （主线与章末钩子每章必写；其余三项视情况覆盖）");
+		reqs.push("节奏：全书张力松紧交替，不连续堆叠高强度章；全书至少 2 次实质性反转（其一为中段最大反转）；高潮落在后三分之一，末章收束到全书目标");
+	} else {
+		reqs.push(`全书规划约 ${n} 章；按需分卷（通常 1–5 卷），每卷用一行声明、形如「- 第X卷·卷名（第A-B章）：描述」（X 为阿拉伯数字从 1 递增；A-B 为该卷章号区间、连续不重叠、合起来覆盖 1 到 ${n} 的全部章；描述为一句话概括该卷主要内容）`);
+		reqs.push("结构：先写全书主线（数句），再写分卷分章（即上述卷声明行），最后写结局（主线如何收束、主角最终状态）");
+	}
+	reqs.push("反套路：反派/阻碍按其自身目标与逻辑行动，不是主角的道具；主角的挫折须源于其自身选择或性格缺陷，而非纯运气差");
+	const existing = (input.existingOutline ?? "").trim();
+	if (existing) reqs.push("本书已有现有大纲内容（见【现有书级大纲】），新内容不得与其剧情重复，应承接或补充，且不得违背其中已确立的事实");
+	const chs = input.chapters ?? [];
+	if (chs.length) {
+		reqs.push(`本书已有 ${String(chs.length)} 章（见【已有章节 · 阅读序】），其内容是既定事实、不可改写——规划须与它们严格一致（人物状态、已埋伏笔、因果链），不得重复或矛盾${input.flatMode ? "；已有章的章标记下用 1–2 句简述其既定剧情即可，缺失章按固定结构写新规划" : ""}`);
+	}
+	if (!input.flatMode && (input.volumes ?? []).length) {
+		reqs.push("分卷须与现有卷对齐（见【卷列表 · 阅读序】）：保留现有卷名与顺序、可在末尾追加新卷；各卷章号区间须覆盖其已有章节");
+	}
+	const pg = (input.planningGuide ?? "").trim();
+	if (pg) reqs.push("书级《策划指南》（见【策划规范 · 本书既定规划】）是本书的既定规划约束：主线、升级路径、主角转变、反转与伏笔规划、新意点、节奏、人物行动逻辑、信息与知识状态、世界观红线、连续性基线均须与其一致，不得违背");
+	reqs.push("不得违背世界观设定（世界规则 / 势力 / 力量体系）");
+	reqs.push("只输出大纲正文本身，不要解释、前言说明或代码块包裹");
+
+	const parts: string[] = [`${input.flatMode ? `请根据下面的书籍设定，生成一份恰好 ${n} 章的书级大纲。` : `请根据下面的书籍设定，为本书生成一份书级大纲（全书规划约 ${n} 章）。`}\n\n要求：\n${reqs.map((r, i) => `${i + 1}. ${r}`).join("\n")}`];
+
+	const info: string[] = [`书名：${input.bookTitle}`];
+	const genre = (input.genre ?? "").trim();
+	const style = (input.writingStyle ?? "").trim();
+	if (genre) info.push(`题材：${genre}`);
+	if (style) info.push(`基调/风格：${style}`);
+	parts.push(`\n【书籍信息】\n${info.join("\n")}`);
+
+	if (pg) parts.push(`\n【策划规范 · 本书既定规划（生成大纲时必须遵循、不得违背）】\n${pg}`); // v0.2.13+ 策划指南注入
+
+	const wb = worldBlock(input.world); // v0.2.x+：优先清洗后全文（自由格式设定也注入），缺失回退结构化字段
+	if (wb) parts.push(wb);
+
+	if (!input.flatMode && (input.volumes ?? []).length) {
+		const lines = (input.volumes ?? []).map((v, i) => {
+			const desc = (v.description ?? "").trim();
+			return `${i + 1}. ${v.name}${desc ? `（${desc}）` : ""}`;
+		});
+		parts.push(`\n【卷列表 · 阅读序】\n${lines.join("\n")}`);
+	}
+
+	if (chs.length) {
+		const lines = chs.map((c) => {
+			const s = (c.summary ?? "").trim();
+			return `${c.label}${s ? `\n   摘要：${s}` : ""}`;
+		});
+		parts.push(`\n【已有章节 · 阅读序】\n${lines.join("\n")}`);
+	}
+
+	if (existing) parts.push(`\n【现有书级大纲 · 避免重复】\n${existing}`);
+
+	return parts.join("\n");
+}
+
+// ---------- v0.2.13+ 策划指南 (/planning-guide；书级《策划指南.md》，大纲类命令的既定规划约束) ----------
+
+export interface PlanningGuideInput {
+	bookTitle: string; // 书名
+	genre?: string; // 题材
+	writingStyle?: string; // 编写类型/故事基调
+	world?: WorldSettingDoc | null; // 全局世界观设定
+	globalOutline?: string; // 全书《大纲.md》清洗文本
+	volumes?: Array<{ name: string; description?: string }>; // 全部卷（阅读序）
+	chapters?: Array<{ label: string; summary?: string }>; // 已有章节（阅读序）+ 已存摘要；label 为展示标签（跨卷时含卷名前缀）
+	existingGuide?: string; // 现有《策划指南.md》清洗文本（重新生成模式：既定事实约束）
+}
+
+/** v0.2.13+「策划指南」prompt：依据全局设定与已有章节（及其已存摘要）生成书级《策划指南.md》——固定十节结构，
+ * 是后续书级/卷级大纲生成的既定规划约束。重新生成时 existingGuide 非空，整体重写但不得改变既定事实。 */
+export function buildPlanningGuidePrompt(input: PlanningGuideInput): string {
+	const reqs: string[] = [
+		"按以下固定十节结构输出，每节一个 H2 标题、顺序不可变、不可增删节：\n   ## 一、全书主线\n   ## 二、升级路径\n   ## 三、主角转变弧\n   ## 四、反转与伏笔总规划\n   ## 五、新意点与反套路条款\n   ## 六、节奏与张力曲线\n   ## 七、人物行动逻辑\n   ## 八、信息与知识状态规则\n   ## 九、世界观红线\n   ## 十、连续性基线",
+		"各节内容要求（具体可执行、避免空话）：\n   - 一·全书主线：数句说清主角目标、核心冲突、结局走向（这本书到底在讲什么）\n   - 二·升级路径：赌注与代价如何在全书范围内一步步抬高——列出关键抬升节点及其大致位置（第几卷/第几章附近）\n   - 三·主角转变弧：开篇状态 → 结局状态；变化由其在压力下的哪个选择驱动\n   - 四·反转与伏笔总规划：列出全部主要反转（至少含一个全书中段最大反转），每个写明：反转是什么、伏笔埋在哪几章、在哪回收\n   - 五·新意点与反套路条款：先写出这个故事最可预测的版本，再指明在 1–2 个关键处如何刻意打破它；列出本书明确不用的俗套桥段清单\n   - 六·节奏与张力曲线：全书张力松紧交替的安排；高潮位置（后三分之一）；实质性反转的落位（≥2 次）\n   - 七·人物行动逻辑：主角与主要配角（含反派）的核心动机与行为逻辑——按其自身目标与逻辑行动，不是主角的道具\n   - 八·信息与知识状态规则：各角色在任一时刻知道/不知道什么；信息释放节奏（禁止角色突然获得其不该知道的信息）\n   - 九·世界观红线：不得违背的硬规则（世界规则 / 势力 / 力量体系），逐条列出\n   - 十·连续性基线：已有章节确立的既定事实（人物状态、已埋伏笔、因果链），后续一切规划须与其严格一致",
+	];
+	const chs = input.chapters ?? [];
+	if (chs.length) {
+		reqs.push(`本书已有 ${String(chs.length)} 章（见【已有章节 · 阅读序】），其内容是既定事实、不可改写——「十·连续性基线」一节必须依据这些章节的摘要如实整理`);
+	}
+	const existing = (input.existingGuide ?? "").trim();
+	if (existing) {
+		reqs.push("本书已有《策划指南》（见【现有策划指南 · 既定事实】），本次为整体重写：可以调整表述、补充遗漏、修正与既有章节矛盾之处，但不得改变其中已确立的事实（主线走向、已埋伏笔、人物状态、世界观红线）");
+	}
+	reqs.push("只输出策划指南正文本身（上述十个 H2 节），不要输出 H1 标题、解释、前言说明或代码块包裹");
+
+	const parts: string[] = [`${existing ? "请根据下面的书籍设定，重新生成本书的《策划指南》。" : `请根据下面的书籍设定，为「${input.bookTitle}」生成一份《策划指南》。\n\n它是后续书级/卷级大纲生成的既定规划约束，大纲生成时必须遵循、不得违背。`}\n\n要求：\n${reqs.map((r, i) => `${i + 1}. ${r}`).join("\n")}`];
+
+	const info: string[] = [`书名：${input.bookTitle}`];
+	const genre = (input.genre ?? "").trim();
+	const style = (input.writingStyle ?? "").trim();
+	if (genre) info.push(`题材：${genre}`);
+	if (style) info.push(`基调/风格：${style}`);
+	parts.push(`\n【书籍信息】\n${info.join("\n")}`);
+
+	const wb = worldBlock(input.world); // v0.2.x+：优先清洗后全文（自由格式设定也注入），缺失回退结构化字段
+	if (wb) parts.push(wb);
+
+	const globalOutline = (input.globalOutline ?? "").trim();
+	if (globalOutline) parts.push(`\n【全书大纲】\n${globalOutline}`);
+
+	if ((input.volumes ?? []).length) {
+		const lines = (input.volumes ?? []).map((v, i) => {
+			const desc = (v.description ?? "").trim();
+			return `${i + 1}. ${v.name}${desc ? `（${desc}）` : ""}`;
+		});
+		parts.push(`\n【卷列表 · 阅读序】\n${lines.join("\n")}`);
+	}
+
+	if (chs.length) {
+		const lines = chs.map((c) => {
+			const s = (c.summary ?? "").trim();
+			return `${c.label}${s ? `\n   摘要：${s}` : ""}`;
+		});
+		parts.push(`\n【已有章节 · 阅读序】\n${lines.join("\n")}`);
+	}
+
+	if (existing) parts.push(`\n【现有策划指南 · 既定事实】\n${existing}`);
+
+	return parts.join("\n");
 }
 
 // ---------- 章节摘要（对齐 CLI writer.py _summarize_chapter：正文写盘后/上下文组装时缺失即生成，落 <章目录>/章节摘要.md）----------
@@ -917,6 +1210,8 @@ ${input.userInstruction ? `【重写要求】${input.userInstruction}` : "请严
 - **如果没有特殊要求**：基于大纲自由发挥，但尽量与原文风格一致
 - **必须保留的**：角色性格一致性、本章与全局大纲约束（大纲要点不得遗漏）、与前文/后文的衔接逻辑
 - **可以改变的**：事件顺序、描写详略、对话比重、叙事角度、悬念设置
+- **场景工艺**：每个场景有明确的目标与障碍；关键转折用动作、对话和细节演出来，不用叙述概括；章节结尾以本章情节的自然终点收束，有大纲「章末钩子」时落在钩子上，不以总结段落收尾
+- **通顺与逻辑优先**：每句话成分完整、语序正常，读一遍就懂；每个行动都有动机和缘由，前后信息不断链——不得为追求风格写出病句、乱序或逻辑断裂的段落
 
 请直接输出正文内容，不要包含额外说明。`;
 }

@@ -2219,7 +2219,9 @@ private emptyState(storyName: string): StoryState {
 	// ---------- 世界观（世界观.md）----------
 
 	async readWorldDoc(storyName: string): Promise<doc.WorldSettingDoc> {
-		return doc.parseWorld(await this.readDoc(`${this.storyPath(storyName)}/世界观.md`));
+		const text = await this.readDoc(`${this.storyPath(storyName)}/世界观.md`);
+		// v0.2.x+：附带清洗后全文——parseWorld 只识别固定字段行，自由格式设定（人物/时间线/自定义小节）会全部丢失；提示词注入优先用 fullText，保证任意写法的世界观都进上下文
+		return { ...doc.parseWorld(text), fullText: doc.stripComments(text).trim() };
 	}
 
 	/** /world set <字段> <值>：世界/类型/规则/势力/地点/历史/力量体系 */
@@ -2946,6 +2948,65 @@ private emptyState(storyName: string): StoryState {
 		return lines.join("\n").trim();
 	}
 
+	/** v0.2.11+「自动生成卷大纲」：读目标卷《卷大纲.md》原始文本（不清洗，保留注释与 H1——供追加模式在原文末尾续写）；卷不存在或文件缺失返回空串 */
+	async readVolumeOutlineRaw(storyName: string, volId: string): Promise<string> {
+		const vols = await this.loadVolumes(storyName);
+		const vol = this.findVolumeIn(vols, volId);
+		if (!vol) return "";
+		const volDir = `${this.storyPath(storyName)}/${this.volumeFolderName(vol)}`;
+		return (await this.readDoc(this.resolveVolumeDocPath(volDir, vol.name, "卷大纲.md"))).trim();
+	}
+
+	/** v0.2.11+「自动生成卷大纲」：全量写目标卷《卷大纲.md》（H1 `# <卷名> 卷大纲` + 正文，正文尾部空白已去）；卷不存在抛错 */
+	async setVolumeOutline(storyName: string, volId: string, bodyText: string): Promise<void> {
+		const vols = await this.loadVolumes(storyName);
+		const vol = this.findVolumeIn(vols, volId);
+		if (!vol) throw new Error(`卷不存在：${volId}`);
+		const volDir = `${this.storyPath(storyName)}/${this.volumeFolderName(vol)}`;
+		const body = String(bodyText ?? "").replace(/\s+$/, "");
+		await this.writeDoc(this.resolveVolumeDocPath(volDir, vol.name, "卷大纲.md"), `# ${vol.name} 卷大纲\n\n${body}\n`);
+	}
+
+	/** v0.2.11+「自动生成卷大纲」：读全书《大纲.md》清洗文本（与 readGlobalOutlineRaw/写作上下文注入同口径）；缺失返回空串 */
+	async readGlobalOutline(storyName: string): Promise<string> {
+		return this.readGlobalOutlineRaw(storyName);
+	}
+
+	/** v0.2.x+「生成书籍大纲」：读全书《大纲.md》原始文本（不清洗，保留注释与 H1——供追加模式在原文末尾续写）；文件缺失返回空串 */
+	async readGlobalOutlineFile(storyName: string): Promise<string> {
+		return (await this.readDoc(`${this.storyPath(storyName)}/大纲.md`)).trim();
+	}
+
+	/** v0.2.x+「生成书籍大纲」：全量写全书《大纲.md》（H1 `# <书名> 大纲` + 正文 + 标记帮助尾注，与初始模板 outlineTemplate 一致；正文尾部空白已去） */
+	async setGlobalOutline(storyName: string, bodyText: string): Promise<void> {
+		const state = await this.loadState(storyName);
+		const title = ((state?.title ?? "").trim()) || "未命名小说";
+		const body = String(bodyText ?? "").replace(/\s+$/, "");
+		await this.writeDoc(`${this.storyPath(storyName)}/大纲.md`, appendOutlineMarkerHelp(`# ${title} 大纲\n\n${body}\n`));
+	}
+
+	// ---------- v0.2.13+ 策划指南 策划指南.md（书级单文件 <书名>/策划指南.md；仅供大纲类命令注入【策划规范】，不进写作命令/聊天面板） ----------
+
+	planningGuidePath(storyName: string): string {
+		return `${this.storyPath(storyName)}/策划指南.md`;
+	}
+
+	/** v0.2.13+「策划指南」：读书级《策划指南.md》清洗文本（去注释 + 去首部 H1 标题行，与 readGlobalOutline 同口径）；缺失返回空串 */
+	async readPlanningGuide(storyName: string): Promise<string> {
+		const raw = await this.readDoc(this.planningGuidePath(storyName));
+		let lines = doc.stripComments(raw.trim()).trim().split("\n");
+		while (lines.length && /^#\s/.test(lines[0])) lines.shift();
+		return lines.join("\n").trim();
+	}
+
+	/** v0.2.13+「策划指南」：全量写书级《策划指南.md》（H1 `# <书名> 策划指南` + 正文，正文尾部空白已去）；缺失则创建、存在则覆盖 */
+	async setPlanningGuide(storyName: string, bodyText: string): Promise<void> {
+		const state = await this.loadState(storyName);
+		const title = ((state?.title ?? "").trim()) || "未命名小说";
+		const body = String(bodyText ?? "").replace(/\s+$/, "");
+		await this.writeDoc(this.planningGuidePath(storyName), `# ${title} 策划指南\n\n${body}\n`);
+	}
+
 	/** 读正文：剥离 AI 用语标红标签 + 去 "# " 标题行（对齐 _read_std_chapter_dir，摘要哈希基于此文本） */
 	async readChapterContent(storyName: string, chapterKey: string): Promise<string> {
 		const ch = await this.chapterDirOf(storyName, chapterKey);
@@ -2973,6 +3034,11 @@ private emptyState(storyName: string): StoryState {
 		const m = /<!--\s*内容哈希[:：]\s*([0-9a-f]{32})\s*-->/.exec(raw);
 		if (!m || m[1] !== md5(src.text)) return "";
 		return doc.stripTitleLine(doc.stripComments(raw))[0];
+	}
+
+	/** v0.2.x+「生成书籍大纲」：读某章已保存且未失效的 AI 摘要（只读、不触发生成）；缺失/失效返回空串 */
+	async readSavedChapterSummary(storyName: string, chapterKey: string): Promise<string> {
+		return this.readFreshSummary(storyName, chapterKey);
 	}
 
 	/** v0.1.4+ 保存单章 AI 摘要并写入当前内容哈希头（对齐《卷摘要》格式；哈希基于有效来源文本） */
@@ -3011,10 +3077,14 @@ private emptyState(storyName: string): StoryState {
 			const lbl = label?.trim() || (() => { const p = parseChKey(chapterKey); return `第${p.num}章`; })();
 			this.onProgress?.(`正在生成「${lbl}」章节摘要…`); // v0.1.4+：延迟生成的进度反馈（LLM 调用可能耗时数十秒）
 			const t = ((await this.generateChapterSummary({ storyName, chapterKey, label: lbl, sourceText: src.text, viaOutline: src.viaOutline })) ?? "").trim();
-			if (!t) return "";
+			if (!t) {
+				console.warn(`[articlewriter] 章节摘要生成返回空（未落盘）：${storyName} ${chapterKey}`); // v0.2.x+：诊断日志——此前该路径完全静默，LLM 失败时用户只见进度提示、摘要却从未保存
+				return "";
+			}
 			await this.saveChapterSummary(storyName, chapterKey, t);
 			return t;
-		} catch {
+		} catch (e) {
+			console.error(`[articlewriter] 章节摘要确保失败（未落盘）：${storyName} ${chapterKey}`, e); // v0.2.x+：诊断日志——保留「失败不阻断」语义，仅补可见性
 			return ""; // 摘要失败不影响写作上下文组装/写盘流程
 		}
 	}
@@ -3086,10 +3156,14 @@ private emptyState(storyName: string): StoryState {
 			if (stored) return stored;
 			this.onProgress?.(`正在依据 ${chapters.length} 个章节摘要生成「${volName}」卷摘要…`);
 			const t = ((await this.generateVolumeSummary({ storyName, volId, volumeName: volName, chapters })) ?? "").trim();
-			if (!t) return "";
+			if (!t) {
+				console.warn(`[articlewriter] 卷摘要生成返回空（未落盘）：${storyName} ${volId}`); // v0.2.x+：诊断日志——同章节摘要，此前该路径完全静默
+				return "";
+			}
 			await this.saveVolumeSummary(storyName, volId, t);
 			return t;
-		} catch {
+		} catch (e) {
+			console.error(`[articlewriter] 卷摘要确保失败（未落盘）：${storyName} ${volId}`, e); // v0.2.x+：诊断日志——保留「失败不阻断」语义，仅补可见性
 			return ""; // 卷摘要失败不影响写作上下文组装/写盘流程
 		}
 	}
@@ -3123,6 +3197,8 @@ private emptyState(storyName: string): StoryState {
 			includeCurrentSummary?: boolean;
 			/** 允许按需触发摘要的 LLM 生成（默认 true）。**只读展示场景必须传 false**——否则一个"读上下文算字数"的动作会顺带烧 token 生成摘要并把生成过程面板顶出来（如 LLM 对话框刷新提示词标签） */
 			ensureSummaries?: boolean;
+			/** 调用方自行注入本章大纲时传 true（/write 的「章节大纲：」块、/rewrite·/review 的前后章桥接块）——跳过《章节大纲.md》进 folderDocs，避免同一份大纲在用户提示词里注入两次；/continue 不传（其提示词不注入大纲，唯一来源就是 folderDocs 的【本章大纲】） */
+			dropOutlineDoc?: boolean;
 		}
 	): Promise<import("./prompts").WritingContextInput & { savedForeshadows: number }> {
 		const state = await this.validatedState(storyName);
@@ -3149,7 +3225,8 @@ private emptyState(storyName: string): StoryState {
 		const excludeCharNames = Object.keys(doc.parseCharacters(chCharRaw, ch.num));
 		const excludeSceneIds = Object.keys(doc.parseScenes(chSceneRaw, ch.num));
 		const entries: ChapterFolderDocEntry[] = [
-			{ file: "章节大纲.md", text: await this.readDoc(`${ch.dir.path}/章节大纲.md`) },
+			// dropOutlineDoc：本章大纲改由提示词构建方注入（/write·/rewrite·/review），此处跳过防二次注入；伏笔抽取不受影响（下方 readChapterOutlineForPrompt→saveOutlineForeshadows 独立覆盖）
+			{ file: "章节大纲.md", text: opts?.dropOutlineDoc ? "" : await this.readDoc(`${ch.dir.path}/章节大纲.md`) },
 			{ file: "人物.md", text: chCharRaw },
 			{ file: "场景.md", text: chSceneRaw },
 			{ file: "章节信息.md", text: await this.readDoc(`${ch.dir.path}/章节信息.md`) },

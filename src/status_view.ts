@@ -99,6 +99,12 @@ export type StatusAction =
 	| { kind: "activate-volume"; story: string; id: string } // 行尾 Radio 选中：设 current_volume 并跳到该卷最后一章（对齐 /volume use）
 	| { kind: "export-volume"; story: string; id: string } // 卷节点右键「导出…」：该卷内所选范围《章节.md》正文合一 MD——只问一个范围输入框（不预填、留空/all=该卷全部章节），不问输出路径/不支持改名，默认 <书名>-<卷名>-范围.md（经 packStory forcedVolId 锁定本卷）
 	| { kind: "export-story"; story: string } // 「书稿」小节标题右键「导出书稿…」：整本书稿口径——问范围〔留空/all=整本〕+输出路径两问，有卷模式输出含「第N卷 · 卷名」标题行；限定某卷时默认名 <书名>-<卷名>-范围.md、整本 <书名>-书稿.md
+	| { kind: "vol-outline-generate"; story: string } // 「书稿」小节标题行右键「自动生成卷大纲…」：书级语义（无卷→按书级《大纲.md》声明自动建卷并逐卷生成；有卷→当前卷或选择器），与命令面板同义
+	| { kind: "book-outline-generate"; story: string } // 「书稿」小节标题行右键「生成书籍大纲…」：依据全局设定与已有章节 AI 生成书级《大纲.md》——平铺模式逐章规划、有卷模式输出卷声明，两模式通用，与命令面板同义
+	| { kind: "vol-outline-to-chapters"; story: string; id?: string } // 卷节点右键「从卷大纲生成章节」：按「第N章」标记拆分本卷《卷大纲.md》并创建缺失章节；id 缺省=平铺（无卷）模式「书稿」标题行右键「从书级大纲生成章节…」——拆书级《大纲.md》、章节落书根
+	| { kind: "vol-outline-sync"; story: string; id: string } // 卷节点右键「同步卷大纲章节」：本卷大纲追加后把新增「第N章」标记建成新章
+	| { kind: "write-consecutive"; story: string; id?: string } // 「连续编写」：id=卷节点右键——限该卷内连续编写（当前章属本卷则从之、否则从本卷首章，停在第一个无大纲章或卷末）；缺省=「书稿」标题行右键——全书语义（与命令面板同义）
+	| { kind: "book-outline-to-volumes"; story: string } // 「书籍列表」标题行右键「从书级大纲生成卷…」：解析书级《大纲.md》卷声明，逐卷生成全部卷及其卷大纲（缺失卷自动创建、只补缺失章）
 	| { kind: "rename-chapter"; story: string; key: string } // 改写章名：重命名目录并同步文档引用（对齐 /chapter rename）；key=复合键
 	| { kind: "delete-chapter"; story: string; key: string }
 	| { kind: "new-file"; story: string; key: string | null } // key=null → 书根目录；否则该章节目录
@@ -264,7 +270,10 @@ export class StatusView extends ItemView {
 			];
 			if (active) {
 				const volMode = ad?.useVolumes !== false; // v0.0.16+：仅「有卷模式」才提供建卷入口（无卷=纯 书→章）
-				if (volMode) arr.push({ label: "新建卷…", run: () => this.runStatusAction({ kind: "create-volume", story: active.name }) }); // 对当前激活书建卷（无激活书/无卷模式时不显示，无处可挂）
+				if (volMode) {
+					arr.push({ label: "新建卷…", run: () => this.runStatusAction({ kind: "create-volume", story: active.name }) }); // 对当前激活书建卷（无激活书/无卷模式时不显示，无处可挂）
+					arr.push({ label: "从书级大纲生成卷…", run: () => this.runStatusAction({ kind: "book-outline-to-volumes", story: active.name }) }); // 解析书级《大纲.md》卷声明，逐卷生成全部卷及其卷大纲（缺失卷自动创建、只补缺失章）
+				}
 				arr.push(
 					{ sep: true },
 					{ label: `改名「${active.name}」…`, run: () => this.runStatusAction({ kind: "rename-story", name: active.name }) }, // 修改书籍名称：状态文档 title + 顶层目录同步改名
@@ -353,9 +362,21 @@ export class StatusView extends ItemView {
 			this.showContextMenu(e, [
 				// 新建项随工作模式切换：无卷（平铺）书稿标题的新建=「新建章节…」（落书根），有卷=「新建卷…」
 				...(d.useVolumes === false
-					? [{ label: "新建章节…", run: () => this.runStatusAction({ kind: "new-chapter", story: d.storyName }) }]
-					: [{ label: "新建卷…", run: () => this.runStatusAction({ kind: "create-volume", story: d.storyName }) }]),
+					? [
+						{ label: "新建章节…", run: () => this.runStatusAction({ kind: "new-chapter", story: d.storyName }) },
+						// v0.2.x+：平铺模式书级入口——AI 生成书级《大纲.md》（逐章规划），配套拆章步骤=「从书级大纲生成章节」
+						{ label: "生成书籍大纲…", run: () => this.runStatusAction({ kind: "book-outline-generate", story: d.storyName }) },
+						{ label: "从书级大纲生成章节…", run: () => this.runStatusAction({ kind: "vol-outline-to-chapters", story: d.storyName }) }, // id 缺省 → 拆书级《大纲.md》、章节落书根
+					]
+					: [
+						{ label: "新建卷…", run: () => this.runStatusAction({ kind: "create-volume", story: d.storyName }) },
+						// v0.2.x+：书级入口——无卷时按书级《大纲.md》声明自动建卷并逐卷生成；有卷时走当前卷/选择器（与命令面板同语义）
+						{ label: "自动生成卷大纲…", run: () => this.runStatusAction({ kind: "vol-outline-generate", story: d.storyName }) },
+						// v0.2.x+：有卷模式书级入口——AI 生成书级《大纲.md》（全书主线 + 卷声明 + 结局），可被「从书级大纲生成卷」解析
+						{ label: "生成书籍大纲…", run: () => this.runStatusAction({ kind: "book-outline-generate", story: d.storyName }) },
+					]),
 				...(!d.prologueFiles.length ? [{ label: "新建引言…", run: () => this.runStatusAction({ kind: "new-prologue", story: d.storyName }) }] : []), // 书根建「引言」文件夹+正文（尚无引言时才显示）
+				{ label: "连续编写", run: () => this.runStatusAction({ kind: "write-consecutive", story: d.storyName }) }, // 全书语义：从当前章起按阅读序逐章推进（与命令面板同义）
 				{ label: "导出书稿…", run: () => this.runStatusAction({ kind: "export-story", story: d.storyName }) }, // 全部/所选范围章节《章节.md》正文合一 MD，有卷模式带卷号+卷名标题行
 			]),
 		);
@@ -394,6 +415,10 @@ export class StatusView extends ItemView {
 		const volItems = (): Array<{ label: string; danger?: boolean; run: () => void } | { sep: true }> => [
 			{ label: `在本卷新建章节…`, run: () => this.runStatusAction({ kind: "new-chapter", story: d.storyName, volId: v.id }) },
 			{ label: "新建卷…", run: () => this.runStatusAction({ kind: "create-volume", story: d.storyName }) },
+			{ sep: true },
+			{ label: "从卷大纲生成章节", run: () => this.runStatusAction({ kind: "vol-outline-to-chapters", story: d.storyName, id: v.id }) }, // 按「第N章」标记拆分本卷大纲建缺失章
+			{ label: "同步卷大纲章节", run: () => this.runStatusAction({ kind: "vol-outline-sync", story: d.storyName, id: v.id }) }, // 大纲追加后把新增「第N章」建成新章
+			{ label: "连续编写", run: () => this.runStatusAction({ kind: "write-consecutive", story: d.storyName, id: v.id }) }, // 限本卷内连续编写：当前章属本卷则从之、否则从本卷首章
 			{ sep: true },
 			{ label: "重命名本卷…", run: () => this.runStatusAction({ kind: "rename-volume", story: d.storyName, id: v.id }) },
 			{ label: "导出…", run: () => this.runStatusAction({ kind: "export-volume", story: d.storyName, id: v.id }) }, // 只问范围（留空/all=该卷全章），默认 <书名>-<卷名>-范围.md；空卷由 manager 报错提示先整理归位

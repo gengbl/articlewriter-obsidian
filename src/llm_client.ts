@@ -98,6 +98,7 @@ interface LlmChatBody {
 	temperature?: number;
 	max_tokens?: number;
 	top_p?: number;
+	thinking?: { type: "enabled" | "disabled" }; // DeepSeek 官方思考开关（仅对 deepseek 端点发送，见 buildParams）
 	[k: string]: unknown;
 }
 
@@ -111,11 +112,18 @@ function buildParams(cfg: LlmConfigDoc, messages: Message[], stream: boolean, ex
 	if (cfg.max_tokens != null) body.max_tokens = cfg.max_tokens;
 	if (cfg.top_p != null) body.top_p = cfg.top_p;
 	if (extra) Object.assign(body, extra);
-	// 已知端点上限保护：DeepSeek 官方 max_tokens 上限 8192，超限请求会被 400 拒绝
-	// （用户配置里常见直接填 65535，切到该端点后每条命令都失败）
-	if (body.max_tokens != null && body.max_tokens > 8192 && /api\.deepseek\.com/i.test(cfg.base_url || "")) {
-		console.warn(`[articlewriter] max_tokens=${String(body.max_tokens)} 超过 DeepSeek 上限，已自动夹取为 8192`);
-		body.max_tokens = 8192;
+	// 已知端点上限保护：DeepSeek 官方（V4 时代，deepseek-flash / deepseek-v4-pro）最大输出 384K tokens，超限请求会被 400 拒绝。
+	// 注意旧 V3/R1 时代上限是 8192——对思考型模型夹到那个值是致命的：思考与正文共享同一 max_tokens 预算，
+	// 8192 会被 reasoning_content 全部耗尽、content 恒空（表现为「思考型模型正文为空」）。旧模型名已于 2026-07-24 停用，无需特判。
+	if (body.max_tokens != null && body.max_tokens > 393216 && /api\.deepseek\.com/i.test(cfg.base_url || "")) {
+		console.warn(`[articlewriter] max_tokens=${String(body.max_tokens)} 超过 DeepSeek 上限，已自动夹取为 393216（384K）`);
+		body.max_tokens = 393216;
+	}
+	// 思考模式开关（DeepSeek 官方请求体字段 thinking:{type:"enabled"|"disabled"}）：仅当 base_url 或模型名含 deepseek 时发送——
+	// OpenAI 官方及其他兼容端点对未知字段会 400，不能透传。留空=跟随服务端默认（deepseek-flash 默认开思考）。
+	const t = (cfg.thinking || "").trim().toLowerCase();
+	if (t && /deepseek/i.test(`${cfg.base_url ?? ""} ${cfg.model_name ?? ""}`)) {
+		body.thinking = { type: /^(off|disabled|false|no|0)$/.test(t) ? "disabled" : "enabled" };
 	}
 	return body;
 }
@@ -198,12 +206,31 @@ export function isRetryableLlmError(e: unknown): boolean {
 	return /failed to fetch|connection error|etimedout|econnreset|econnrefused|econnaborted|socket hang up|network error|timed out|timeout|502|503|504/.test(text);
 }
 
+/** 「正文为空但思考非空」的诊断文案：finish_reason=length 说明思考与正文共享的输出预算被思考耗尽；否则按思考块未闭合/模型异常处理 */
+function emptyBodyReason(finishReason: string | null | undefined): string {
+	if (finishReason === "length")
+		return "输出已达 max_tokens 上限（finish_reason=length）：思考与正文共享同一输出预算，思考把预算全部用尽。可尝试：调大该请求 max_tokens、降低思考强度（reasoning_effort），或关闭思考（DeepSeek：thinking:{type:\"disabled\"}；本地模板：enable_thinking:false / /no_think）";
+	return "思考未结束即达到 max_tokens 上限，或思考块未正常闭合。可尝试：调大该请求 max_tokens、换非思考模型，或在请求参数/提示词中关闭思考（enable_thinking:false / /no_think，需服务端模板支持）";
+}
+
 /** 非流式补全，返回完整文本 */
 export async function chatCompletion(cfg: LlmConfigDoc, messages: Message[], extra?: Record<string, unknown>, signal?: AbortSignal): Promise<string> {
 	const client = createClient(cfg, GENERATE_TIMEOUT_MS); // 非流式也可能长（摘要/去AI味整段重写），同用放宽值
 	const r = await client.chat.completions.create(buildParams(cfg, messages, false, extra) as OpenAI.ChatCompletionCreateParamsNonStreaming, { signal });
-	const content = r.choices?.[0]?.message?.content;
-	if (!content) throw new Error("LLM 未返回内容");
+	const choice = r.choices?.[0];
+	const msg = choice?.message as { content?: string | null; reasoning_content?: string } | undefined;
+	const content = msg?.content;
+	if (!content) {
+		// 思考型模型（llama-server --reasoning-format deepseek 等）非流式响应把思考放 message.reasoning_content、正文放 content——
+		// max_tokens 预算被思考耗尽时 content 恒空，通用报错无从诊断（对齐 chatStream 的针对性错误）；
+		// finish_reason=length 可区分「预算耗尽」与「思考块未闭合」两种成因
+		const reasoning = (msg?.reasoning_content ?? "").trim();
+		throw new Error(
+			reasoning
+				? `思考型模型正文为空（已产生 ${String(reasoning.length)} 字思考）：${emptyBodyReason(choice?.finish_reason)}`
+				: "LLM 未返回内容"
+		);
+	}
 	return content;
 }
 
@@ -224,8 +251,10 @@ export async function chatStream(
 	const stream = await client.chat.completions.create(buildParams(cfg, messages, true, extra) as OpenAI.ChatCompletionCreateParamsStreaming, { signal });
 	let full = "";
 	let reasoning = "";
+	let finishReason: string | null | undefined;
 	for await (const chunk of stream) {
 		const choice = chunk.choices?.[0];
+		if (choice?.finish_reason) finishReason = choice.finish_reason; // 记录最后一个非空值：正文为空时区分「预算耗尽」与「思考未闭合」
 		const delta = choice?.delta?.content ?? "";
 		if (delta) {
 			full += delta;
@@ -238,10 +267,7 @@ export async function chatStream(
 		}
 	}
 	if (!full.trim()) {
-		if (reasoning.trim())
-			throw new Error(
-				`思考型模型正文为空（已产生 ${String(reasoning.length)} 字思考）：思考未结束即达到 max_tokens 上限，或思考块未正常闭合。可尝试：调小上下文/前文窗口、换非思考模型，或在提示词末尾加 /no_think 关闭思考（需服务端模板支持）`
-			);
+		if (reasoning.trim()) throw new Error(`思考型模型正文为空（已产生 ${String(reasoning.length)} 字思考）：${emptyBodyReason(finishReason)}`);
 		throw new Error("LLM 流式输出为空");
 	}
 	return full;
