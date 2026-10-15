@@ -11,9 +11,15 @@
 
 - `manifest.json` 语义化版本；每批功能新增 / 修复在发布时 patch +1（如 0.0.3 → 0.0.4）。改完必须重新构建让 esbuild 把新 manifest.json 同步进 `release/` 再打包。
 
+## 发布门禁：no-unsafe-* lint 检测（强制）
+
+- **规则**：任何提交 / 发布前必须跑 `npm run lint`（= `eslint src/`）且**零违规**；命中以下四类中任一即视为发布失败、先修复再走后续步骤：`@typescript-eslint/no-unsafe-assignment` / `no-unsafe-call` / `no-unsafe-member-access` / `no-unsafe-return`（error/any 类型的赋值 / 调用 / 成员访问 / 返回）。
+- **工具**：devDependencies `eslint` + `typescript-eslint`（flat config），配置在仓库根 `eslint.config.mjs`——类型感知解析（`parserOptions.project: ./tsconfig.json`），只启用上述四条规则为 error，不做其他风格检查。
+- **背景与配套约定**：外部检查器（不含 `@types/node` 传递 lib 的类型环境）曾把超出 tsconfig lib（止于 ES2018）的 ES2019 API（`Array.prototype.flatMap`，src/md_docs.ts:296）判为 error 类型、一次触发全部四类告警——已改为显式循环修复。因此本门禁之外还保持既有约定：**src/ 不使用超出 tsconfig lib（≤ES2018）的 API**（先例：prompts.ts 以 exec 循环替代 matchAll(ES2020)；已知实例清单见 l3-build-deploy.md「API 版本上限」条）。
+
 ## 代码提交流程（每次任务收尾）
 
-1. `npm run build && node --check release/main.js` 通过
+1. `npm run build && node --check release/main.js` 通过；`npm run lint` 零违规（发布门禁，见上节）
 2. 部署：`release/` 下全部文件覆盖复制到 `/home/fosky/workspace/geng_bl/.obsidian/plugins/articlewriter/`（vault 根 = `/home/fosky/workspace/geng_bl`，内含用户工作目录「我的工作/写书计划」；2026-10-09 实测确认——旧记载的 `/home/fosky/.obsidian/geng_bl` 已不存在）
 3. 按 AGENTS.md「工作更新写回约定」修订条目 + CHANGELOG.md 末尾追加一行摘要
 4. `git add <显式列出改动文件>`（不用 `git add .`）
@@ -23,7 +29,7 @@
 ## 发布打包与上线流程（用户要求"打包发布"时）
 
 1. bump `manifest.json` version
-2. `npm run build` 重建（esbuild 自动拷入新版 manifest.json、styles.css；写作指南 WRITING_GUIDE.md 自本次起不再拷入 release/）
+2. `npm run build` 重建（esbuild 自动拷入新版 manifest.json、styles.css；写作指南 WRITING_GUIDE.md 自本次起不再拷入 release/）+ `npm run lint` 必须零违规——四类 no-unsafe-* 任一命中即中止发布、修复后重跑
 3. **整体压缩 `release/` 全部文件**：`cd release && zip ../articlewriter-v<版本>.zip *`——release/ 现仅含 main.js / manifest.json / styles.css（不含 WRITING_GUIDE.md），直接整目录打包即可
 4. 提交打标签：`git add manifest.json …` → commit → `git push origin main` → `git tag v<版本> && git push origin v<版本>`；随后按 l3-build-deploy「GitHub 镜像同步（强制）」把该 commit 同消息同步到镜像并推**无 v 前缀** tag `<版本>`——CI 自动重建、签名并创建 GitHub Release，再回到第 5 步补 Gitea Release
 5. 创建 Gitea Release（**必须维护**：每个发布版本都要有对应 Release + zip 附件；但**不需要在 Gitea 侧搭建或拉起任何自动化工作流**，手动执行下述脚本即可）：**REST API 会忽略上传的文件，只能走 Web 会话表单流**（脚本如下；凭据用上面提到的 user/pass）：

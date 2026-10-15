@@ -10,7 +10,8 @@
 # 验证要求
 
 - **每次代码变化只检查本次改动的新增/修改行有无冗余类型断言**（no-unnecessary-type-assertion 同类问题；不扫全库、不回溯 git 历史）：对本次改动的每处 `as T` / `as {…}` / `as unknown as …` 判断必要性——若删掉断言仍编译通过且语义不变（接收方已接受原始窄化后的类型），直接赋值、删除断言及关联的 eslint-disable 注释。合法保留场景：从 `unknown`/`any` 收窄（catch 变量 `e as Error`、`JSON.parse(…) as T`）、联合→成员（`.pop() as string`、`string|string[]` 取其一）、向下转型（ItemView→具体视图子类）、直转不重叠须经 `unknown` 双 cast（基类未声明的专有方法）、对象字面量补必填字段报错抑制（`{} as LlmConfigDoc`）。删除断言后重跑 `npm run build` 确认 tsc 零错误。
-- 每次任务完成必须：`npm run build` 通过 + 复制部署到 vault + 在 Obsidian 中重载并对改动路径做实际冒烟（建一个临时测试小说跑通新增/修改的命令，验完删除——**不要在真实书籍目录里试错**）。
+- **发布门禁 lint（强制）**：任何代码变化后、提交/发布前必须 `npm run lint`（= `eslint src/`，配置见仓库根 `eslint.config.mjs`：类型感知解析 + 仅启用四类 no-unsafe-* 规则为 error）零违规；命中 `no-unsafe-assignment` / `no-unsafe-call` / `no-unsafe-member-access` / `no-unsafe-return` 任一即不得发布。配套约定：**src/ 不使用超出 tsconfig lib（止于 ES2018）的 API**——外部检查器（不含 @types/node 传递 lib 的类型环境）会把这类 API（如 flatMap(ES2019)、matchAll(ES2020)）判为 error 类型而触发全部四类告警（2026-10-15 实测 md_docs.ts:296 flatMap 案例；先例 prompts.ts exec 循环替代 matchAll）。
+- 每次任务完成必须：`npm run build` 通过 + `npm run lint` 零违规 + 复制部署到 vault + 在 Obsidian 中重载并对改动路径做实际冒烟（建一个临时测试小说跑通新增/修改的命令，验完删除——**不要在真实书籍目录里试错**）。
 - 构建部署通过后按「工作更新写回约定」同步对应的 `agents/*.md` 子文件，再算任务结束。
 - 修复类任务需说明根因与验证结果。
 - 纯函数层（md_docs.ts / story_types.ts）的行为变更应先用临时脚本或现有命令双向验证 parse↔format 往返一致（保存→再读回内容不丢字段、注释保留行不丢失）。

@@ -293,7 +293,9 @@ export function mergeVolOutlineChapters(oldBody: string, newContent: string): { 
 		if (idx < 0) result.push(blk);
 		else result.splice(idx, 0, blk);
 	}
-	return { body: [...preamble.lines, ...result.flatMap((b) => b.lines)].join("\n").replace(/\s+$/, ""), added, dropped };
+	const bodyLines: string[] = [...preamble.lines]; // 显式收集替代 flatMap(ES2019)：tsconfig lib 止于 ES2018，flatMap 在不含 @types/node 传递 lib 的类型检查器下会成 error 类型、触发 no-unsafe-* 告警
+	for (const b of result) bodyLines.push(...b.lines);
+	return { body: bodyLines.join("\n").replace(/\s+$/, ""), added, dropped };
 }
 
 /** 书级《大纲.md》中解析出的卷声明（v0.2.x+「从书级大纲生成卷」） */
