@@ -440,10 +440,11 @@ export function getStoryTypeGuide(
 
 // ---------- MD5（章节摘要过期检测哈希，对齐 Python hashlib.md5().hexdigest()）----------
 
-/** 剥离 /deai 写入正文的 AI 用语标红标签，读回内存时恢复纯净文本 */
+/** 剥离 /deai 写入正文的 AI 用语标红标签与 /typo-check 写入的错别字下划线标签（title 属性可缺省），读回内存时恢复纯净文本 */
 export function stripAiWordMarks(text: string): string {
 	return String(text ?? "")
 		.replace(/<span style="color:red">/g, "")
+		.replace(/<span style="text-decoration:underline"(?:\s+title="[^"]*")?>/g, "")
 		.replace(/<\/span>/g, "");
 }
 

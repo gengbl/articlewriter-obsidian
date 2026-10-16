@@ -950,7 +950,7 @@ private emptyState(storyName: string): StoryState {
 		for (const ch of chapters) {
 			if (key != null && ch.key !== key) continue;
 			const f = this.vault.getAbstractFileByPath(this.resolveChapterDocPath(`${ch.dir.path}/章节.md`));
-			const content = f instanceof TFile ? await this.vault.read(f) : "";
+			const content = f instanceof TFile ? stripAiWordMarks(await this.vault.read(f)) : ""; // 剥离错别字下划线等标记，避免 span 标签虚增字数
 			rows.push({ key: ch.key, num: ch.num, title: ch.title, words: countPureWords(content), chars: countCharsWithPunct(content) });
 		}
 		return rows;
@@ -1352,7 +1352,7 @@ private emptyState(storyName: string): StoryState {
 		let sum = 0;
 		for (const ch of await this.listChapters(storyName)) {
 			const f = this.vault.getAbstractFileByPath(this.resolveChapterDocPath(`${ch.dir.path}/章节.md`));
-			sum += countPureWords(f instanceof TFile ? await this.vault.read(f) : "");
+			sum += countPureWords(f instanceof TFile ? stripAiWordMarks(await this.vault.read(f)) : ""); // 剥离错别字下划线等标记，避免 span 标签虚增字数
 		}
 		state.total_words = sum;
 	}
@@ -2767,7 +2767,7 @@ private emptyState(storyName: string): StoryState {
 		const skipped: number[] = [];
 		const appendChapter = async (ch: (typeof all)[number]): Promise<void> => {
 			const f = this.vault.getAbstractFileByPath(this.resolveChapterDocPath(`${ch.dir.path}/章节.md`));
-			let text = f instanceof TFile ? await this.vault.read(f) : "";
+			let text = f instanceof TFile ? stripAiWordMarks(await this.vault.read(f)) : ""; // 剥离错别字下划线等标记，导出合辑不含 span
 			text = text.replace(bodyRe, "").trim();
 			if (!text) {
 				skipped.push(ch.num);
@@ -2818,7 +2818,7 @@ private emptyState(storyName: string): StoryState {
 		const skipped: number[] = [];
 		for (const ch of chapters) {
 			const f = this.vault.getAbstractFileByPath(this.resolveChapterDocPath(`${ch.dir.path}/章节.md`));
-			let text = f instanceof TFile ? await this.vault.read(f) : "";
+			let text = f instanceof TFile ? stripAiWordMarks(await this.vault.read(f)) : ""; // 剥离错别字下划线等标记，导出合辑不含 span
 			text = text.replace(bodyRe, "").trim();
 			if (!text) {
 				skipped.push(ch.num);
@@ -2883,7 +2883,7 @@ private emptyState(storyName: string): StoryState {
 			}
 			const info = doc.parseChapterInfo(await this.readDoc(`${ch.dir.path}/章节信息.md`));
 			const f = this.vault.getAbstractFileByPath(this.resolveChapterDocPath(`${ch.dir.path}/章节.md`));
-			const words = countPureWords(f instanceof TFile ? await this.vault.read(f) : "");
+			const words = countPureWords(f instanceof TFile ? stripAiWordMarks(await this.vault.read(f)) : ""); // 剥离错别字下划线等标记，避免 span 标签虚增字数
 			// 归属以目录位置为准（按卷整理后位置即真相）；《章节信息》「卷」字段与位置冲突时就地回填
 			let volId = ch.vol ?? (info.volume || undefined);
 			if (ch.vol && info.volume && info.volume !== ch.vol) {
@@ -3372,7 +3372,7 @@ private emptyState(storyName: string): StoryState {
 		state.chapters[chapterKey] = meta;
 		const heading = (meta.title || "").trim() || ch.title;
 		await this.writeDoc(`${ch.dir.path}/章节.md`, `# 第${num}章 ${heading}\n\n${(bodyText || "").replace(/\s+$/, "")}\n`);
-		meta.words = countPureWords(bodyText);
+		meta.words = countPureWords(stripAiWordMarks(bodyText)); // 剥离错别字下划线等标记，字数按纯净正文计
 		await this.recomputeTotalWords(storyName, state);
 		await this.saveState(storyName, state);
 		return meta.words;

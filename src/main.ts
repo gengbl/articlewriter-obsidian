@@ -18,7 +18,7 @@ import { DEFAULT_USAGE_GUIDE } from "./usage_guide_default";
 import { assembleSystemPrompt, chatCompletion, chatStream, describeLlmError, isRetryableLlmError, normalizeBaseURL, testConnection } from "./llm_client";
 import type { Message } from "./llm_client";
 import { findAiWordHits, mergeGuideCategories } from "./banned_words";
-import { appendOutlineInstruction, BOOK_OUTLINE_GEN_SYSTEM_PROMPT, buildBookOutlineGenPrompt, buildChapterPrompt, buildChapterSummaryPrompt, buildContinuePrompt, buildPlanningGuidePrompt, buildPolishPrompt, buildReviewPrompt, buildRewritePrompt, buildStoryTypeSystemPrompt, buildVolOutlineChapterPrompt, buildVolOutlineDesignPrompt, buildVolRebuildPrompt, buildWritingContext, CHAPTER_SUMMARY_SYSTEM_PROMPT, checkOutlineCoverage, cleanAiText, embedAggHash, formatRetryNote, parseAggHash, serializeAggregateGuide, stripHeading, validateStoryTypeFormat, VOL_OUTLINE_GEN_SYSTEM_PROMPT, VOL_SUMMARY_SYSTEM_PROMPT, PlanningGuideInput, VolOutlineGenInput, wordRangeFromGuides } from "./prompts";
+import { appendOutlineInstruction, applyTypoMarks, BOOK_OUTLINE_GEN_SYSTEM_PROMPT, buildBookOutlineGenPrompt, buildChapterPrompt, buildChapterSummaryPrompt, buildContinuePrompt, buildPlanningGuidePrompt, buildPolishPrompt, buildReviewPrompt, buildRewritePrompt, buildStoryTypeSystemPrompt, buildTypoScanPrompt, buildVolOutlineChapterPrompt, buildVolOutlineDesignPrompt, buildVolRebuildPrompt, buildWritingContext, CHAPTER_SUMMARY_SYSTEM_PROMPT, checkOutlineCoverage, cleanAiText, embedAggHash, formatRetryNote, parseAggHash, parseTypoScan, serializeAggregateGuide, stripHeading, TYPO_SCAN_SYSTEM_PROMPT, validateStoryTypeFormat, VOL_OUTLINE_GEN_SYSTEM_PROMPT, VOL_SUMMARY_SYSTEM_PROMPT, PlanningGuideInput, VolOutlineGenInput, wordRangeFromGuides } from "./prompts";
 import { extractPlannedChapterCount, mergeVolOutlineChapters, parseChapterSelection, parseRelationships, parseTimelines, parseVolumeDeclarations, splitList, splitVolOutlineByChapter, stripComments, type TimelineEntry, type VolumeDeclaration } from "./md_docs";
 import type { RelationshipEntry } from "./md_docs";
 
@@ -187,6 +187,7 @@ export default class ArticleWriterPlugin extends Plugin {
 		this.addCommand({ id: "rewrite-chapter", name: "重写本章（/rewrite：基于大纲与旧文整体重构）", callback: () => this.cmdRewriteChapter() });
 		this.addCommand({ id: "polish-text", name: "润色当前章（/polish：仅优化文字表达不改情节）", callback: () => this.cmdPolishText() });
 		this.addCommand({ id: "deai-clean", name: "去AI味（/deai：含 AI 常用词的句子打回 LLM 重写并原位替换）", callback: () => this.cmdDeaiClean() });
+		this.addCommand({ id: "typo-check", name: "错别字检测（/typo-check：LLM 扫描本章错字并加下划线标记，附建议改正）", callback: () => this.cmdTypoCheck() });
 		this.addCommand({ id: "review-chapter", name: "审阅本章（/review：全局视角查逻辑/连贯性问题出报告）", callback: () => this.cmdReviewChapter() });
 		this.addCommand({ id: "llm-chat", name: "打开 LLM 对话窗口（常驻面板：多轮流式聊天，可停靠任意区域、切换已保存的模型配置）", callback: () => void this.openLlmPanel() });
 		this.addCommand({ id: "status-page", name: "打开写字台（当前书/章节/文件一览，点击小说或章节可切换激活）", callback: () => void this.openStatusPanel() });
@@ -4935,6 +4936,82 @@ async cmdRenameChapterFile(): Promise<void> {
 			new Notice(`✓ ${chLabel}已更新（${String(words)} 字）`, 8000);
 		} catch (e) {
 			this.notifyError("去AI味失败", e);
+		}
+	}
+
+	// ---------- /typo-check 错别字检测 ----------
+
+	async cmdTypoCheck(): Promise<void> {
+		if (!(await this.ensureWorkDir())) return;
+		const story = await this.requireStory();
+		if (!story) return;
+		try {
+			const num = await this.targetChapterKey(story, "检测错别字"); // v0.0.15：复合键
+			if (num == null) return;
+			const volNames = await this.volNameMap(story).catch(() => ({}));
+			const chLabel = this.keyLabel(num, volNames);
+			const bodyOnDisk = await this.manager.readChapterContent(story, num); // readChapterContent 已剥离既有标红/下划线标记，重跑不会双重包裹
+			if (!bodyOnDisk.trim()) {
+				new Notice(`${chLabel}还没有内容，无法检测错别字`);
+				return;
+			}
+			const setup = await this.loadWriterSetup();
+			if (!setup) return;
+
+			const n = new Notice(`正在检测${chLabel}的错别字…\nLLM 全文扫描，可能需要一点时间`);
+			let markedText = "";
+			let list: Array<{ wrong: string; right: string | null }> = [];
+			try {
+				// 全文回显式输出：token 预算须覆盖原文 + <u> 标记 + 建议 JSON，取配置值与估算值的较大者
+				const maxTokens = Math.max(setup.cfg.max_tokens ?? 65535, Math.ceil(bodyOnDisk.length * 2) + 1024);
+				for (let attempt = 1; attempt <= 3; attempt++) {
+					const raw = await chatCompletion(
+						setup.cfg,
+						[
+							{ role: "system" as const, content: TYPO_SCAN_SYSTEM_PROMPT },
+							{ role: "user" as const, content: buildTypoScanPrompt(bodyOnDisk) },
+						],
+						{ max_tokens: maxTokens }
+					);
+					const parsed = parseTypoScan(raw || "", bodyOnDisk);
+					if (!parsed) continue; // 剥掉 <u> 标记后与原文不一致 → 重试
+					const applied = applyTypoMarks(parsed.marked, parsed.marks, parsed.suggestions);
+					markedText = applied.text;
+					list = applied.list;
+					break;
+				}
+			} catch (e) {
+				n.hide();
+				this.notifyError("错别字检测失败", e);
+				return;
+			}
+			n.hide();
+			if (!markedText) {
+				new Notice(`✗ 错别字检测失败：模型输出 3 次均未通过校验（全文回显漂移），章节文件未改动`, 10000);
+				return;
+			}
+			if (!list.length) {
+				new Notice(`✓ ${chLabel}未检测到错别字`, 6000);
+				return;
+			}
+			const modal = await this.beginWritingPanel(`错别字检测结果 · ${chLabel}`);
+			if (!modal) { new Notice("无法打开生成面板，本次操作已取消", 8000); return; }
+			const listLines = list.map((it, i) => `${i + 1}. ${it.wrong} → ${it.right ?? "（无建议）"}`);
+			modal.append(`共发现 ${String(list.length)} 处错别字：\n${listLines.join("\n")}\n\n---\n\n` + markedText);
+			modal.finish();
+			const keep = await modal.done;
+			if (!keep) {
+				new Notice("未保存（错别字标记仅预览）", 6000);
+				return;
+			}
+			const words = await this.manager.setChapterBody(story, num, markedText); // 全量覆盖；下划线 span 有意落盘、读回时自动剥离
+			try {
+				const f = await this.manager.chapterBodyFile(story, num);
+				if (f instanceof TFile) await this.manager.openMarkdown(f.path);
+			} catch { /* ignore */ }
+			new Notice(`✓ ${chLabel}已标记 ${String(list.length)} 处错别字（${String(words)} 字）`, 8000);
+		} catch (e) {
+			this.notifyError("错别字检测失败", e);
 		}
 	}
 

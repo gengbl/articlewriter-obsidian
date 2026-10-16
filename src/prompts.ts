@@ -1617,3 +1617,97 @@ export function parseAggHash(text: string): AggHashes | null {
 	if (!m) return null;
 	return { b: m[1], u: m[2], s: m[3] };
 }
+
+// ---------- /typo-check 错别字检测（LLM 全文扫描 + 确定性校验） ----------
+
+/** 错别字检测系统提示词：只校对不改写、不评价 */
+export const TYPO_SCAN_SYSTEM_PROMPT =
+	"你是中文网络小说的校对助手。只找错别字（同音字误用、形近字误写、「的/地/得」误用、人名地名等专名错字）。不改写句子、不调整标点、不评价文笔、不输出任何解释。";
+
+/** 错别字检测用户提示词：要求 LLM 输出 <MARKED> 包裹的带 <u> 标记全文 + 建议改正 JSON 数组；解析后由插件做确定性校验 */
+export function buildTypoScanPrompt(content: string): string {
+	return (
+		"请找出下面章节正文中的错别字（用错的字）。\n\n" +
+		"严格按以下格式输出，不要输出任何其他内容：\n" +
+		"第一行：<MARKED>\n" +
+		"接下来是完整原文：把每个错字（或错词）用 <u> 和 </u> 包住（例如 <u>按耐</u>），其余字符一律不得增删改换顺序；没有错字就原样输出原文。\n" +
+		"最后一行：</MARKED>\n" +
+		"之后另起一行输出 JSON 数组（可多行），每个元素形如 {\"wrong\":\"错字\",\"right\":\"建议改正\"}，与 <u> 标记按出现顺序一一对应；没有错字则输出 []。\n\n" +
+		"【章节正文】\n---\n" + content + "\n---"
+	);
+}
+
+/** LLM 输出中 <u> 标记的位置与文本（位置相对 marked 全文） */
+export interface TypoMark { start: number; end: number; text: string }
+/** 建议改正条目 */
+export interface TypoSuggestion { wrong: string; right: string }
+
+/** 解析并校验 LLM 错别字检测输出：取首个 <MARKED>…</MARKED> 段，剥掉 <u>/</u> 后必须与原文逐字一致（不一致返回 null 供重试）；
+ * 建议列表取 </MARKED> 之后的 JSON 数组，解析失败降级为空（标记仍生效、只是无建议改正） */
+export function parseTypoScan(raw: string, original: string): { marked: string; marks: TypoMark[]; suggestions: TypoSuggestion[] } | null {
+	const open = raw.indexOf("<MARKED>");
+	const close = open >= 0 ? raw.indexOf("</MARKED>", open) : -1;
+	if (open < 0 || close < 0) return null;
+	let marked = raw.slice(open + "<MARKED>".length, close);
+	// 确定性校验：剥掉 <u>/</u> 后必须与原文逐字一致；模型把标记各占一行时容忍首尾各一个协议换行
+	if (marked.replace(/<\/?u>/g, "") !== original) {
+		const t = marked.replace(/^\r?\n/, "").replace(/\r?\n$/, "");
+		if (t.replace(/<\/?u>/g, "") === original) marked = t;
+		else return null; // 全文回显有任何漂移即判失败
+	}
+	const marks: TypoMark[] = [];
+	const re = /<u>([\s\S]*?)<\/u>/g;
+	let m: RegExpExecArray | null;
+	while ((m = re.exec(marked)) !== null) {
+		marks.push({ start: m.index, end: m.index + m[0].length, text: m[1] });
+	}
+	const suggestions: TypoSuggestion[] = [];
+	const tail = raw.slice(close + "</MARKED>".length);
+	const jb = tail.indexOf("[");
+	const je = tail.lastIndexOf("]");
+	if (jb >= 0 && je > jb) {
+		try {
+			const parsed: unknown = JSON.parse(tail.slice(jb, je + 1));
+			if (Array.isArray(parsed)) {
+				for (const item of parsed as Array<Record<string, unknown>>) {
+					const wrong = typeof item?.wrong === "string" ? item.wrong.trim() : "";
+					const right = typeof item?.right === "string" ? item.right.trim() : "";
+					if (wrong && right) suggestions.push({ wrong, right });
+				}
+			}
+		} catch { /* JSON 解析失败降级为空建议列表 */ }
+	}
+	return { marked, marks, suggestions };
+}
+
+/** 把 marked 全文中的 <u> 标记转换为可落盘的下划线 span（有建议改正时带 title 属性，Obsidian 阅读视图悬停可见），
+ * 返回标记后文本与按出现顺序的「错字 → 建议」清单（供预览展示）。
+ * 建议映射：条数与标记数一致时按顺序一一对应；否则按 wrong===标记文本 匹配（每条建议只用一次）；都匹配不到则该处无建议 */
+export function applyTypoMarks(
+	marked: string,
+	marks: TypoMark[],
+	suggestions: TypoSuggestion[]
+): { text: string; list: Array<{ wrong: string; right: string | null }> } {
+	const list: Array<{ wrong: string; right: string | null }> = [];
+	const pool = [...suggestions];
+	const rightFor = (i: number, text: string): string | null => {
+		if (suggestions.length === marks.length) return suggestions[i]?.right ?? null;
+		const idx = pool.findIndex((s) => s.wrong === text);
+		if (idx >= 0) return pool.splice(idx, 1)[0].right;
+		return null;
+	};
+	let out = "";
+	let cursor = 0;
+	for (let i = 0; i < marks.length; i++) {
+		const mk = marks[i];
+		out += marked.slice(cursor, mk.start);
+		const right = rightFor(i, mk.text);
+		list.push({ wrong: mk.text, right });
+		out += right != null
+			? `<span style="text-decoration:underline" title="建议改为：${right.replace(/"/g, "&quot;")}">${mk.text}</span>`
+			: `<span style="text-decoration:underline">${mk.text}</span>`;
+		cursor = mk.end;
+	}
+	out += marked.slice(cursor);
+	return { text: out, list };
+}

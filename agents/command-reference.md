@@ -45,6 +45,7 @@
 | `rewrite-chapter` | 重写整章（单次生成不带格式校验），含前后章大纲桥接与旧文参考，去AI味后全量覆盖保存 |
 | `polish-text` | 润色当前章（原文截断4500字入 prompt，仅改表达不改情节），全量覆盖保存 |
 | `deai-clean` | 检测 AI 常用词 → 逐句打回 LLM 重写（基础系统提示词，非编写类型块）→ 原位替换两轮 → 预览确认后覆盖保存 |
+| `typo-check` | **错别字检测**：LLM 全文扫描当前章错字（非流式 chatCompletion、system=`TYPO_SCAN_SYSTEM_PROMPT` 只校对不改写）；输出协议＝`<MARKED>` 内逐字回显全文＋错字包 `<u>错</u>`＋其后 JSON `[{"wrong","right"}]`；确定性校验＝剥 `<u>` 后与原文逐字一致（容忍标记各占一行引入的首尾单换行），漂移自动重试≤3 次仍败则 Notice 不动文件；无错字 Notice「✓ 未检测到错别字」直接返回；有错字面板预览清单＋带 span 全文，确认后 `setChapterBody` 落盘——下划线 span（`title="建议改为：X"`，无建议省略）为结果性标记有意保留、读回经 stripAiWordMarks 剥离故重跑幂等；max_tokens 取 max(配置值, ceil(正文长×2)+1024) |
 | `review-chapter` | 全局视角审阅报告（非流式 chatCompletion，thinking=on 语义，空结果重试×3），可另存为章节目录内 `审阅笔记.md` |
 | （设置页 LLM 区） | Obsidian 插件设置 → ArticleWriter：多组 OpenAI 兼容配置的查看/编辑/切换 active_llm/保存回写 MD 文档（正文与自定义属性透传保留） |
 | `llm-chat` | **常驻可停靠** LLM 对话面板（自定义 ItemView `LlmChatView`，见代码结构表；ribbon 图标同入口）：多轮流式聊天，Enter 发送/Shift+Enter 换行（含中文输入法合成态保护），支持 @ 引用 vault 任意文件（弹窗选择或手输路径；范围可写 :行号 / :起-止 / 紧跟如 ]]3-5），Enter 发送时引用被原位替换为对应行的实际内容再发给模型，顶部下拉切换任意已保存模型配置（对后续轮次生效），「停止生成」只中断当前一轮、会话保留；已有面板时命令直接激活之，否则底部新建分割区；每轮前置对话专用系统提示词（见代码结构表）；顶部首行显示当前小说·章节；不落盘（重启清空历史）、关闭面板中断进行中请求 |
