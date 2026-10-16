@@ -3237,7 +3237,8 @@ private emptyState(storyName: string): StoryState {
 
 		// v0.1.4+：窗口章数 N=data.json settings.prevChapters（缺省/非法回落 CLI 默认 3）；卷模式窗口限本容器——
 		// 跨卷缺口不拉取他卷章节，改以最近各前卷新鲜《卷摘要》填充（prevVolSummaries，由近及远）
-		const rawPrevN = Number(this.getPrevChapters?.() ?? 3);
+		// v0.2.x+：本书级覆盖——故事状态.md frontmatter 的 prev_chapters 显式设置时优先于全局设置
+		const rawPrevN = state.prev_chapters != null ? Number(state.prev_chapters) : Number(this.getPrevChapters?.() ?? 3);
 		const prevN = Number.isFinite(rawPrevN) && rawPrevN >= 0 ? Math.floor(rawPrevN) : 3;
 		let startIdx = Math.max(0, idx - prevN);
 		while (ch.vol && startIdx < idx && parseChKey(ordered[startIdx].key).vol !== ch.vol) startIdx++; // 卷模式跳过落在其他容器的头部
@@ -3264,9 +3265,12 @@ private emptyState(storyName: string): StoryState {
 			}
 		}
 
+		// v0.2.x+：本书级覆盖——故事状态.md frontmatter 的 include_volume_summary 显式设置时优先于全局设置
+		const includeVolSummary = state.include_volume_summary ?? this.includeVolumeSummary?.() ?? false;
+
 		// v0.1.4+：跨卷缺口填充（仅 includeVolumeSummary 开启时）——本容器内不足 N 章时，以阅读序最近各前卷的新鲜《卷摘要》补足至 N（由近及远、不深入他卷章节）；默认关闭时严格只按 prevN 注入单章摘要
 		let prevVolSummaries: Array<{ name: string; text: string }> | undefined;
-		if (this.includeVolumeSummary?.() && ch.vol && state.use_summaries !== false && prevN > 0 && prevN - prevChapters.length > 0) {
+		if (includeVolSummary && ch.vol && state.use_summaries !== false && prevN > 0 && prevN - prevChapters.length > 0) {
 			const prevVolsFarToNear: string[] = []; // 阅读序在前且非本卷的卷 id（远→近）
 			for (let i = 0; i < idx; i++) {
 				const v = parseChKey(ordered[i].key).vol;
@@ -3312,7 +3316,7 @@ private emptyState(storyName: string): StoryState {
 			const lines = doc.stripComments((await this.readDoc(this.resolveVolumeDocPath(volDir, vols[ch.vol].name, "卷大纲.md"))).trim()).split("\n");
 			while (lines.length && /^#\s/.test(lines[0])) lines.shift(); // 去 H1 标题行
 			volOutlineText = lines.join("\n").trim();
-			if (state.use_summaries !== false && this.includeVolumeSummary?.()) {
+			if (state.use_summaries !== false && includeVolSummary) {
 				// v0.1.4+：延迟生成——本卷全部章节摘要为输入全量重建，需要时才触发 LLM（带进度反馈）；默认关闭不注入整卷 digest、也不触发其重建
 				volSummary = ensureSummaries ? await this.ensureFreshVolumeSummary(storyName, ch.vol) : await this.readFreshVolumeSummary(storyName, ch.vol);
 			}

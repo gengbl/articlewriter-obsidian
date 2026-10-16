@@ -162,6 +162,7 @@ export default class ArticleWriterPlugin extends Plugin {
 		this.addCommand({ id: "vol-outline-sync", name: "同步卷大纲章节（/vol-outline-sync：卷大纲续写后，把新增的「第N章」标记建成新章节）", callback: () => this.cmdSyncVolOutlineChapters() });
 		this.addCommand({ id: "book-outline-to-volumes", name: "从书级大纲生成卷（/book-outline-to-volumes：解析书级《大纲.md》的卷声明，逐卷生成全部卷及其卷大纲——缺失卷自动创建、只补缺失章）", callback: () => this.cmdBookOutlineToVolumes() });
 		this.addCommand({ id: "planning-guide", name: "策划指南（/planning-guide：AI 流式生成书级《策划指南.md》——固定十节既定规划约束，供书级/卷级大纲生成遵循；已存在时确认后整体重写）", callback: () => this.cmdPlanningGuide() });
+		this.addCommand({ id: "planning-guide-worldview", name: "生成策划指南·仅世界观（/planning-guide-worldview：早期规划场景——输入仅书籍信息＋世界观设定，AI 流式生成书级《策划指南.md》）", callback: () => this.cmdPlanningGuideWorldview() });
 
 		this.addCommand({ id: "chapter-delete", name: "删除章节（移入回收站并清理元数据）", callback: () => this.cmdChapterDelete() });
 		this.addCommand({ id: "chapter-rename", name: "重命名章节标题（同步目录名与文档引用）", callback: () => this.cmdChapterRename() });
@@ -4027,14 +4028,15 @@ async cmdRenameChapterFile(): Promise<void> {
 
 	// ---------- v0.2.13+ 策划指南 (/planning-guide；书级《策划指南.md》——书级/卷级大纲生成的既定规划约束) ----------
 
-	/** v0.2.13+ 组装策划指南生成输入（自动生成与手动 /planning-guide 共用）：书籍信息 / 世界观 / 全书大纲 / 卷列表（阅读序，平铺模式无卷）/ 已有章节 + 已存摘要 */
-	private async buildPlanningGuideInput(story: string, state: StoryState, existingGuide?: string): Promise<PlanningGuideInput> {
+	/** v0.2.13+ 组装策划指南生成输入（自动生成与手动 /planning-guide·/planning-guide-worldview 共用）：书籍信息 / 世界观 / 全书大纲 / 卷列表（阅读序，平铺模式无卷）/ 已有章节 + 已存摘要。
+	 * opts.chapterCount=目标总章数（各节位置以其为基准表述）；opts.worldOnly=仅世界观生成（跳过大纲/卷/章节输入，早期规划场景） */
+	private async buildPlanningGuideInput(story: string, state: StoryState, existingGuide?: string, opts?: { chapterCount?: number; worldOnly?: boolean }): Promise<PlanningGuideInput> {
 		const world = await this.manager.readWorldDoc(story);
-		const globalOutline = await this.manager.readGlobalOutline(story);
-		const volsRec = state.use_volumes === false ? {} : await this.manager.loadVolumes(story);
+		const globalOutline = opts?.worldOnly ? undefined : await this.manager.readGlobalOutline(story);
+		const volsRec = opts?.worldOnly || state.use_volumes === false ? {} : await this.manager.loadVolumes(story);
 		const vols = Object.values(volsRec).sort((a, b) => a.order - b.order || a.id.localeCompare(b.id));
 		const volNames = await this.volNameMap(story);
-		const chapters = await this.manager.listChapters(story);
+		const chapters = opts?.worldOnly ? [] : await this.manager.listChapters(story);
 		const chSummaries: Array<{ label: string; summary?: string }> = [];
 		for (const ch of chapters) {
 			const s = await this.manager.readSavedChapterSummary(story, ch.key);
@@ -4049,17 +4051,20 @@ async cmdRenameChapterFile(): Promise<void> {
 			volumes: vols.map((v) => ({ name: v.name, description: v.description })),
 			chapters: chSummaries,
 			...(existingGuide ? { existingGuide } : {}),
+			...(opts?.chapterCount != null ? { chapterCount: opts.chapterCount } : {}),
+			flatMode: state.use_volumes === false, // v0.2.x+：平铺模式——位置一律用章号表述、禁用卷划分
 		};
 	}
 
 	/** v0.2.13+ 大纲生成前确保书级《策划指南.md》存在：已有非空直接返回清洗文本；缺失/为空则 LLM 流式自动生成（无确认弹窗）并落盘后返回；
-	 * 生成失败（用户中止 / 连续 3 次空结果）仅告警并返回 ""——软依赖，大纲生成照常进行、只是不带【策划规范】块 */
-	private async ensurePlanningGuide(story: string, state: StoryState): Promise<string> {
+	 * 生成失败（用户中止 / 连续 3 次空结果）仅告警并返回 ""——软依赖，大纲生成照常进行、只是不带【策划规范】块。
+	 * opts.chapterCount=目标总章数（自动生成时传入，使策划指南各节位置与本次大纲规划同基准） */
+	private async ensurePlanningGuide(story: string, state: StoryState, opts?: { chapterCount?: number }): Promise<string> {
 		const existing = await this.manager.readPlanningGuide(story);
 		if (existing.trim()) return existing;
 		const setup = await this.loadWriterSetup();
 		if (!setup) { new Notice("未取到活动 LLM 配置，跳过策划指南自动生成", 8000); return ""; }
-		const input = await this.buildPlanningGuideInput(story, state);
+		const input = await this.buildPlanningGuideInput(story, state, undefined, opts);
 		const promptText = buildPlanningGuidePrompt(input);
 		console.debug("[articlewriter] 策划指南自动生成请求规模", { model: setup.cfg.model_name || "(默认)", promptLen: promptText.length });
 		const modal = await this.beginWritingPanel("自动生成策划指南");
@@ -4094,9 +4099,12 @@ async cmdRenameChapterFile(): Promise<void> {
 				const choice = await this.pickAction("书级《策划指南.md》已存在，如何处理？", items);
 				if (choice == null || choice === 1) { new Notice("已取消生成策划指南", 6000); return; }
 			}
+			// v0.2.x+：询问目标总章数——各节位置（抬升节点/伏笔埋设与回收/高潮落位等）以该总章数为基准表述
+			const count = await this.promptChapterCountInput("生成策划指南", `将 AI 生成书级《策划指南.md》（固定十节的既定规划约束）。\n请指定目标总章数（1–99 的整数），各节位置将以该总章数为基准表述；输入后按回车确认、Esc 取消：`, "已取消生成策划指南");
+			if (count == null) return;
 			const setup = await this.loadWriterSetup();
 			if (!setup) return;
-			const input = await this.buildPlanningGuideInput(story, state, existing.trim() || undefined);
+			const input = await this.buildPlanningGuideInput(story, state, existing.trim() || undefined, { chapterCount: count });
 			const promptText = buildPlanningGuidePrompt(input);
 			console.debug("[articlewriter] 策划指南生成请求规模", { model: setup.cfg.model_name || "(默认)", regenerate: !!existing.trim(), promptLen: promptText.length });
 			const modal = await this.beginWritingPanel(existing.trim() ? "重新生成策划指南" : "生成策划指南");
@@ -4112,6 +4120,46 @@ async cmdRenameChapterFile(): Promise<void> {
 			new Notice(`✓ ${existing.trim() ? "已重写" : "已生成"}书级《策划指南.md》，后续书级/卷级大纲生成将遵循其既定规划`, 12000);
 		} catch (e) {
 			this.notifyError("生成策划指南失败", e);
+		}
+	}
+
+	/** v0.2.x+「生成策划指南（仅世界观）」(/planning-guide-worldview)：早期规划场景——输入仅书籍信息＋世界观设定（不含大纲/卷/章节），AI 流式生成书级《策划指南.md》。
+	 * 已有非空时同样弹确认（整体重写 / 取消）；重写以现有内容为既定事实约束（不丢已确立事实）。需指定目标总章数（各节位置以其为基准表述）。流式展示完自动落盘 */
+	async cmdPlanningGuideWorldview(): Promise<void> {
+		if (!(await this.ensureWorkDir())) return;
+		const story = await this.requireStory();
+		if (!story || !(await this.ensureVolumeLayout(story))) return;
+		try {
+			const state = await this.manager.validatedState(story);
+			const existing = await this.manager.readPlanningGuide(story);
+			if (existing.trim()) {
+				const items: ActionItem[] = [
+					{ label: "整体重写", sub: "以现有《策划指南.md》为既定事实约束，仅依据世界观重新生成并覆盖" },
+					{ label: "取消", sub: "保留现有内容不变" },
+				];
+				const choice = await this.pickAction("书级《策划指南.md》已存在，如何处理？", items);
+				if (choice == null || choice === 1) { new Notice("已取消生成策划指南（仅世界观）", 6000); return; }
+			}
+			const count = await this.promptChapterCountInput("生成策划指南（仅世界观）", `将仅依据世界观设定 AI 生成书级《策划指南.md》（不含大纲/卷/章节）。\n请指定目标总章数（1–99 的整数），各节位置将以该总章数为基准表述；输入后按回车确认、Esc 取消：`, "已取消生成策划指南（仅世界观）");
+			if (count == null) return;
+			const setup = await this.loadWriterSetup();
+			if (!setup) return;
+			const input = await this.buildPlanningGuideInput(story, state, existing.trim() || undefined, { chapterCount: count, worldOnly: true });
+			const promptText = buildPlanningGuidePrompt(input);
+			console.debug("[articlewriter] 策划指南（仅世界观）生成请求规模", { model: setup.cfg.model_name || "(默认)", regenerate: !!existing.trim(), promptLen: promptText.length });
+			const modal = await this.beginWritingPanel(existing.trim() ? "重新生成策划指南（仅世界观）" : "生成策划指南（仅世界观）");
+			if (!modal) { new Notice("无法打开生成面板，本次操作已取消", 8000); return; }
+			const content = await this.streamWithEmptyRetry(setup.cfg, () => [
+				{ role: "system", content: BOOK_OUTLINE_GEN_SYSTEM_PROMPT },
+				{ role: "user", content: promptText },
+			], modal, "生成策划指南（仅世界观）");
+			if (modal.signal.aborted) return;
+			if (!content.trim()) return;
+			await this.manager.setPlanningGuide(story, content);
+			modal.finishAuto("✓ 策划指南已保存", "本轮用时");
+			new Notice(`✓ ${existing.trim() ? "已重写" : "已生成"}书级《策划指南.md》（仅依据世界观），后续大纲生成将遵循其既定规划`, 12000);
+		} catch (e) {
+			this.notifyError("生成策划指南（仅世界观）失败", e);
 		}
 	}
 
@@ -4137,7 +4185,7 @@ async cmdRenameChapterFile(): Promise<void> {
 			// 上下文组装：世界观 / 现有书级大纲（避免重复）/ 全部卷（仅非平铺）/ 已有章节 + 已存摘要（阅读序）
 			const world = await this.manager.readWorldDoc(story);
 			const existing = await this.manager.readGlobalOutline(story); // 清洗文本：模板注释视为空
-			const planningGuide = await this.ensurePlanningGuide(story, state); // v0.2.13+：缺失则先自动生成（软依赖，失败返回 ""）
+			const planningGuide = await this.ensurePlanningGuide(story, state, { chapterCount: count }); // v0.2.13+：缺失则先自动生成（软依赖，失败返回 ""）；v0.2.x+ 传入目标章数使策划指南各节位置与本次规划同基准
 			const volsRec = flatMode ? {} : await this.manager.loadVolumes(story);
 			const vols = Object.values(volsRec).sort((a, b) => a.order - b.order || a.id.localeCompare(b.id));
 			const volNames = await this.volNameMap(story);
@@ -4235,7 +4283,7 @@ async cmdRenameChapterFile(): Promise<void> {
 			const setup = await this.loadWriterSetup();
 			if (!setup) return;
 			const world = await this.manager.readWorldDoc(story);
-			const planningGuide = await this.ensurePlanningGuide(story, state); // v0.2.13+：缺失则先自动生成（软依赖，失败返回 ""）
+			const planningGuide = await this.ensurePlanningGuide(story, state, { chapterCount: counts.reduce((a, b) => a + b, 0) }); // v0.2.13+：缺失则先自动生成（软依赖，失败返回 ""）；v0.2.x+ 各卷目标章数之和即全书总章数
 
 			let vols = await this.manager.volumeList(story);
 			const freshOutlines = new Map<string, string>(); // 本轮已更新的卷 → 清洗后大纲（供后续卷链式上下文，与 readVolumeOutline 同口径）

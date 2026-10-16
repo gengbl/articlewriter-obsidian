@@ -31,7 +31,9 @@ export interface StoryState {
 	current_volume?: string;
 	total_words: number;
 	use_summaries: boolean;
-	use_volumes: boolean; // v0.0.16+：工作模式开关——false=无卷模式（纯 书→章 扁平结构）、true=有卷模式；缺省时按是否含卷数据推断（存量有卷书判 true 防回归，新/扁平书默认 false）
+	use_volumes: boolean; // v0.0.16+：工作模式开关——false=无卷
+	prev_chapters?: number; // v0.2.x+：本书级「使用章节摘要数量组装提示词」（前文窗口章数 N）；显式设置时优先于全局 data.json settings.prevChapters
+	include_volume_summary?: boolean; // v0.2.x+：本书级「是否使用前卷摘要组织提示词」；显式设置时优先于全局 data.json settings.includeVolumeSummary模式（纯 书→章 扁平结构）、true=有卷模式；缺省时按是否含卷数据推断（存量有卷书判 true 防回归，新/扁平书默认 false）
 	chapters: Record<string, ChapterMeta>; // 键=复合键（见 chKey/parseChKey）
 	created_at: string;
 	updated_at: string;
@@ -117,6 +119,7 @@ export function parseStateDoc(
 	const extraKeys = new Set([
 		"version", "title", "genre", "writing_style", "current_chapter", "current_scene",
 		"current_volume", "total_words", "use_summaries", "use_volumes", "chapters", "created_at", "updated_at",
+		"prev_chapters", "include_volume_summary",
 	]);
 	const extra: Record<string, unknown> = {};
 	for (const [k, v] of Object.entries(o)) if (!extraKeys.has(k)) extra[k] = v;
@@ -135,6 +138,11 @@ export function parseStateDoc(
 			use_volumes: typeof o.use_volumes === "boolean"
 				? o.use_volumes
 				: Object.keys(chapters).some((k) => parseChKey(k).vol != null) || !!asStr(o.current_volume),
+			// v0.2.x+：本书级提示词组装选项——仅显式设置时保留（非法值视为未设置），否则回落全局 data.json 设置
+			prev_chapters: typeof o.prev_chapters === "number" && Number.isInteger(o.prev_chapters) && o.prev_chapters >= 0
+				? o.prev_chapters
+				: undefined,
+			include_volume_summary: typeof o.include_volume_summary === "boolean" ? o.include_volume_summary : undefined,
 			chapters,
 			created_at: asStr(o.created_at),
 			updated_at: asStr(o.updated_at),
@@ -159,6 +167,9 @@ export function formatStateDoc(
 	o["total_words"] = state.total_words;
 	o["use_summaries"] = state.use_summaries;
 	o["use_volumes"] = state.use_volumes; // 恒显式写出，保存后行为确定（不再依赖缺省推断）
+	// v0.2.x+：本书级提示词组装选项——仅显式设置时写回（未设置的存量文档保持原样、继续走全局设置）
+	if (state.prev_chapters != null) o["prev_chapters"] = state.prev_chapters;
+	if (state.include_volume_summary != null) o["include_volume_summary"] = state.include_volume_summary;
 	if (state.created_at) o["created_at"] = state.created_at;
 	if (state.updated_at) o["updated_at"] = state.updated_at;
 	const chapters: Record<string, unknown> = {};
