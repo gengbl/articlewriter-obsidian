@@ -52,6 +52,7 @@
 - **故事状态.md（frontmatter，version 2）字段**：`title`、`genre`、`writing_style`、`current_chapter`（复合键字符串）、`current_scene`、`current_volume`、`total_words`、`created_at`、`updated_at`、`use_summaries`、**`use_volumes`（v0.0.16+，无卷模式开关，见「卷 / 当前状态激活语义」）**、**`prev_chapters`（v0.2.x+，可选 number≥0——本书级「使用章节摘要数量组装提示词」前文窗口章数 N；显式设置时优先于全局 data.json settings.prevChapters，非法值解析为 undefined 回落全局）**、**`include_volume_summary`（v0.2.x+，可选 boolean——本书级「是否使用前卷摘要组织提示词」；显式设置时优先于全局 data.json settings.includeVolumeSummary）** + `chapters`（键为**复合键字符串** `"N"` / `"volId:N"`，见「章节身份模型」；值=**仅 标题/字数/卷** 的嵌套映射——tags/note 已精简移除：无代码读回，标签/备注只属于各章《章节信息.md》；旧文档残留这两个键解析忽略、下次保存消失）。空可选字段序列化时省略；key 顺序固定。磁盘是唯一事实来源；每个写操作后立即落盘，内存不持有文档内容。
 - **状态文档保存语义（saveState）**：先读旧文档 → 只重写 frontmatter，**正文原样保留**（可自由写笔记）；用户在 Obsidian 属性面板加的自定义顶层属性会收进 `extra` 并透传回写（不被覆盖丢失）。新建书时用模板注释作初始正文。
 - **兼容迁移**：`loadState` 优先读 `故事状态.md`，缺失时回落旧版 `story_state.json`（旧格式产物仍可直接识别加载）；对含旧 JSON 的小说首次 saveState 会把 JSON `vault.rename` 到 `_backup/story_state_<时间戳>.json`（不用回收站，保证可恢复），此后 MD 为唯一事实来源。
+- **「补全故事状态可用参数」命令（v0.2.x+，`state-complete`→main.ts `cmdCompleteState`）**：升级旧的故事状态文档——因 formatStateDoc 仅在字段显式设置时写回，存量文档永远不含 `prev_chapters`/`include_volume_summary` 两键（静默回落全局）。流程：loadState 后检测两键缺失情况，均显式设置则仅 Notice 提示已齐全不写盘；缺 `prev_chapters` 弹输入框（非负整数、0=不注入前文，预填当前全局生效值 `effectivePrevN()`，非法重弹、Esc 取消整个命令不写盘）；缺 `include_volume_summary` 弹 confirmBox（确认=true/取消=false，文案注明当前全局开关态）；逐项赋值后经 saveState 落盘（正文与其余键原样保留）。旧版 `story_state.json` 载体经 loadState/saveState 顺带迁移为 MD 文档。只补这两个「书级提示词组装选项」——`current_scene`/`current_volume` 属运行态指针不做补全。
 
 ## 删除约定
 

@@ -172,6 +172,7 @@ export default class ArticleWriterPlugin extends Plugin {
 		this.addCommand({ id: "pack-chapters", name: "打包章节合集（/pack：正文合辑单 MD，留空=当前章，支持 all/区间 3-7/列表 1、4、5；输出路径可自定义）", callback: () => this.cmdPackChapters() });
 		this.addCommand({ id: "pack-volume", name: "导出卷合集（该卷全部章节正文合一 MD，默认 <书名>-<卷名>-合集.md；写字台卷节点右键同义入口）", callback: () => this.cmdPackVolume() });
 		this.addCommand({ id: "rescan-story", name: "扫描重建小说状态文档（以磁盘为准）", callback: () => this.cmdRescanStory() });
+		this.addCommand({ id: "state-complete", name: "补全故事状态可用参数（升级旧故事状态文档：把缺失的书级提示词组装选项补写进 frontmatter）", callback: () => this.cmdCompleteState() });
 		this.addCommand({ id: "set-style", name: "设置编写类型（网文小说/剧本/普通小说/散文随笔…）", callback: () => this.cmdSetStyle() });
 		this.addCommand({ id: "agents-view", name: "查看创作规范 WRITING_GUIDE.md（对齐 CLI /agents view：小说级/用户级/系统级三层）", callback: () => this.cmdAgentsView() });
 		this.addCommand({ id: "agents-edit", name: "编辑创作规范 WRITING_GUIDE.md（对齐 CLI /agents edit：小说级/用户级/系统级三层）", callback: () => this.cmdAgentsEdit() });
@@ -741,6 +742,25 @@ await this.promptCreateVolumesIfEmpty(story); // 零卷 → 先弹建卷框（�
 			const n = parseInt(raw, 10);
 			if (n >= 1 && n <= 99) return n;
 			new Notice(`章数无效：请输入 1–99 的整数（收到「${raw}」）`, 6000);
+		}
+	}
+
+	/** v0.2.x+「补全故事状态可用参数」专用：收集书级 prev_chapters（非负整数，0=不注入前文），预填当前全局生效值；非法输入重弹，取消返回 null */
+	private async promptPrevChaptersInput(story: string): Promise<number | null> {
+		for (;;) {
+			const raw = await this.prompt(
+				"使用章节摘要数量（prev_chapters）",
+				"前文窗口章数 N（非负整数，如 3）",
+				[
+					`《${story}》的故事状态文档缺少书级参数 prev_chapters（写作提示词「前文内容」窗口章数）。`,
+					`输入非负整数：0＝不注入前文；当前按全局设置生效（N=${this.effectivePrevN()}，已预填在输入框）。`,
+					"输入后按回车确认、Esc 取消：",
+				].join("\n"),
+				String(this.effectivePrevN())
+			);
+			if (raw == null) { new Notice("已取消补全故事状态参数", 4000); return null; }
+			if (!/^\d+$/.test(raw.trim())) { new Notice(`数值无效：请输入非负整数（收到「${raw}」）`, 6000); continue; }
+			return parseInt(raw.trim(), 10);
 		}
 	}
 
@@ -1963,6 +1983,43 @@ async cmdRenameChapterFile(): Promise<void> {
 			new Notice(`扫描完成：章节 ${r.chapters} 个，总字数（纯文字）${r.totalWords}${r.createdDocs ? `，补齐缺失模板文档 ${r.createdDocs} 份` : ""}${r.volumeFixed ? `，修正与目录位置不一致的卷归属字段 ${r.volumeFixed} 处` : ""}`, 6000);
 		} catch (e) {
 			this.notifyError("扫描失败", e);
+		}
+	}
+
+	/** v0.2.x+「补全故事状态可用参数」：升级旧的故事状态文档——把缺失的书级提示词组装选项（prev_chapters / include_volume_summary）逐项询问后显式补写进 frontmatter（正文原样保留、其余键不动）；两项均已显式设置时仅提示无需补全。旧版 story_state.json 载体经 loadState/saveState 顺带迁移为 MD 文档 */
+	async cmdCompleteState(): Promise<void> {
+		if (!(await this.ensureWorkDir())) return;
+		const story = await this.requireStory();
+		if (!story) return;
+		const state = await this.manager.loadState(story);
+		if (!state) { new Notice("读取故事状态文档失败", 6000); return; }
+		const missingPrev = state.prev_chapters == null;
+		const missingVolSum = state.include_volume_summary == null;
+		if (!missingPrev && !missingVolSum) {
+			new Notice(`《${story}》故事状态文档的可用参数已齐全（prev_chapters=${state.prev_chapters}、include_volume_summary=${state.include_volume_summary}），无需补全`, 8000);
+			return;
+		}
+		const parts: string[] = [];
+		if (missingPrev) {
+			const n = await this.promptPrevChaptersInput(story);
+			if (n == null) return; // 取消：不写盘
+			state.prev_chapters = n;
+			parts.push(`prev_chapters=${n}`);
+		}
+		if (missingVolSum) {
+			const on = await this.confirmBox(
+				"是否使用前卷摘要组织提示词（include_volume_summary）",
+				`《${story}》的故事状态文档缺少书级参数 include_volume_summary（是否使用前卷摘要组织提示词）。\n开启后写作上下文额外注入本卷完整《卷摘要》，跨卷缺口以各前卷《卷摘要》由近及远填充；关闭则严格只按窗口章数注入单章摘要。\n当前按全局设置生效（${this.settings.includeVolumeSummary ? "开" : "关"}）。\n确认＝写入 true（开）、取消＝写入 false（关）：`,
+				"开启"
+			);
+			state.include_volume_summary = on;
+			parts.push(`include_volume_summary=${on}`);
+		}
+		try {
+			await this.manager.saveState(story, state);
+			new Notice(`已补全故事状态参数：${parts.join("、")}`, 8000);
+		} catch (e) {
+			this.notifyError("补全故事状态参数失败", e);
 		}
 	}
 

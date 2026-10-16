@@ -31,6 +31,7 @@
 | `pack-chapters` | 正文打包单 MD：章标题行「## 第N章 章节名」（中文章节号带「第」前缀）+ `---` 分隔；支持范围/列表/all（表达式解析在 `md_docs.parseChapterSelection`）；默认输出 `<书名>-第X-Y章-合集.md`。与导出卷共用私有装配 buildPackParts（逐章读《章节.md》去 H1、空正文章跳过计入 skipped）+ writePackFile（outputPath 带扩展名=完整文件名、不带当目录拼 fileName）——改合辑格式只动这两处 |
 | `pack-volume` | 选卷→该卷实体目录下全部章节（按位置判归属，入口先过 ensureVolumeLayout 门禁保证位置==归属）正文合一 MD；无章报错提示先「按卷整理目录」归位；默认输出 `<书名>-<卷名>-合集.md`；管理卷菜单亦有同款项。**写字台面板卷节点右键已改为「导出…」**（StatusAction export-volume）：只问范围〔留空/all=该卷全章、区间/列表按卷内本地号〕、不问输出路径且不支持自定义文件名——经 manager.packStory 以 forcedVolId 锁定本卷（与导出书稿共用装配引擎，文件首行带「# 第N卷 · 卷名」标题行），默认名 `<书名>-<卷名>-范围.md`——**不再与本命令同义**（本命令固定整卷+`-合集`命名） |
 | `rescan-story` | 从现有 MD 重建故事状态.md（只初始化，不切小说不改 work_dir） |
+| `state-complete` | 补全故事状态可用参数（升级旧故事状态文档）：检测 frontmatter 缺失的书级提示词组装选项 `prev_chapters`（非负整数输入、预填全局生效值）/`include_volume_summary`（确认框=开/取消=关），逐项询问后经 saveState 显式补写（正文与其余键原样保留）；两项均已设置仅提示已齐全不写盘，Esc 取消不落盘；旧版 story_state.json 载体顺带迁移为 MD |
 | `set-style` | 切换编写类型 writing_style（预设或自定义），持久化到 state |
 | `agents-view` / `agents-edit` | 三层创作规范：小说级 `<书名>/WRITING_GUIDE.md` > 用户级 `<work_dir>/WRITING_GUIDE.md` > 系统级 **插件数据目录** `.obsidian/plugins/articlewriter/WRITING_GUIDE.md`[固定路径，非用户可配]；view 各层直接打开对应文件，单层直开/多层选择器/全无则提示用编辑创建；edit 选层后多行文本框全量保存并刷新该书《写作指南汇总》 |
 | `generate-writing-guide` | 生成空模板：对用户级 `<work_dir>/WRITING_GUIDE.md` 与当前书 `<书名>/WRITING_GUIDE.md` 各建一份同格式骨架（`buildEmptyGuideTemplate` 抽段名、清正文），目标已存在且非空则跳过并提示；不触碰系统级 |

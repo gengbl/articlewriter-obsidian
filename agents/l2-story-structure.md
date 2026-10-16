@@ -10,6 +10,7 @@
 - **卷名唯一且作为目录名**；「引言」为保留名（与书根引言文件夹物理冲突）。
 - **新书默认无卷模式**（`use_volumes=false`）；`/volume off` 是破坏性拍平（含卷残留文件 salvage 回书根）。
 - **切换书籍检测到平面残留 → 强制自动整理、不可跳过**，失败置 `flatBlocked` 锁定该书结构操作。
+- **「补全故事状态可用参数」（`state-complete`）升级旧故事状态文档**：把 frontmatter 缺失的书级提示词组装选项（`prev_chapters`/`include_volume_summary`）逐项询问（预填当前全局生效值）后显式补写；两项均已设置仅提示不写盘，Esc 取消不落盘；详见 [l3-state-and-volumes.md](./l3-state-and-volumes.md)。
 - 删除一律走回收站（`trashFile`），角色改名先备份 `_backup/` 再替换。
 - 建章/建卷/建书自动播种标准模板文档（缺失补建、绝不覆盖用户内容），模板清单与格式见 [l3-md-docs-parsing.md](./l3-md-docs-parsing.md)。
 
