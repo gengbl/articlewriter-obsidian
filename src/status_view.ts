@@ -108,10 +108,12 @@ export type StatusAction =
 	| { kind: "rename-chapter"; story: string; key: string } // 改写章名：重命名目录并同步文档引用（对齐 /chapter rename）；key=复合键
 	| { kind: "delete-chapter"; story: string; key: string }
 	| { kind: "new-file"; story: string; key: string | null } // key=null → 书根目录；否则该章节目录
+	| { kind: "chapter-to-screenplay"; story: string; key: string } // 章节行右键「转成剧本」：针对某章节正文文件生成“原文件名+剧本.md”
 	| { kind: "delete-file"; path: string }
 	| { kind: "new-volume-doc"; story: string; volId: string } // 卷节点 / 卷内「文档」分组右键：在该卷实体目录下新建 .md（语义同 new-file，落点为卷目录而非章节目录）
 	| { kind: "complete-volume-docs"; story: string; volId: string } // 卷内「文档」命名头右键「补全卷文档」：检查该卷下缺失的设定模板（卷大纲/人物/人物关系/场景/时间线五件套）并创建，已存在不覆盖
-	| { kind: "complete-root-docs"; story: string } // 案头资料节点右键「补全资料」：检查书根缺失的默认资料文件（大纲/世界观/伏笔/笔记/人物/人物关系/场景/时间线八件套）并按模板创建，已存在不覆盖
+	| { kind: "complete-root-docs"; story: string } // 案头资料节点右键「补全资料」：检查书根缺失的默认资料文件（大纲/策划指南/世界观/伏笔/笔记/人物/人物关系/场景/时间线九件套）并按模板创建，已存在不覆盖
+	| { kind: "complete-outline-docs"; story: string } // 「书稿」小节标题右键「补全大纲资料…」：检查参与大纲生成的四件资料（大纲/策划指南/世界观/人物关系）并按模板补缺，已存在不覆盖
 	| { kind: "new-prologue"; story: string } // 「书稿」标题行右键「新建引言…」：书根建「引言」文件夹 + 正文《引言.md》（幂等；已存在仅提示）
 	| { kind: "delete-prologue"; story: string } // 引言节点右键「删除引言」：整个「引言」文件夹移入回收站（先确认框）
 	| { kind: "new-prologue-doc"; story: string } // 引言节点 / 其文件行右键「新建引言内文档…」：在「引言」文件夹内新建 .md（仅自定义文件名）
@@ -341,7 +343,7 @@ export class StatusView extends ItemView {
 	/** 「案头资料」「书稿」两个小节；isActive=该书是否为当前激活小说（仅其下章节/卷可被 Radio 选中激活）。书稿小节按归属卷渲染为树节点（卷名行 + 缩进章节），未归属章节平铺兜底 */
 	private renderStorySections(parent: HTMLElement, d: StatusDetail, isActive: boolean): void {
 		if (d.globalFiles.length) {
-			// 案头资料分组：标题行与组内空白右键=「补全资料」（书根默认资料八件套补缺、已存在不覆盖）+「新建资料…」（v0.1.6+：不再提供新建章节/新建卷——建章在书稿具体章节/卷节点上、建卷在书籍列表标题行或书稿小节标题）
+			// 案头资料分组：标题行与组内空白右键=「补全资料」（书根默认资料九件套补缺、已存在不覆盖）+「新建资料…」（v0.1.6+：不再提供新建章节/新建卷——建章在书稿具体章节/卷节点上、建卷在书籍列表标题行或书稿小节标题）
 			const gItems = (): Array<{ label: string; run: () => void } | { sep: true }> => [
 				{ label: "补全资料", run: () => this.runStatusAction({ kind: "complete-root-docs", story: d.storyName }) }, // 检查缺失的默认资料文件并创建，已存在保留不覆盖
 				{ sep: true },
@@ -377,6 +379,7 @@ export class StatusView extends ItemView {
 					]),
 				...(!d.prologueFiles.length ? [{ label: "新建引言…", run: () => this.runStatusAction({ kind: "new-prologue", story: d.storyName }) }] : []), // 书根建「引言」文件夹+正文（尚无引言时才显示）
 				{ label: "连续编写", run: () => this.runStatusAction({ kind: "write-consecutive", story: d.storyName }) }, // 全书语义：从当前章起按阅读序逐章推进（与命令面板同义）
+				{ label: "补全大纲资料…", run: () => this.runStatusAction({ kind: "complete-outline-docs", story: d.storyName }) }, // 大纲/策划指南/世界观/人物关系 缺失者按模板补建（已存在不覆盖）
 				{ label: "导出书稿…", run: () => this.runStatusAction({ kind: "export-story", story: d.storyName }) }, // 全部/所选范围章节《章节.md》正文合一 MD，有卷模式带卷号+卷名标题行
 			]),
 		);
@@ -596,6 +599,7 @@ export class StatusView extends ItemView {
 					{ label: "编写本章…", run: () => this.runStatusAction({ kind: "llm-write", story: storyName, key: c.key }) }, // /write：先激活该书/章再走创作流程
 					{ label: "续写本章…", run: () => this.runStatusAction({ kind: "llm-continue", story: storyName, key: c.key }) }, // /continue
 					{ label: "润色本章…", run: () => this.runStatusAction({ kind: "llm-polish", story: storyName, key: c.key }) }, // /polish
+					{ label: "转成剧本…", run: () => this.runStatusAction({ kind: "chapter-to-screenplay", story: storyName, key: c.key }) },
 					{ sep: true },
 					{ label: "重命名本章…", run: () => this.runStatusAction({ kind: "rename-chapter", story: storyName, key: c.key }) }, // /chapter rename：改写章名，同步目录与文档引用
 					{ label: `删除本章（第${String(c.num)}章）`, danger: true, run: () => this.runStatusAction({ kind: "delete-chapter", story: storyName, key: c.key }) }, // 删除只作用于被点中的这一章

@@ -1,7 +1,8 @@
 // ===== 插件 LLM 配置（对齐 Python 版 ~/.articlewriter/config.json 的 llm 段字段）=====
 // 载体为 Obsidian 标准插件数据目录：<vault>/.obsidian/plugins/articlewriter/data.json
 // （经 Plugin.saveData/loadData 持久化，与 work_dir/lastStory 等设置同处存放）。
-// 注意：api_key 以明文存于 data.json，请勿将 .obsidian 同步/共享到不可信位置。
+// 注意：本插件依赖桌面端运行环境与 LLM 接口，且 api_key 以明文存于 data.json。
+// 为了避免移动端环境/本地服务兼容性问题，插件声明为 desktop-only；请勿将 .obsidian 同步/共享到不可信位置。
 
 export interface LlmConfigDoc {
 	name: string;
@@ -31,7 +32,10 @@ export interface PluginConfig {
 	system_guide_path?: string; // 系统级指南文件路径（vault 相对路径）；设置且可读时优先于内嵌 system_guide
 }
 
-/** 首次运行（data.json 无 llm 段）时预置的标准模板：字段结构与 Python 用户配置文件一致，api_key/model_name 留空待填 */
+/** 首次运行（data.json 无 llm 段）时预置的标准模板：字段结构与 Python 用户配置文件一致，api_key/model_name 留空待填。
+ * 说明：本插件仅支持桌面端使用，原因是它依赖本地或远程 LLM API 端点、文件系统访问与 Obsidian 桌面环境；
+ * 任何密钥都应仅保存在本地桌面 vault 的 .obsidian 目录中，不建议同步到共享/不受信任位置。
+ */
 export function buildDefaultLlmConf(): PluginConfig {
 	const base = {
 		temperature: 0.8,

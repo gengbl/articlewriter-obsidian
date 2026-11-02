@@ -6,7 +6,8 @@
 	"scripts": {
 		"dev": "node esbuild.config.mjs",
 		"build": "tsc -noEmit -skipLibCheck && node esbuild.config.mjs --production",
-		"lint": "eslint src/"
+		"lint": "eslint src/",
+		"test": "node -e \"const { buildSync } = require('esbuild'); const { execFileSync } = require('child_process'); const fs = require('fs'); const path = require('path'); const out = path.join(process.cwd(), '.tmp.prompts.test.mjs'); buildSync({ entryPoints: ['src/prompts.test.ts'], bundle: true, platform: 'node', format: 'esm', outfile: out, tsconfig: 'tsconfig.json' }); execFileSync(process.execPath, ['--test', out], { stdio: 'inherit' }); fs.rmSync(out, { force: true });\""
 	},
 	"keywords": [
 		"obsidian",
