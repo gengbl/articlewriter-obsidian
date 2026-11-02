@@ -42,15 +42,15 @@ curl -s -b $CJ -c $CJ -e "$B/user/login" --data-urlencode "_csrf=$CSRF" \
   --data-urlencode "user_name=geng_bl" --data-urlencode "password=<密码>" \
   -o /dev/null -w "%{http_code}\n" $B/user/login    # 期望 303
 PAGE=$B/geng_bl/articlewritter-obsidian/releases/new
-# ② 取新建页及其 _csrf
-curl -s -b $CJ $PAGE -o /tmp/opencode/relnew.html
+# ② 取新建页及其 _csrf（整条链每步都带 -b -c：只读 -b 会在会话 cookie 轮换后导致 400 Invalid CSRF token）
+curl -s -b $CJ -c $CJ $PAGE -o /tmp/opencode/relnew.html
 CSRF=$(grep '_csrf' /tmp/opencode/relnew.html | grep -o 'value="[^"]*"' | head -1 | cut -d'"' -f2)
 # ③ 上传临时文件 → uuid（字段名是 file，不是 attachment！实测坑位：不要给 part 写显式 ;type=，无需指定 MIME）
-UUID=$(curl -s -b $CJ --referer "$PAGE" -X POST $B/geng_bl/articlewritter-obsidian/releases/attachments \
+UUID=$(curl -s -b $CJ -c $CJ --referer "$PAGE" -X POST $B/geng_bl/articlewritter-obsidian/releases/attachments \
   -F "_csrf=$CSRF" -F "file=@articlewriter-v<版本>.zip" \
   | python3 -c "import json,sys;print(json.load(sys.stdin)['uuid'])")
 # ④ 提交表单创建 Release（隐藏域 files=<uuid> 关联附件；期望 303）
-curl -s -b $CJ --referer "$PAGE" -X POST $PAGE -F "_csrf=$CSRF" -F "tag_name=v<版本>" \
+curl -s -b $CJ -c $CJ --referer "$PAGE" -X POST $PAGE -F "_csrf=$CSRF" -F "tag_name=v<版本>" \
   -F "tag_target=main" -F "title=v<版本>" -F "content=<发布说明>" -F "files=$UUID" \
   -o /dev/null -w "%{http_code}\n"
 ```
@@ -78,5 +78,6 @@ curl -s -b $CJ --referer "$PAGE" -X POST $PAGE -F "_csrf=$CSRF" -F "tag_name=v<�
 - REST API `POST /releases` 忽略 multipart 里的文件 part；也没有独立资产上传端点（`POST /releases/{id}/assets` 报 500）→ 一律走上面的 Web 会话流
 - `/releases/attachments` 临时上传的文件字段名是 **`file`**（用 `attachment` 会 500 "FormFile: http: no such file"）；表单提交时用隐藏域 **`files=<uuid>`** 关联（直接发 `attachment=` part 会被静默忽略、release 建出来但无附件）
 - CSRF token 必须取自对应页面本身，且带匹配的 Referer
+- **整条链每步都同时带 `-b $CJ -c $CJ`**（2026-11-02 实测）：只带只读 `-b` 时，登录成功后 Gitea 若轮换会话 Cookie，后续 POST 提交会返回 `400 Invalid CSRF token`（响应体仅这一句话、非表单页）；附件上传端点返回 uuid 不代表最终 submit 必过，以 submit 返回 303 为准
 - zsh 行首不要写未加引号的 `===`（= 展开报错）；本机 curl 不支持 `-F "body<文件"` 语法（报 "badly used here"），正文用 shell 变量经 -F 传或改用 JSON
 - 标签已存在 release 时必须先删再重建；删除后重新取新建页（csrf 可能变化）
