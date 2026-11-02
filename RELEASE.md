@@ -26,6 +26,8 @@
 5. `git commit -m "vX.Y.Z：中文摘要"`（非发布的普通提交直接写功能描述即可）
 6. `git push origin main`
 
+注：上述第 4–6 步的 git 操作一律在 Gitea 专用克隆 `/tmp/opencode/aw-gitea` 内执行（本地工作树 `.git` 的 origin 指向 GitHub、历史与 Gitea 无共同祖先，直推必被 non-fast-forward 拒绝；详见 l3-build-deploy.md「一切 Gitea 侧 git 操作走专用克隆」条）。
+
 ## 发布打包与上线流程（用户要求"打包发布"时）
 
 1. bump `manifest.json` version

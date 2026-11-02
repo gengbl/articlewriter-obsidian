@@ -659,14 +659,19 @@ export function validateStoryTypeFormat(content: string, writingStyle?: string):
 	content = content || "";
 	if (storyType === "剧本") {
 		const hasSceneHeader = /(?:^|\n)(?:INT\.|EXT\.|INT\/EXT\.|FADE IN:|FADE OUT:|CUT TO:|CONTINUOUS|INTERCUT|内景|外景)\s*.*(?:-|\s)(?:NIGHT|DAY|DUSK|DAWN|LATER|NEXT DAY|DAYS LATER|夜|日|晨|暮|午|上午|下午|晚上)/i.test(content);
-		const hasCharacterCue = /(?:^|\n)(?:[A-Z][A-Z0-9 _()\-]{0,24}|[\u4e00-\u9fffA-Za-z][^\n：]{0,18})\s*\n\s*[^\n]{2,}/m.test(content);
-		const hasDialogueLine = /^(?:[A-Z][A-Z0-9 _()\-]{0,24}|[\u4e00-\u9fffA-Za-z][^\n：]{0,18})\s*$\n\s*[^\n]{2,}/m.test(content);
+		const hasCharacterCue = /(?:^|\n)(?:[A-Z][A-Z0-9 _()-]{0,24}|[\u4e00-\u9fffA-Za-z][^\n：]{0,18})\s*\n\s*[^\n]{2,}/m.test(content);
+		const hasDialogueLine = /^(?:[A-Z][A-Z0-9 _()-]{0,24}|[\u4e00-\u9fffA-Za-z][^\n：]{0,18})\s*$\n\s*[^\n]{2,}/m.test(content);
 		const hasTransition = /(?:^|\n)(?:CUT TO:|FADE IN:|FADE OUT:|CONTINUOUS|INTERCUT|NEXT DAY|DAYS LATER|LATER)/.test(content);
 		const hasScriptMarkers = hasSceneHeader || hasTransition || hasCharacterCue || hasDialogueLine;
 		if (!hasScriptMarkers) {
 			return "输出缺少剧本格式特征（INT./EXT. / CUT TO: / 角色名独立一行 + 台词另起一段），不是标准 screenplay";
 		}
-		const sceneHeaders = [...content.matchAll(/(?:^|\n)(?:INT\.|EXT\.|INT\/EXT\.|FADE IN:|FADE OUT:|CUT TO:|CONTINUOUS|INTERCUT|内景|外景)\s*.*?(?:-|\s)(NIGHT|DAY|DUSK|DAWN|LATER|NEXT DAY|DAYS LATER|夜|日|晨|暮|午|上午|下午|晚上)/gi)].map((m) => (m[1] || "").toUpperCase());
+		const SCENE_HEADER_RE = /(?:^|\n)(?:INT\.|EXT\.|INT\/EXT\.|FADE IN:|FADE OUT:|CUT TO:|CONTINUOUS|INTERCUT|内景|外景)\s*.*?(?:-|\s)(NIGHT|DAY|DUSK|DAWN|LATER|NEXT DAY|DAYS LATER|夜|日|晨|暮|午|上午|下午|晚上)/gi; // 函数内局部正则：每次调用全新实例，无 lastIndex 残留
+		const sceneHeaders: string[] = [];
+		let sh: RegExpExecArray | null;
+		while ((sh = SCENE_HEADER_RE.exec(content)) !== null) { // exec 循环替代 matchAll(ES2020)：外部检查器类型环境缺 @types/node 传递的 es2020 lib，matchAll 会退化为 any 触发 no-unsafe-*
+			sceneHeaders.push((sh[1] || "").toUpperCase());
+		}
 		const repeatedDayLike = sceneHeaders.length >= 3 && sceneHeaders.every((tag) => tag === "DAY" || tag === "NIGHT" || tag === "日" || tag === "夜");
 		const hasTimeProgression = /(?:^|\n)(?:LATER|NEXT DAY|DAYS LATER)/i.test(content);
 		if (repeatedDayLike && !hasTimeProgression) {

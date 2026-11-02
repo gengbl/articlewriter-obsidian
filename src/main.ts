@@ -20,7 +20,7 @@ import type { Message } from "./llm_client";
 import { findAiWordHits, mergeGuideCategories } from "./banned_words";
 import { appendOutlineInstruction, applyTypoMarks, BOOK_OUTLINE_GEN_SYSTEM_PROMPT, buildBookOutlineContinuePrompt, buildBookOutlineGenPrompt, buildChapterPrompt, buildChapterSummaryPrompt, buildContinuePrompt, buildPlanningGuidePrompt, buildPolishPrompt, buildReviewPrompt, buildRewritePrompt, buildStoryTypeSystemPrompt, buildTypoScanPrompt, buildVolOutlineChapterPrompt, buildVolOutlineDesignPrompt, buildVolRebuildPrompt, buildWritingContext, CHAPTER_SUMMARY_SYSTEM_PROMPT, checkOutlineCoverage, cleanAiText, cleanRelationshipsDoc, embedAggHash, formatRetryNote, parseAggHash, parseTypoScan, serializeAggregateGuide, stripHeading, TYPO_SCAN_SYSTEM_PROMPT, validateStoryTypeFormat, VOL_OUTLINE_GEN_SYSTEM_PROMPT, VOL_SUMMARY_SYSTEM_PROMPT, BookOutlineGenInput, PlanningGuideInput, VolOutlineGenInput, wordRangeFromGuides } from "./prompts";
 import { cnToNum, extractPlannedChapterCount, mergeVolOutlineChapters, parseChapterSelection, parseRelationships, parseTimelines, parseVolumeDeclarations, splitList, splitVolOutlineByChapter, stripComments, type TimelineEntry, type VolumeDeclaration } from "./md_docs";
-import type { RelationshipEntry } from "./md_docs";
+import type { RelationshipEntry, VolumeInfo } from "./md_docs";
 
 interface ArticleWriterSettings {
 	workDir: string; // 写小说的文件夹（对齐 CLI --work_dir / /dir）；空=未初始化，首次用命令时弹选择器
@@ -58,7 +58,7 @@ export default class ArticleWriterPlugin extends Plugin {
 		return Number.isFinite(n) && n >= 0 ? n : 3;
 	}
 
-	private async readOutlineRelationships(story: string, volume?: { id?: string; name?: string } | false | null): Promise<{ bookRelationships: string; volRelationships: string }> {
+	private async readOutlineRelationships(story: string, volume?: VolumeInfo | false | null): Promise<{ bookRelationships: string; volRelationships: string }> {
 		const base = this.manager.storyPath(story);
 		const readText = async (path: string): Promise<string> => {
 			const file = this.app.vault.getAbstractFileByPath(path);
@@ -72,9 +72,9 @@ export default class ArticleWriterPlugin extends Plugin {
 		let volRelationships = "";
 		if (volume && typeof volume === "object" && volume.name) {
 			const volumeName = volume.name.trim();
-			const volDir = `${base}/${this.manager.volumeFolderName(volume as any)}`;
+			const volDir = `${base}/${this.manager.volumeFolderName(volume)}`;
 			const candidates = [
-				`${volDir}/${this.manager.volumeFolderName(volume as any)}-人物关系.md`,
+				`${volDir}/${this.manager.volumeFolderName(volume)}-人物关系.md`,
 				`${volDir}/人物关系.md`,
 				`${volDir}/${safeFilename(volumeName)}-人物关系.md`,
 			];

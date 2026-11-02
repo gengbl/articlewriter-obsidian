@@ -38,6 +38,22 @@
 
 凭据提取陷阱、手动回落方案等细节见 [agents/l3-build-deploy.md](./agents/l3-build-deploy.md)「GitHub 镜像同步（强制）」与 [RELEASE.md](./RELEASE.md)。
 
+## 发布流程（标准 vX.Y.Z，严格串行执行）
+
+完整脚本在 [RELEASE.md](./RELEASE.md)「发布打包与上线流程」；此处记录顺序、门禁与易错点：
+
+1. **版本号 bump**：`manifest.json` version = 目标版本；两仓提交消息约定 `vX.Y.Z：<中文功能摘要>`（同消息同步）。
+2. **发布门禁**（全部通过才继续）：`npm run build`（tsc 零错误）→ `node --check release/main.js` → `npm run lint`（四类 no-unsafe-* 零违规）→ 检查新增/修改行无冗余类型断言。
+3. **打 zip**：`cd release && zip ../articlewriter-v<版本>.zip *`（release/ 恰含 main.js / manifest.json / styles.css 三文件），记下字节数（`stat -c %s`）。
+4. **Gitea 主仓推送 + tag**：一切 Gitea git 操作在专用克隆 `/tmp/opencode/aw-gitea` 内执行——本地工作树 `.git` 的 origin 指向 GitHub、历史为拷贝式独立提交（同消息不同 SHA、与 Gitea 无共同祖先），从它或镜像目录直推必被 non-fast-forward 拒绝，禁止 force push。流程：改动文件逐一拷入克隆 → 显式 `git add` → 同消息 commit → `push origin main` → **tag `vX.Y.Z` 打在版本号 bump 那个 commit 上**再推送（不指 HEAD）。
+5. **GitHub 镜像同步 + CI 上架**：同一批文件拷入 `/home/fosky/workspace/articlewriter-obsidian-git/`，同消息 commit + `push origin main`；随后推**无 v 前缀** tag `<版本>`——CI 自动从源码重建、attestation 签名并创建/更新 GitHub Release（仅三个散文件、不传 zip）；等 workflow completed/success 再继续。
+6. **Gitea Release 手动创建**：REST API 无法带附件，必须走 Web 会话表单流（脚本见 RELEASE.md §step5）；整条链每个 curl 都带 `-b $CJ -c $CJ`；submit 返回 303 才算成功（上传端点返回 uuid 不代表 submit 会过）。
+7. **双端资产核验**：Gitea REST `GET …/releases/tags/v<版本>` 确认附件字节数 == 本地 zip；GitHub Release 恰为三个散文件且与本地尺寸一致。
+8. **tag 后 CHANGELOG 条目**：CHANGELOG.md 末尾追加「CHANGELOG：追加 vX.Y.Z 发布条目」一行（＋相关文档写回）→ 两仓各自 commit+push；该提交落在被 tag 的 commit **之后**。
+9. **部署 vault**：`release/` 三文件覆盖复制到 `/home/fosky/workspace/geng_bl/.obsidian/plugins/articlewriter/`，md5 核对 main.js 一致；Obsidian 内重载插件生效。
+
+凭据 / CSRF cookie 轮换 / 代理绕行等坑位见 [agents/l3-build-deploy.md](./agents/l3-build-deploy.md)（「Gitea Release」「API 版本上限」条）与 RELEASE.md「坑位记录」。
+
 ## 全局硬规则（任何改动都适用）
 
 - **禁止并行处理**：执行任何任务一律串行——一次只发起一个工具调用 / 操作，拿到其结果后再进行下一步；即便多个操作彼此独立、本可并发，也不得批量或同时发起。逐步推进以便每步可核验、避免相互覆盖的并发改动。
