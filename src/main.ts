@@ -265,6 +265,8 @@ export default class ArticleWriterPlugin extends Plugin {
 			this.wsSaveTimer = window.setTimeout(() => { void this.captureBookWorkspace(s); }, 1500);
 		}));
 		void this.checkWorkspaceDirOnStartup(); // v0.2.1+ 启动自检：检测 workspaces/ 缺失则创建（仅 console 留痕，不落盘任何文件；原 .heartbeat.txt 诊断机制在 IO 通路验证后移除）
+		// v0.2.20 启动即把写字台放进左栏切换列表（移动端抽屉可见可选）：等布局就绪后补位，不抢焦点、不展开抽屉
+		this.app.workspace.onLayoutReady(() => { void this.ensureStatusInLeftSidebar(); });
 	}
 
 	/** 插件加载时检测一次工作区存档目录：缺失则递归创建；失败走统一上报（noteWsIoError），成功不打日志避免噪音 */
@@ -360,6 +362,7 @@ export default class ArticleWriterPlugin extends Plugin {
 		this.lastWorkspaceRestoreAt = Date.now(); // 先打时间戳再换布局：changeLayout 引发的 layout-change 回声被过滤
 		try {
 			await this.app.workspace.changeLayout(layout);
+			void this.ensureStatusInLeftSidebar(); // v0.2.20：changeLayout 全量替换会抹掉左栏（存档未含写字台时），立即补回保持常驻
 			new Notice(`已加载「${s}」的工作区`, 4000);
 			return true;
 		} catch (e) {
@@ -2553,6 +2556,20 @@ async cmdRenameChapterFile(): Promise<void> {
 		} catch (e) {
 			this.notifyError("打开对话窗口失败", e);
 		}
+	}
+
+	/** v0.2.20 写字台常驻左栏（移动端抽屉／桌面端左栏）：左栏没有写字台叶子时经 ensureSideLeaf 补一个 tab（不抢焦点、不展开抽屉），保证它始终出现在侧栏视图切换列表里可被选中；左栏已有则无操作（幂等） */
+	private async ensureStatusInLeftSidebar(): Promise<void> {
+		const ws = this.app.workspace;
+		if (!ws.layoutReady) return; // 启动早期布局未就绪：静默跳过（onLayoutReady 回调路径已覆盖正常时机）
+		let present = false;
+		ws.iterateAllLeaves((leaf) => {
+			if (leaf.getRoot() === ws.leftSplit && leaf.view instanceof StatusView) present = true;
+		});
+		if (present) return;
+		try {
+			await ws.ensureSideLeaf(StatusView.VIEW_TYPE, "left", { active: false, reveal: false });
+		} catch { /* 尽力而为的辅助动作，失败不影响主流程（命令/ribbon 仍可手动打开） */ }
 	}
 
 	private async openStatusPanel(): Promise<void> {
