@@ -362,6 +362,20 @@ export function findAiSentences(text: string): AiSentence[] {
 	return results;
 }
 
+/** 定位行内包含指定位置的句子边界 [start, end)（按句末标点切分，与 findAiSentences 同口径；pos 越界时钳制到行尾） */
+export function sentenceBoundsInLine(line: string, pos: number): { start: number; end: number } {
+	let p = 0;
+	while (p < line.length) {
+		const re = SENTENCE_END_RE();
+		re.lastIndex = p;
+		const m = re.exec(line);
+		const end = m ? m.index + m[0].length : line.length;
+		if (pos < end) return { start: p, end };
+		p = end;
+	}
+	return { start: Math.min(pos, line.length), end: line.length };
+}
+
 // ===== AI 用语标红标记（写入 MD 文件用）=====
 export const AI_WORD_MARK_OPEN = '<span style="color:red">';
 export const AI_WORD_MARK_CLOSE = "</span>";

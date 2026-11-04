@@ -48,6 +48,7 @@
 | `rewrite-chapter` | 重写整章（单次生成不带格式校验），含前后章大纲桥接与旧文参考，去AI味后全量覆盖保存 |
 | `polish-text` | 润色当前章（原文截断4500字入 prompt，仅改表达不改情节），全量覆盖保存 |
 | `deai-clean` | 检测 AI 常用词 → 逐句打回 LLM 重写（基础系统提示词，非编写类型块）→ 原位替换两轮 → 预览确认后覆盖保存 |
+| `fix-chapter-refs` | **修复章节编号引用**（v0.2.21+）：代码确定性检测当前章正文「第N章」类元引用（`findChapterRefLeaks` 同口径，无命中 Notice 结束）→ `findChapterRefSentences` 定位命中句（句末标点切分、同句多命中记一次、至多 10 句）→ 单轮 LLM 逐句重写（基础系统提示词，输出协议同去AI味「N：改写句」）→ 校验后从后往前原位替换（改写为空或仍含「第N章」跳过保留原文）→ 预览确认后 `setChapterBody` 覆盖保存；Notice 带改写/跳过句数。与生成后自动检测（warnChapterRefs 非阻断提醒）互补：本命令是手动按需修复入口 |
 | `typo-check` | **错别字检测**：LLM 全文扫描当前章错字（非流式 chatCompletion、system=`TYPO_SCAN_SYSTEM_PROMPT` 只校对不改写）；输出协议＝`<MARKED>` 内逐字回显全文＋错字包 `<u>错</u>`＋其后 JSON `[{"wrong","right"}]`；确定性校验＝剥 `<u>` 后与原文逐字一致（容忍标记各占一行引入的首尾单换行），漂移自动重试≤3 次仍败则 Notice 不动文件；无错字 Notice「✓ 未检测到错别字」直接返回；有错字面板预览清单＋带 span 全文，确认后 `setChapterBody` 落盘——下划线 span（`title="建议改为：X"`，无建议省略）为结果性标记有意保留、读回经 stripAiWordMarks 剥离故重跑幂等；max_tokens 取 max(配置值, ceil(正文长×2)+1024) |
 | `review-chapter` | 全局视角审阅报告（非流式 chatCompletion，thinking=on 语义，空结果重试×3），可另存为章节目录内 `审阅笔记.md` |
 | （设置页 LLM 区） | Obsidian 插件设置 → ArticleWriter：多组 OpenAI 兼容配置的查看/编辑/切换 active_llm/保存回写 MD 文档（正文与自定义属性透传保留） |

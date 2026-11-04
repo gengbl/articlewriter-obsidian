@@ -13,6 +13,7 @@ import {
 	buildMergedBannedBlock,
 	findAiSentences,
 	findAiWordHits,
+	sentenceBoundsInLine,
 	simplifyEmphaticRepetition,
 	simplifyNegationContrast,
 } from "./banned_words";
@@ -763,6 +764,96 @@ export function findChapterRefLeaks(content: string): Array<{ line: number; snip
 		}
 	}
 	return leaks;
+}
+
+/** 含「第N章」引用的正文句子（全文偏移 + 命中片段 + 1 基行号），供手动检测修复命令逐句重写 */
+export interface ChapterRefSentence {
+	start: number; // 全文偏移（含换行）
+	end: number;
+	sentence: string;
+	match: string; // 命中的「第N章」片段
+	line: number; // 1 基行号
+}
+
+/** 确定性定位含「第N章」类章节编号引用的句子（豁免口径同 findChapterRefLeaks：MD 标题行与纯文本章题行跳过）。返回按位置排序、互不重叠的结果，至多 10 句；同一句多处命中只记一次 */
+export function findChapterRefSentences(content: string): ChapterRefSentence[] {
+	const out: ChapterRefSentence[] = [];
+	if (!content) return out;
+	const re = /第[0-9一二三四五六七八九十百千零两]+章/g;
+	const titleLine = /^[第]?[一二三四五六七八九十百\d]+[章回](?:[：:\s].*)?$/;
+	let lineStart = 0;
+	const lines = content.split("\n");
+	for (let i = 0; i < lines.length && out.length < 10; i++) {
+		const line = lines[i];
+		if (!/^\s*#/.test(line) && !titleLine.test(line.trim())) {
+			re.lastIndex = 0;
+			let lastStart = -1;
+			let m: RegExpExecArray | null;
+			while ((m = re.exec(line)) !== null && out.length < 10) {
+				const b = sentenceBoundsInLine(line, m.index);
+				if (b.start === lastStart) continue; // 同句多处命中，已记录
+				lastStart = b.start;
+				out.push({ start: lineStart + b.start, end: lineStart + b.end, sentence: line.slice(b.start, b.end), match: m[0], line: i + 1 });
+			}
+		}
+		lineStart += line.length + 1;
+	}
+	return out;
+}
+
+/** 组装「第N章」引用逐句修复的改写提示词 */
+export function buildChapterRefFixPrompt(text: string, sentences: ChapterRefSentence[]): string {
+	const items: string[] = [];
+	sentences.forEach((s, i) => {
+		items.push(`${i + 1}. 上下文：${aiLineContext(text, s.start, s.end)}\n   句子（含章节编号引用：「${s.match}」）：${s.sentence}`);
+	});
+	return (
+		"这是小说正文的「章节编号引用修复」改写任务。下面每一句都包含「第N章」这类章节编号的元引用" +
+		"（如\"第5章\"\"第十二章\"），需要逐句改写。\n\n" +
+		"改写规则：\n" +
+		"1. 把章节编号引用替换为具体内容（人物、事件、情节点）指代，让读者无需查章节编号也能理解所指\n" +
+		"2. 保留原句含义、情节信息、人物与叙述视角，不增删剧情信息\n" +
+		"3. 不合并、不拆分句子；对话与引号、标点保持完整\n" +
+		"4. 改写后的句子不得再出现任何「第N章」类章节编号引用\n" +
+		"5. 句子本身没有章节编号引用时原样输出\n" +
+		"6. 改写后要与上下文衔接自然，保持原写作风格\n\n" +
+		"【待改写句子】\n" + items.join("\n") +
+		"\n\n请严格按以下格式逐条输出，每行一条：\n" +
+		"1：改写后的句子\n2：改写后的句子\n……\n" +
+		"只输出编号行，不要任何解释或多余内容。"
+	);
+}
+
+export interface ChapterRefFixReport {
+	replaced: Array<[string, string]>; // [原句, 改写句]
+	skipped: string[]; // 改写为空或仍含章节编号引用而跳过（保留原文）的句子
+}
+
+/** 「第N章」引用修复主流程：单轮 LLM 逐句重写后从后往前确定性原位替换（改写为空或仍含「第N章」则跳过保留原文） */
+export async function fixChapterRefs(text: string, rewrite: AiRewriteFn): Promise<{ text: string; report: ChapterRefFixReport }> {
+	const emptyReport: ChapterRefFixReport = { replaced: [], skipped: [] };
+	if (!text) return { text, report: emptyReport };
+	const sentences = findChapterRefSentences(text);
+	if (!sentences.length) return { text, report: emptyReport };
+	const prompt = buildChapterRefFixPrompt(text, sentences);
+	const maxTokens = Math.min(8192, sentences.length * 300 + 1024);
+	const raw = await rewrite(prompt, maxTokens);
+	const rewriteMap = parseAiRewrites(raw || "", sentences.length);
+	const refRe = /第[0-9一二三四五六七八九十百千零两]+章/;
+	let current = text;
+	const report: ChapterRefFixReport = { replaced: [], skipped: [] };
+	for (let idx = sentences.length - 1; idx >= 0; idx--) {
+		const s = sentences[idx];
+		const newS = ((rewriteMap[idx] || "")).trim();
+		if (!newS || refRe.test(newS)) {
+			report.skipped.push(s.sentence);
+			continue;
+		}
+		if (newS === s.sentence) continue;
+		current = current.slice(0, s.start) + newS + current.slice(s.end);
+		report.replaced.push([s.sentence, newS]);
+	}
+	return { text: current, report };
 }
 
 // ---------- /write 章节提示词（对应 writer.py _build_chapter_prompt） ----------

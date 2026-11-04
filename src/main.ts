@@ -18,7 +18,7 @@ import { DEFAULT_USAGE_GUIDE } from "./usage_guide_default";
 import { assembleSystemPrompt, chatCompletion, chatStream, describeLlmError, isRetryableLlmError, normalizeBaseURL, testConnection } from "./llm_client";
 import type { Message } from "./llm_client";
 import { findAiWordHits, mergeGuideCategories } from "./banned_words";
-import { appendOutlineInstruction, applyTypoMarks, BOOK_OUTLINE_GEN_SYSTEM_PROMPT, buildBookOutlineContinuePrompt, buildBookOutlineExtendPrompt, buildBookOutlineGenPrompt, buildChapterPrompt, buildChapterSummaryPrompt, buildContinuePrompt, buildPlanningGuidePrompt, buildPolishPrompt, buildReviewPrompt, buildRewritePrompt, buildStoryTypeSystemPrompt, buildTypoScanPrompt, buildVolOutlineChapterPrompt, buildVolOutlineDesignPrompt, buildVolRebuildPrompt, buildWritingContext, CHAPTER_SUMMARY_SYSTEM_PROMPT, checkOutlineCoverage, cleanAiText, cleanRelationshipsDoc, embedAggHash, findChapterRefLeaks, formatRetryNote, parseAggHash, parseChapterWithSummary, parseTypoScan, serializeAggregateGuide, stripHeading, TYPO_SCAN_SYSTEM_PROMPT, validateStoryTypeFormat, VOL_OUTLINE_GEN_SYSTEM_PROMPT, VOL_SUMMARY_SYSTEM_PROMPT, BookOutlineGenInput, PlanningGuideInput, VolOutlineGenInput, wordRangeFromGuides } from "./prompts";
+import { appendOutlineInstruction, applyTypoMarks, BOOK_OUTLINE_GEN_SYSTEM_PROMPT, buildBookOutlineContinuePrompt, buildBookOutlineExtendPrompt, buildBookOutlineGenPrompt, buildChapterPrompt, buildChapterSummaryPrompt, buildContinuePrompt, buildPlanningGuidePrompt, buildPolishPrompt, buildReviewPrompt, buildRewritePrompt, buildStoryTypeSystemPrompt, buildTypoScanPrompt, buildVolOutlineChapterPrompt, buildVolOutlineDesignPrompt, buildVolRebuildPrompt, buildWritingContext, CHAPTER_SUMMARY_SYSTEM_PROMPT, checkOutlineCoverage, cleanAiText, cleanRelationshipsDoc, embedAggHash, findChapterRefLeaks, fixChapterRefs, formatRetryNote, parseAggHash, parseChapterWithSummary, parseTypoScan, serializeAggregateGuide, stripHeading, TYPO_SCAN_SYSTEM_PROMPT, validateStoryTypeFormat, VOL_OUTLINE_GEN_SYSTEM_PROMPT, VOL_SUMMARY_SYSTEM_PROMPT, BookOutlineGenInput, ChapterRefFixReport, PlanningGuideInput, VolOutlineGenInput, wordRangeFromGuides } from "./prompts";
 import { cnToNum, extractPlannedChapterCount, maxDeclaredEndChapter, mergeVolOutlineChapters, parseChapterSelection, parseRelationships, parseTimelines, parseVolumeDeclarations, splitList, splitVolOutlineByChapter, stripComments, type TimelineEntry, type VolumeDeclaration } from "./md_docs";
 import type { RelationshipEntry, VolumeInfo } from "./md_docs";
 import { CAST_ANALYZE_SYSTEM_PROMPT, aggregateCastAnalyses, buildCastChapterPrompt, buildCharacterWritePlan, buildRelationshipWritePlan, buildSceneWritePlan, parseCastChapterAnalysis, relPairKey } from "./cast_analyzer";
@@ -228,6 +228,7 @@ export default class ArticleWriterPlugin extends Plugin {
 		this.addCommand({ id: "rewrite-chapter", name: "重写本章（/rewrite：基于大纲与旧文整体重构）", callback: () => this.cmdRewriteChapter() });
 		this.addCommand({ id: "polish-text", name: "润色当前章（/polish：仅优化文字表达不改情节）", callback: () => this.cmdPolishText() });
 		this.addCommand({ id: "deai-clean", name: "去AI味（/deai：含 AI 常用词的句子打回 LLM 重写并原位替换）", callback: () => this.cmdDeaiClean() });
+		this.addCommand({ id: "fix-chapter-refs", name: "修复章节编号引用（/fix-refs：检测正文「第N章」类元引用，LLM 逐句改写后原位替换）", callback: () => this.cmdFixChapterRefs() });
 		this.addCommand({ id: "typo-check", name: "错别字检测（/typo-check：LLM 扫描本章错字并加下划线标记，附建议改正）", callback: () => this.cmdTypoCheck() });
 		this.addCommand({ id: "review-chapter", name: "审阅本章（/review：全局视角查逻辑/连贯性问题出报告）", callback: () => this.cmdReviewChapter() });
 		this.addCommand({ id: "llm-chat", name: "打开 LLM 对话窗口（常驻面板：多轮流式聊天，可停靠任意区域、切换已保存的模型配置）", callback: () => void this.openLlmPanel() });
@@ -5736,6 +5737,82 @@ async cmdRenameChapterFile(): Promise<void> {
 			new Notice(`✓ ${chLabel}已更新（${String(words)} 字）`, 8000);
 		} catch (e) {
 			this.notifyError("去AI味失败", e);
+		}
+	}
+
+	// ---------- /fix-refs 修复章节编号引用（v0.2.21+：手动检测「第N章」元引用并原位替换） ----------
+
+	async cmdFixChapterRefs(): Promise<void> {
+		if (!(await this.ensureWorkDir())) return;
+		const story = await this.requireStory();
+		if (!story) return;
+		try {
+			const num = await this.targetChapterKey(story, "修复章节编号引用"); // v0.0.15：复合键
+			if (num == null) return;
+			const volNames = await this.volNameMap(story).catch(() => ({}));
+			const chLabel = this.keyLabel(num, volNames);
+			const bodyOnDisk = await this.manager.readChapterContent(story, num);
+			if (!bodyOnDisk.trim()) {
+				new Notice(`${chLabel}还没有内容`);
+				return;
+			}
+			const leaks = findChapterRefLeaks(bodyOnDisk);
+			if (!leaks.length) {
+				new Notice(`✓ ${chLabel}未检测到「第N章」类章节编号引用`, 6000);
+				return;
+			}
+			const setup = await this.loadWriterSetup();
+			if (!setup) return;
+			const guides = await this.loadWriterGuides(story);
+			const baseSp = assembleSystemPrompt(undefined, guides.guideText, setup.systemPrompt); // 修复用基础系统提示词
+
+			const n = new Notice(`正在修复${chLabel}的章节编号引用（${String(leaks.length)} 处）…\n逐句打回 LLM 重写，可能需要一点时间`);
+			let fixed: string;
+			let report: ChapterRefFixReport;
+			try {
+				const r = await fixChapterRefs(
+					bodyOnDisk,
+					async (p, maxTokens) =>
+						chatCompletion(setup.cfg, [
+							{ role: "system" as const, content: baseSp },
+							{ role: "user" as const, content: p },
+						], { max_tokens: Math.min(maxTokens, setup.cfg.max_tokens ?? maxTokens) })
+				);
+				fixed = r.text;
+				report = r.report;
+			} catch (e) {
+				n.hide();
+				this.notifyError("修复章节编号引用失败", e);
+				return;
+			}
+			n.hide();
+
+			if (!fixed.trim()) {
+				new Notice("✗ 修复结果为空", 8000);
+				return;
+			}
+			if (!report.replaced.length) {
+				new Notice(`✗ ${chLabel}的 ${String(leaks.length)} 处引用均未成功改写（${String(report.skipped.length)} 句跳过，原文保留）`, 10000);
+				return;
+			}
+			const modal = await this.beginWritingPanel(`章节编号引用修复结果 · ${chLabel}`);
+			if (!modal) { new Notice("无法打开生成面板，本次操作已取消", 8000); return; }
+			modal.append(fixed);
+			modal.finish();
+			const keep = await modal.done;
+			if (!keep) {
+				new Notice("未保存（修复结果仅预览）", 6000);
+				return;
+			}
+			const words = await this.manager.setChapterBody(story, num, fixed); // 全量覆盖；v0.1.4+：摘要延迟到下次上下文组装时按需生成
+			try {
+				const f = await this.manager.chapterBodyFile(story, num);
+				if (f instanceof TFile) await this.manager.openMarkdown(f.path);
+			} catch { /* ignore */ }
+			const skipNote = report.skipped.length ? `，${String(report.skipped.length)} 句跳过保留原文` : "";
+			new Notice(`✓ ${chLabel}已更新（${String(words)} 字，改写 ${String(report.replaced.length)} 句${skipNote}）`, 10000);
+		} catch (e) {
+			this.notifyError("修复章节编号引用失败", e);
 		}
 	}
 

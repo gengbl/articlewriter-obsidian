@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { buildBookOutlineContinuePrompt, buildChapterPrompt, buildContinuePrompt, buildRewritePrompt, buildVolOutlineChapterPrompt, CHAPTER_REF_BAN, compactOutlineIndex, findChapterRefLeaks, parseChapterWithSummary } from "./prompts";
+import { buildBookOutlineContinuePrompt, buildChapterPrompt, buildContinuePrompt, buildRewritePrompt, buildVolOutlineChapterPrompt, buildChapterRefFixPrompt, CHAPTER_REF_BAN, compactOutlineIndex, findChapterRefLeaks, findChapterRefSentences, fixChapterRefs, parseChapterWithSummary } from "./prompts";
 
 test("strictCurrentOutlineOnly keeps the prompt anchored to the current volume outline only", () => {
 	const prompt = buildVolOutlineChapterPrompt({
@@ -219,6 +219,67 @@ test("findChapterRefLeaks returns empty for clean text and caps at 10 hits", () 
 	assert.equal(leaks.length, 10);
 	assert.equal(leaks[0].line, 1);
 	assert.equal(leaks[9].line, 10);
+});
+
+test("findChapterRefSentences locates sentences with offsets, skips title lines, dedupes multi-hit sentences", () => {
+	const content = [
+		"# 第五章 风起", // MD 标题行 → 豁免
+		"第五章：风起", // 纯文本章题行 → 豁免
+		"他想起第5章。然后到了。", // 首句命中
+		"伏笔早在第十二章就埋下了，第13章才揭晓。", // 同句两处命中 → 只记一次
+	].join("\n");
+	assert.deepEqual(findChapterRefSentences(content), [
+		{ start: 16, end: 23, sentence: "他想起第5章。", match: "第5章", line: 3 },
+		{ start: 29, end: 50, sentence: "伏笔早在第十二章就埋下了，第13章才揭晓。", match: "第十二章", line: 4 },
+	]);
+	assert.deepEqual(findChapterRefSentences(""), []);
+	const many = Array.from({ length: 12 }, (_, i) => `第${i + 1}章又出现了。`).join("\n");
+	assert.equal(findChapterRefSentences(many).length, 10);
+});
+
+test("buildChapterRefFixPrompt lists each hit sentence with context and strict output format", () => {
+	const text = "他想起第5章。然后到了。\n伏笔早在第十二章就埋下了。";
+	const prompt = buildChapterRefFixPrompt(text, findChapterRefSentences(text));
+	assert.ok(prompt.includes("章节编号引用修复"));
+	assert.ok(prompt.includes("「第5章」"));
+	assert.ok(prompt.includes("「第十二章」"));
+	assert.ok(prompt.includes("他想起第5章。"));
+	assert.ok(prompt.includes("1：改写后的句子"));
+});
+
+test("fixChapterRefs replaces sentences in place (back to front) after a single LLM round", async () => {
+	const text = "他想起第5章。然后到了。\n伏笔早在第十二章就埋下了。";
+	let calls = 0;
+	const r = await fixChapterRefs(text, async () => {
+		calls++;
+		return "1：他想起那场雨夜的对峙。\n2：伏笔早在雪夜的密谈里就埋下了。";
+	});
+	assert.equal(calls, 1);
+	assert.equal(r.text, "他想起那场雨夜的对峙。然后到了。\n伏笔早在雪夜的密谈里就埋下了。");
+	assert.deepEqual(r.report.replaced, [
+		["伏笔早在第十二章就埋下了。", "伏笔早在雪夜的密谈里就埋下了。"],
+		["他想起第5章。", "他想起那场雨夜的对峙。"],
+	]);
+	assert.deepEqual(r.report.skipped, []);
+});
+
+test("fixChapterRefs keeps original when rewrite is empty or still contains a chapter ref", async () => {
+	const text = "他想起第5章。然后到了。\n伏笔早在第十二章就埋下了。";
+	const r = await fixChapterRefs(text, async () => "2：伏笔早在第12章就埋下了。");
+	assert.equal(r.text, text);
+	assert.deepEqual(r.report.replaced, []);
+	assert.deepEqual(r.report.skipped, ["伏笔早在第十二章就埋下了。", "他想起第5章。"]);
+});
+
+test("fixChapterRefs is a no-op when no chapter refs are found", async () => {
+	let called = false;
+	const r = await fixChapterRefs("一切如常，没有编号引用。", async () => {
+		called = true;
+		return "";
+	});
+	assert.equal(called, false);
+	assert.equal(r.text, "一切如常，没有编号引用。");
+	assert.deepEqual(r.report, { replaced: [], skipped: [] });
 });
 
 test("writing prompts all carry the chapter-ref ban clause", () => {
