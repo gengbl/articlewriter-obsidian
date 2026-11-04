@@ -5749,8 +5749,8 @@ async cmdRenameChapterFile(): Promise<void> {
 		try {
 			// v0.2.x+：输入语义——留空=全书所有章节都检测修复（按阅读序逐章），填数字=只修指定章节（跨卷同号逐个确认）
 			const raw = await this.prompt("修复章节编号引用", "输入章节号（留空=全部章节）", [
-				"检测正文「第N章」类元引用，LLM 逐句改写后原位替换：",
-				"· 留空 —— 全书所有章节都检测修复（按阅读序逐章处理、逐章预览确认）",
+				"检测正文「第N章」类元引用，LLM 逐句改写后原位替换、自动保存（无预览确认）：",
+				"· 留空 —— 全书所有章节都检测修复（按阅读序逐章处理）",
 				"· 填数字 —— 只修指定章节（如 3；跨卷同号会逐个确认）",
 			].join("\n"));
 			if (raw == null) return;
@@ -5816,17 +5816,7 @@ async cmdRenameChapterFile(): Promise<void> {
 					new Notice(`⏭ ${chLabel}的 ${String(leaks.length)} 处引用均未成功改写（${String(report.skipped.length)} 句跳过，原文保留）`, 10000);
 					continue;
 				}
-				const modal = await this.beginWritingPanel(`章节编号引用修复结果 · ${chLabel}`);
-				if (!modal) { new Notice("无法打开生成面板，本次操作已取消", 8000); return; }
-				modal.append(fixed);
-				modal.finish();
-				const keep = await modal.done;
-				if (!keep) {
-					notFixedChapters++;
-					new Notice(`${chLabel}未保存（修复结果仅预览）`, 6000);
-					continue;
-				}
-				await this.manager.setChapterBody(story, ch.key, fixed); // 全量覆盖；v0.1.4+：摘要延迟到下次上下文组装时按需生成
+				await this.manager.setChapterBody(story, ch.key, fixed); // v0.2.x+：自动保存（无预览确认）；全量覆盖；v0.1.4+：摘要延迟到下次上下文组装时按需生成
 				try {
 					const f = await this.manager.chapterBodyFile(story, ch.key);
 					if (f instanceof TFile) await this.manager.openMarkdown(f.path);
