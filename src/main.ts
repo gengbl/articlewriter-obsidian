@@ -228,7 +228,7 @@ export default class ArticleWriterPlugin extends Plugin {
 		this.addCommand({ id: "rewrite-chapter", name: "重写本章（/rewrite：基于大纲与旧文整体重构）", callback: () => this.cmdRewriteChapter() });
 		this.addCommand({ id: "polish-text", name: "润色当前章（/polish：仅优化文字表达不改情节）", callback: () => this.cmdPolishText() });
 		this.addCommand({ id: "deai-clean", name: "去AI味（/deai：含 AI 常用词的句子打回 LLM 重写并原位替换）", callback: () => this.cmdDeaiClean() });
-		this.addCommand({ id: "fix-chapter-refs", name: "修复章节编号引用（/fix-refs：检测正文「第N章」类元引用，LLM 逐句改写后原位替换）", callback: () => this.cmdFixChapterRefs() });
+		this.addCommand({ id: "fix-chapter-refs", name: "修复章节编号引用（/fix-refs：检测正文「第N章」类元引用，LLM 逐句改写后原位替换；留空=全部章节，填数字=指定章）", callback: () => this.cmdFixChapterRefs() });
 		this.addCommand({ id: "typo-check", name: "错别字检测（/typo-check：LLM 扫描本章错字并加下划线标记，附建议改正）", callback: () => this.cmdTypoCheck() });
 		this.addCommand({ id: "review-chapter", name: "审阅本章（/review：全局视角查逻辑/连贯性问题出报告）", callback: () => this.cmdReviewChapter() });
 		this.addCommand({ id: "llm-chat", name: "打开 LLM 对话窗口（常驻面板：多轮流式聊天，可停靠任意区域、切换已保存的模型配置）", callback: () => void this.openLlmPanel() });
@@ -5747,70 +5747,102 @@ async cmdRenameChapterFile(): Promise<void> {
 		const story = await this.requireStory();
 		if (!story) return;
 		try {
-			const num = await this.targetChapterKey(story, "修复章节编号引用"); // v0.0.15：复合键
-			if (num == null) return;
+			// v0.2.x+：输入语义——留空=全书所有章节都检测修复（按阅读序逐章），填数字=只修指定章节（跨卷同号逐个确认）
+			const raw = await this.prompt("修复章节编号引用", "输入章节号（留空=全部章节）", [
+				"检测正文「第N章」类元引用，LLM 逐句改写后原位替换：",
+				"· 留空 —— 全书所有章节都检测修复（按阅读序逐章处理、逐章预览确认）",
+				"· 填数字 —— 只修指定章节（如 3；跨卷同号会逐个确认）",
+			].join("\n"));
+			if (raw == null) return;
+			const t = raw.trim();
 			const volNames = await this.volNameMap(story).catch(() => ({}));
-			const chLabel = this.keyLabel(num, volNames);
-			const bodyOnDisk = await this.manager.readChapterContent(story, num);
-			if (!bodyOnDisk.trim()) {
-				new Notice(`${chLabel}还没有内容`);
+			const all = await this.manager.listChapters(story); // 阅读序：书根在前 + 各卷按 order、组内本地号升序
+			if (!all.length) { new Notice("还没有章节，请先创建章节", 8000); return; }
+			let targets: Array<{ key: string; num: number; title: string }>;
+			if (t === "") {
+				targets = all; // 留空＝全书所有章节
+			} else if (/^\d+$/.test(t)) {
+				const ref = await this.resolveLocalNum(story, parseInt(t, 10), volNames); // 裸章号 → 具体容器（跨卷同号逐个确认）
+				const hit = ref ? all.find((c) => c.key === chKey(ref.vol ?? null, ref.num)) : undefined;
+				if (!hit) { new Notice(`第${t}章不存在`); return; }
+				targets = [hit];
+			} else {
+				new Notice(`章节号无效：请输入数字或留空（收到「${raw}」）`, 6000);
 				return;
 			}
-			const leaks = findChapterRefLeaks(bodyOnDisk);
-			if (!leaks.length) {
-				new Notice(`✓ ${chLabel}未检测到「第N章」类章节编号引用`, 6000);
-				return;
-			}
+
 			const setup = await this.loadWriterSetup();
 			if (!setup) return;
 			const guides = await this.loadWriterGuides(story);
-			const baseSp = assembleSystemPrompt(undefined, guides.guideText, setup.systemPrompt); // 修复用基础系统提示词
+			const baseSp = assembleSystemPrompt(undefined, guides.guideText, setup.systemPrompt); // 修复用基础系统提示词（全书共用一份）
 
-			const n = new Notice(`正在修复${chLabel}的章节编号引用（${String(leaks.length)} 处）…\n逐句打回 LLM 重写，可能需要一点时间`);
-			let fixed: string;
-			let report: ChapterRefFixReport;
-			try {
-				const r = await fixChapterRefs(
-					bodyOnDisk,
-					async (p, maxTokens) =>
-						chatCompletion(setup.cfg, [
-							{ role: "system" as const, content: baseSp },
-							{ role: "user" as const, content: p },
-						], { max_tokens: Math.min(maxTokens, setup.cfg.max_tokens ?? maxTokens) })
-				);
-				fixed = r.text;
-				report = r.report;
-			} catch (e) {
+			let fixedChapters = 0, cleanChapters = 0, emptyChapters = 0, notFixedChapters = 0, totalReplaced = 0, totalSkippedSent = 0;
+			for (const ch of targets) {
+				const chLabel = this.keyLabel(ch.key, volNames, ch.title);
+				const bodyOnDisk = await this.manager.readChapterContent(story, ch.key);
+				if (!bodyOnDisk.trim()) { emptyChapters++; continue; }
+				const leaks = findChapterRefLeaks(bodyOnDisk);
+				if (!leaks.length) { cleanChapters++; continue; }
+
+				const n = new Notice(`正在修复${chLabel}的章节编号引用（${String(leaks.length)} 处）…\n逐句打回 LLM 重写，可能需要一点时间`);
+				let fixed: string;
+				let report: ChapterRefFixReport;
+				try {
+					const r = await fixChapterRefs(
+						bodyOnDisk,
+						async (p, maxTokens) =>
+							chatCompletion(setup.cfg, [
+								{ role: "system" as const, content: baseSp },
+								{ role: "user" as const, content: p },
+							], { max_tokens: Math.min(maxTokens, setup.cfg.max_tokens ?? maxTokens) })
+					);
+					fixed = r.text;
+					report = r.report;
+				} catch (e) {
+					n.hide();
+					this.notifyError("修复章节编号引用失败", e);
+					return;
+				}
 				n.hide();
-				this.notifyError("修复章节编号引用失败", e);
-				return;
-			}
-			n.hide();
 
-			if (!fixed.trim()) {
-				new Notice("✗ 修复结果为空", 8000);
-				return;
+				if (!fixed.trim()) {
+					notFixedChapters++;
+					new Notice(`✗ ${chLabel}修复结果为空，跳过`, 8000);
+					continue;
+				}
+				if (!report.replaced.length) {
+					notFixedChapters++;
+					totalSkippedSent += report.skipped.length;
+					new Notice(`⏭ ${chLabel}的 ${String(leaks.length)} 处引用均未成功改写（${String(report.skipped.length)} 句跳过，原文保留）`, 10000);
+					continue;
+				}
+				const modal = await this.beginWritingPanel(`章节编号引用修复结果 · ${chLabel}`);
+				if (!modal) { new Notice("无法打开生成面板，本次操作已取消", 8000); return; }
+				modal.append(fixed);
+				modal.finish();
+				const keep = await modal.done;
+				if (!keep) {
+					notFixedChapters++;
+					new Notice(`${chLabel}未保存（修复结果仅预览）`, 6000);
+					continue;
+				}
+				await this.manager.setChapterBody(story, ch.key, fixed); // 全量覆盖；v0.1.4+：摘要延迟到下次上下文组装时按需生成
+				try {
+					const f = await this.manager.chapterBodyFile(story, ch.key);
+					if (f instanceof TFile) await this.manager.openMarkdown(f.path);
+				} catch { /* ignore */ }
+				fixedChapters++;
+				totalReplaced += report.replaced.length;
+				totalSkippedSent += report.skipped.length;
 			}
-			if (!report.replaced.length) {
-				new Notice(`✗ ${chLabel}的 ${String(leaks.length)} 处引用均未成功改写（${String(report.skipped.length)} 句跳过，原文保留）`, 10000);
-				return;
-			}
-			const modal = await this.beginWritingPanel(`章节编号引用修复结果 · ${chLabel}`);
-			if (!modal) { new Notice("无法打开生成面板，本次操作已取消", 8000); return; }
-			modal.append(fixed);
-			modal.finish();
-			const keep = await modal.done;
-			if (!keep) {
-				new Notice("未保存（修复结果仅预览）", 6000);
-				return;
-			}
-			const words = await this.manager.setChapterBody(story, num, fixed); // 全量覆盖；v0.1.4+：摘要延迟到下次上下文组装时按需生成
-			try {
-				const f = await this.manager.chapterBodyFile(story, num);
-				if (f instanceof TFile) await this.manager.openMarkdown(f.path);
-			} catch { /* ignore */ }
-			const skipNote = report.skipped.length ? `，${String(report.skipped.length)} 句跳过保留原文` : "";
-			new Notice(`✓ ${chLabel}已更新（${String(words)} 字，改写 ${String(report.replaced.length)} 句${skipNote}）`, 10000);
+
+			const lines = [`章节编号引用修复结束：改写保存 ${String(fixedChapters)} 章`];
+			if (cleanChapters) lines.push(`无引用跳过 ${String(cleanChapters)} 章`);
+			if (emptyChapters) lines.push(`无正文跳过 ${String(emptyChapters)} 章`);
+			if (notFixedChapters) lines.push(`未成功 ${String(notFixedChapters)} 章`);
+			if (totalReplaced) lines.push(`共改写 ${String(totalReplaced)} 句`);
+			if (totalSkippedSent) lines.push(`${String(totalSkippedSent)} 句跳过保留原文`);
+			new Notice(lines.join("\n"), 12000);
 		} catch (e) {
 			this.notifyError("修复章节编号引用失败", e);
 		}
