@@ -1,4 +1,4 @@
-import { App, Component, MarkdownRenderer, Modal, Notice, SuggestModal, Setting, TFolder } from "obsidian";
+import { App, Component, MarkdownRenderer, Modal, Notice, SuggestModal, Setting, TFile, TFolder, ToggleComponent } from "obsidian";
 
 /** 单行文本输入框；提交回调收到值（空串视为取消）。可选 hint：渲染在标题与输入框之间的说明文字（支持 \n 多行，样式 .aw-prompt-hint）；可选 initial：预填初始值（光标置于末尾） */
 export class TextInputModal extends Modal {
@@ -756,6 +756,104 @@ export class AddCharacterModal extends Modal {
 	override onClose(): void {
 		this.contentEl.empty();
 		if (!this.submitted && this.onCancel) this.onCancel();
+	}
+}
+
+// ---------- LLM 对话回复保存到文件 ----------
+
+export interface SaveReplyResult {
+	path: string; // vault 相对路径（无扩展名已自动补 .md）
+	openAfter: boolean; // 保存后是否打开该文件
+}
+
+/** 对话回复保存到文件：输入目标路径（vault 相对；无扩展名自动补 .md，缺失父目录由调用方逐级创建）；目标已存在时红色警示且须勾选「覆盖」才可保存；可选「保存后打开文件」（默认开）。纯 UI，落盘动作由调用方回调执行 */
+export class SaveReplyModal extends Modal {
+	private submitted = false;
+	private inputEl!: HTMLInputElement;
+	private warnEl!: HTMLElement;
+	private overwriteTgl!: ToggleComponent;
+	private openTgl!: ToggleComponent;
+	private saveBtn!: HTMLButtonElement;
+
+	constructor(
+		app: App,
+		private defaultPath: string,
+		private onSubmit: (result: SaveReplyResult) => void | Promise<void>,
+		private onCancel?: () => void
+	) {
+		super(app);
+	}
+
+	onOpen(): void {
+		this.contentEl.createEl("h3", { text: "保存回复到文件" });
+		this.contentEl.createDiv({ cls: "aw-prompt-hint", text: "输入目标文件路径（vault 相对路径，如 我的书/笔记.md）；未带扩展名自动补 .md，缺失的父目录会自动创建。" });
+		this.inputEl = this.contentEl.createEl("input", { cls: "text-input aw-newdoc-input", type: "text" }); // 原生 input 保证占满整行（Setting 布局在部分主题下会右对齐缩窄）
+		this.inputEl.setAttr("placeholder", "如：我的书/LLM回复.md");
+		if (this.defaultPath) this.inputEl.value = this.defaultPath; // 预填默认目录前缀（光标置末尾，直接续输文件名）
+		this.inputEl.focus();
+		window.setTimeout(() => { const n = this.inputEl.value.length; this.inputEl.setSelectionRange(n, n); }, 0); // 光标置末尾，避免选中态误删预填内容
+		this.warnEl = this.contentEl.createDiv({ cls: "aw-save-warn" });
+		new Setting(this.contentEl).setName("覆盖已存在的文件").addToggle((t) => {
+			this.overwriteTgl = t;
+			t.setValue(false).onChange(() => this.refreshState());
+		});
+		new Setting(this.contentEl).setName("保存后打开文件").addToggle((t) => {
+			this.openTgl = t;
+			t.setValue(true);
+		});
+		new Setting(this.contentEl)
+			.addButton((b) => {
+				this.saveBtn = b.buttonEl;
+				b.setCta().setButtonText("保存").onClick(() => this.submit());
+			})
+			.addButton((b) => b.setButtonText("取消").onClick(() => this.close()));
+		this.inputEl.addEventListener("input", () => this.refreshState());
+		this.inputEl.addEventListener("keydown", (e) => {
+			if (e.key === "Enter") {
+				e.preventDefault();
+				this.submit();
+			} else if (e.key === "Escape") {
+				this.close(); // onClose 触发 onCancel
+			}
+		});
+		this.refreshState();
+	}
+
+	/** 规范化路径：去首尾空白、去前导 /，基名无扩展名时补 .md */
+	private normalizePath(): string {
+		let p = this.inputEl.value.trim().replace(/^\/+/, "");
+		if (!p) return "";
+		const base = p.substring(p.lastIndexOf("/") + 1);
+		if (!/\.[A-Za-z0-9]{1,8}$/.test(base)) p += ".md";
+		return p;
+	}
+
+	/** 按当前输入刷新警示与「保存」可用性：目标已存在→红色警示且须勾选覆盖；目标是目录→报错禁用 */
+	private refreshState(): void {
+		const p = this.normalizePath();
+		const f = p ? this.app.vault.getAbstractFileByPath(p) : null;
+		const isFile = f instanceof TFile;
+		const isDir = f instanceof TFolder;
+		if (isDir) this.warnEl.setText(`目标是文件夹，不能保存到它：${p}`);
+		else if (isFile) this.warnEl.setText(`目标文件已存在，保存将覆盖其内容：${p}`);
+		else this.warnEl.setText("");
+		this.saveBtn.disabled = !p || isDir || (isFile && !this.overwriteTgl.getValue());
+	}
+
+	private submit(): void {
+		const p = this.normalizePath();
+		if (!p) return; // 空路径不提交，防误触
+		const f = this.app.vault.getAbstractFileByPath(p);
+		if (f instanceof TFolder) return;
+		if (f instanceof TFile && !this.overwriteTgl.getValue()) return; // 覆盖须显式勾选
+		this.submitted = true;
+		this.close();
+		void this.onSubmit({ path: p, openAfter: this.openTgl.getValue() });
+	}
+
+	override onClose(): void {
+		this.contentEl.empty();
+		if (!this.submitted && this.onCancel) this.onCancel(); // 未提交即关闭（Esc/点外部）视为取消
 	}
 }
 

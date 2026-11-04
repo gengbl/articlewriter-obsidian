@@ -1,7 +1,8 @@
-import { ItemView, TFile, WorkspaceLeaf } from "obsidian";
+import { ItemView, Notice, TFile, TFolder, WorkspaceLeaf } from "obsidian";
 import type { LlmConfigDoc, PluginConfig } from "./plugin_config";
 import { chatStream, describeLlmError, normalizeBaseURL } from "./llm_client";
 import type { Message } from "./llm_client";
+import { SaveReplyModal } from "./modals";
 
 interface ChatTurn {
 	role: "user" | "assistant";
@@ -45,19 +46,23 @@ export class LlmChatView extends ItemView {
 	private getActiveStory?: () => Promise<{ story: string; chapterNum: number; chapterTitle: string } | null>;
 	/** v0.2.0+：切换模型时写回 data.json 的 active_llm（由 main.ts 注入）——写作命令读的是同一个激活项，两边从此保持一致、下次启动按它加载 */
 	private setActiveModel?: (name: string) => void | Promise<void>;
+	/** 「保存到文件」弹窗的默认路径前缀（由 main.ts 注入）：当前书目录 > work_dir > vault 根 */
+	private getDefaultSaveDir?: () => Promise<string>;
 
 	constructor(
 		leaf: WorkspaceLeaf,
 		getConf: () => PluginConfig | undefined,
 		getSystemPrompt?: () => Promise<{ text: string; hasStory: boolean }>,
 		getActiveStory?: () => Promise<{ story: string; chapterNum: number; chapterTitle: string } | null>,
-		setActiveModel?: (name: string) => void | Promise<void>
+		setActiveModel?: (name: string) => void | Promise<void>,
+		getDefaultSaveDir?: () => Promise<string>
 	) {
 		super(leaf);
 		this.getConf = getConf;
 		this.getSystemPrompt = getSystemPrompt;
 		this.getActiveStory = getActiveStory;
 		this.setActiveModel = setActiveModel;
+		this.getDefaultSaveDir = getDefaultSaveDir;
 	}
 
 	getViewType(): string {
@@ -430,10 +435,55 @@ export class LlmChatView extends ItemView {
 			if (!failed) this.setStatus(""); // 正常完成回到空闲态（输入框占位提示重新可见）
 			if (full.trim() && el.parentElement !== null) {
 				this.history.push({ role: "assistant", content: full });
+				this.addSaveAction(el.parentElement, full); // 气泡下方「保存到文件」按钮（中断留部分结果的轮次同样显示；出错移除气泡的轮次不显示）
 			}
 			this.setBusy(false);
 			void this.updateCtxLine(); // 每轮后同步小说/章节行与提示词来源（期间可能执行过写作命令）
 			void this.updateSpLabel();
+		}
+	}
+
+	/** 助手气泡下方追加「保存到文件」动作行：点击弹 SaveReplyModal 选目标路径，把完整回复原文落盘 */
+	private addSaveAction(wrap: HTMLElement, content: string): void {
+		const actions = wrap.createDiv({ cls: "aw-chat-actions" });
+		const btn = actions.createEl("button", { cls: "aw-chat-save-btn", text: "保存到文件" });
+		btn.addEventListener("click", () => void this.saveReply(content));
+	}
+
+	private async saveReply(content: string): Promise<void> {
+		let dir = "";
+		try {
+			dir = (await this.getDefaultSaveDir?.()) ?? "";
+		} catch { /* 取默认目录失败降级为空（vault 根） */ }
+		new SaveReplyModal(this.app, dir ? dir.replace(/\/+$/, "") + "/" : "", (res) => void this.writeReply(res.path, content, res.openAfter)).open();
+	}
+
+	/** 回复落盘：已存在→modify；否则逐级创建缺失父目录（createFolder 一次只建一层）+ create；可选保存后打开 */
+	private async writeReply(path: string, content: string, openAfter: boolean): Promise<void> {
+		try {
+			const existing = this.app.vault.getAbstractFileByPath(path);
+			if (existing instanceof TFolder) {
+				new Notice(`目标是文件夹，无法保存：${path}`, 6000);
+				return;
+			}
+			if (existing instanceof TFile) {
+				await this.app.vault.modify(existing, content);
+			} else {
+				const parts = path.split("/");
+				let cur = "";
+				for (let i = 0; i < parts.length - 1; i++) {
+					cur = cur ? `${cur}/${parts[i]}` : parts[i];
+					if (!this.app.vault.getAbstractFileByPath(cur)) await this.app.vault.createFolder(cur);
+				}
+				await this.app.vault.create(path, content);
+			}
+			if (openAfter) {
+				const f = this.app.vault.getAbstractFileByPath(path);
+				if (f instanceof TFile) await this.app.workspace.getLeaf(false).openFile(f);
+			}
+			new Notice(`已保存到 ${path}`);
+		} catch (e) {
+			new Notice(`保存文件失败：${e instanceof Error ? e.message : String(e)}`, 8000);
 		}
 	}
 

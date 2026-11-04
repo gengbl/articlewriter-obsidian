@@ -346,6 +346,19 @@ export function parseVolumeDeclarations(text: string): VolumeDeclaration[] {
 	return out;
 }
 
+/** v0.2.x+ 书级大纲「继续生成」（有卷模式）：扫描卷声明行末尾区间注记「（第A-B章）」中的最大 B，即已有大纲已覆盖到的章号；无声明行或无区间注记返回 0 */
+export function maxDeclaredEndChapter(text: string): number {
+	let max = 0;
+	for (const line of String(text ?? "").split("\n")) {
+		if (!/^\s*[-*]\s*第\s*(?:\d+|[零一二两三四五六七八九十百]+)\s*卷/.test(line)) continue;
+		const m = /[（(]\s*第\s*\d+\s*[-–—~～至到]\s*(\d+)\s*章\s*[)）]/.exec(line);
+		if (!m) continue;
+		const b = parseInt(m[1], 10);
+		if (Number.isSafeInteger(b) && b > max) max = b;
+	}
+	return max;
+}
+
 // ---------- 场景（场景.md，全局或章节内）----------
 
 export function parseScenes(text: string, defaultChapter: number): Record<string, SceneDoc> {

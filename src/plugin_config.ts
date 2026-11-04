@@ -51,7 +51,10 @@ export function buildDefaultLlmConf(): PluginConfig {
 		version: 1,
 		active_llm: "local",
 		llm_configs: [
-			{ name: "local", provider: "openai", base_url: "http://localhost:8509", model_name: "", ...base, openai_extras: ["repeat_penalty"], api_style: "" },
+			// local 默认关思考（reasoning_effort:"none"）：本地 llama-server + Qwen 等模板默认开思考，
+			// 思考与正文共享 max_tokens 预算，"high" 会耗尽预算致 content 恒空（大纲/长文生成失败根因）。
+			// 需要思考的本地模型自行在设置页改回 high/max。
+			{ name: "local", provider: "openai", base_url: "http://localhost:8509", model_name: "", ...base, reasoning_effort: "none", openai_extras: ["repeat_penalty"], api_style: "" },
 			{ name: "deepseek", provider: "deepseek", api_key: "", base_url: "https://api.deepseek.com", model_name: "", ...base, openai_extras: [], api_style: "responses" },
 			{ name: "qwen-dashscope", provider: "openai", api_key: "", base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1", model_name: "", ...base, openai_extras: [], api_style: "" },
 		],

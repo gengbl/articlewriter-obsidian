@@ -14,6 +14,7 @@
 | --- | --- | --- |
 | 故事结构（目录树 / 卷 / 章节 / 引言 / 状态文档 / 章节身份） | [l2-story-structure.md](./l2-story-structure.md) | [l3-state-and-volumes.md](./l3-state-and-volumes.md)、[l3-md-docs-parsing.md](./l3-md-docs-parsing.md) |
 | 设定实体（大纲 / 场景 / 人物 / 世界观 / 伏笔 / 笔记） | [l2-setting-entities.md](./l2-setting-entities.md) | [l3-md-docs-parsing.md](./l3-md-docs-parsing.md) |
+| 人物与场景分析（/analyze-cast：逐章 LLM 分析正文，按出现范围写入书/卷/章三层《人物.md》《场景.md》，新关系追加对应层《人物关系.md》） | [l2-cast-analysis.md](./l2-cast-analysis.md) | [l3-cast-analyzer.md](./l3-cast-analyzer.md) |
 | 写字台（StatusView：书籍列表 / 树节点 / 右键菜单 / 新建文档流程） | [l2-writing-desk.md](./l2-writing-desk.md) | [l3-status-view.md](./l3-status-view.md)、[l3-view-rendering.md](./l3-view-rendering.md) |
 | LLM 对话面板 | [l2-llm-chat-panel.md](./l2-llm-chat-panel.md) | [l3-llm-chat-view.md](./l3-llm-chat-view.md)、[l3-view-rendering.md](./l3-view-rendering.md) |
 | 人物关系面板 | [l2-relationship-panel.md](./l2-relationship-panel.md) | [l3-relationship-view.md](./l3-relationship-view.md)、[l3-md-docs-parsing.md](./l3-md-docs-parsing.md) |

@@ -38,6 +38,7 @@ import {
 	stripAiWordMarks,
 } from "./story_types";
 import { buildChapterFolderDocs, cleanRelationshipsDoc } from "./prompts";
+import type { CastLayerDoc, CastLayerRef } from "./cast_analyzer";
 import type { ChapterFolderDocEntry, PrevChapterRef } from "./prompts";
 
 const CHAPTER_DIR_RE = /^第(\d{1,6})章-(.+)$/;
@@ -1833,6 +1834,11 @@ private emptyState(storyName: string): StoryState {
 			if (!ch) throw new Error(`章节不存在：${chKey(vol ?? null, chapNum)}（无法定位其《场景》文件）`);
 			return this.resolveChapterDocPath(`${ch.dir.path}/场景.md`);
 		}
+		if (vol) { // /analyze-cast：卷级场景（归属本卷的场景设定）落卷实体目录，与 loadAllScenes 的卷级读取口径一致
+			const v = (await this.loadVolumes(storyName))[vol];
+			if (!v) throw new Error(`卷不存在：${vol}（无法定位其《场景》文件）`);
+			return this.resolveVolumeDocPath(`${this.storyPath(storyName)}/${this.volumeFolderName(v)}`, v.name, "场景.md");
+		}
 		return `${this.storyPath(storyName)}/场景.md`;
 	}
 
@@ -1846,6 +1852,9 @@ private emptyState(storyName: string): StoryState {
 		if (chapNum > 0) {
 			const ch = await this.chapterDirOf(storyName, chKey(vol ?? null, chapNum));
 			heading = ch ? `第${chapNum}章 ${ch.title}` : `第${chapNum}章`; // 容器内本地语义，不写卷名
+		} else if (vol) {
+			const v = (await this.loadVolumes(storyName))[vol];
+			heading = v ? v.name : "场景"; // 卷级：H1 用卷名（与卷级人物同口径）
 		} else {
 			const state = await this.loadState(storyName);
 			heading = this.bookTitle(storyName, state);
@@ -2016,6 +2025,102 @@ private emptyState(storyName: string): StoryState {
 			Object.assign(result, parsed);
 		}
 		return result;
+	}
+
+	// ---------- /analyze-cast 分层读写（人物/场景按 ref 定位书/卷/章三层）----------
+
+	/** 读全部三层《人物.md》（书根 + 每卷 + 每章），保持层间独立、逐层打标 ref；文件缺失的层返回空条目 */
+	async loadCharacterLayerDocs(storyName: string): Promise<CastLayerDoc<doc.CharacterDoc>[]> {
+		const out: CastLayerDoc<doc.CharacterDoc>[] = [];
+		const base = this.storyPath(storyName);
+		out.push({ ref: { scope: "book" }, entries: doc.parseCharacters(await this.readDoc(`${base}/人物.md`), 0) });
+		for (const [volId, vol] of Object.entries(await this.loadVolumes(storyName))) {
+			const entries = doc.parseCharacters(
+				await this.readDoc(this.resolveVolumeDocPath(`${base}/${this.volumeFolderName(vol)}`, vol.name, "人物.md")),
+				0
+			);
+			for (const c of Object.values(entries)) c.vol = volId; // 运行态标签（不落盘）
+			out.push({ ref: { scope: "volume", volId }, entries });
+		}
+		for (const ch of await this.listChapters(storyName)) {
+			const entries = doc.parseCharacters(await this.readDoc(`${ch.dir.path}/人物.md`), ch.num);
+			if (ch.vol) for (const c of Object.values(entries)) c.vol = ch.vol;
+			out.push({ ref: { scope: "chapter", chapterKey: ch.key }, entries });
+		}
+		return out;
+	}
+
+	/** 读全部三层《场景.md》，口径同 loadCharacterLayerDocs */
+	async loadSceneLayerDocs(storyName: string): Promise<CastLayerDoc<doc.SceneDoc>[]> {
+		const out: CastLayerDoc<doc.SceneDoc>[] = [];
+		const base = this.storyPath(storyName);
+		out.push({ ref: { scope: "book" }, entries: doc.parseScenes(await this.readDoc(`${base}/场景.md`), 0) });
+		for (const [volId, vol] of Object.entries(await this.loadVolumes(storyName))) {
+			const entries = doc.parseScenes(
+				await this.readDoc(this.resolveVolumeDocPath(`${base}/${this.volumeFolderName(vol)}`, vol.name, "场景.md")),
+				0
+			);
+			for (const s of Object.values(entries)) s.vol = volId;
+			out.push({ ref: { scope: "volume", volId }, entries });
+		}
+		for (const ch of await this.listChapters(storyName)) {
+			const entries = doc.parseScenes(await this.readDoc(`${ch.dir.path}/场景.md`), ch.num);
+			if (ch.vol) for (const s of Object.values(entries)) s.vol = ch.vol;
+			out.push({ ref: { scope: "chapter", chapterKey: ch.key }, entries });
+		}
+		return out;
+	}
+
+	/** 把一层人物条目整体写回（ref → (本地章号, 卷) 定位；book=章号0无卷、volume=章号0带卷、chapter=复合键解析） */
+	async saveCharacterLayer(storyName: string, ref: CastLayerRef, entries: Record<string, doc.CharacterDoc>): Promise<void> {
+		if (ref.scope === "chapter") {
+			const key = String(ref.chapterKey ?? "").trim();
+			if (!key) throw new Error("缺少章节键，无法写入章级《人物》");
+			const { vol, num } = parseChKey(key);
+			await this.saveCharactersFile(storyName, num, entries, vol ?? null);
+			return;
+		}
+		if (ref.scope === "volume") {
+			const volId = String(ref.volId ?? "").trim();
+			if (!volId) throw new Error("缺少卷 id，无法写入卷级《人物》");
+			await this.saveCharactersFile(storyName, 0, entries, volId);
+			return;
+		}
+		await this.saveCharactersFile(storyName, 0, entries, null);
+	}
+
+	/** 把一层场景条目整体写回，口径同 saveCharacterLayer */
+	async saveSceneLayer(storyName: string, ref: CastLayerRef, entries: Record<string, doc.SceneDoc>): Promise<void> {
+		if (ref.scope === "chapter") {
+			const key = String(ref.chapterKey ?? "").trim();
+			if (!key) throw new Error("缺少章节键，无法写入章级《场景》");
+			const { vol, num } = parseChKey(key);
+			await this.saveScenesFile(storyName, num, entries, vol ?? null);
+			return;
+		}
+		if (ref.scope === "volume") {
+			const volId = String(ref.volId ?? "").trim();
+			if (!volId) throw new Error("缺少卷 id，无法写入卷级《场景》");
+			await this.saveScenesFile(storyName, 0, entries, volId);
+			return;
+		}
+		await this.saveScenesFile(storyName, 0, entries, null);
+	}
+
+	/** 读全部三层《人物关系.md》（书根 + 每卷 + 每章）合并为条目列表，供跨层去重；文件缺失的层跳过 */
+	async readAllRelationshipEntries(storyName: string): Promise<doc.RelationshipEntry[]> {
+		const out: doc.RelationshipEntry[] = [];
+		const base = this.storyPath(storyName);
+		let bookText = await this.readDoc(`${base}/人物关系.md`);
+		if (!bookText.trim()) bookText = await this.readDoc(`${base}/角色关系.md`); // 旧别名兜底（与写作上下文同口径）
+		out.push(...doc.parseRelationships(bookText));
+		for (const vol of Object.values(await this.loadVolumes(storyName))) {
+			out.push(...doc.parseRelationships(await this.readDoc(this.resolveVolumeDocPath(`${base}/${this.volumeFolderName(vol)}`, vol.name, "人物关系.md"))));
+		}
+		for (const ch of await this.listChapters(storyName)) {
+			out.push(...doc.parseRelationships(await this.readDoc(this.resolveChapterDocPath(`${ch.dir.path}/人物关系.md`))));
+		}
+		return out;
 	}
 
 	findCharacterIn(chars: Record<string, doc.CharacterDoc>, key: string): doc.CharacterDoc | null {
