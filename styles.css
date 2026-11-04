@@ -60,6 +60,37 @@
 	margin: 4px 0;
 }
 
+/* 助手气泡下方「保存到文件」动作行 */
+.aw-chat-actions {
+	margin-top: 6px;
+}
+
+.aw-chat-save-btn {
+	font-size: 0.8em;
+	padding: 2px 10px;
+	background: var(--background-secondary-alt);
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 6px;
+	color: var(--text-muted);
+	cursor: pointer;
+}
+
+.aw-chat-save-btn:hover {
+	color: var(--text-normal);
+	background: var(--background-secondary);
+}
+
+/* 保存到文件弹窗：目标已存在/是目录时的红色警示（空则隐藏） */
+.aw-save-warn {
+	color: var(--text-error);
+	font-size: 0.9em;
+	margin: 4px 0;
+}
+
+.aw-save-warn:empty {
+	display: none;
+}
+
 .aw-chat-input textarea {
 	width: 100%;
 	resize: vertical;

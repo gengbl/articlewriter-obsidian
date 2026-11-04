@@ -137,6 +137,24 @@ export function cnToNum(text: string): number | null {
 	return total + section + digit;
 }
 
+/**
+ * 导出合辑用：剥掉正文开头自带的章节号行（「第3章 标题」/「第三章：标题」/「## 第3章 标题」等，连续重复一并剥掉），
+ * 避免与导出代码生成的「## 第N章 标题」重复。只处理开头连续的标记行，不碰正文中间的「第X章」引用；
+ * 同行剩余若带句末标点或明显过长则视为正文叙述、不剥。
+ */
+export function stripLeadingChapterHeading(text: string): string {
+	let s = String(text ?? "").replace(/^\s+/, "");
+	const lineRe = /^#{0,6}[^\S\n]*(?:第[^\S\n]*)?(?:\d+|[零〇一二两三四五六七八九十百千万]+)[^\S\n]*(?:章|回|节|话)(?:(?:[^\S\n]+|[:：、.．\-—·][^\S\n]*)([^\n]*))?[^\S\n]*(?:\n|$)/;
+	for (let i = 0; i < 3; i++) {
+		const m = lineRe.exec(s);
+		if (!m) break;
+		const tail = (m[1] ?? "").trim();
+		if (tail && (/[。！？!?…]$/.test(tail) || tail.length > 40)) break; // 开头是完整句子/长段 → 正文，不剥
+		s = s.slice(m[0].length).replace(/^\s+/, "");
+	}
+	return s;
+}
+
 // ---------- 卷（卷.md）----------
 
 export function parseVolumes(text: string): Record<string, VolumeInfo> {
@@ -234,13 +252,13 @@ export function splitVolOutlineByChapter(text: string): { segments: VolOutlineSe
 /**
  * 提取卷大纲中声明的目标章数（v0.2.10+「从卷大纲生成章节」AI 兜底拆分用）：
  * 匹配「共N章 / 合计N章 / 总计N章 / 总共N章 / 最多N章 / 分为N章 / 拆成N章 / 分成N单 / 分N章 / 计划写N章 / 预计N章 / 约N章」等常见写法（N 为阿拉伯数字，量词「章」或「单」）；
- * 无匹配或超出 1–99 范围返回 null（调用方回落弹窗收集）。取文档顺序首个匹配。
+ * 无匹配或不是正安全整数返回 null（调用方回落弹窗收集）。取文档顺序首个匹配；v0.2.x+ 起不设 99 上限。
  */
 export function extractPlannedChapterCount(text: string): number | null {
-	const m = /(?:共|合计|总计|总共|最多|(?:拆分|分割|划分|分|拆)\s*[为成]?|(?:计划|预计|约|打算|准备)\s*(?:写|创作|安排)?)\s*(\d{1,3})\s*[章单]/.exec(String(text ?? ""));
+	const m = /(?:共|合计|总计|总共|最多|(?:拆分|分割|划分|分|拆)\s*[为成]?|(?:计划|预计|约|打算|准备)\s*(?:写|创作|安排)?)\s*(\d+)\s*[章单]/.exec(String(text ?? ""));
 	if (!m) return null;
-	const n = parseInt(m[1], 10);
-	return n >= 1 && n <= 99 ? n : null;
+	const n = Number(m[1]);
+	return Number.isSafeInteger(n) && n >= 1 ? n : null;
 }
 
 /** 卷大纲原始块（围栏感知切分）：blocks[0] 为前言（num=null），其后各块按文档顺序；全部块的行拼回即原文（逐字节保留，含注释与标记行本身） */
@@ -326,6 +344,19 @@ export function parseVolumeDeclarations(text: string): VolumeDeclaration[] {
 		out.push({ name, description });
 	}
 	return out;
+}
+
+/** v0.2.x+ 书级大纲「继续生成」（有卷模式）：扫描卷声明行末尾区间注记「（第A-B章）」中的最大 B，即已有大纲已覆盖到的章号；无声明行或无区间注记返回 0 */
+export function maxDeclaredEndChapter(text: string): number {
+	let max = 0;
+	for (const line of String(text ?? "").split("\n")) {
+		if (!/^\s*[-*]\s*第\s*(?:\d+|[零一二两三四五六七八九十百]+)\s*卷/.test(line)) continue;
+		const m = /[（(]\s*第\s*\d+\s*[-–—~～至到]\s*(\d+)\s*章\s*[)）]/.exec(line);
+		if (!m) continue;
+		const b = parseInt(m[1], 10);
+		if (Number.isSafeInteger(b) && b > max) max = b;
+	}
+	return max;
 }
 
 // ---------- 场景（场景.md，全局或章节内）----------

@@ -111,6 +111,11 @@ function buildParams(cfg: LlmConfigDoc, messages: Message[], stream: boolean, ex
 	if (cfg.temperature != null) body.temperature = cfg.temperature;
 	if (cfg.max_tokens != null) body.max_tokens = cfg.max_tokens;
 	if (cfg.top_p != null) body.top_p = cfg.top_p;
+	// 配置级采样参数（reasoning_effort / openai_extras）：先于 extra 合并，调用方显式传入的 extra 可覆盖。
+	// 思考型本地模型（llama-server --reasoning-format deepseek 等）默认开思考，思考与正文共享 max_tokens 预算——
+	// 不发送 reasoning_effort:"none" 时思考会耗尽预算、content 恒空（表现为「思考型模型正文为空」）。
+	const ex = samplingExtras(cfg);
+	if (ex) Object.assign(body, ex);
 	if (extra) Object.assign(body, extra);
 	// 已知端点上限保护：DeepSeek 官方（V4 时代，deepseek-flash / deepseek-v4-pro）最大输出 384K tokens，超限请求会被 400 拒绝。
 	// 注意旧 V3/R1 时代上限是 8192——对思考型模型夹到那个值是致命的：思考与正文共享同一 max_tokens 预算，
@@ -128,11 +133,25 @@ function buildParams(cfg: LlmConfigDoc, messages: Message[], stream: boolean, ex
 	return body;
 }
 
-/** 采样等参数透传（如 reasoning_effort / enable_thinking——OpenAI 官方无此字段，兼容端点接受） */
+/**
+ * 配置级采样参数透传，已接入 buildParams：所有 chatCompletion/chatStream 请求自动携带，调用方 extra 可覆盖。
+ * - reasoning_effort：顶层字段随每次请求发送。各端点实况——DeepSeek V4 原生支持（none/low/high/max，
+ *   minimal→low、medium/xhigh→high 兼容映射；与 thinking:{type} 同发时后者优先选模式，不冲突）；
+ *   OpenAI o 系列原生支持；llama-server + Qwen jinja 模板实测 "none" 关思考、"high" 注入 xhigh 推理指令；
+ *   vLLM 识别并自动转 enable_thinking；其余兼容端点忽略未知字段无副作用。
+ *   思考型本地模型默认开思考且思考与正文共享 max_tokens 预算——不发 "none" 时思考耗尽预算、content 恒空
+ *   （表现为「思考型模型正文为空」），这是本地端点大纲/长文生成失败的根因。
+ * - openai_extras：声明式名单（对齐 Python llm_client.py 语义），"repeat_penalty" → 发送 cfg.repeat_penalty 数值
+ *   （llamacpp 私有参数，仅显式声明才发，避免远程端点 400）；其余名字按布尔 true 透传（声明式开关兜底）。
+ */
 export function samplingExtras(cfg: LlmConfigDoc): Record<string, unknown> | undefined {
 	const ex: Record<string, unknown> = {};
 	if (cfg.reasoning_effort) ex.reasoning_effort = cfg.reasoning_effort;
-	for (const k of cfg.openai_extras ?? []) if (k && !(k in ex)) ex[k] = true;
+	for (const k of cfg.openai_extras ?? []) {
+		if (!k || k in ex) continue;
+		if (k === "repeat_penalty") { if (cfg.repeat_penalty != null) ex.repeat_penalty = cfg.repeat_penalty; }
+		else ex[k] = true;
+	}
 	return Object.keys(ex).length ? ex : undefined;
 }
 
@@ -187,7 +206,11 @@ export function describeLlmError(e: unknown): string {
 	if (err?.type) bits.push(`type=${String(err.type)}`);
 	if (err?.cause?.code) bits.push(`cause=${String(err.cause.code)}`);
 	else if (err?.cause?.message) bits.push(`cause=${String(err.cause.message)}`);
-	const out = bits.length ? bits.join(" · ") : String(e);
+	let out = bits.length ? bits.join(" · ") : String(e);
+	// 上下文窗口溢出（llama-server / vLLM / OpenAI 等直接 4xx 拒绝）：追加可操作诊断。注意文案不得含「输出为空」「未返回内容」——streamOnce 依赖这两个串判定空结果重试
+	if (/exceeds the available context size|maximum context length|context length exceeded|prompt is too long|too many tokens/i.test(out)) {
+		out += " · 提示词超出模型上下文窗口（服务端直接拒绝）：① 换上下文窗口更大的端点/模型 ② 调大服务端上下文（如 llama-server --ctx-size 131072，内存代价随之增长）③ 减少注入内容（降低目标章数 / 用「继续生成」而非完整生成 / 精简策划指南与写作指南）";
+	}
 	return out.replace(/Bearer .+/g, "Bearer ***").replace(/\bsk-[A-Za-z0-9_-]{6,}/g, "sk-***");
 }
 
@@ -209,8 +232,8 @@ export function isRetryableLlmError(e: unknown): boolean {
 /** 「正文为空但思考非空」的诊断文案：finish_reason=length 说明思考与正文共享的输出预算被思考耗尽；否则按思考块未闭合/模型异常处理 */
 function emptyBodyReason(finishReason: string | null | undefined): string {
 	if (finishReason === "length")
-		return "输出已达 max_tokens 上限（finish_reason=length）：思考与正文共享同一输出预算，思考把预算全部用尽。可尝试：调大该请求 max_tokens、降低思考强度（reasoning_effort），或关闭思考（DeepSeek：thinking:{type:\"disabled\"}；本地模板：enable_thinking:false / /no_think）";
-	return "思考未结束即达到 max_tokens 上限，或思考块未正常闭合。可尝试：调大该请求 max_tokens、换非思考模型，或在请求参数/提示词中关闭思考（enable_thinking:false / /no_think，需服务端模板支持）";
+		return "输出已达 max_tokens 上限（finish_reason=length）：思考与正文共享同一输出预算，思考把预算全部用尽。可尝试：调大该请求 max_tokens、降低思考强度（设置页 reasoning_effort 改为 low/medium），或关闭思考（设置页 reasoning_effort=none；DeepSeek 端点：thinking=off）";
+	return "思考未结束即达到 max_tokens 上限，或思考块未正常闭合。可尝试：调大该请求 max_tokens、换非思考模型，或在设置页将 reasoning_effort 设为 none 关闭思考（本地 llama-server + Qwen 模板实测有效）";
 }
 
 /** 非流式补全，返回完整文本 */

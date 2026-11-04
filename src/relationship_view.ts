@@ -159,6 +159,7 @@ export class RelationshipView extends ItemView {
 
 	private getData: () => Promise<RelSnapshot>;
 	private onAddCharacter?: () => void | Promise<void>;
+	private onRenameCharacter?: (name: string) => void | Promise<void>;
 	private built = false;
 	private rootEl!: HTMLElement;
 	private topEl!: HTMLElement;
@@ -182,10 +183,16 @@ export class RelationshipView extends ItemView {
 	/** 图视图「人物状态」区当前选中角色（会话内保持，不落盘；单击节点设置，× 清除） */
 	private selectedChar: string | null = null;
 
-	constructor(leaf: WorkspaceLeaf, getData: () => Promise<RelSnapshot>, onAddCharacter?: () => void | Promise<void>) {
+	constructor(leaf: WorkspaceLeaf, getData: () => Promise<RelSnapshot>, onAddCharacter?: () => void | Promise<void>, onRenameCharacter?: (name: string) => void | Promise<void>) {
 		super(leaf);
 		this.getData = getData;
 		this.onAddCharacter = onAddCharacter; // v0.2.0+：头部「添加人物」按钮的动作（弹窗由 main.ts 提供，面板不自持业务逻辑）
+		this.onRenameCharacter = onRenameCharacter; // v0.2.x+：人物状态区「改名」动作（全书同步替换 + 自动备份，由 main.ts 提供）
+	}
+
+	/** 角色改名成功后同步「人物状态」区的选中名（避免刷新后仍按旧名筛选而显示为空）；数据刷新由 main.ts 统一调度 */
+	handleRenamed(oldName: string, newName: string): void {
+		if (this.selectedChar === oldName) this.selectedChar = newName;
 	}
 
 	getViewType(): string {
@@ -673,6 +680,11 @@ export class RelationshipView extends ItemView {
 			return;
 		}
 		head.createSpan({ text: name, cls: "aw-rel-charselect" });
+		if (this.onRenameCharacter) {
+			const rename = head.createSpan({ text: "改名", cls: "aw-rel-openfile" });
+			rename.setAttribute("title", "全书 MD 同步替换旧名并自动备份");
+			rename.addEventListener("click", () => void this.onRenameCharacter?.(name));
+		}
 		const close = head.createSpan({ text: "×", cls: "aw-rel-charclose" });
 		close.setAttribute("title", "清除选中");
 		close.addEventListener("click", () => {
