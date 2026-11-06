@@ -1485,6 +1485,7 @@
 /* 思考型模型的思考过程展示区（仅展示不落盘；默认隐藏，首个思考增量到达时显示） */
 .aw-stream-reasoning {
 	white-space: pre-wrap;
+	user-select: text;
 	color: var(--text-faint);
 	font-size: var(--font-smallest);
 	border-left: 2px solid var(--background-modifier-border);
