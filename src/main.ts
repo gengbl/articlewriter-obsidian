@@ -14,6 +14,7 @@ import { buildDefaultLlmConf } from "./plugin_config";
 import type { LlmConfigDoc, PluginConfig } from "./plugin_config";
 import { DEFAULT_SYSTEM_GUIDE } from "./system_guide_default";
 import { EMPTY_GUIDE_TEMPLATE } from "./guide_template_default";
+import { GUIDE_TYPES, matchGuideTypes } from "./guide_types_default";
 import { DEFAULT_USAGE_GUIDE } from "./usage_guide_default";
 import { assembleSystemPrompt, chatCompletion, chatStream, describeLlmError, isRetryableLlmError, normalizeBaseURL, testConnection } from "./llm_client";
 import type { Message } from "./llm_client";
@@ -149,6 +150,7 @@ export default class ArticleWriterPlugin extends Plugin {
 			onProgress: (msg) => { void this.notifyGenProgress(msg); }, // v0.1.4+：延迟生成的进度反馈（持久 Notice + 空闲超时兜底）；回调契约为 void，显式丢弃 Promise
 		});
 		await this.ensureSystemGuideFile(); // 首次运行把系统级写作指南从 data.json/内置默认播种到插件数据目录文件
+		await this.ensureGuideTypeFiles(); // 首次运行把四个「类型要点」文件从内置默认播种到插件数据目录 guide-types/
 		void this.ensureUsageDocOnStartup(); // 工作目录已设且《使用说明.md》缺失时：自动生成并打开（首跑引导）；真·首启无工作目录则等 pickWorkDir 投放
 
 		this.addCommand({ id: "set-work-dir", name: "选择工作目录（work_dir，对齐 CLI --work_dir）", callback: () => this.pickWorkDir(false) });
@@ -2290,6 +2292,35 @@ async cmdRenameChapterFile(): Promise<void> {
 		return t && t.trim() ? t : DEFAULT_SYSTEM_GUIDE;
 	}
 
+	// ---------- 「不同类型写作要点」类型文件（插件数据目录 guide-types/*.md，按书籍题材组装进汇总） ----------
+
+	/** 单个类型要点文件路径：插件数据目录 .obsidian/plugins/<id>/guide-types/<key>.md（与系统指南同目录体系，走 DataAdapter 读写） */
+	private guideTypePath(key: string): string {
+		return `${this.app.vault.configDir}/plugins/${this.manifest.id}/guide-types/${key}.md`;
+	}
+
+	/** 首次运行确保四个类型要点文件存在：缺失则用内置默认播种（已存在不覆盖——用户可编辑定制）；失败不阻断启动 */
+	private async ensureGuideTypeFiles(): Promise<void> {
+		try {
+			for (const t of GUIDE_TYPES) {
+				const p = this.guideTypePath(t.key);
+				if (!(await this.manager.pluginFileExists(p))) {
+					await this.manager.writePluginFile(p, t.defaultText);
+				}
+			}
+		} catch (e) {
+			console.warn("[ArticleWriter] 初始化类型要点文件失败", e);
+		}
+	}
+
+	/** 读取某类型要点生效文本；读不到/为空回落内置默认（提示词永不缺类型规范） */
+	private async readGuideTypeText(key: string): Promise<string> {
+		const def = GUIDE_TYPES.find((t) => t.key === key);
+		if (!def) return "";
+		const t = await this.manager.readPluginFile(this.guideTypePath(key));
+		return t && t.trim() ? t : def.defaultText;
+	}
+
 	private guideLayers(story: string): Array<{ label: string; path?: string }> {
 		return [
 			{ label: `小说级 ${this.manager.bookGuidePath(story)}`, path: this.manager.bookGuidePath(story) },
@@ -2314,29 +2345,39 @@ async cmdRenameChapterFile(): Promise<void> {
 		return `${this.manager.storyPath(story)}/写作指南汇总.md`;
 	}
 
-	/** 合并三层→序列化为可再解析的 MD；按需把带 hash 头的汇总文件写入书目录；返回注入用正文（去 HTML 注释）与合并结果 */
-	private async persistAggregatedGuide(story: string, bookText: string, userText: string, systemText: string): Promise<{ guideText: string; merged: Record<string, string> }> {
+	/** 合并三层→按题材追加命中类型的「类型要点」节→序列化为可再解析的 MD；按需把带 hash 头的汇总文件写入书目录；返回注入用正文（去 HTML 注释）与合并结果。
+	 * genre：书籍题材自由文本（故事状态.md），未命中任何类型→不注入类型要点（typeText 空串） */
+	private async persistAggregatedGuide(story: string, bookText: string, userText: string, systemText: string, genre: string): Promise<{ guideText: string; merged: Record<string, string> }> {
 		const layers = [bookText, userText, systemText].filter((t) => t.trim()); // 顺序=优先级：小说级 > 用户级 > 系统级
 		const merged = mergeGuideCategories(layers);
+		let typeText = ""; // 命中类型的要点（去注释正文），多个命中依次追加
+		for (const t of matchGuideTypes(genre)) {
+			const body = stripComments(await this.readGuideTypeText(t.key)).trim();
+			if (!body) continue;
+			typeText += (typeText ? "\n\n" : "") + `## 不同类型写作要点（${t.name}）\n` + body;
+		}
+		if (typeText) merged["通用"] = (merged["通用"] ? merged["通用"].trimEnd() + "\n\n" : "") + typeText;
 		const body = serializeAggregateGuide(merged);
-		const h = { b: md5(bookText), u: md5(userText), s: md5(systemText) };
+		const h = { b: md5(bookText), u: md5(userText), s: md5(systemText), t: md5(typeText) };
 		try {
 			const p = this.aggregatePath(story);
 			const existing = await this.manager.readGuideAt(p); // null=尚未生成
 			const prev = existing ? parseAggHash(existing) : null;
-			if (existing == null || !prev || prev.b !== h.b || prev.u !== h.u || prev.s !== h.s) {
+			if (existing == null || !prev || prev.b !== h.b || prev.u !== h.u || prev.s !== h.s || prev.t !== h.t) {
 				await this.manager.writeGuideAt(p, embedAggHash(body, h));
 			}
 		} catch { /* 汇总落盘失败不影响提示词构建 */ }
 		return { guideText: stripComments(body).trim(), merged };
 	}
 
-	/** 读三层→合并→落盘汇总文件，返回注入正文与禁用词类目文本（写作命令/对话面板共用） */
+	/** 读三层→合并→落盘汇总文件，返回注入正文与禁用词类目文本（写作命令/对话面板共用）；题材取自故事状态（读取失败按无题材→不注入类型要点） */
 	private async rebuildAggregatedGuide(story: string): Promise<{ guideText: string; bannedGuideText: string }> {
 		const bookText = (await this.manager.readGuideAt(this.manager.bookGuidePath(story))) ?? "";
 		const userText = (await this.manager.readGuideAt(this.manager.userGuidePath())) ?? "";
 		const systemText = await this.readSystemGuideText();
-		const r = await this.persistAggregatedGuide(story, bookText, userText, systemText);
+		let genre = "";
+		try { genre = (await this.manager.loadState(story))?.genre ?? ""; } catch { /* 状态读取失败按无题材处理 */ }
+		const r = await this.persistAggregatedGuide(story, bookText, userText, systemText, genre);
 		return { guideText: r.guideText, bannedGuideText: r.merged["禁用词"] || "" };
 	}
 
@@ -2494,10 +2535,13 @@ async cmdRenameChapterFile(): Promise<void> {
 
 	async cmdRegenerateSystemGuide(): Promise<void> {
 		try {
-			const ok = await this.confirmBox("重新生成系统写作指南？", "将用代码内置默认内容覆盖插件数据目录中的系统级 WRITING_GUIDE.md。\n你此前对系统级的修改会丢失。", "覆盖");
+			const ok = await this.confirmBox("重新生成系统写作指南？", "将用代码内置默认内容覆盖插件数据目录中的系统级 WRITING_GUIDE.md 与 guide-types/ 下四个「类型要点」文件。\n你此前对这些文件的修改会丢失。", "覆盖");
 			if (!ok) return;
 			await this.manager.writePluginFile(this.systemGuidePath(), DEFAULT_SYSTEM_GUIDE);
-			let note = `系统级写作指南已重置为内置默认\n${this.systemGuidePath()}`;
+			for (const t of GUIDE_TYPES) {
+				await this.manager.writePluginFile(this.guideTypePath(t.key), t.defaultText);
+			}
+			let note = `系统级写作指南与类型要点文件已重置为内置默认\n${this.systemGuidePath()}\n${this.guideTypePath(GUIDE_TYPES[0].key)} 等 ${GUIDE_TYPES.length} 个类型文件`;
 			const cur = this.settings.lastStory?.trim();
 			if (cur && (await this.manager.listStories()).includes(cur)) {
 				try { await this.rebuildAggregatedGuide(cur); note += "\n已刷新该书的《写作指南汇总》"; } catch { /* ignore */ }
@@ -2894,7 +2938,9 @@ async cmdRenameChapterFile(): Promise<void> {
 		const bookText = (await this.manager.readGuideAt(this.manager.bookGuidePath(storyName))) ?? "";
 		const userText = (await this.manager.readGuideAt(this.manager.userGuidePath())) ?? "";
 		const systemText = await this.readSystemGuideText(); // 读不到回落内置默认（写作命令不打扰）
-		const r = await this.persistAggregatedGuide(storyName, bookText, userText, systemText);
+		let genre = "";
+		try { genre = (await this.manager.loadState(storyName))?.genre ?? ""; } catch { /* 状态读取失败按无题材处理 */ }
+		const r = await this.persistAggregatedGuide(storyName, bookText, userText, systemText, genre);
 		return { bookText, userText, systemText, guideText: r.guideText, bannedGuideText: r.merged["禁用词"] || "" };
 	}
 
