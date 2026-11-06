@@ -21,10 +21,10 @@ export interface GuideTypeDef {
 }
 
 export const GUIDE_TYPES: GuideTypeDef[] = [
-	{ key: "玄幻仙侠", name: "玄幻 / 仙侠", keywords: /玄幻|仙侠|修仙|修真|仙魔|洪荒/, defaultText: xuanhuanMd },
-	{ key: "都市现实", name: "都市 / 现实", keywords: /都市|现实|职场|校园|生活/, defaultText: dushiMd },
-	{ key: "科幻", name: "科幻", keywords: /科幻|星际|未来|机甲|赛博|太空/, defaultText: kehanMd },
-	{ key: "历史武侠", name: "历史 / 武侠", keywords: /历史|武侠|古代|古风|江湖|王朝/, defaultText: lishiMd },
+	{ key: "玄幻仙侠", name: "玄幻 / 仙侠", keywords: /玄幻|仙侠|修仙|修真|仙魔|洪荒|网文/, defaultText: xuanhuanMd },
+	{ key: "都市现实", name: "都市 / 现实", keywords: /都市|现实|职场|校园|生活|网文/, defaultText: dushiMd },
+	{ key: "科幻", name: "科幻", keywords: /科幻|星际|未来|机甲|赛博|太空|网文/, defaultText: kehanMd },
+	{ key: "历史武侠", name: "历史 / 武侠", keywords: /历史|武侠|古代|古风|江湖|王朝|网文/, defaultText: lishiMd },
 ];
 
 /** 题材匹配类型文件：返回全部命中（可能多个，组装时依次追加）；未命中→空数组（不注入类型要点） */
