@@ -105,3 +105,4 @@
 - 2026-11-06：节标题「不同类型写作要点」统一简称为「写作要点」（main.ts 注入行 + guide_types_default.ts 注释）。tsc 零错误＋node --check/lint 零违规，release 部署 vault md5 一致，双仓推送。
 - 2026-11-06：修复生成过程面板流式输出不可选中复制——Obsidian 核心 CSS 全局 `user-select: none` 覆盖了 `.aw-stream-pre` 和 `.aw-stream-reasoning`；两 selector 均补 `user-select: text`（后者含思考过程区）。tsc 零错误＋node --check/lint 零违规，release 部署 vault md5 一致，双仓推送。
 - 2026-11-06：Subagents 三阶段独立模型配置——PluginConfig 新增 `writing_phases[]`（WritingPhase{name, llm_config_name?}），默认三阶段（策划方案生成/书籍大纲和卷级大纲生成/文章大纲生成和编写文章）各留空=回落 active_llm；main.ts 新增 `getPhaseLlmSetup(phaseIndex)` 辅助方法，所有写作命令按所处阶段调用对应配置；设置页新增「写作阶段模型配置」区块（三个阶段各一个下拉框列出所有已配置模型）。tsc 零错误＋node --check/lint 零违规，release 部署 vault md5 一致，双仓推送。同步 agents/l2-settings-llm-config.md / docs/使用说明.md。
+- 2026-11-06：设置页每份模型配置页内新增「删除配置」动作行（与列表级删除并列）；删除时同步清理 writing_phases 中对被删配置的引用（对应阶段 llm_config_name 置空回落 active_llm）。tsc 零错误＋node --check/lint 零违规，release 部署 vault md5 一致，双仓推送。
