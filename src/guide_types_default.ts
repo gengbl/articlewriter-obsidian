@@ -1,5 +1,5 @@
 /**
- * 「不同类型写作要点」内置默认内容（玄幻仙侠 / 都市现实 / 科幻 / 历史武侠）：
+ * 「写作要点」内置默认内容（玄幻仙侠 / 都市现实 / 科幻 / 历史武侠）：
  * 唯一来源为 docs/guide-types/*.md。构建时由 esbuild 以 text loader 打包进 release/main.js；
  * 运行时播种到插件数据目录 guide-types/（用户可编辑），「重新生成系统写作指南」一并覆盖重置。
  * 汇总管线按书籍题材（genre 自由文本）关键词匹配，只把命中类型的要点组装进该书《写作指南汇总.md》。
@@ -21,15 +21,19 @@ export interface GuideTypeDef {
 }
 
 export const GUIDE_TYPES: GuideTypeDef[] = [
-	{ key: "玄幻仙侠", name: "玄幻 / 仙侠", keywords: /玄幻|仙侠|修仙|修真|仙魔|洪荒|网文/, defaultText: xuanhuanMd },
-	{ key: "都市现实", name: "都市 / 现实", keywords: /都市|现实|职场|校园|生活|网文/, defaultText: dushiMd },
-	{ key: "科幻", name: "科幻", keywords: /科幻|星际|未来|机甲|赛博|太空|网文/, defaultText: kehanMd },
-	{ key: "历史武侠", name: "历史 / 武侠", keywords: /历史|武侠|古代|古风|江湖|王朝|网文/, defaultText: lishiMd },
+	{ key: "玄幻仙侠", name: "玄幻 / 仙侠", keywords: /玄幻|仙侠|修仙|修真|仙魔|洪荒/, defaultText: xuanhuanMd },
+	{ key: "都市现实", name: "都市 / 现实", keywords: /都市|现实|职场|校园|生活/, defaultText: dushiMd },
+	{ key: "科幻", name: "科幻", keywords: /科幻|星际|未来|机甲|赛博|太空/, defaultText: kehanMd },
+	{ key: "历史武侠", name: "历史 / 武侠", keywords: /历史|武侠|古代|古风|江湖|王朝/, defaultText: lishiMd },
 ];
 
-/** 题材匹配类型文件：返回全部命中（可能多个，组装时依次追加）；未命中→空数组（不注入类型要点） */
-export function matchGuideTypes(genre: string): GuideTypeDef[] {
+/** 题材匹配类型文件：返回全部命中（可能多个，组装时依次追加）；未命中→空数组（不注入类型要点）。
+ * 当 genre 为「网文小说」时，若提供 writingStyle 则用其做关键词匹配（只注入实际题材对应的类型要点）；
+ * 否则回退到 genre 本身匹配。 */
+export function matchGuideTypes(genre: string, writingStyle?: string): GuideTypeDef[] {
 	const g = String(genre || "").trim();
 	if (!g) return [];
-	return GUIDE_TYPES.filter((t) => t.keywords.test(g));
+	// 网文小说书籍：用 writing_style 决定命中哪些类型要点（而非 genre 本身）
+	const matchKey = (g === "网文小说" && writingStyle) ? writingStyle : g;
+	return GUIDE_TYPES.filter((t) => t.keywords.test(matchKey));
 }

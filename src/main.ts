@@ -2318,14 +2318,19 @@ async cmdRenameChapterFile(): Promise<void> {
 		const userText = await this.readUserGuideText(story);
 		const systemText = await this.readSystemGuideText();
 		let genre = "";
-		try { genre = (await this.manager.loadState(story))?.genre ?? ""; } catch { /* 状态读取失败按无题材处理 */ }
+		let writingStyle = "";
+		try {
+			const st = await this.manager.loadState(story);
+			genre = st?.genre ?? "";
+			writingStyle = st?.writing_style ?? "";
+		} catch { /* 状态读取失败按无题材处理 */ }
 
 		// Delegate to persistAggregatedGuide: genre-based type tips + hash-embedded incremental update
-		await this.persistAggregatedGuide(story, bookText, userText, systemText, genre);
+		await this.persistAggregatedGuide(story, bookText, userText, systemText, genre, writingStyle);
 		new Notice(`《写作指南汇总.md》已生成并保存到 ${story} 目录`);
 	}
 
-	// ---------- 「不同类型写作要点」类型文件（插件数据目录 guide-types/*.md，按书籍题材组装进汇总） ----------
+	// ---------- 「写作要点」类型文件（插件数据目录 guide-types/*.md，按书籍题材组装进汇总） ----------
 
 	/** 单个类型要点文件路径：插件数据目录 .obsidian/plugins/<id>/guide-types/<key>.md（与系统指南同目录体系，走 DataAdapter 读写） */
 	private guideTypePath(key: string): string {
@@ -2380,14 +2385,14 @@ async cmdRenameChapterFile(): Promise<void> {
 
 	/** 合并三层→按题材追加命中类型的「类型要点」节→序列化为可再解析的 MD；按需把带 hash 头的汇总文件写入书目录；返回注入用正文（去 HTML 注释）与合并结果。
 	 * genre：书籍题材自由文本（故事状态.md），未命中任何类型→不注入类型要点（typeText 空串） */
-	private async persistAggregatedGuide(story: string, bookText: string, userText: string, systemText: string, genre: string): Promise<{ guideText: string; merged: Record<string, string> }> {
+	private async persistAggregatedGuide(story: string, bookText: string, userText: string, systemText: string, genre: string, writingStyle?: string): Promise<{ guideText: string; merged: Record<string, string> }> {
 		const layers = [bookText, userText, systemText].filter((t) => t.trim()); // 顺序=优先级：小说级 > 用户级 > 系统级
 		const merged = mergeGuideCategories(layers);
 		let typeText = ""; // 命中类型的要点（去注释正文），多个命中依次追加
-		for (const t of matchGuideTypes(genre)) {
+		for (const t of matchGuideTypes(genre, writingStyle)) {
 			const body = stripComments(await this.readGuideTypeText(t.key)).trim();
 			if (!body) continue;
-			typeText += (typeText ? "\n\n" : "") + `## 不同类型写作要点（${t.name}）\n` + body;
+			typeText += (typeText ? "\n\n" : "") + `## 写作要点（${t.name}）\n` + body;
 		}
 		if (typeText) merged["通用"] = (merged["通用"] ? merged["通用"].trimEnd() + "\n\n" : "") + typeText;
 		const body = serializeAggregateGuide(merged);
@@ -2409,8 +2414,13 @@ async cmdRenameChapterFile(): Promise<void> {
 		const userText = (await this.manager.readGuideAt(this.manager.userGuidePath())) ?? "";
 		const systemText = await this.readSystemGuideText();
 		let genre = "";
-		try { genre = (await this.manager.loadState(story))?.genre ?? ""; } catch { /* 状态读取失败按无题材处理 */ }
-		const r = await this.persistAggregatedGuide(story, bookText, userText, systemText, genre);
+		let writingStyle = "";
+		try {
+			const st = await this.manager.loadState(story);
+			genre = st?.genre ?? "";
+			writingStyle = st?.writing_style ?? "";
+		} catch { /* 状态读取失败按无题材处理 */ }
+		const r = await this.persistAggregatedGuide(story, bookText, userText, systemText, genre, writingStyle);
 		return { guideText: r.guideText, bannedGuideText: r.merged["禁用词"] || "" };
 	}
 
