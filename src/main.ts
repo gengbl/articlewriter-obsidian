@@ -1684,7 +1684,7 @@ await this.promptCreateVolumesIfEmpty(story); // 零卷 → 先弹建卷框（�
 			}
 			if (!targets.length) { new Notice("所有章节都还没有正文，无法分析", 8000); return; }
 
-			const setup = await this.loadWriterSetup();
+			const setup = this.getPhaseLlmSetup(2); // v0.2.22+：文章大纲生成和编写文章阶段
 			if (!setup) return;
 
 			// 现有三层文档播种：已知人名/场景名（跨章名称归一）+ 已有关系对（去重基线）
@@ -2330,7 +2330,7 @@ async cmdRenameChapterFile(): Promise<void> {
 		new Notice(`《写作指南汇总.md》已生成并保存到 ${story} 目录`);
 	}
 
-	// ---------- 「不同类型写作要点」类型文件（插件数据目录 guide-types/*.md，按书籍题材组装进汇总） ----------
+	// ---------- 「写作要点」类型文件（插件数据目录 guide-types/*.md，按书籍题材组装进汇总） ----------
 
 	/** 单个类型要点文件路径：插件数据目录 .obsidian/plugins/<id>/guide-types/<key>.md（与系统指南同目录体系，走 DataAdapter 读写） */
 	private guideTypePath(key: string): string {
@@ -2392,7 +2392,7 @@ async cmdRenameChapterFile(): Promise<void> {
 		for (const t of matchGuideTypes(genre, writingStyle)) {
 			const body = stripComments(await this.readGuideTypeText(t.key)).trim();
 			if (!body) continue;
-			typeText += (typeText ? "\n\n" : "") + `## 不同类型写作要点（${t.name}）\n` + body;
+			typeText += (typeText ? "\n\n" : "") + `## 写作要点（${t.name}）\n` + body;
 		}
 		if (typeText) merged["通用"] = (merged["通用"] ? merged["通用"].trimEnd() + "\n\n" : "") + typeText;
 		const body = serializeAggregateGuide(merged);
@@ -2705,6 +2705,18 @@ async cmdRenameChapterFile(): Promise<void> {
 		const cfgs = conf?.llm_configs ?? [];
 		if (!conf || !cfgs.length) return null;
 		const cfg = cfgs.find((c) => c.name === conf.active_llm) ?? cfgs[0];
+		return { cfg, systemPrompt: conf.system_prompt, descStyle: conf.desc_style };
+	}
+
+	/** 按写作阶段获取模型配置：优先使用阶段指定的 llm_config_name，否则回落 active_llm；无可用配置返回 null */
+	private getPhaseLlmSetup(phaseIndex: number): { cfg: LlmConfigDoc; systemPrompt?: string; descStyle?: string } | null {
+		const conf = this.settings.llm ?? null;
+		const cfgs = conf?.llm_configs ?? [];
+		if (!conf || !cfgs.length) return null;
+		const phases = conf.writing_phases ?? [];
+		const phase = phases[phaseIndex];
+		let cfgName = phase?.llm_config_name?.trim() || conf.active_llm;
+		const cfg = cfgName ? (cfgs.find((c) => c.name === cfgName) ?? cfgs[0]) : cfgs[0];
 		return { cfg, systemPrompt: conf.system_prompt, descStyle: conf.desc_style };
 	}
 
@@ -4177,7 +4189,7 @@ async cmdRenameChapterFile(): Promise<void> {
 			}
 
 			// 组装提示词与系统提示词（loadWritingData/readOutlineWindow 按磁盘阅读序定位，全新章须先建目录）
-			const setup = await this.loadWriterSetup();
+			const setup = this.getPhaseLlmSetup(2); // v0.2.22+：文章大纲生成和编写文章阶段
 			if (!setup) return;
 			const guides = await this.loadWriterGuides(story);
 			if (!structureReady) {
@@ -4321,7 +4333,7 @@ async cmdRenameChapterFile(): Promise<void> {
 			let aiCount = 0;
 			if (!segments.length) {
 				// 一个章节标记都没有 → 交给 AI 拆分，但改成逐章生成：每章调用一次 LLM，生成完后立即继续下一章，不在一轮里把整份大纲推成超长思考。
-				const setup = await this.loadWriterSetup();
+				const setup = this.getPhaseLlmSetup(1); // v0.2.22+：书籍大纲和卷级大纲生成阶段
 				if (!setup) return;
 				const cleaned = stripComments(raw);
 				const count = extractPlannedChapterCount(cleaned) ?? (flatMode
@@ -4434,7 +4446,7 @@ async cmdRenameChapterFile(): Promise<void> {
 				if (idx == null) return;
 				vol = vols[idx];
 			}
-			const setup = await this.loadWriterSetup();
+			const setup = this.getPhaseLlmSetup(1); // v0.2.22+：书籍大纲和卷级大纲生成阶段
 			if (!setup) return;
 			// 上下文组装：世界观 / 全书大纲 / 卷列表 / 基调 / 前一卷卷大纲（只读参考）/ 本卷现有大纲（避免重复）
 			const world = await this.manager.readWorldDoc(story);
@@ -4571,7 +4583,7 @@ async cmdRenameChapterFile(): Promise<void> {
 	private async autoCreateVolumesAndGenOutlines(story: string, state: StoryState, decls: VolumeDeclaration[], globalOutline: string, planningGuide: string): Promise<void> {
 		const counts = await this.promptAllVolumeChapterCounts(decls, "自动生成卷大纲");
 		if (!counts) return;
-		const setup = await this.loadWriterSetup();
+		const setup = this.getPhaseLlmSetup(1); // v0.2.22+：书籍大纲和卷级大纲生成阶段
 		if (!setup) return;
 		const world = await this.manager.readWorldDoc(story);
 		const guides = await this.loadWriterGuides(story); // v0.2.x+ 三层创作规范合并 + 《写作指南汇总.md》检测更新（与编写章节同一流程），整批只查一次、注入各卷【创作规范】块
@@ -4690,7 +4702,7 @@ async cmdRenameChapterFile(): Promise<void> {
 	private async ensurePlanningGuide(story: string, state: StoryState, opts?: { chapterCount?: number }): Promise<string> {
 		const existing = await this.manager.readPlanningGuide(story);
 		if (existing.trim()) return existing;
-		const setup = await this.loadWriterSetup();
+		const setup = this.getPhaseLlmSetup(0); // v0.2.22+：策划方案生成阶段
 		if (!setup) { new Notice("未取到活动 LLM 配置，跳过策划指南自动生成", 8000); return ""; }
 		const input = await this.buildPlanningGuideInput(story, state, undefined, opts);
 		const promptText = buildPlanningGuidePrompt(input);
@@ -4730,7 +4742,7 @@ async cmdRenameChapterFile(): Promise<void> {
 			// v0.2.x+：询问目标总章数——各节位置（抬升节点/伏笔埋设与回收/高潮落位等）以该总章数为基准表述
 			const count = await this.promptChapterCountInput("生成策划指南", `将 AI 生成书级《策划指南.md》（固定十节的既定规划约束）。\n请指定目标总章数（正整数，不设上限），各节位置将以该总章数为基准表述；输入后按回车确认、Esc 取消：`, "已取消生成策划指南");
 			if (count == null) return;
-			const setup = await this.loadWriterSetup();
+			const setup = this.getPhaseLlmSetup(0); // v0.2.22+：策划方案生成阶段
 			if (!setup) return;
 			const input = await this.buildPlanningGuideInput(story, state, existing.trim() || undefined, { chapterCount: count });
 			const promptText = buildPlanningGuidePrompt(input);
@@ -4956,7 +4968,7 @@ async cmdRenameChapterFile(): Promise<void> {
 		try {
 			const state = await this.manager.validatedState(story);
 			const flatMode = state.use_volumes === false;
-			const setup = await this.loadWriterSetup();
+			const setup = this.getPhaseLlmSetup(1); // v0.2.22+：书籍大纲和卷级大纲生成阶段
 			if (!setup) return;
 			const existing = await this.manager.readGlobalOutline(story); // 清洗文本：模板注释视为空
 			// v0.2.x+ 继续生成：现有大纲非空时先选「完整生成 / 按已有进度继续」；继续模式目标总章数 = 已有最大章号 M + 用户指定增量 N
@@ -5161,7 +5173,7 @@ async cmdRenameChapterFile(): Promise<void> {
 			const counts = await this.promptAllVolumeChapterCounts(decls);
 			if (!counts) return;
 
-			const setup = await this.loadWriterSetup();
+			const setup = this.getPhaseLlmSetup(1); // v0.2.22+：书籍大纲和卷级大纲生成阶段
 			if (!setup) return;
 			const world = await this.manager.readWorldDoc(story);
 			const planningGuide = await this.ensurePlanningGuide(story, state, { chapterCount: counts.reduce((a, b) => a + b, 0) }); // v0.2.13+：缺失则先自动生成（软依赖，失败返回 ""）；v0.2.x+ 各卷目标章数之和即全书总章数
@@ -5336,7 +5348,7 @@ async cmdRenameChapterFile(): Promise<void> {
 		if (!story || !(await this.ensureVolumeLayout(story))) return;
 		try {
 			const state = await this.manager.validatedState(story);
-			const setup = await this.loadWriterSetup();
+			const setup = this.getPhaseLlmSetup(2); // v0.2.22+：文章大纲生成和编写文章阶段
 			if (!setup) return;
 			const guides = await this.loadWriterGuides(story);
 			const allChapters = await this.manager.listChapters(story); // 阅读序：书根在前 + 各卷按 order、组内本地号升序
@@ -5500,7 +5512,7 @@ async cmdRenameChapterFile(): Promise<void> {
 				new Notice(`已更新${curLabel}大纲并保存`, 4000);
 			}
 
-			const setup = await this.loadWriterSetup();
+			const setup = this.getPhaseLlmSetup(2); // v0.2.22+：文章大纲生成和编写文章阶段
 			if (!setup) return;
 			const guides = await this.loadWriterGuides(story);
 			const data = await this.manager.loadWritingData(story, currentKey, { includeCurrentSummary: true });
@@ -5606,7 +5618,7 @@ async cmdRenameChapterFile(): Promise<void> {
 			const instruction = rawInstr.trim();
 
 			const state = await this.manager.validatedState(story);
-			const setup = await this.loadWriterSetup();
+			const setup = this.getPhaseLlmSetup(2); // v0.2.22+：文章大纲生成和编写文章阶段
 			if (!setup) return;
 			const guides = await this.loadWriterGuides(story);
 			const data = await this.manager.loadWritingData(story, num, { includeCurrentSummary: true, dropOutlineDoc: true }); // 本章大纲由桥接块【当前情节】注入，不再经 folderDocs 二次注入
@@ -5714,7 +5726,7 @@ async cmdRenameChapterFile(): Promise<void> {
 			if (rawStyle == null) return; // Esc=取消
 			const style = rawStyle.trim();
 
-			const setup = await this.loadWriterSetup();
+			const setup = this.getPhaseLlmSetup(2); // v0.2.22+：文章大纲生成和编写文章阶段
 			if (!setup) return;
 			const guides = await this.loadWriterGuides(story);
 			const data = await this.manager.loadWritingData(story, currentKey, { includeCurrentSummary: true });
@@ -5780,7 +5792,7 @@ async cmdRenameChapterFile(): Promise<void> {
 				new Notice(`✓ ${chLabel}未检测到 AI 常用词`, 6000);
 				return;
 			}
-			const setup = await this.loadWriterSetup();
+			const setup = this.getPhaseLlmSetup(2); // v0.2.22+：文章大纲生成和编写文章阶段
 			if (!setup) return;
 			const guides = await this.loadWriterGuides(story);
 			const baseSp = assembleSystemPrompt(undefined, guides.guideText, setup.systemPrompt); // 去AI味用基础系统提示词
@@ -5860,7 +5872,7 @@ async cmdRenameChapterFile(): Promise<void> {
 				return;
 			}
 
-			const setup = await this.loadWriterSetup();
+			const setup = this.getPhaseLlmSetup(2); // v0.2.22+：文章大纲生成和编写文章阶段
 			if (!setup) return;
 			const guides = await this.loadWriterGuides(story);
 			const baseSp = assembleSystemPrompt(undefined, guides.guideText, setup.systemPrompt); // 修复用基础系统提示词（全书共用一份）
@@ -5943,7 +5955,7 @@ async cmdRenameChapterFile(): Promise<void> {
 				new Notice(`${chLabel}还没有内容，无法检测错别字`);
 				return;
 			}
-			const setup = await this.loadWriterSetup();
+			const setup = this.getPhaseLlmSetup(2); // v0.2.22+：文章大纲生成和编写文章阶段
 			if (!setup) return;
 
 			const n = new Notice(`正在检测${chLabel}的错别字…\nLLM 全文扫描，可能需要一点时间`);
@@ -6139,6 +6151,14 @@ class ArticleWriterSettingTab extends PluginSettingTab {
 			{ name: "描述方式 desc_style", desc: "normal / complete（对齐 CLI）", control: { key: "llm.desc_style", type: "dropdown", options: { normal: "normal", complete: "complete" }, defaultValue: "normal" } },
 		] });
 
+		// v0.2.22+：写作阶段模型配置（三阶段独立模型）
+		const phases = this.conf().writing_phases ?? [];
+		defs.push({ type: "group", heading: "写作阶段模型配置（v0.2.22+）", items: [
+			{ name: "策划方案生成阶段", desc: "planning-guide / planning-guide-worldview：AI 生成《策划指南.md》", control: { key: "writing_phases.0.llm_config_name", type: "dropdown", options: llmNameMap, defaultValue: "" } },
+			{ name: "书籍大纲和卷级大纲生成阶段", desc: "book-outline-generate / book-outline-to-volumes：书级/卷级大纲生成", control: { key: "writing_phases.1.llm_config_name", type: "dropdown", options: llmNameMap, defaultValue: "" } },
+			{ name: "文章大纲生成和编写文章阶段", desc: "generate-chapter-streamed：章节大纲与正文生成", control: { key: "writing_phases.2.llm_config_name", type: "dropdown", options: llmNameMap, defaultValue: "" } },
+		] });
+
 		defs.push({ type: "list", heading: "模型配置（llm_configs，存于插件数据目录 data.json）", emptyState: "没有模型配置。", addItem: { name: "新建配置", action: () => void this.addLlmConfig() }, onDelete: (i) => void this.removeLlmConfig(i), onReorder: (o, n) => void this.reorderLlmConfigs(o, n), items: cfgs.map((cfg, i) => this.configPage(cfg, i)) });
 
 		defs.push({ name: "关于", desc: "ArticleWriter Obsidian 版：建书/建章、打开文档、保存、字数统计；数据全部为 vault 内 MD 文档，运行态存于各书的「故事状态.md」YAML 文件属性（version 2）。LLM 走 OpenAI 兼容接口（openai SDK），可接 DeepSeek / DashScope / Ollama / LM Studio / llama.cpp 等。api_key 明文存放——同步/分享 vault 时注意不要泄露配置文件。" });
@@ -6183,6 +6203,13 @@ class ArticleWriterSettingTab extends PluginSettingTab {
 		}
 		if (key === "llm.system_prompt") return c.system_prompt ?? "";
 		if (key === "llm.desc_style") return c.desc_style || "normal";
+		// v0.2.22+：写作阶段模型配置
+		const phaseMatch = key.match(/^writing_phases\.(\d+)\.llm_config_name$/);
+		if (phaseMatch) {
+			const idx = Number(phaseMatch[1]);
+			const phases = c.writing_phases ?? [];
+			return phases[idx]?.llm_config_name ?? "";
+		}
 		if (key.startsWith("cfg.")) {
 			const parts = key.split(".");
 			const field = parts.slice(2).join(".") as keyof LlmConfigDoc;
@@ -6223,7 +6250,19 @@ class ArticleWriterSettingTab extends PluginSettingTab {
 		if (key === "llm.active_llm") { c.active_llm = str || undefined; this.plugin.syncChatModelSelect(); } // 设置页改激活模型 → 已打开的 LLM 对话框下拉同步跟随
 		else if (key === "llm.system_prompt") c.system_prompt = str.trim() || undefined;
 		else if (key === "llm.desc_style") c.desc_style = str || "normal";
-		else if (key.startsWith("cfg.")) {
+		// v0.2.22+：写作阶段模型配置
+		else {
+			const phaseMatch = key.match(/^writing_phases\.(\d+)\.llm_config_name$/);
+			if (phaseMatch) {
+				const idx = Number(phaseMatch[1]);
+				if (!c.writing_phases) c.writing_phases = [];
+				while (c.writing_phases.length <= idx) c.writing_phases.push({ name: `阶段${idx + 1}` });
+				c.writing_phases[idx].llm_config_name = str.trim() || undefined;
+				await this.plugin.saveSettings();
+				return;
+			}
+		}
+		if (key.startsWith("cfg.")) {
 			const parts = key.split(".");
 			const field = parts.slice(2).join(".") as keyof LlmConfigDoc;
 			const cfg = (c.llm_configs ?? [])[Number(parts[1])];

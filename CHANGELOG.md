@@ -104,3 +104,4 @@
 - 2026-11-06：修复「生成写作指南汇总」对 genre=网文小说书籍不注入类型要点的 bug——根因是关键词正则含|网文使所有类型均命中；撤回该修改，改为 matchGuideTypes 新增 writingStyle 参数，genre=网文小说 时以 writing_style 字段做关键词匹配（如 writing_style=玄幻/仙侠 则只注入玄幻仙侠类型），其余 genre 行为不变。节标题「不同类型写作要点（X）」统一改为「写作要点（X）」。
 - 2026-11-06：节标题「不同类型写作要点」统一简称为「写作要点」（main.ts 注入行 + guide_types_default.ts 注释）。tsc 零错误＋node --check/lint 零违规，release 部署 vault md5 一致，双仓推送。
 - 2026-11-06：修复生成过程面板流式输出不可选中复制——Obsidian 核心 CSS 全局 `user-select: none` 覆盖了 `.aw-stream-pre` 和 `.aw-stream-reasoning`；两 selector 均补 `user-select: text`（后者含思考过程区）。tsc 零错误＋node --check/lint 零违规，release 部署 vault md5 一致，双仓推送。
+- 2026-11-06：Subagents 三阶段独立模型配置——PluginConfig 新增 `writing_phases[]`（WritingPhase{name, llm_config_name?}），默认三阶段（策划方案生成/书籍大纲和卷级大纲生成/文章大纲生成和编写文章）各留空=回落 active_llm；main.ts 新增 `getPhaseLlmSetup(phaseIndex)` 辅助方法，所有写作命令按所处阶段调用对应配置；设置页新增「写作阶段模型配置」区块（三个阶段各一个下拉框列出所有已配置模型）。tsc 零错误＋node --check/lint 零违规，release 部署 vault md5 一致，双仓推送。同步 agents/l2-settings-llm-config.md / docs/使用说明.md。
