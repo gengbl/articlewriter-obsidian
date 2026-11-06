@@ -39,6 +39,7 @@
 | `agents-view` / `agents-edit` | 三层创作规范：小说级 `<书名>/WRITING_GUIDE.md` > 用户级 `<work_dir>/WRITING_GUIDE.md` > 系统级 **插件数据目录** `.obsidian/plugins/articlewriter/WRITING_GUIDE.md`[固定路径，非用户可配]；view 各层直接打开对应文件，单层直开/多层选择器/全无则提示用编辑创建；edit 选层后多行文本框全量保存并刷新该书《写作指南汇总》 |
 | `generate-writing-guide` | 生成空模板：对用户级 `<work_dir>/WRITING_GUIDE.md` 与当前书 `<书名>/WRITING_GUIDE.md` 各建一份同格式骨架（`buildEmptyGuideTemplate` 抽段名、清正文），目标已存在且非空则跳过并提示；不触碰系统级 |
 | `regenerate-system-guide` | 重新生成系统写作指南：confirmBox 二次确认后把内置默认覆盖写回 `.obsidian/plugins/articlewriter/WRITING_GUIDE.md` **与 guide-types/ 下四个「类型要点」文件**（玄幻仙侠/都市现实/科幻/历史武侠），再尽力刷新当前书《写作指南汇总》（按故事状态 genre 经 matchGuideTypes 组装命中类型的要点） |
+| `generate-writing-guide-summary` | **生成写作指南汇总**：requireStory 守卫 → 聚合三层创作规范（小说级 `<书>/WRITING_GUIDE.md` + 用户级 `readUserGuideText(story)` 按题材命中 guide-types/*.md + 系统级 `readSystemGuideText()`）→ mergeGuideCategories + serializeAggregateGuide → writePluginFile 落盘 `<书>/写作指南汇总.md`；Notice 提示保存路径 |
 | `generate-usage-doc` | 生成使用说明：按内置文本（`src/usage_guide_default.ts` DEFAULT_USAGE_GUIDE）在 work_dir 根建《使用说明.md》，成功后打开该文件；**设置/切换工作目录时自动投放**（pickWorkDir 回调内 seedUsageDoc），仅缺失或为空才写入、绝不覆盖用户内容，已存在非空则跳过并提示 |
 | （无对应命令） | LLM 配置改存插件数据目录 data.json（首次运行预置三组标准模板）；旧的「打开插件设置文档 open-config-doc」命令已移除，不再读写 work_dir MD 文件、不做迁移 |
 | `llm-test` | 对激活 LLM 配置执行 GET /models 连通性测试并弹通知（列出可用模型）；设置页内每份配置也可单独测连 |

@@ -221,6 +221,7 @@ export default class ArticleWriterPlugin extends Plugin {
 		this.addCommand({ id: "agents-edit", name: "编辑创作规范 WRITING_GUIDE.md（对齐 CLI /agents edit：小说级/用户级/系统级三层）", callback: () => this.cmdAgentsEdit() });
 		this.addCommand({ id: "generate-writing-guide", name: "生成写作指南（在用户级 work_dir 与当前书目录各建一份同格式空模板；已存在非空则跳过并提示）", callback: () => this.cmdGenerateWritingGuide() });
 		this.addCommand({ id: "regenerate-system-guide", name: "重新生成系统写作指南（按代码内置默认覆盖插件数据目录中的系统级 WRITING_GUIDE.md，需确认）", callback: () => this.cmdRegenerateSystemGuide() });
+		this.addCommand({ id: "generate-writing-guide-summary", name: "生成写作指南汇总（根据当前小说的创作规范，生成《写作指南汇总.md》）", callback: () => this.cmdGenerateWritingGuideSummary() });
 		this.addCommand({ id: "generate-usage-doc", name: "生成使用说明（在 work_dir 根建「使用说明.md」；已存在非空则跳过并提示）", callback: () => this.cmdGenerateUsageDoc() });
 		this.addCommand({ id: "llm-test", name: "LLM 连接测试（/llm test：GET /models 验证当前激活配置）", callback: () => this.cmdLlmTest() });
 
@@ -2290,6 +2291,42 @@ async cmdRenameChapterFile(): Promise<void> {
 	private async readSystemGuideText(): Promise<string> {
 		const t = await this.manager.readPluginFile(this.systemGuidePath());
 		return t && t.trim() ? t : DEFAULT_SYSTEM_GUIDE;
+	}
+
+	/** 读取用户级写作指南文本（按小说类型分组） */
+	private async readUserGuideText(storyName: string): Promise<string> {
+		const storyState = await this.manager.loadState(storyName);
+		if (!storyState) return "";
+		
+		const genre = storyState.genre || "";
+		if (!genre) return "";
+		
+		// Read the user guide for this genre
+		const userGuidePath = `${this.app.vault.configDir}/plugins/${this.manifest.id}/guide-types/${genre}.md`;
+		const userGuideText = await this.manager.readPluginFile(userGuidePath);
+		return userGuideText || "";
+	}
+
+	private async cmdGenerateWritingGuideSummary() {
+		const story = this.settings.lastStory;
+		if (!story) {
+			new Notice("请先选择一个小说项目");
+			return;
+		}
+
+		const bookText = await this.manager.readPluginFile(`${this.manager.storyPath(story)}/WRITING_GUIDE.md`) || "";
+		const userText = await this.readUserGuideText(story);
+		const systemText = await this.readSystemGuideText();
+
+		// Generate the aggregated guide
+		const aggregatedGuide = serializeAggregateGuide(
+			mergeGuideCategories([bookText, userText, systemText].filter(t => t.trim()))
+		);
+
+		// Save the aggregated guide to the story's directory
+		const summaryPath = `${this.manager.storyPath(story)}/写作指南汇总.md`;
+		await this.manager.writePluginFile(summaryPath, aggregatedGuide);
+		new Notice(`《写作指南汇总.md》已生成并保存到 ${story} 目录`);
 	}
 
 	// ---------- 「不同类型写作要点」类型文件（插件数据目录 guide-types/*.md，按书籍题材组装进汇总） ----------
