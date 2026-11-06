@@ -2317,15 +2317,11 @@ async cmdRenameChapterFile(): Promise<void> {
 		const bookText = await this.manager.readPluginFile(`${this.manager.storyPath(story)}/WRITING_GUIDE.md`) || "";
 		const userText = await this.readUserGuideText(story);
 		const systemText = await this.readSystemGuideText();
+		let genre = "";
+		try { genre = (await this.manager.loadState(story))?.genre ?? ""; } catch { /* 状态读取失败按无题材处理 */ }
 
-		// Generate the aggregated guide
-		const aggregatedGuide = serializeAggregateGuide(
-			mergeGuideCategories([bookText, userText, systemText].filter(t => t.trim()))
-		);
-
-		// Save the aggregated guide to the story's directory
-		const summaryPath = `${this.manager.storyPath(story)}/写作指南汇总.md`;
-		await this.manager.writePluginFile(summaryPath, aggregatedGuide);
+		// Delegate to persistAggregatedGuide: genre-based type tips + hash-embedded incremental update
+		await this.persistAggregatedGuide(story, bookText, userText, systemText, genre);
 		new Notice(`《写作指南汇总.md》已生成并保存到 ${story} 目录`);
 	}
 
