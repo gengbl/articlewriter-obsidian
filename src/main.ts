@@ -6187,6 +6187,7 @@ class ArticleWriterSettingTab extends PluginSettingTab {
 		const thinkCur = (cfg.thinking ?? "").trim();
 		if (thinkCur && !Object.prototype.hasOwnProperty.call(thinkOptions, thinkCur)) thinkOptions[thinkCur] = `${thinkCur}（存量值）`;
 		items.push({ name: "思考模式 thinking", desc: "仅 DeepSeek 端点生效：off=不思考，更快更省 token；留空=跟随服务端默认（deepseek-flash 默认开思考）", control: { key: `cfg.${i}.thinking`, type: "dropdown", options: thinkOptions } });
+		items.push({ name: "删除配置", desc: "从列表中移除该模型配置；若被写作阶段引用则自动清空对应阶段的 llm_config_name", action: () => void this.removeLlmConfig(i) });
 		return { type: "page", name: `${cfg.name}${active ? " ◀ 当前" : ""}`, desc: cfg.base_url || "（未填服务地址）", displayValue: () => [cfg.model_name && `模型 ${cfg.model_name}`, cfg.base_url].filter(Boolean).join(" · "), status: cfg.base_url ? null : ("warning" as const), items };
 	}
 
@@ -6295,6 +6296,13 @@ class ArticleWriterSettingTab extends PluginSettingTab {
 			const cfgs = conf.llm_configs ?? [];
 			const removed = cfgs.splice(i, 1)[0];
 			if (removed && conf.active_llm === removed.name) conf.active_llm = cfgs[0]?.name; // 删激活项则回落到第一个（可能为 undefined=空列表）
+			// 清理 writing_phases 中对被删配置的引用
+			if (removed) {
+				const phases = conf.writing_phases ?? [];
+				for (const phase of phases) {
+					if (phase.llm_config_name === removed.name) phase.llm_config_name = undefined;
+				}
+			}
 			await this.plugin.saveSettings();
 			this.plugin.syncChatModelSelect();
 			this.update();
