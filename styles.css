@@ -1580,3 +1580,12 @@
 	gap: var(--size-2-3);
 	margin-bottom: var(--size-2-2);
 }
+/* 功能点行：整行可点切换选中态 */
+.aw-export-prompts-row {
+	padding: var(--size-2-1) var(--size-2-2);
+	border-radius: var(--radius-s, 4px);
+	cursor: pointer;
+}
+.aw-export-prompts-row:hover {
+	background: var(--background-secondary-alt);
+}

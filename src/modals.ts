@@ -930,7 +930,11 @@ export class ExportPromptsSelectModal extends Modal {
 			const row = contentEl.createDiv({ cls: "aw-export-prompts-row" });
 			const cb = row.createEl("input", { type: "checkbox", cls: "aw-export-prompts-cb" });
 			cb.checked = this.selected.has(feat.title);
-			cb.addEventListener("change", () => {
+			// 整行可点：点击行内任意位置（含 checkbox 本身、键盘空格激活）都切换选中态；
+			// preventDefault 抑制 checkbox 的原生切换，保证手动 toggle 是唯一入口（否则点 checkbox 会双切回原态）
+			row.addEventListener("click", (ev) => {
+				ev.preventDefault();
+				cb.checked = !cb.checked;
 				if (cb.checked) this.selected.add(feat.title);
 				else this.selected.delete(feat.title);
 			});
