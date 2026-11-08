@@ -1918,20 +1918,20 @@ export function serializeAggregateGuide(m: Record<string, string>): string {
 	return AGG_TITLE + "\n\n" + parts.join("\n\n") + "\n";
 }
 
-/** 变更检测头（HTML 注释，注入前会被 stripComments 剥掉）：记录三层原文 md5 + 所选类型要点内容 md5（t；无命中为空串——题材/类型文件任一变化即触发重建） */
-export interface AggHashes { b: string; u: string; s: string; t: string }
+/** 变更检测头（HTML 注释，注入前会被 stripComments 剥掉）：记录三层原文 md5 + 所选类型要点内容 md5（t；无命中为空串——题材/类型文件任一变化即触发重建）+ 合并算法版本 v（合并语义升级时 bump，强制一次性重建旧汇总） */
+export interface AggHashes { b: string; u: string; s: string; t: string; v: string }
 export function aggHashLine(h: AggHashes): string {
-	return `<!-- agg-hash: b=${h.b} u=${h.u} s=${h.s} t=${h.t} -->`;
+	return `<!-- agg-hash: b=${h.b} u=${h.u} s=${h.s} t=${h.t} v=${h.v} -->`;
 }
 export function embedAggHash(body: string, h: AggHashes): string {
 	return aggHashLine(h) + "\n" + body;
 }
-const AGG_HASH_RE = /^<!--\s*agg-hash:\s*b=([0-9a-f]+)\s+u=([0-9a-f]+)\s+s=([0-9a-f]+)(?:\s+t=([0-9a-f]+))?\s*-->/m;
+const AGG_HASH_RE = /^<!--\s*agg-hash:\s*b=([0-9a-f]+)\s+u=([0-9a-f]+)\s+s=([0-9a-f]+)(?:\s+t=([0-9a-f]+))?(?:\s+v=(\d+))?\s*-->/m;
 export function parseAggHash(text: string): AggHashes | null {
 	const m = AGG_HASH_RE.exec(String(text || ""));
 	if (!m) return null;
-	// 旧版汇总头无 t 字段→按空串处理，与新值必不相等→一次性重建（无害）
-	return { b: m[1], u: m[2], s: m[3], t: m[4] ?? "" };
+	// 旧版汇总头无 t 字段→按空串处理、无 v 字段→按 "1" 处理，与新值必不相等→一次性重建（无害）
+	return { b: m[1], u: m[2], s: m[3], t: m[4] ?? "", v: m[5] ?? "1" };
 }
 
 // ---------- /typo-check 错别字检测（LLM 全文扫描 + 确定性校验） ----------

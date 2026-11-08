@@ -423,7 +423,7 @@ export const GUIDE_CATEGORY_NAMES = ["禁用词", "故事风格", "个人特色"
 
 const CAT_BLOCK_SOURCE = "<!--\\s*写作指南分类\\s*[:：]\\s*([^>]+?)\\s*-->(.*?)<!--\\s*/?\\s*写作指南分类\\s*-->";
 const CAT_TYPE_BLOCK_RE = () => /<!--\s*编写类型\s*[:：].*?<!--\s*\/\s*编写类型\s*-->/gs;
-const HTML_COMMENT_RE = () => /<!--.*?-->/g;
+const HTML_COMMENT_RE = () => /<!--[\s\S]*?-->/g; // 必须跨行——汇总文件里 commentOutEmptySections 产出多行注释，单行正则会让 <!-- --> 残行泄漏进正文、round-trip 不幂等
 const BANNED_TOKEN_RE = () => /[「`]([^」`]+)[」`]/g; // 闭合类必须含 CJK 直角引号 」——曾误写为 »(U+00BB)，致对代码内置块（「」书写）提取 0 token、buildMergedBannedBlock 纯列表行过滤全程失效
 
 /**
@@ -459,42 +459,80 @@ export function extractGuideCategories(text: string): Record<string, string> {
 	return result;
 }
 
+/** 指南块：level=起始标题级别（0=首个标题前的前言），title=标题文本（去 # 号后 trim），lines=块内全部原始行 */
+interface GuideBlock {
+	level: number;
+	title: string;
+	lines: string[];
+}
+
 /**
- * 合并多层写作指南（layers 顺序即优先级：故事层 > 用户层）。
- * - 通用：跨层逐行去重合并
- * - 故事风格 / 个人特色：高优先级层有内容则采用，跳过其余层（避免风格冲突与重复）
- * - 禁用词：跨层逐行去重合并（词级去重在 buildMergedBannedBlock 中再完成）
+ * 把指南文本拆成块：遇到「级别 ≤ 当前块级别」的标题开新块，更深的子标题留在父块内；
+ * 首个标题之前的内容归入前言块 (level 0, title "")。代码围栏（``` / ~~~）内的 # 行不当标题。
  */
-export function mergeGuideCategories(layers: string[]): Record<string, string> {
-	const merged: Record<string, string | string[]> = { 通用: [], "故事风格": "", "个人特色": "", "禁用词": [] };
-	const seen = new Set<string>();
-	for (const layer of layers) {
-		const cats = extractGuideCategories(layer);
-		for (const line of (cats["通用"] || "").split("\n")) {
-			const key = line.trim();
-			if (!key || seen.has(key)) continue;
-			seen.add(key);
-			(merged["通用"] as string[]).push(line);
-		}
-		for (const name of ["故事风格", "个人特色"]) {
-			if (!(merged[name] as string) && (cats[name] || "").trim()) {
-				merged[name] = cats[name].trim();
-			}
-		}
-		for (const line of (cats["禁用词"] || "").split("\n")) {
-			const key = line.trim();
-			if (key && !seen.has(key)) {
-				seen.add(key);
-				(merged["禁用词"] as string[]).push(line);
-			}
+function splitGuideBlocks(text: string): GuideBlock[] {
+	const blocks: GuideBlock[] = [];
+	let cur: GuideBlock | null = null;
+	let fence = false;
+	for (const line of String(text || "").split("\n")) {
+		const t = line.trim();
+		if (/^(`{3,}|~{3,})/.test(t)) fence = !fence; // 围栏开关行本身作为普通内容行
+		const m = fence ? null : /^(#{1,6})(?:\s|$)/.exec(t);
+		if (m && (!cur || m[1].length <= cur.level)) {
+			cur = { level: m[1].length, title: t.slice(m[1].length).trim(), lines: [line] };
+			blocks.push(cur);
+		} else if (cur) {
+			cur.lines.push(line);
+		} else {
+			cur = { level: 0, title: "", lines: [line] };
+			blocks.push(cur);
 		}
 	}
-	return {
-		"通用": ((merged["通用"] as string[]) ?? []).join("\n").trim(),
-		"故事风格": merged["故事风格"] as string,
-		"个人特色": merged["个人特色"] as string,
-		"禁用词": ((merged["禁用词"] as string[]) ?? []).join("\n").trim(),
-	};
+	return blocks;
+}
+
+/**
+ * 合并多层写作指南（layers 顺序即优先级：故事层 > 用户层 > 系统层）。
+ * - 通用 / 禁用词：块级分组合并——按「标题级别 + 标题文本」把各层同名小节归为一节，
+ *   节内按优先级依次拼接各行、逐行去重；每类别独立去重集，避免跨类别同名标题误吞
+ *   （曾致用户层禁用词骨架标题吞掉系统层通用同名标题、正文失去小节结构）；
+ *   节序按优先级首次出现排列。禁用词的词级去重在 buildMergedBannedBlock 中再完成。
+ * - 故事风格 / 个人特色：高优先级层有内容则采用，跳过其余层（避免风格冲突与重复）
+ */
+export function mergeGuideCategories(layers: string[]): Record<string, string> {
+	const extracted = layers.map((l) => extractGuideCategories(l));
+	const merged: Record<string, string> = { 通用: "", "故事风格": "", "个人特色": "", 禁用词: "" };
+	for (const cat of ["通用", "禁用词"] as const) {
+		const seen = new Set<string>();
+		const slots: GuideBlock[] = [];
+		const slotIndex = new Map<string, number>();
+		for (const cats of extracted) {
+			for (const block of splitGuideBlocks(cats[cat] || "")) {
+				const key = `${block.level}\u0000${block.title}`;
+				let idx = slotIndex.get(key);
+				if (idx === undefined) {
+					idx = slots.length;
+					slotIndex.set(key, idx);
+					slots.push({ level: block.level, title: block.title, lines: [] });
+				}
+				for (const line of block.lines) {
+					const k = line.trim();
+					if (!k || seen.has(k)) continue;
+					seen.add(k);
+					slots[idx].lines.push(line);
+				}
+			}
+		}
+		const out: string[] = [];
+		for (const s of slots) out.push(...s.lines);
+		merged[cat] = out.join("\n").trim();
+	}
+	for (const cats of extracted) {
+		for (const name of ["故事风格", "个人特色"]) {
+			if (!merged[name] && (cats[name] || "").trim()) merged[name] = cats[name].trim();
+		}
+	}
+	return merged;
 }
 
 // 禁用词提取：兼容「词」与 `词` 两种书写

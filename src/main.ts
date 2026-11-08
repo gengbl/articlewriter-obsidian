@@ -2398,12 +2398,12 @@ async cmdRenameChapterFile(): Promise<void> {
 		}
 		if (typeText) merged["通用"] = (merged["通用"] ? merged["通用"].trimEnd() + "\n\n" : "") + typeText;
 		const body = serializeAggregateGuide(merged);
-		const h = { b: md5(bookText), u: md5(userText), s: md5(systemText), t: md5(typeText) };
+		const h = { b: md5(bookText), u: md5(userText), s: md5(systemText), t: md5(typeText), v: "2" }; // v=合并算法版本：块级分组上线，旧汇总强制重建一次
 		try {
 			const p = this.aggregatePath(story);
 			const existing = await this.manager.readGuideAt(p); // null=尚未生成
 			const prev = existing ? parseAggHash(existing) : null;
-			if (existing == null || !prev || prev.b !== h.b || prev.u !== h.u || prev.s !== h.s || prev.t !== h.t) {
+			if (existing == null || !prev || prev.b !== h.b || prev.u !== h.u || prev.s !== h.s || prev.t !== h.t || prev.v !== h.v) {
 				await this.manager.writeGuideAt(p, embedAggHash(body, h));
 			}
 		} catch { /* 汇总落盘失败不影响提示词构建 */ }
