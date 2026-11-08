@@ -13,6 +13,7 @@ import { chKey, parseChKey, type StoryState } from "./state_doc";
 import { buildDefaultLlmConf } from "./plugin_config";
 import type { LlmConfigDoc, PluginConfig } from "./plugin_config";
 import { DEFAULT_SYSTEM_GUIDE } from "./system_guide_default";
+import { DEFAULT_TENSION_RULES } from "./tension_rules_default";
 import { EMPTY_GUIDE_TEMPLATE } from "./guide_template_default";
 import { GUIDE_TYPES, matchGuideTypes } from "./guide_types_default";
 import { DEFAULT_USAGE_GUIDE } from "./usage_guide_default";
@@ -151,6 +152,7 @@ export default class ArticleWriterPlugin extends Plugin {
 		});
 		await this.ensureSystemGuideFile(); // 首次运行把系统级写作指南从 data.json/内置默认播种到插件数据目录文件
 		await this.ensureGuideTypeFiles(); // 首次运行把四个「类型要点」文件从内置默认播种到插件数据目录 guide-types/
+		await this.ensureTensionRulesFile(); // 首次运行把情节张力/节奏规则从内置默认播种到插件数据目录 TENSION_RULES.md（生成大纲/策划指南时注入）
 		void this.ensureUsageDocOnStartup(); // 工作目录已设且《使用说明.md》缺失时：自动生成并打开（首跑引导）；真·首启无工作目录则等 pickWorkDir 投放
 
 		this.addCommand({ id: "set-work-dir", name: "选择工作目录（work_dir，对齐 CLI --work_dir）", callback: () => this.pickWorkDir(false) });
@@ -2294,6 +2296,31 @@ async cmdRenameChapterFile(): Promise<void> {
 		return t && t.trim() ? t : DEFAULT_SYSTEM_GUIDE;
 	}
 
+	// ---------- 情节张力/节奏规则 TENSION_RULES.md（插件数据目录播种文件，仅注入大纲/策划路径，不进正文写作提示词） ----------
+
+	/** 张力规则文件路径：插件数据目录 .obsidian/plugins/<id>/TENSION_RULES.md（不被元数据索引收录，走 DataAdapter 读写） */
+	private tensionRulesPath(): string {
+		return `${this.app.vault.configDir}/plugins/${this.manifest.id}/TENSION_RULES.md`;
+	}
+
+	/** 首次运行确保文件存在：缺失则用内置默认播种（已存在不覆盖——用户可编辑定制）；失败不阻断启动 */
+	private async ensureTensionRulesFile(): Promise<void> {
+		try {
+			const p = this.tensionRulesPath();
+			if (!(await this.manager.pluginFileExists(p))) {
+				await this.manager.writePluginFile(p, DEFAULT_TENSION_RULES);
+			}
+		} catch (e) {
+			console.warn("[ArticleWriter] 初始化情节张力规则失败", e);
+		}
+	}
+
+	/** 读取张力规则生效文本（运行时读盘上内容，用户改过就用改过的）；读不到/为空回落内置默认 */
+	private async loadTensionRules(): Promise<string> {
+		const t = await this.manager.readPluginFile(this.tensionRulesPath());
+		return t && t.trim() ? t : DEFAULT_TENSION_RULES;
+	}
+
 	/** 读取用户级写作指南文本（按小说类型分组） */
 	private async readUserGuideText(storyName: string): Promise<string> {
 		const storyState = await this.manager.loadState(storyName);
@@ -4393,6 +4420,7 @@ async cmdRenameChapterFile(): Promise<void> {
 				if (count == null) return;
 				const volList = flatMode ? [] : Object.values(await this.manager.loadVolumes(story)).sort((a, b) => a.order - b.order || a.id.localeCompare(b.id)).map((v) => ({ name: v.name, description: v.description }));
 				const guides = await this.loadWriterGuides(story); // v0.2.x+ 三层创作规范合并 + 《写作指南汇总.md》检测更新（与编写章节同一流程），注入【创作规范】块
+				const tensionRules = await this.loadTensionRules(); // 情节张力/节奏规则（插件数据目录播种文件），注入【张力规则】块
 				const soFarSegs: string[] = []; // 本轮已生成各章（提示词注入时经 outlineSoFarContext 裁剪为最近 3 章）
 				for (let num = 1; num <= count; num++) {
 					const view = await this.beginWritingPanel(`AI 拆分${sourceLabel}第${num}章`);
@@ -4407,6 +4435,7 @@ async cmdRenameChapterFile(): Promise<void> {
 						strictCurrentOutlineOnly: true,
 						planningGuide: await this.ensurePlanningGuide(story, state),
 						guideText: guides.guideText,
+						tensionRules,
 						volumes: volList,
 						targetVolumeName: vol.name,
 						existingOutline: "",
@@ -4509,6 +4538,7 @@ async cmdRenameChapterFile(): Promise<void> {
 			const existing = await this.manager.readVolumeOutline(story, vol.id); // 清洗文本：模板注释视为空
 			const relationshipCtx = await this.readOutlineRelationships(story, vol);
 			const guides = await this.loadWriterGuides(story); // v0.2.x+ 三层创作规范合并 + 《写作指南汇总.md》检测更新（与编写章节同一流程），注入【创作规范】块
+			const tensionRules = await this.loadTensionRules(); // 情节张力/节奏规则（插件数据目录播种文件），注入【张力规则】块
 
 			// v0.2.x+ 继续生成：现有大纲非空时先选「完整生成 / 按已有进度继续」；继续模式目标总章数 = 已有最大章号 M + 用户指定增量 N
 			let continueMode = false;
@@ -4550,6 +4580,7 @@ async cmdRenameChapterFile(): Promise<void> {
 				prevVolumeOutline: prevOutline,
 				existingOutline: existing,
 				guideText: guides.guideText,
+				tensionRules,
 				chapterCount: count,
 			};
 
@@ -4638,6 +4669,7 @@ async cmdRenameChapterFile(): Promise<void> {
 		if (!setup) return;
 		const world = await this.manager.readWorldDoc(story);
 		const guides = await this.loadWriterGuides(story); // v0.2.x+ 三层创作规范合并 + 《写作指南汇总.md》检测更新（与编写章节同一流程），整批只查一次、注入各卷【创作规范】块
+		const tensionRules = await this.loadTensionRules(); // 情节张力/节奏规则（插件数据目录播种文件），整批只查一次、注入各卷【张力规则】块
 
 		let vols = await this.manager.volumeList(story);
 		const freshOutlines = new Map<string, string>(); // 本轮已生成的卷 → 清洗后大纲（供后续卷链式上下文）
@@ -4685,6 +4717,7 @@ async cmdRenameChapterFile(): Promise<void> {
 				prevVolumeOutline: prevOutline,
 				existingOutline: existing,
 				guideText: guides.guideText,
+				tensionRules,
 				chapterCount: n,
 			};
 			console.debug("[articlewriter] 自动生成卷大纲（无卷自动建卷）增量生成", { model: setup.cfg.model_name || "(默认)", vol: vol.name, steps: n + 1 });
@@ -4722,6 +4755,7 @@ async cmdRenameChapterFile(): Promise<void> {
 	/** v0.2.13+ 组装策划指南生成输入（自动生成与手动 /planning-guide·/planning-guide-worldview 共用）：书籍信息 / 世界观 / 全书大纲 / 卷列表（阅读序，平铺模式无卷）/ 已有章节 + 已存摘要。
 	 * opts.chapterCount=目标总章数（各节位置以其为基准表述）；opts.worldOnly=仅世界观生成（跳过大纲/卷/章节输入，早期规划场景） */
 	private async buildPlanningGuideInput(story: string, state: StoryState, existingGuide?: string, opts?: { chapterCount?: number; worldOnly?: boolean }): Promise<PlanningGuideInput> {
+		const tensionRules = await this.loadTensionRules(); // 情节张力/节奏规则（插件数据目录播种文件，运行时读盘上内容）
 		const world = await this.manager.readWorldDoc(story);
 		const globalOutline = opts?.worldOnly ? undefined : await this.manager.readGlobalOutline(story);
 		const volsRec = opts?.worldOnly || state.use_volumes === false ? {} : await this.manager.loadVolumes(story);
@@ -4744,6 +4778,7 @@ async cmdRenameChapterFile(): Promise<void> {
 			...(existingGuide ? { existingGuide } : {}),
 			...(opts?.chapterCount != null ? { chapterCount: opts.chapterCount } : {}),
 			flatMode: state.use_volumes === false, // v0.2.x+：平铺模式——位置一律用章号表述、禁用卷划分
+			tensionRules, // 情节张力/节奏规则 →【张力规则】块（「六·节奏与张力曲线」等节逐条对照）
 		};
 	}
 
@@ -5054,6 +5089,7 @@ async cmdRenameChapterFile(): Promise<void> {
 			const world = await this.manager.readWorldDoc(story);
 			const planningGuide = await this.ensurePlanningGuide(story, state, { chapterCount: count }); // v0.2.13+：缺失则先自动生成（软依赖，失败返回 ""）；v0.2.x+ 传入目标章数使策划指南各节位置与本次规划同基准
 			const guides = await this.loadWriterGuides(story); // v0.2.x+ 三层创作规范合并 + 《写作指南汇总.md》检测更新（与编写章节同一流程），注入【创作规范】块
+			const tensionRules = await this.loadTensionRules(); // 情节张力/节奏规则（插件数据目录播种文件），注入【张力规则】块
 			const volsRec = flatMode ? {} : await this.manager.loadVolumes(story);
 			const vols = Object.values(volsRec).sort((a, b) => a.order - b.order || a.id.localeCompare(b.id));
 			const currentVolumeKey = typeof state.current_volume === "string" && state.current_volume.trim() ? state.current_volume.trim() : "";
@@ -5080,6 +5116,7 @@ async cmdRenameChapterFile(): Promise<void> {
 				existingOutlineCompact: flatMode && !!existing.trim(), // v0.2.x+：平铺模式把现有大纲压成「章标题 + 主线」紧凑索引再注入（百章大纲全量注入易撑爆本地模型上下文窗口）；有卷模式大纲小、保持全量
 				planningGuide,
 				guideText: guides.guideText,
+				tensionRules,
 				chapterCount: count,
 			};
 			// v0.2.x+ 继续生成 · 有卷模式：只追加覆盖 M+1..count 的新卷声明行 + 更新后的结局（不重出主线/旧卷），直接拼到原文末尾（无覆盖/追加二选一）
@@ -5229,6 +5266,7 @@ async cmdRenameChapterFile(): Promise<void> {
 			const world = await this.manager.readWorldDoc(story);
 			const planningGuide = await this.ensurePlanningGuide(story, state, { chapterCount: counts.reduce((a, b) => a + b, 0) }); // v0.2.13+：缺失则先自动生成（软依赖，失败返回 ""）；v0.2.x+ 各卷目标章数之和即全书总章数
 			const guides = await this.loadWriterGuides(story); // v0.2.x+ 三层创作规范合并 + 《写作指南汇总.md》检测更新（与编写章节同一流程），整批只查一次、注入各卷【创作规范】块
+			const tensionRules = await this.loadTensionRules(); // 情节张力/节奏规则（插件数据目录播种文件），整批只查一次、注入各卷【张力规则】块
 
 			let vols = await this.manager.volumeList(story);
 			const freshOutlines = new Map<string, string>(); // 本轮已更新的卷 → 清洗后大纲（供后续卷链式上下文，与 readVolumeOutline 同口径）
@@ -5282,6 +5320,7 @@ async cmdRenameChapterFile(): Promise<void> {
 					prevVolumeOutline: prevOutline,
 					existingOutline: existingClean,
 					guideText: guides.guideText,
+					tensionRules,
 					chapterCount: n,
 				};
 				console.debug("[articlewriter] 书级大纲→生成卷增量生成", { model: setup.cfg.model_name || "(默认)", vol: vol.name, mode: supplementMode ? "补全" : "全量", missing, steps: missing.length + (supplementMode ? 0 : 1) });
@@ -6379,6 +6418,7 @@ async cmdRenameChapterFile(): Promise<void> {
 				existingOutlineCompact: flatMode && !!existing.trim(),
 				planningGuide,
 				guideText: guides.guideText,
+				tensionRules: await this.loadTensionRules(), // 张力规则：与运行时同口径（读插件数据目录 TENSION_RULES.md，缺失回落内置默认）
 				chapterCount: defaultCount,
 			});
 			return this.exportSection(title, setup.cfg, phaseName(1), [
@@ -6416,6 +6456,7 @@ async cmdRenameChapterFile(): Promise<void> {
 				prevVolumeOutline: prevOutline,
 				existingOutline: existing,
 				guideText: guides.guideText,
+				tensionRules: await this.loadTensionRules(), // 张力规则：与运行时同口径（读插件数据目录 TENSION_RULES.md，缺失回落内置默认）
 				chapterCount: defaultCount,
 			};
 			return this.exportSection(title, setup.cfg, phaseName(1), [
@@ -6466,6 +6507,7 @@ async cmdRenameChapterFile(): Promise<void> {
 				strictCurrentOutlineOnly: true,
 				planningGuide: await this.manager.readPlanningGuide(story), // 导出只读盘；运行时会 ensurePlanningGuide
 				guideText: guides.guideText,
+				tensionRules: await this.loadTensionRules(), // 张力规则：与运行时同口径（读插件数据目录 TENSION_RULES.md，缺失回落内置默认）
 				volumes: volList,
 				targetVolumeName: vol.name,
 				existingOutline: "",

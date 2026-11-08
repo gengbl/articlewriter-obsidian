@@ -1042,6 +1042,7 @@ export interface VolOutlineGenInput {
 	strictCurrentOutlineOnly?: boolean; // v0.2.x+：强制本次拆分仅依赖当前卷大纲，不允许把全书大纲/前卷线索当成拆分依据
 	planningGuide?: string; // v0.2.13+ 书级《策划指南.md》清洗文本（本书既定规划约束，注入【策划规范】块）
 	guideText?: string; // v0.2.x+ 《写作指南汇总.md》去注释正文（三层创作规范合并，与编写章节同一口径，注入【创作规范】块）
+	tensionRules?: string; // 情节张力/节奏规则（插件数据目录 TENSION_RULES.md 播种文件内容，注入【张力规则】块——仅大纲/策划路径）
 	bookRelationships?: string; // 书籍级人物关系（清洗后文本，只附加书籍级和卷级，不带章节级）
 	volRelationships?: string; // 目标卷人物关系（清洗后文本，只附加书籍级和卷级，不带章节级）
 	volumes: Array<{ name: string; description?: string }>; // 全部卷（阅读序）
@@ -1066,6 +1067,9 @@ function volOutlineContextParts(input: VolOutlineGenInput, existingLabel: string
 
 	const gt = (input.guideText ?? "").trim(); // v0.2.x+ 写作指南汇总：三层创作规范合并正文，与编写章节同一口径
 	if (gt) parts.push(`\n【创作规范 · 本项目要求必须遵守的创作规范（生成大纲时必须遵循、不得违背）】\n${gt}`);
+
+	const tr = (input.tensionRules ?? "").trim(); // 情节张力/节奏规则：设计张力曲线与章末钩子时须逐条对照
+	if (tr) parts.push(`\n【张力规则 · 情节张力/节奏规则（生成大纲时必须遵循）】\n${tr}`);
 
 	const wb = worldBlock(input.world); // v0.2.x+：优先清洗后全文（自由格式设定也注入），缺失回退结构化字段
 	if (wb) parts.push(wb);
@@ -1188,6 +1192,7 @@ export interface BookOutlineGenInput {
 	existingOutline?: string; // 现有书级《大纲.md》清洗文本（避免重复）
 	planningGuide?: string; // v0.2.13+ 书级《策划指南.md》清洗文本（本书既定规划约束，注入【策划规范】块）
 	guideText?: string; // v0.2.x+ 《写作指南汇总.md》去注释正文（三层创作规范合并，与编写章节同一口径，注入【创作规范】块）
+	tensionRules?: string; // 情节张力/节奏规则（插件数据目录 TENSION_RULES.md 播种文件内容，注入【张力规则】块——仅大纲/策划路径）
 	chapterCount: number; // 目标章数（平铺=恰好 N 章；有卷=全书规划总章数参考）
 	existingOutlineCompact?: boolean; // v0.2.x+：注入前把 existingOutline 压成「章标题行 + 主线行」紧凑索引（平铺模式百章大纲全量注入 ~40K tokens，易撑爆本地模型上下文窗口）
 }
@@ -1236,6 +1241,9 @@ function bookOutlineContextParts(input: BookOutlineGenInput): string[] {
 
 	const gt = (input.guideText ?? "").trim(); // v0.2.x+ 写作指南汇总：三层创作规范合并正文，与编写章节同一口径
 	if (gt) parts.push(`\n【创作规范 · 本项目要求必须遵守的创作规范（生成大纲时必须遵循、不得违背）】\n${gt}`);
+
+	const tr = (input.tensionRules ?? "").trim(); // 情节张力/节奏规则：设计张力曲线与章末钩子时须逐条对照
+	if (tr) parts.push(`\n【张力规则 · 情节张力/节奏规则（生成大纲时必须遵循）】\n${tr}`);
 
 	const wb = worldBlock(input.world); // v0.2.x+：优先清洗后全文（自由格式设定也注入），缺失回退结构化字段
 	if (wb) parts.push(wb);
@@ -1379,6 +1387,7 @@ export interface PlanningGuideInput {
 	existingGuide?: string; // 现有《策划指南.md》清洗文本（重新生成模式：既定事实约束）
 	chapterCount?: number; // v0.2.x+：目标总章数——各节位置（抬升节点/伏笔埋设与回收/高潮落位等）一律以该总章数为基准表述
 	flatMode?: boolean; // v0.2.x+：平铺（无卷）模式——全书无卷结构，位置一律用章号表述、禁用任何卷划分/卷引用
+	tensionRules?: string; // 情节张力/节奏规则（插件数据目录 TENSION_RULES.md 播种文件内容，注入【张力规则】块——「六·节奏与张力曲线」等节须逐条对照）
 	// 注：「仅世界观生成」（/planning-guide-worldview）不设独立标志——行为由 globalOutline/volumes/chapters 缺省驱动（无对应输入块、连续性基线改以世界观为据）
 }
 
@@ -1419,6 +1428,9 @@ export function buildPlanningGuidePrompt(input: PlanningGuideInput): string {
 	if (genre) info.push(`题材：${genre}`);
 	if (style) info.push(`基调/风格：${style}`);
 	parts.push(`\n【书籍信息】\n${info.join("\n")}`);
+
+	const tr = (input.tensionRules ?? "").trim(); // 情节张力/节奏规则：「六·节奏与张力曲线」「二·升级路径」等节须逐条对照
+	if (tr) parts.push(`\n【张力规则 · 情节张力/节奏规则（生成策划指南时必须遵循）】\n${tr}`);
 
 	const wb = worldBlock(input.world); // v0.2.x+：优先清洗后全文（自由格式设定也注入），缺失回退结构化字段
 	if (wb) parts.push(wb);

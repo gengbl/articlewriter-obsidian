@@ -61,3 +61,15 @@
 - 「打包发布」类任务先读 [RELEASE.md](./RELEASE.md)（版本号规则、GitHub 镜像 tag + CI 自动上架流程与坑位；GitHub CI 只上三个散文件、不传 zip）。
 - **发布后必核对 GitHub Release**：每个已打 tag 的版本都要在 GitHub 有对应 Release，且资产恰为 `main.js` / `manifest.json` / `styles.css` 三个散文件。收尾用 REST API `GET …/releases/tags/v<版本>` 校验其存在；缺失则走手动回落方案（Web UI 上传）。详见 [agents/l3-build-deploy.md](./agents/l3-build-deploy.md)。
 - 变更历史见 **[CHANGELOG.md](./CHANGELOG.md)**（每次任务收尾向其末尾追加一行，了解历史先读它）。
+
+## 张力规则（TENSION_RULES.md）——分步实施记录（2026-11-08）
+
+「情节张力/节奏规则」按以下步骤落地；后续维护（改规则文本、加注入点、排查未生效）照此路径走：
+
+1. **独立源文件**：仓库根 `TENSION_RULES.md`＝规则全文（逐字保留，含「用法建议」节），是播种内容的唯一事实源。
+2. **打包导出**：`src/tension_rules_default.ts` 以 `import text from "../TENSION_RULES.md"`（esbuild `.md=text` loader，全局已配、无需改配置）导出 `DEFAULT_TENSION_RULES`——与 system_guide_default.ts 同模式。
+3. **首启播种**：main.ts 三方法——`tensionRulesPath()`（插件数据目录 TENSION_RULES.md，不被元数据索引收录、走 DataAdapter）＋ `ensureTensionRulesFile()`（onload 调一次，仅缺失时写盘、失败 console.warn 不阻断启动）＋ `loadTensionRules()`（运行时读盘上内容，用户直接编辑即生效；读不到/为空回落内置默认）。
+4. **注入点**：prompts.ts 三个 input interface（VolOutlineGenInput / BookOutlineGenInput / PlanningGuideInput）各加可选 `tensionRules?` 字段；user prompt 上下文函数注入独立块——大纲路径（vol-outline-generate 含无卷兜底批量路径 / book-outline-generate）放【创作规范】块后，策划指南路径（planning-guide·planning-guide-worldview 含 ensurePlanningGuide 触发的自动生成路径）放【书籍信息】后〔world 块前〕且文案为「生成策划指南时必须遵循」（策划指南无【创作规范】块故不挂其后）；**不进正文写作命令提示词**。
+5. **传值点**：main.ts 全部调用点（运行时 6＋预览 3）生成前 `await this.loadTensionRules()` 传入；export-ai-prompts 预览视图与运行时同口径（读盘、缺失回落内置默认）。
+6. **门禁与 bundle 核验**：npm run build（tsc 零错误）→ node --check release/main.js → npm run lint 零违规。核验坑：esbuild 非 ASCII 转义存储（CJK→`\uXXXX`、`·`(U+00B7)→`\xB7`），对 release/main.js 做字面中文 grep 必误报 MISS——须先全局解码 `\uXXXX`＋`\xXX` 再搜。
+7. **文档写回**：agents/l2-llm-writing-commands.md（模块概要）、l3-writing-commands-impl.md（三个 input 字段描述）、l3-main-ts-flow.md（生命周期 bullet）、command-reference.md（planning-guide / vol-outline-generate / book-outline-generate 三条）＋ CHANGELOG.md。
