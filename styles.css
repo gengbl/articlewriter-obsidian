@@ -357,6 +357,20 @@
 	background: var(--background-modifier-hover);
 }
 
+/* 案头资料中的文件夹行：图标前缀 + 文件夹名；仅展示（点击无动作），右键提供新建/删除 */
+.aw-st-folder {
+	padding: 2px 8px;
+	display: flex;
+	align-items: center;
+	gap: 4px;
+}
+
+.aw-st-folder::before {
+	content: "📁";
+	font-size: 13px;
+	line-height: 1;
+}
+
 .aw-st-chap-block + .aw-st-chap-block {
 	margin-top: 2px;
 }

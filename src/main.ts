@@ -3,12 +3,12 @@ import { ActionItem, ActionMenuModal, AddCharacterModal, ChapterListModal, Confi
 import type { AddCharacterResult, CharacterScopeOption } from "./modals";
 import { LlmChatView } from "./llm_chat_view";
 import { GenProgressView, formatElapsedMs, type WritingStreamSink } from "./gen_progress_view";
-import { StatusView, type StatusAction, type StatusChapterEntry, type StatusDetail, type StatusSnapshot, type StatusStoryEntry } from "./status_view";
+import { StatusView, type StatusAction, type StatusChapterEntry, type StatusDetail, type StatusFileEntry, type StatusFolderEntry, type StatusSnapshot, type StatusStoryEntry } from "./status_view";
 import { RelationshipView, type RelCharInfo, type RelGroup, type RelRow, type RelSnapshot, type RelStoryEntry } from "./relationship_view";
 import { TimelineView, type TlRow, type TlSnapshot, type TlStoryEntry } from "./timeline_view";
 import { chapterOutlineTemplate, countPureWords, FORESHADOW_TEMPLATE, formatLocalDateTime, md5, NOTES_TEMPLATE, outlineTemplate, WORLD_TEMPLATE } from "./story_types";
 import { safeFilename } from "./story_types";
-import { StoryManager, NO_VOL_MODE_MSG } from "./story_manager";
+import { StoryManager, NO_VOL_MODE_MSG, CHAPTER_DIR_RE, PROLOGUE_DIR_NAME, DESK_DOCS_DIR_NAME, MANUSCRIPT_DIR_NAME } from "./story_manager";
 import { chKey, parseChKey, type StoryState } from "./state_doc";
 import { buildDefaultLlmConf } from "./plugin_config";
 import type { LlmConfigDoc, PluginConfig } from "./plugin_config";
@@ -3226,10 +3226,27 @@ async cmdRenameChapterFile(): Promise<void> {
 			files: c.dir.children.filter((f): f is TFile => f instanceof TFile).map((f) => ({ path: f.path, name: f.name })).sort((a, b) => a.name.localeCompare(b.name, "zh")),
 		}));
 		const storyDir = this.app.vault.getAbstractFileByPath(this.manager.storyPath(storyName));
-		const globalFiles =
-			storyDir instanceof TFolder
-				? storyDir.children.filter((f): f is TFile => f instanceof TFile).map((f) => ({ path: f.path, name: f.name })).sort((a, b) => a.name.localeCompare(b.name, "zh"))
-				: [];
+		const deskDir = this.app.vault.getAbstractFileByPath(this.manager.deskDocsPath(storyName)); // 「案头资料/」（新布局）；旧布局尚未迁移时不存在
+		// 「案头资料」小节展示 = 「案头资料/」内容 ∪ 书根剩余项（故事状态.md/卷.md/AI提示词/ 等系统项留书根一并展示；「案头资料/」「书稿/」两个容器自身不列入）
+		const srcDirs = [deskDir, storyDir].filter((d): d is TFolder => d instanceof TFolder);
+		const knownVolNames = new Set(vols.map((v) => this.manager.volumeFolderName(v))); // 已建卷的实体目录名集合，用于过滤书根文件夹（旧布局未迁移时生效）
+		const globalFiles: StatusFileEntry[] = [];
+		const globalFolders: StatusFolderEntry[] = [];
+		for (const d of srcDirs) {
+			for (const f of d.children) {
+				if (f instanceof TFile) {
+					globalFiles.push({ path: f.path, name: f.name });
+				} else if (f instanceof TFolder && d === storyDir) {
+					if (f.name === DESK_DOCS_DIR_NAME || f.name === MANUSCRIPT_DIR_NAME) continue; // 新布局两容器
+					if (CHAPTER_DIR_RE.test(f.name) || knownVolNames.has(f.name) || f.name === PROLOGUE_DIR_NAME) continue;
+					globalFolders.push({ path: f.path, name: f.name });
+				} else if (f instanceof TFolder) {
+					globalFolders.push({ path: f.path, name: f.name }); // 「案头资料/」直属文件夹原样展示
+				}
+			}
+		}
+		globalFiles.sort((a, b) => a.name.localeCompare(b.name, "zh"));
+		globalFolders.sort((a, b) => a.name.localeCompare(b.name, "zh"));
 		const volDocs = await this.manager.listVolumeDocsByVol(storyName); // v0.1.3+：各卷实体目录直属 md（非章节目录），供写字台「文档」子节点展示
 		const prologueFiles = this.manager.listPrologueDocs(storyName); // v0.2.x+：书根「引言」文件夹直属 md（全书唯一），供写字台「引言」节点展示
 		return {
@@ -3245,6 +3262,7 @@ async cmdRenameChapterFile(): Promise<void> {
 			volumes: vols.map((v) => ({ id: v.id, name: v.name, order: v.order, active: v.id === curVolId, docs: volDocs[v.id] ?? [] })),
 			chapters,
 			globalFiles,
+			globalFolders,
 			prologueFiles,
 			useVolumes: state?.use_volumes ?? true, // v0.0.16+：无卷模式时写字台隐藏全部「新建卷」入口；状态缺失按有卷兜底不擅藏功能
 		};
@@ -3544,7 +3562,21 @@ async cmdRenameChapterFile(): Promise<void> {
 				return;
 			}
 			case "new-file": {
-				const target = a.key == null ? {} : { chKey: a.key }; // 书根（案头资料）或章节目录
+				if (a.folder) {
+					// 案头资料文件夹行右键「新建文章…」：在该文件夹内新建 .md（仅自定义文件名，无标准文档清单）
+					const folder = a.folder;
+					if (!(this.app.vault.getAbstractFileByPath(folder) instanceof TFolder)) throw new Error("该文件夹不存在或已被移动");
+					const res = await this.pickNewDoc(`在「${folder.split("/").pop() ?? folder}」新建文章`, []);
+					if (res == null) return;
+					let base = safeFilename(res.name);
+					if (!base.toLowerCase().endsWith(".md")) base += ".md";
+					const path = `${folder}/${base}`;
+					if (this.app.vault.getAbstractFileByPath(path)) throw new Error(`同名文件已存在：${path}`);
+					await this.app.vault.create(path, "");
+					new Notice(`已创建 ${path}`);
+					return;
+				}
+				const target = a.key == null ? {} : { chKey: a.key }; // 书级（案头资料）或章节目录
 				const stds = await this.manager.standardDocs(a.story, target); // 标准模板文档列出（参与提示词者），已存在禁用
 				const res = await this.pickNewDoc(`新建${a.key == null ? "资料" : "文章"}（${a.key == null ? "书根目录（案头资料）" : "该章节目录"}）`, stds); // v0.1.8+：全宽输入框+底部「确定」单视图，不再多窗
 				if (res == null) return;
@@ -3563,7 +3595,7 @@ async cmdRenameChapterFile(): Promise<void> {
 				}
 				let folder: string;
 				if (a.key == null) {
-					folder = this.manager.storyPath(a.story);
+					folder = this.manager.deskDocsPath(a.story); // 书级自定义资料落「案头资料/」
 				} else {
 					const ch = (await this.manager.listChapters(a.story)).find((c) => c.key === a.key); // 以磁盘为准取真实章节目录（含章名）
 					if (!ch) throw new Error(`第${parseChKey(a.key).num}章不存在`);
@@ -3582,6 +3614,16 @@ async cmdRenameChapterFile(): Promise<void> {
 				if (!(f instanceof TFile)) throw new Error("文件不存在或已被移动");
 				if (f.name === "故事状态.md") throw new Error("不能删除小说状态文档（需要重置请用「重建小说状态」命令）");
 				const ok = await this.confirmBox(`删除文件 ${f.path}？`, "将移入 Obsidian 回收站，可从中找回。", "删除");
+				if (!ok) return;
+				await this.app.fileManager.trashFile(f);
+				new Notice(`${f.name} 已删除（可在回收站找回）`);
+				return;
+			}
+			case "delete-folder": {
+				const f = this.app.vault.getAbstractFileByPath(a.path);
+				if (!(f instanceof TFolder)) throw new Error("文件夹不存在或已被移动");
+				if (f.name === DESK_DOCS_DIR_NAME || f.name === MANUSCRIPT_DIR_NAME) throw new Error(`「${f.name}」是系统容器目录，不能删除`); // 双保险：这两类容器不会出现在案头资料列表里
+				const ok = await this.confirmBox(`删除文件夹 ${f.path} 及其全部内容？`, "将整体移入 Obsidian 回收站，可从中找回。", "删除");
 				if (!ok) return;
 				await this.app.fileManager.trashFile(f);
 				new Notice(`${f.name} 已删除（可在回收站找回）`);

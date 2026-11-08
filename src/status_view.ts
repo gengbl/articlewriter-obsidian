@@ -40,6 +40,10 @@ export interface StatusFileEntry {
 	path: string;
 	name: string;
 }
+export interface StatusFolderEntry {
+	path: string;
+	name: string;
+}
 export interface StatusChapterEntry {
 	key: string; // v0.0.15：复合键 "volId:N" / "N"（章节唯一身份）
 	num: number; // 卷内本地章号（仅展示用）
@@ -69,6 +73,7 @@ export interface StatusDetail {
 	volumes: StatusVolumeEntry[];
 	chapters: StatusChapterEntry[];
 	globalFiles: StatusFileEntry[];
+	globalFolders: StatusFolderEntry[]; // 「案头资料/」内文件夹 ∪ 书根剩余文件夹（排除「案头资料」「书稿」两容器、章节目录、卷实体目录、引言目录）；空数组=尚无
 	prologueFiles: StatusFileEntry[]; // 书根「引言」文件夹直属 md（全书唯一）；空数组=尚无引言
 	useVolumes?: boolean; // v0.0.16+：false=无卷模式（纯 书→章），隐藏全部「新建卷」入口；缺省/true=有卷
 }
@@ -107,9 +112,10 @@ export type StatusAction =
 	| { kind: "book-outline-to-volumes"; story: string } // 「书籍列表」标题行右键「从书级大纲生成卷…」：解析书级《大纲.md》卷声明，逐卷生成全部卷及其卷大纲（缺失卷自动创建、只补缺失章）
 	| { kind: "rename-chapter"; story: string; key: string } // 改写章名：重命名目录并同步文档引用（对齐 /chapter rename）；key=复合键
 	| { kind: "delete-chapter"; story: string; key: string }
-	| { kind: "new-file"; story: string; key: string | null } // key=null → 书根目录；否则该章节目录
+	| { kind: "new-file"; story: string; key: string | null; folder?: string } // key=null → 书根目录；否则该章节目录；folder 指定 → 在该文件夹内新建（案头资料文件夹行右键）
 	| { kind: "chapter-to-screenplay"; story: string; key: string } // 章节行右键「转成剧本」：针对某章节正文文件生成“原文件名+剧本.md”
 	| { kind: "delete-file"; path: string }
+	| { kind: "delete-folder"; path: string } // 案头资料文件夹行右键「删除」：整个文件夹移入回收站（先确认框）
 	| { kind: "new-volume-doc"; story: string; volId: string } // 卷节点 / 卷内「文档」分组右键：在该卷实体目录下新建 .md（语义同 new-file，落点为卷目录而非章节目录）
 	| { kind: "complete-volume-docs"; story: string; volId: string } // 卷内「文档」命名头右键「补全卷文档」：检查该卷下缺失的设定模板（卷大纲/人物/人物关系/场景/时间线五件套）并创建，已存在不覆盖
 	| { kind: "complete-root-docs"; story: string } // 案头资料节点右键「补全资料」：检查书根缺失的默认资料文件（大纲/策划指南/世界观/伏笔/笔记/人物/人物关系/场景/时间线九件套）并按模板创建，已存在不覆盖
@@ -342,14 +348,14 @@ export class StatusView extends ItemView {
 
 	/** 「案头资料」「书稿」两个小节；isActive=该书是否为当前激活小说（仅其下章节/卷可被 Radio 选中激活）。书稿小节按归属卷渲染为树节点（卷名行 + 缩进章节），未归属章节平铺兜底 */
 	private renderStorySections(parent: HTMLElement, d: StatusDetail, isActive: boolean): void {
-		if (d.globalFiles.length) {
+		if (d.globalFiles.length || d.globalFolders.length) {
 			// 案头资料分组：标题行与组内空白右键=「补全资料」（书根默认资料九件套补缺、已存在不覆盖）+「新建资料…」（v0.1.6+：不再提供新建章节/新建卷——建章在书稿具体章节/卷节点上、建卷在书籍列表标题行或书稿小节标题）
 			const gItems = (): Array<{ label: string; run: () => void } | { sep: true }> => [
 				{ label: "补全资料", run: () => this.runStatusAction({ kind: "complete-root-docs", story: d.storyName }) }, // 检查缺失的默认资料文件并创建，已存在保留不覆盖
 				{ sep: true },
 				{ label: "新建资料…", run: () => this.runStatusAction({ kind: "new-file", story: d.storyName, key: null }) },
 			];
-			const gBody = this.sectionHead(parent, `案头资料（${String(d.globalFiles.length)}）`, `gdocs:${d.storyName}`, (e) => this.showContextMenu(e, gItems()));
+			const gBody = this.sectionHead(parent, `案头资料（${String(d.globalFiles.length + d.globalFolders.length)}）`, `gdocs:${d.storyName}`, (e) => this.showContextMenu(e, gItems()));
 			if (gBody) {
 				gBody.addClass("aw-st-kids"); // 展开后文件列表带左侧指示线
 				gBody.addEventListener("contextmenu", (e) => {
@@ -357,6 +363,7 @@ export class StatusView extends ItemView {
 					this.showContextMenu(e, gItems());
 				});
 				for (const f of d.globalFiles) this.appendFileRow(gBody, f, { story: d.storyName, key: null });
+				for (const folder of d.globalFolders) this.appendFolderRow(gBody, folder, d.storyName);
 			}
 		}
 
@@ -666,6 +673,19 @@ export class StatusView extends ItemView {
 				]);
 			});
 		}
+	}
+
+	private appendFolderRow(parent: HTMLElement, folder: StatusFolderEntry, storyName: string): void {
+		const el = parent.createDiv({ cls: "aw-st-folder" });
+		el.setText(folder.name);
+		// 文件夹行仅展示：点击无动作（Obsidian 无公开 API 在文件浏览器定位文件夹），右键提供新建/删除
+		el.addEventListener("contextmenu", (e) => {
+			e.stopPropagation();
+			this.showContextMenu(e, [
+				{ label: "新建文章…", run: () => this.runStatusAction({ kind: "new-file", story: storyName, key: null, folder: folder.path }) },
+				{ label: `删除「${folder.name}」`, danger: true, run: () => this.runStatusAction({ kind: "delete-folder", path: folder.path }) },
+			]);
+		});
 	}
 
 	/** 执行右键菜单动作（main.ts handleStatusAction），完成后刷新视图；失败追加错误行 */

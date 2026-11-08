@@ -41,10 +41,22 @@ import { buildChapterFolderDocs, cleanRelationshipsDoc } from "./prompts";
 import type { CastLayerDoc, CastLayerRef } from "./cast_analyzer";
 import type { ChapterFolderDocEntry, PrevChapterRef } from "./prompts";
 
-const CHAPTER_DIR_RE = /^第(\d{1,6})章-(.+)$/;
+export const CHAPTER_DIR_RE = /^第(\d{1,6})章-(.+)$/;
 
-/** 引言实体目录名（书根唯一；保留名——卷名不得占用，避免与引言文件夹物理冲突） */
-const PROLOGUE_DIR_NAME = "引言";
+/** 引言实体目录名（位于 `书稿/` 下；保留名——卷名不得占用，避免与引言文件夹物理冲突） */
+export const PROLOGUE_DIR_NAME = "引言";
+
+/** 案头资料目录名（书级参考资料：九件套 + 用户自建文件；写字台「案头资料」小节展示其内容 ∪ 书根剩余项） */
+export const DESK_DOCS_DIR_NAME = "案头资料";
+
+/** 书稿目录名（容纳引言目录、章节目录与卷目录） */
+export const MANUSCRIPT_DIR_NAME = "书稿";
+
+/** 卷文档子目录名（卷目录直属，容纳卷文档六件套 + 用户文件） */
+export const VOLUME_DOCS_DIR_NAME = "文档";
+
+/** 书根系统管理项（迁移不搬动、不计入「案头资料」；隐藏点文件另行按前缀跳过） */
+const ROOT_SYSTEM_NAMES = new Set([STATE_DOC_NAME, LEGACY_STATE_JSON, "WRITING_GUIDE.md", "写作指南汇总.md", "AI提示词", "_backup", "卷.md"]);
 
 /** 人物关系面板数据源（v0.1.9+）：一层《人物关系.md》的归属层级、展示标签、实际路径与原文（文件缺失时 text 为空串） */
 export interface RelationshipDocSource {
@@ -224,9 +236,239 @@ export class StoryManager {
 		return `${this.storyPath(storyName)}/${LEGACY_STATE_JSON}`;
 	}
 
+	/** 章节目录（未归属章落「书稿/」直属；归卷章在 书稿/<卷>/ 下，见 volumeDirPath） */
 	chapterDirPath(storyName: string, num: number, title?: string): string {
 		const safe = safeFilename((title || "").trim() || `第${num}章`);
-		return `${this.storyPath(storyName)}/第${String(num).padStart(2, "0")}章-${safe}`;
+		return `${this.manuscriptPath(storyName)}/第${String(num).padStart(2, "0")}章-${safe}`;
+	}
+
+	/** 书稿目录（引言/章节/卷的物理容器；平铺与有卷模式共用） */
+	manuscriptPath(storyName: string): string {
+		return `${this.storyPath(storyName)}/${MANUSCRIPT_DIR_NAME}`;
+	}
+
+	/** 案头资料目录（书级参考资料：九件套 + 用户自建文件） */
+	deskDocsPath(storyName: string): string {
+		return `${this.storyPath(storyName)}/${DESK_DOCS_DIR_NAME}`;
+	}
+
+	/** 卷实体目录（书稿/<卷目录名>） */
+	volumeDirPath(storyName: string, vol: doc.VolumeInfo): string {
+		return `${this.manuscriptPath(storyName)}/${this.volumeFolderName(vol)}`;
+	}
+
+	/** 卷文档子目录（书稿/<卷目录名>/文档） */
+	volumeDocsDirPath(storyName: string, vol: doc.VolumeInfo): string {
+		return `${this.volumeDirPath(storyName, vol)}/${VOLUME_DOCS_DIR_NAME}`;
+	}
+
+	// ---------- 布局迁移（旧格式 → 案头资料/书稿 物理结构）----------
+
+	/** 已确认处于新布局（或无需迁移）的书名缓存，避免每次读写重复探测 */
+	private readonly layoutChecked = new Set<string>();
+	/** 正在迁移中的书名（防重入：迁移期间的收口调用直接放行，避免递归） */
+	private readonly migrating = new Set<string>();
+
+	/** 从 vault 路径提取书名（故事根下第一级目录）；不在故事根下返回 null */
+	private storyNameOfPath(path: string): string | null {
+		const root = this.getStoryRoot().replace(/\/+$/, "");
+		const rel = root ? (path.startsWith(`${root}/`) ? path.slice(root.length + 1) : null) : path;
+		if (!rel) return null;
+		const seg = rel.split("/")[0];
+		return seg && !seg.startsWith(".") ? seg : null;
+	}
+
+	/**
+	 * 布局收口：确保该书处于新物理结构（案头资料/ + 书稿/）。
+	 * 探测轻量：①「案头资料/」已存在 → 视为已迁移直接返回；②否则 adapter.list(书根) 一次调用本地判定——
+	 * 存在任何非隐藏、非系统项（引言/、章节目录、卷目录、九件套或用户自建文件/文件夹）即触发迁移。
+	 * force=true 绕过 layoutChecked 缓存（/scan 修复入口用）。migrating 防重入；迁移失败不写缓存（下次重试）。
+	 */
+	private async ensureLayout(storyName: string, force = false): Promise<void> {
+		if (this.migrating.has(storyName)) return;
+		if (!force && this.layoutChecked.has(storyName)) return;
+		this.migrating.add(storyName);
+		try {
+			if (this.vault.getAbstractFileByPath(this.deskDocsPath(storyName)) instanceof TFolder) {
+				this.layoutChecked.add(storyName); // ① 已迁移
+				return;
+			}
+			let listed: { files?: string[]; folders?: string[] };
+			try {
+				listed = await this.vault.adapter.list(this.storyPath(storyName)); // ② 一次 list 调用
+			} catch {
+				return; // 书目录不存在等 → 不迁移
+			}
+			const hasMarker = [...(listed.files ?? []), ...(listed.folders ?? [])].some((p) => {
+				const name = p.split("/").pop() ?? "";
+				if (!name || name.startsWith(".")) return false;
+				if (name === DESK_DOCS_DIR_NAME || name === MANUSCRIPT_DIR_NAME) return false;
+				return !ROOT_SYSTEM_NAMES.has(name); // 任何非隐藏非系统项（含纯用户文件书）都触发
+			});
+			if (!hasMarker) {
+				this.layoutChecked.add(storyName); // 仅系统项/空书 → 无需迁移
+				return;
+			}
+			await this.migrateStoryLayout(storyName);
+			this.layoutChecked.add(storyName);
+		} finally {
+			this.migrating.delete(storyName);
+		}
+	}
+
+	/**
+	 * 旧格式 → 新物理结构一次性迁移引擎（幂等、可重跑）：
+	 * ① 卷目录（书根）→ 整体 rename 到 书稿/<卷>/（章节目录随迁），再建「文档/」子目录并把卷直属 TFile 移入（legacy 前缀名归一裸基名）；
+	 * ② 引言/ → 书稿/引言/；③ 书根章节目录 → 书稿/；④ 书根其余非系统项（九件套 + 用户文件/文件夹）→ 案头资料/。
+	 * 系统项（故事状态.md / story_state.json / WRITING_GUIDE.md / 写作指南汇总.md / AI提示词/ / _backup/ / 卷.md）留书根；隐藏点文件跳过不搬。
+	 * 冲突按 Obsidian 惯例加 ` (N)` 后缀；目标文件夹已存在时 mergeMoveFolder 逐子项合并后清源。全程 vault.rename/createFolder 直操，不经 writeDoc。
+	 */
+	private async migrateStoryLayout(storyName: string): Promise<void> {
+		const base = this.storyPath(storyName);
+		const desk = this.deskDocsPath(storyName);
+		const ms = this.manuscriptPath(storyName);
+		for (const p of [desk, ms]) {
+			if (!this.vault.getAbstractFileByPath(p)) await this.vault.createFolder(p);
+		}
+		const checks: Array<{ path: string; expect: boolean }> = [];
+
+		// 已知卷目录名（《卷.md》：物理名与 ID 都可能是目录名）
+		const volNames = new Set<string>();
+		try {
+			for (const v of Object.values(await this.loadVolumes(storyName))) {
+				volNames.add(this.volumeFolderName(v));
+				volNames.add(v.id);
+			}
+		} catch { /* 无《卷.md》→ 无已知卷 */ }
+
+		// ① 卷目录：整体 rename 到 书稿/<卷>/（章节目录随迁），再建「文档/」移直属 TFile
+		let rootFolders: string[] = [];
+		try {
+			rootFolders = (await this.vault.adapter.list(base)).folders ?? [];
+		} catch {
+			return; // 书根不可读 → 放弃迁移
+		}
+		for (const f of rootFolders) {
+			const name = f.split("/").pop() ?? "";
+			if (!name || name.startsWith(".") || name === DESK_DOCS_DIR_NAME || name === MANUSCRIPT_DIR_NAME) continue;
+			if (!volNames.has(name)) continue;
+			const src = `${base}/${name}`;
+			const dest = `${ms}/${name}`;
+			if (this.vault.getAbstractFileByPath(dest) instanceof TFolder) {
+				await this.mergeMoveFolder(src, dest); // 目标已存在（半迁移态）→ 逐子项合并后清源
+			} else {
+				const sf = this.vault.getAbstractFileByPath(src);
+				if (!(sf instanceof TFolder)) continue;
+				await this.vault.rename(sf, dest);
+			}
+			checks.push({ path: src, expect: false }, { path: dest, expect: true });
+			// 建「文档/」子目录并移入卷直属 TFile（legacy 前缀名归一裸基名；用户文件原名保留）
+			const docsDir = `${dest}/${VOLUME_DOCS_DIR_NAME}`;
+			if (!this.vault.getAbstractFileByPath(docsDir)) await this.vault.createFolder(docsDir);
+			let vfiles: string[] = [];
+			try {
+				vfiles = (await this.vault.adapter.list(dest)).files ?? [];
+			} catch {
+				continue;
+			}
+			for (const vf of vfiles) {
+				const vname = vf.split("/").pop() ?? "";
+				if (!vname || vname.startsWith(".")) continue;
+				const tf = this.vault.getAbstractFileByPath(`${dest}/${vname}`);
+				if (!(tf instanceof TFile)) continue;
+				const logical = this.volumeLogicalBaseOf(vname, name); // 标准模板 → 裸基名；非标准 → null（原名）
+				const finalName = await this.uniqueSiblingName(docsDir, logical ?? vname);
+				await this.vault.rename(tf, `${docsDir}/${finalName}`);
+				checks.push({ path: `${dest}/${vname}`, expect: false }, { path: `${docsDir}/${finalName}`, expect: true });
+			}
+		}
+
+		// ② 引言/ → 书稿/引言/
+		const prologueSrc = `${base}/${PROLOGUE_DIR_NAME}`;
+		if (this.vault.getAbstractFileByPath(prologueSrc) instanceof TFolder) {
+			const dest = `${ms}/${PROLOGUE_DIR_NAME}`;
+			if (this.vault.getAbstractFileByPath(dest) instanceof TFolder) {
+				await this.mergeMoveFolder(prologueSrc, dest);
+			} else {
+				await this.vault.rename(this.vault.getAbstractFileByPath(prologueSrc) as TFolder, dest);
+			}
+			checks.push({ path: prologueSrc, expect: false }, { path: dest, expect: true });
+		}
+
+		// ③ 书根章节目录 → 书稿/（重列一次，覆盖卷目录移出后剩余项）
+		let restFolders: string[] = [];
+		try {
+			restFolders = (await this.vault.adapter.list(base)).folders ?? [];
+		} catch { /* 忽略 */ }
+		for (const f of restFolders) {
+			const name = f.split("/").pop() ?? "";
+			if (!name || name.startsWith(".") || name === DESK_DOCS_DIR_NAME || name === MANUSCRIPT_DIR_NAME) continue;
+			if (!CHAPTER_DIR_RE.test(name)) continue;
+			const src = `${base}/${name}`;
+			const dest = `${ms}/${name}`;
+			if (this.vault.getAbstractFileByPath(dest) instanceof TFolder) {
+				await this.mergeMoveFolder(src, dest);
+			} else {
+				const sf = this.vault.getAbstractFileByPath(src);
+				if (!(sf instanceof TFolder)) continue;
+				await this.vault.rename(sf, dest);
+			}
+			checks.push({ path: src, expect: false }, { path: dest, expect: true });
+		}
+
+		// ④ 书根其余非系统项 → 案头资料/（再列一次，兜住全部剩余）
+		let rest: { files?: string[]; folders?: string[] } = {};
+		try {
+			rest = await this.vault.adapter.list(base);
+		} catch { /* 忽略 */ }
+		for (const p of [...(rest.folders ?? []), ...(rest.files ?? [])]) {
+			const name = p.split("/").pop() ?? "";
+			if (!name || name.startsWith(".")) continue;
+			if (name === DESK_DOCS_DIR_NAME || name === MANUSCRIPT_DIR_NAME) continue;
+			if (ROOT_SYSTEM_NAMES.has(name)) continue; // 系统项留书根
+			const from = this.vault.getAbstractFileByPath(`${base}/${name}`);
+			if (!from) continue;
+			const toName = await this.uniqueSiblingName(desk, name);
+			await this.vault.rename(from, `${desk}/${toName}`);
+			checks.push({ path: `${base}/${name}`, expect: false }, { path: `${desk}/${toName}`, expect: true });
+		}
+
+		// 连续 rename 后等真实文件系统落定（元数据索引滞后由各消费方既有兜底逻辑容忍）
+		await this.settleTree(checks);
+	}
+
+	/** 同目录内生成不冲突名（Obsidian 惯例：冲突加 ` (N)` 后缀）；查真实文件系统，避免索引滞后误判 */
+	private async uniqueSiblingName(dirPath: string, desired: string): Promise<string> {
+		if (!(await this.vault.adapter.exists(`${dirPath}/${desired}`))) return desired;
+		const dot = desired.lastIndexOf(".");
+		const stem = dot > 0 ? desired.slice(0, dot) : desired;
+		const ext = dot > 0 ? desired.slice(dot) : "";
+		for (let n = 2; ; n++) {
+			const cand = `${stem} (${n})${ext}`;
+			if (!(await this.vault.adapter.exists(`${dirPath}/${cand}`))) return cand;
+		}
+	}
+
+	/** 目标文件夹已存在（半迁移/重跑）时：逐子项移入目标（冲突加 ` (N)` 后缀），再清空源目录；隐藏点文件跳过不搬 */
+	private async mergeMoveFolder(src: string, dest: string): Promise<void> {
+		let listed: { files?: string[]; folders?: string[] } = {};
+		try {
+			listed = await this.vault.adapter.list(src);
+		} catch {
+			return;
+		}
+		for (const p of [...(listed.folders ?? []), ...(listed.files ?? [])]) {
+			const name = p.split("/").pop() ?? "";
+			if (!name || name.startsWith(".")) continue;
+			const from = this.vault.getAbstractFileByPath(`${src}/${name}`);
+			if (!from) continue;
+			const toName = await this.uniqueSiblingName(dest, name);
+			await this.vault.rename(from, `${dest}/${toName}`);
+		}
+		const srcFolder = this.vault.getAbstractFileByPath(src);
+		if (srcFolder instanceof TFolder && srcFolder.children.length === 0) {
+			try { await this.app.fileManager.trashFile(srcFolder); } catch { /* 被外部持锁等极少数情况：清空的源目录残留原地留待手动清理 */ } // 清空的源目录扔回收站（残留点文件时 children 非空，保留目录）
+		}
 	}
 
 	// ---------- 小说发现与状态读写 ----------
@@ -304,6 +546,8 @@ export class StoryManager {
 	}
 
 	private async writeDoc(path: string, content: string): Promise<TFile> {
+		const sn = this.storyNameOfPath(path);
+		if (sn) await this.ensureLayout(sn); // 布局收口：旧格式书先自动迁移再写
 		path = this.resolveChapterDocPath(path); // 章节目录模板文件按新格式 <标题>-<基名> 落盘（老格式存量回退）
 		const existing = this.vault.getAbstractFileByPath(path);
 		if (existing instanceof TFile) {
@@ -346,11 +590,11 @@ export class StoryManager {
 			updated_at: nowIso(),
 		};
 		await this.vault.createFolder(base);
-		for (const [fname, tpl] of [...this.rootDocTemplates(title), ["卷.md", VOLUME_TEMPLATE]]) { // 默认资料九件套 + 系统管理的《卷.md》（与 ensureRootDocs 同一清单来源）
-			await this.ensureDoc(`${base}/${fname}`, tpl);
-		}
+		for (const [fname, tpl] of this.rootDocTemplates(title)) await this.ensureDoc(`${this.deskDocsPath(name)}/${fname}`, tpl); // 默认资料九件套 → 「案头资料/」（与 ensureRootDocs 同一清单来源）
+		await this.ensureDoc(`${base}/卷.md`, VOLUME_TEMPLATE); // 系统管理的《卷.md》留书根
 		await this.ensurePrologue(name).catch(() => {}); // 引言播种（best-effort：失败不影响建书主流程）
 		await this.saveState(name, state);
+		this.layoutChecked.add(name); // 新书按新布局播种，无需迁移探测
 		return name;
 	}
 
@@ -410,7 +654,7 @@ export class StoryManager {
 
 	// ---------- 章节扫描与创建 ----------
 
-	/** 卷实体目录名（= 净化后的卷名）。未归属章节留在书根，故卷名须唯一（addVolume/updateVolume 强制） */
+	/** 卷实体目录名（= 净化后的卷名）。未归属章节留在「书稿/」直属，故卷名须唯一（addVolume/updateVolume 强制） */
 	volumeFolderName(vol: doc.VolumeInfo): string {
 		return safeFilename(vol.name.trim() || vol.id);
 	}
@@ -425,12 +669,12 @@ export class StoryManager {
 	}
 
 	/**
-	 * 参与章节扫描的容器路径：[书根本身] + 各「容器」子文件夹。
+	 * 参与章节扫描的容器路径：[书稿目录] + 其下各「容器」子文件夹。
 	 * 容器判定：名称命中某卷的实体目录名/ID，或内部含 ≥1 个形如章节目录的子文件夹；
 	 * 普通资料夹（无章节目录、非卷名）不递归进入，避免把杂项里的同名目录误认成章。
 	 */
 	private async containerPaths(storyName: string, vols?: Record<string, doc.VolumeInfo>): Promise<string[]> {
-		const base = this.storyPath(storyName);
+		const base = this.manuscriptPath(storyName);
 		const paths: string[] = [base];
 		try {
 			const vmap = vols ?? (await this.loadVolumes(storyName));
@@ -449,7 +693,7 @@ export class StoryManager {
 				} catch { /* 不可读子目录忽略 */ }
 				if (known.has(name) || hasChapterChild) paths.push(p);
 			}
-		} catch { /* 书目录不存在等 → 仅扫根 */ }
+		} catch { /* 书稿目录不存在等 → 仅扫书稿 */ }
 		return paths;
 	}
 
@@ -466,7 +710,7 @@ export class StoryManager {
 
 	/** 确保卷实体目录存在（并补建缺失的卷级设定五件套模板），返回其路径 */
 	private async ensureVolumeFolder(storyName: string, vol: doc.VolumeInfo): Promise<string> {
-		const p = `${this.storyPath(storyName)}/${this.volumeFolderName(vol)}`;
+		const p = this.volumeDirPath(storyName, vol);
 		if (!this.vault.getAbstractFileByPath(p)) await this.createFolderPath(p);
 		for (const [fname, tpl] of this.volumeDocTemplates(vol)) {
 			await this.ensureDoc(this.resolveVolumeDocPath(p, vol.name, fname), tpl).catch(() => {}); // 模板补齐尽力而为，不阻断主流程
@@ -479,7 +723,7 @@ export class StoryManager {
 		const vols = await this.loadVolumes(storyName);
 		const vol = this.findVolumeIn(vols, volId); // 按 id/名解析目标卷
 		if (!vol) throw new Error(`卷 ${volId} 不存在或已被删除`);
-		const p = `${this.storyPath(storyName)}/${this.volumeFolderName(vol)}`;
+		const p = this.volumeDirPath(storyName, vol);
 		if (!this.vault.getAbstractFileByPath(p)) await this.createFolderPath(p);
 		const created: string[] = [];
 		for (const [fname, tpl] of this.volumeDocTemplates(vol)) {
@@ -488,7 +732,7 @@ export class StoryManager {
 		return created;
 	}
 
-	/** 书根默认资料九件套模板清单（建书播种 / 写字台「补全资料」同一来源；《故事状态.md》与系统管理的《卷.md》不在其内）。《策划指南》参与大纲生成（空模板，首次大纲生成前自动 AI 生成内容）；《时间线》为可选手写参考资料、不参与提示词注入 */
+	/** 「案头资料/」默认资料九件套模板清单（建书播种 / 写字台「补全资料」同一来源；《故事状态.md》与系统管理的《卷.md》不在其内）。《策划指南》参与大纲生成（空模板，首次大纲生成前自动 AI 生成内容）；《时间线》为可选手写参考资料、不参与提示词注入 */
 	private rootDocTemplates(title: string): Array<[string, string]> {
 		return [
 			["大纲.md", outlineTemplate(title)],
@@ -508,12 +752,12 @@ export class StoryManager {
 		return ["大纲.md", "策划指南.md", "世界观.md", "人物关系.md"];
 	}
 
-	/** 检查书根下参与大纲生成的资料（大纲/策划指南/世界观/人物关系），缺失者按模板创建（已存在一律保留不覆盖）；返回本次新建的文件名列表。供命令面板与写字台「书稿」右键「补全大纲资料」 */
+	/** 检查「案头资料/」下参与大纲生成的资料（大纲/策划指南/世界观/人物关系），缺失者按模板创建（已存在一律保留不覆盖）；返回本次新建的文件名列表。供命令面板与写字台「书稿」右键「补全大纲资料」 */
 	async ensureOutlineDocs(storyName: string): Promise<string[]> {
 		const st = await this.loadState(storyName);
 		if (!st) throw new Error(`小说 ${storyName} 的状态文档缺失`);
-		const base = this.storyPath(storyName);
-		if (!this.vault.getAbstractFileByPath(base)) throw new Error("小说目录不存在或已被移动");
+		const base = this.deskDocsPath(storyName); // 书级大纲资料在「案头资料/」
+		if (!this.vault.getAbstractFileByPath(this.storyPath(storyName))) throw new Error("小说目录不存在或已被移动");
 		const templates = new Map(this.rootDocTemplates(st.title || storyName));
 		const created: string[] = [];
 		for (const fname of this.outlineDocNames()) {
@@ -523,12 +767,12 @@ export class StoryManager {
 		return created;
 	}
 
-	/** 检查书根下的默认资料文件，缺失者按模板创建（已存在一律保留不覆盖）；返回本次新建的文件名列表（全齐则为空数组）。供写字台案头资料节点右键「补全资料」 */
+	/** 检查「案头资料/」下的默认资料文件，缺失者按模板创建（已存在一律保留不覆盖）；返回本次新建的文件名列表（全齐则为空数组）。供写字台案头资料节点右键「补全资料」 */
 	async ensureRootDocs(storyName: string): Promise<string[]> {
 		const st = await this.loadState(storyName);
 		if (!st) throw new Error(`小说 ${storyName} 的状态文档缺失`);
-		const base = this.storyPath(storyName);
-		if (!this.vault.getAbstractFileByPath(base)) throw new Error("小说目录不存在或已被移动");
+		const base = this.deskDocsPath(storyName); // 书级默认资料在「案头资料/」
+		if (!this.vault.getAbstractFileByPath(this.storyPath(storyName))) throw new Error("小说目录不存在或已被移动");
 		const created: string[] = [];
 		for (const [fname, tpl] of this.rootDocTemplates(st.title || storyName)) {
 			if ((await this.ensureDoc(`${base}/${fname}`, tpl)) === "created") created.push(fname);
@@ -536,9 +780,9 @@ export class StoryManager {
 		return created;
 	}
 
-	/** 书根「引言」文件夹路径（全书唯一，有卷/无卷模式均在书根；不参与章节编号与提示词注入） */
+	/** 「引言」文件夹路径（书稿/引言，全书唯一，有卷/无卷模式同位；不参与章节编号与提示词注入） */
 	prologuePath(storyName: string): string {
-		return `${this.storyPath(storyName)}/${PROLOGUE_DIR_NAME}`;
+		return `${this.manuscriptPath(storyName)}/${PROLOGUE_DIR_NAME}`;
 	}
 
 	/** 确保「引言」文件夹与正文《引言.md》存在（幂等，已存在不覆盖）；返回是否本次新建。建书/建卷/建章播种调用，失败由调用方兜底不影响主流程 */
@@ -566,7 +810,7 @@ export class StoryManager {
 		await this.app.fileManager.trashFile(dir);
 	}
 
-	/** 指定节点容器的标准模板文档清单+存在性（写字台「新建…文档/文章…」优先列出参与提示词的标准文档）：chKey=章节目录、volId=卷实体目录、皆无=书根——与各级播种同一来源 */
+	/** 指定节点容器的标准模板文档清单+存在性（写字台「新建…文档/文章…」优先列出参与提示词的标准文档）：chKey=章节目录、volId=卷实体目录、皆无=书级（「案头资料/」）——与各级播种同一来源 */
 	async standardDocs(storyName: string, target: { volId?: string; chKey?: string }): Promise<Array<{ name: string; exists: boolean }>> {
 		const dir = await this.standardDirOf(storyName, target);
 		return (await this.standardTemplateList(storyName, target)).map(([name]) => ({
@@ -575,7 +819,7 @@ export class StoryManager {
 		}));
 	}
 
-	/** 标准模板文档实际路径解析：章节目录走 resolveChapterDocPath、卷目录走 resolveVolumeDocPath（卷名取目录名）、书根原样 */
+	/** 标准模板文档实际路径解析：章节目录走 resolveChapterDocPath、卷目录走 resolveVolumeDocPath（卷名取目录名）、书级原样（dir 已是「案头资料/」） */
 	private resolveStandardDocPath(dir: string, target: { volId?: string; chKey?: string }, name: string): string {
 		if (target.chKey != null) return this.resolveChapterDocPath(`${dir}/${name}`);
 		if (target.volId != null) {
@@ -630,14 +874,15 @@ export class StoryManager {
 			const vols = await this.loadVolumes(storyName);
 			const vol = this.findVolumeIn(vols, target.volId); // 按 id/名解析目标卷
 			if (!vol) throw new Error(`卷 ${target.volId} 不存在或已被删除`);
-			const p = `${this.storyPath(storyName)}/${this.volumeFolderName(vol)}`;
+			const p = this.volumeDirPath(storyName, vol);
 			if (!(this.vault.getAbstractFileByPath(p) instanceof TFolder)) throw new Error("该卷实体目录缺失，请先执行「按卷整理目录」");
 			return p;
 		}
-		return this.storyPath(storyName);
+		return this.deskDocsPath(storyName); // 书级标准文档在「案头资料/」
 	}
 
 	async listChapters(storyName: string): Promise<Array<{ key: string; num: number; title: string; dir: TFolder; vol?: string; parentPath: string }>> {
+		await this.ensureLayout(storyName); // 布局收口：旧格式书先自动迁移再扫描章节
 		const folder = this.vault.getAbstractFileByPath(this.storyPath(storyName));
 		if (!folder || !(folder instanceof TFolder)) return [];
 		const vols = await this.loadVolumes(storyName).catch((): Record<string, doc.VolumeInfo> => ({}));
@@ -646,7 +891,7 @@ export class StoryManager {
 			byDirName.set(this.volumeFolderName(v), v.id);
 			byDirName.set(v.id, v.id);
 		}
-		const base = this.storyPath(storyName);
+		const base = this.manuscriptPath(storyName); // 书级章节直接位于「书稿/」下
 		const result: Array<{ key: string; num: number; title: string; dir: TFolder; vol?: string; parentPath: string }> = [];
 		for (const containerPath of await this.containerPaths(storyName, vols)) {
 			const cont = this.vault.getAbstractFileByPath(containerPath);
@@ -660,7 +905,7 @@ export class StoryManager {
 				result.push({ key: chKey(volId ?? null, parseInt(m[1], 10)), num: parseInt(m[1], 10), title: m[2], dir: child, ...(volId ? { vol: volId } : {}), parentPath: containerPath });
 			}
 		}
-		// v0.0.15：章号按容器独立编号 → 阅读序=书根章在前、各卷按 VolumeInfo.order 依次、组内本地章号升序
+		// v0.0.15：章号按容器独立编号 → 阅读序=「书稿/」直属章在前、各卷按 VolumeInfo.order 依次、组内本地章号升序
 		return result.sort((a, b) => {
 			const av = a.vol || "";
 			const bv = b.vol || "";
@@ -675,7 +920,7 @@ export class StoryManager {
 		});
 	}
 
-	/** v0.1.3+：各卷实体目录下的直属 md 文件（非章节目录，含建卷播种的设定五件套/卷摘要等），按卷 ID 归组；供写字台在卷节点下以「文档」子节点展示。无《卷.md》或某卷目录缺失则跳过该卷 */
+	/** v0.2.x+：各卷实体目录 `文档/` 子目录内的直属文件（含建卷播种的设定五件套/卷摘要 + 用户文件），按卷 ID 归组；供写字台在卷节点下以「文档」子节点展示。无《卷.md》或某卷 `文档/` 缺失则跳过该卷 */
 	async listVolumeDocsByVol(storyName: string): Promise<Record<string, Array<{ path: string; name: string }>>> {
 		const out: Record<string, Array<{ path: string; name: string }>> = {};
 		let vmap: Record<string, doc.VolumeInfo> = {};
@@ -685,7 +930,7 @@ export class StoryManager {
 			return out; // 未建过卷 → 空映射
 		}
 		for (const v of Object.values(vmap)) {
-			const f = this.vault.getAbstractFileByPath(`${this.storyPath(storyName)}/${this.volumeFolderName(v)}`);
+			const f = this.vault.getAbstractFileByPath(this.volumeDocsDirPath(storyName, v));
 			if (!(f instanceof TFolder)) continue;
 			out[v.id] = f.children.filter((x): x is TFile => x instanceof TFile).map((x) => ({ path: x.path, name: x.name })).sort((a, b) => a.name.localeCompare(b.name, "zh"));
 		}
@@ -707,21 +952,21 @@ export class StoryManager {
 		return this.resolveChapterDocPath(`${ch.dir.path}/${base}`);
 	}
 
-	/** v0.0.15：建章不再显式传号——在目标容器（书根/卷）内自动取本地最大号+1；volumeKey 解析不到时落书根 */
+	/** v0.0.15：建章不再显式传号——在目标容器（「书稿/」直属/卷）内自动取本地最大号+1；volumeKey 解析不到时落「书稿/」直属 */
 	async createChapter(storyName: string, title: string, volumeKey = ""): Promise<string> {
 		let volId = "";
 		if (volumeKey && ((await this.loadState(storyName))?.use_volumes ?? false)) {
 			const vols = await this.loadVolumes(storyName);
 			const vol = this.findVolumeIn(vols, volumeKey);
-			if (vol) volId = vol.id; // 新章直接落在卷实体目录内，位置即归属；无卷模式下忽略卷参数、强制落书根
-			// 解析不到 → 落书根（不阻断建章）
+			if (vol) volId = vol.id; // 新章直接落在卷实体目录内，位置即归属；无卷模式下忽略卷参数、强制落「书稿/」直属
+			// 解析不到 → 落「书稿/」直属（不阻断建章）
 		}
 		const inScope = (await this.listChapters(storyName)).filter((c) => (c.vol ?? "") === volId);
 		const num = inScope.reduce((mx, c) => Math.max(mx, c.num), 0) + 1;
 		return this.createChapterAt(storyName, num, title, volId);
 	}
 
-	/** v0.2.10+「从卷大纲生成章节」：确保目标容器（volId="" 为书根）内指定本地号的章节存在——已存在原样返回，缺失则按 createChapterAt 语义创建（含模板播种与状态登记）。返回 { key, created } */
+	/** v0.2.10+「从卷大纲生成章节」：确保目标容器（volId="" 为「书稿/」直属）内指定本地号的章节存在——已存在原样返回，缺失则按 createChapterAt 语义创建（含模板播种与状态登记）。返回 { key, created } */
 	async ensureChapterAt(storyName: string, num: number, rawTitle: string, volId: string): Promise<{ key: string; created: boolean }> {
 		const key = chKey(volId || null, num);
 		if (await this.chapterDirOf(storyName, key)) return { key, created: false };
@@ -756,11 +1001,11 @@ export class StoryManager {
 
 	private async createChapterAt(storyName: string, num: number, rawTitle: string, volId: string): Promise<string> {
 		const safe = safeFilename(rawTitle.trim() || `第${num}章`);
-		let base = this.storyPath(storyName);
+		let base = this.manuscriptPath(storyName); // 章节目录物理落于「书稿/」下（有卷模式则入卷目录）
 		if (volId) {
 			const vols = await this.loadVolumes(storyName);
 			const vol = vols[volId];
-			if (vol) base = `${base}/${this.volumeFolderName(vol)}`;
+			if (vol) base = this.volumeDirPath(storyName, vol);
 		}
 		// 章节目录名：第NN章-章节名（目录名保留「第…章」，仅目录内文件名的数字前缀用纯数字）
 		const folderName = `第${String(num).padStart(2, "0")}章-${safe}`;
@@ -782,7 +1027,7 @@ export class StoryManager {
 		return this.resolveChapterDocPath(`${dirPath}/章节.md`);
 	}
 
-	/** 旧格式模板文档检测：章/卷目录内尚未采用新格式（章节文件 01-初见-后缀.md / 卷文件 卷名-后缀.md）的标准模板文件 → 迁移项 */
+	/** 旧格式模板文档检测：章节目录内尚未采用新格式（01-初见-后缀.md）的章节标准模板、卷 `文档/` 内尚未归一裸基名（卷大纲.md …）的卷标准模板 → 迁移项 */
 	async detectOldFormatDocs(storyName: string): Promise<OldFormatMigrationItem[]> {
 		const items: OldFormatMigrationItem[] = [];
 		// 章节目录内：扫描实际文件，识别逻辑基名后比对目标新格式（01-初见.md / 01-初见-大纲.md …）
@@ -804,12 +1049,12 @@ export class StoryManager {
 			}
 			if (renames.length) items.push({ kind: "chapter", label: `第${String(ch.num).padStart(2, "0")}章 ${ch.title}`, renames });
 		}
-		// 卷目录内：扫描实际文件 → 新格式（风起-大纲.md …）
+		// 卷目录内：扫描 `文档/` 子目录实际文件 → 新布局裸基名（卷大纲.md …）
 		let vols: Record<string, doc.VolumeInfo> = {};
 		try { vols = await this.loadVolumes(storyName); } catch { vols = {}; }
 		for (const vol of Object.values(vols)) {
-			const volDir = `${this.storyPath(storyName)}/${this.volumeFolderName(vol)}`;
-			const volFolder = this.vault.getAbstractFileByPath(volDir);
+			const docsDir = this.volumeDocsDirPath(storyName, vol);
+			const volFolder = this.vault.getAbstractFileByPath(docsDir);
 			if (!(volFolder instanceof TFolder)) continue;
 			const folder = safeFilename(vol.name);
 			const renames: Array<{ from: string; to: string }> = [];
@@ -818,11 +1063,11 @@ export class StoryManager {
 				if (!(child instanceof TFile)) continue;
 				const base = this.volumeLogicalBaseOf(child.name, folder);
 				if (!base || claimed.has(base)) continue;
-				const target = volumeDocPhysicalName(folder, base);
+				const target = base; // 新布局：文档/ 内裸基名
 				if (child.name === target) continue;
 				claimed.add(base);
-				if (volFolder.children.some((x) => x.name === target)) continue; // 目标名已被同目录另一文件占用（如正确新格式与 -undefined 残留并存）→ 跳过避免重命名冲突，残留留待用户手动清理
-				renames.push({ from: `${volDir}/${child.name}`, to: `${volDir}/${target}` });
+				if (volFolder.children.some((x) => x.name === target)) continue; // 目标名已被同目录另一文件占用 → 跳过避免重命名冲突，残留留待用户手动清理
+				renames.push({ from: `${docsDir}/${child.name}`, to: `${docsDir}/${target}` });
 			}
 			if (renames.length) items.push({ kind: "volume", label: `卷「${vol.name}」`, renames });
 		}
@@ -847,7 +1092,7 @@ export class StoryManager {
 		return { migrated, errors };
 	}
 
-	/** 修复历史缺陷：把误建的「NN章-标题」章节目录（缺「第」前缀）重命名为「第NN章-标题」；返回修复数量。书根与各卷目录均扫 */
+	/** 修复历史缺陷：把误建的「NN章-标题」章节目录（缺「第」前缀）重命名为「第NN章-标题」；返回修复数量。书稿目录与各卷目录均扫 */
 	async repairUnprefixedChapterFolders(storyName: string): Promise<number> {
 		let fixed = 0;
 		const fixIn = async (containerPath: string): Promise<void> => {
@@ -865,10 +1110,10 @@ export class StoryManager {
 				} catch { /* 单个失败不阻断其余 */ }
 			}
 		};
-		await fixIn(this.storyPath(storyName));
+		await fixIn(this.manuscriptPath(storyName));
 		let vols: Record<string, doc.VolumeInfo> = {};
 		try { vols = await this.loadVolumes(storyName); } catch { vols = {}; }
-		for (const vol of Object.values(vols)) await fixIn(`${this.storyPath(storyName)}/${this.volumeFolderName(vol)}`);
+		for (const vol of Object.values(vols)) await fixIn(this.volumeDirPath(storyName, vol));
 		return fixed;
 	}
 
@@ -897,9 +1142,9 @@ private emptyState(storyName: string): StoryState {
 		await leaf.openFile(file);
 	}
 
-	/** 打开小说根文档；不存在时先按模板创建再打开 */
+	/** 打开书级根文档（案头资料/）；不存在时先按模板创建再打开 */
 	async openStoryDoc(storyName: string, docName: string, template: string): Promise<void> {
-		const path = `${this.storyPath(storyName)}/${docName}`;
+		const path = `${this.deskDocsPath(storyName)}/${docName}`;
 		await this.ensureDoc(path, template);
 		await this.openMarkdown(path);
 	}
@@ -946,7 +1191,7 @@ private emptyState(storyName: string): StoryState {
 		return ch ? this.resolveChapterDocPath(`${ch.dir.path}/章节.md`) : null;
 	}
 
-	/** v0.0.15：只在当前章所在容器（书根/同一卷）内前后翻页，不跨卷越界 */
+	/** v0.0.15：只在当前章所在容器（「书稿/」直属/同一卷）内前后翻页，不跨卷越界 */
 	async nextOrPrev(storyName: string, dir: 1 | -1): Promise<{ path: string; num: number; key: string } | null> {
 		const chapters = await this.listChapters(storyName);
 		if (chapters.length === 0) return null;
@@ -1054,18 +1299,20 @@ private emptyState(storyName: string): StoryState {
 	// ---------- 通用文档工具 ----------
 
 	private async readDoc(path: string): Promise<string> {
+		const sn = this.storyNameOfPath(path);
+		if (sn) await this.ensureLayout(sn); // 布局收口：旧格式书先自动迁移再读
 		const f = this.vault.getAbstractFileByPath(this.resolveChapterDocPath(path));
 		return f instanceof TFile ? await this.vault.read(f) : "";
 	}
 
 	/**
-	 * v0.1.9+ 人物关系面板：只读返回某书三层《人物关系.md》的层级/标签/路径/原文（书根 + 当前卷 + 当前章）。
+	 * v0.1.9+ 人物关系面板：只读返回某书三层《人物关系.md》的层级/标签/路径/原文（书级 + 当前卷 + 当前章）。
 	 * 章层按 chapterKey 定位（缺省取状态文档 current_chapter）；卷层按键所属卷解析、缺省取 current_volume。
 	 * 定位不到的层不返回；文件不存在时 text 为空串（由调用方按空态处理）。全程非交互、不写盘。
 	 */
 	async readRelationshipDocs(storyName: string, chapterKey?: string | null): Promise<RelationshipDocSource[]> {
 		const out: RelationshipDocSource[] = [];
-		const base = this.storyPath(storyName);
+		const base = this.deskDocsPath(storyName); // 书级《人物关系》在「案头资料/」
 		const state = await this.loadState(storyName);
 		const key = (chapterKey ?? state?.current_chapter) || "";
 		let bookText = await this.readDoc(`${base}/人物关系.md`);
@@ -1077,7 +1324,7 @@ private emptyState(storyName: string): StoryState {
 		if (volId) {
 			const vol = (await this.loadVolumes(storyName))[volId];
 			if (vol) {
-				const path = this.resolveVolumeDocPath(`${base}/${this.volumeFolderName(vol)}`, vol.name, "人物关系.md");
+				const path = this.resolveVolumeDocPath(this.volumeDirPath(storyName, vol), vol.name, "人物关系.md");
 				out.push({ scope: "volume", label: `卷 · ${vol.name}`, path, text: await this.readDoc(path) });
 			}
 		}
@@ -1092,13 +1339,13 @@ private emptyState(storyName: string): StoryState {
 	}
 
 	/**
-	 * 人物关系面板「人物状态」区数据源（v0.2.x+）：只读解析该书**全部三层**《人物.md》（书根 + 每一卷 + 每一章），
+	 * 人物关系面板「人物状态」区数据源（v0.2.x+）：只读解析该书**全部三层**《人物.md》（书级 + 每一卷 + 每一章），
 	 * 返回逐条角色设定（含归属层级/标签/来源路径，同名多层登记不合并——展示侧自行按名筛选）。
 	 * 与 loadAllCharacters 同遍历口径，但保留每条的出处；文件缺失/单层解析失败静默跳过。全程非交互、不写盘。
 	 */
 	async loadCharacterEntries(storyName: string): Promise<CharacterInfoEntry[]> {
 		const out: CharacterInfoEntry[] = [];
-		const base = this.storyPath(storyName);
+		const base = this.deskDocsPath(storyName); // 书级《人物》在「案头资料/」
 		const collect = (text: string, chapNum: number, scope: "book" | "volume" | "chapter", label: string, path: string): void => {
 			let chars: Record<string, doc.CharacterDoc>;
 			try {
@@ -1110,7 +1357,7 @@ private emptyState(storyName: string): StoryState {
 		};
 		collect(await this.readDoc(`${base}/人物.md`), 0, "book", "书籍级", `${base}/人物.md`);
 		for (const [, vol] of Object.entries(await this.loadVolumes(storyName))) {
-			const path = this.resolveVolumeDocPath(`${base}/${this.volumeFolderName(vol)}`, vol.name, "人物.md");
+			const path = this.resolveVolumeDocPath(this.volumeDirPath(storyName, vol), vol.name, "人物.md");
 			collect(await this.readDoc(path), 0, "volume", `卷 · ${vol.name}`, path);
 		}
 		for (const ch of await this.listChapters(storyName)) {
@@ -1130,16 +1377,16 @@ private emptyState(storyName: string): StoryState {
 	}
 
 	/**
-	 * v0.2.x+ 时间线面板：只读枚举某书**全部**《时间线.md》来源（书根 + 每一卷 + 每一章），自上而下的完整时间轴概览。
-	 * 顺序——有卷模式：书籍级 → 书根未归卷章节(num升序) → 各卷按阅读序、每卷紧随其成员章节(num升序，条目带 volId)；无卷模式：书籍级 → 全部章节(num升序)。
+	 * v0.2.x+ 时间线面板：只读枚举某书**全部**《时间线.md》来源（书级 + 每一卷 + 每一章），自上而下的完整时间轴概览。
+	 * 顺序——有卷模式：书籍级 → 「书稿/」直属未归卷章节(num升序) → 各卷按阅读序、每卷紧随其成员章节(num升序，条目带 volId)；无卷模式：书籍级 → 全部章节(num升序)。
 	 * 物理命名兼容新格式(`<NN-标题>-时间线.md` / `<卷名>-时间线.md`)与裸 `时间线.md`，探测次序 新→裸；缺失层记候选路径 + 空文本（展示侧按空态处理）。全程非交互、不写盘。
 	 */
 	async readTimelineDocs(storyName: string): Promise<TimelineDocSource[]> {
 		const out: TimelineDocSource[] = [];
-		const base = this.storyPath(storyName);
+		const base = this.deskDocsPath(storyName); // 书级《时间线》在「案头资料/」
 		out.push({ scope: "book", label: "书籍级", path: `${base}/时间线.md`, text: await this.readDoc(`${base}/时间线.md`) });
 		const chLabel = (ch: { num: number; title: string }): string => `章 · 第${ch.num}章 ${ch.title}`.trim();
-		const all = await this.listChapters(storyName); // 阅读序：书根未归卷在前，其后各卷章节依次(num升序)
+		const all = await this.listChapters(storyName); // 阅读序：「书稿/」直属未归卷在前，其后各卷章节依次(num升序)
 		if ((await this.loadState(storyName))?.use_volumes !== true) {
 			for (const ch of all) {
 				const p = await this.probeTimelineInDir(ch.dir.path, ch.dir.name);
@@ -1152,21 +1399,8 @@ private emptyState(storyName: string): StoryState {
 			out.push({ scope: "chapter", label: chLabel(ch), path: p.path, text: p.text });
 		}
 		for (const vol of await this.volumeList(storyName)) {
-			const volDir = `${base}/${this.volumeFolderName(vol)}`;
-			const prefixed = `${volDir}/${safeFilename(vol.name)}-时间线.md`; // 新格式：风起-时间线.md
-			let vpath = prefixed;
-			let vtext = "";
-			if (this.vault.getAbstractFileByPath(prefixed)) {
-				vpath = prefixed;
-				vtext = await this.readDoc(prefixed);
-			} else {
-				const bare = `${volDir}/时间线.md`; // 裸基名兜底
-				if (this.vault.getAbstractFileByPath(bare)) {
-					vpath = bare;
-					vtext = await this.readDoc(bare);
-				}
-			}
-			out.push({ scope: "volume", label: `卷 · ${vol.name}`, path: vpath, text: vtext });
+			const vpath = this.resolveVolumeDocPath(this.volumeDirPath(storyName, vol), vol.name, "时间线.md"); // 文档/裸基名 → legacy 前缀 → 旧新格式
+			out.push({ scope: "volume", label: `卷 · ${vol.name}`, path: vpath, text: await this.readDoc(vpath) });
 			for (const ch of all) if (ch.vol === vol.id) {
 				const p = await this.probeTimelineInDir(ch.dir.path, ch.dir.name);
 				out.push({ scope: "chapter", label: chLabel(ch), path: p.path, text: p.text, volId: vol.id });
@@ -1176,7 +1410,7 @@ private emptyState(storyName: string): StoryState {
 	}
 
 	/**
-	 * v0.2.0+「添加人物」：把关系条目**追加**到指定层级的《人物关系.md》（书根 / 卷目录 / 章节目录）。
+	 * v0.2.0+「添加人物」：把关系条目**追加**到指定层级的《人物关系.md》（书级 / 卷目录 / 章节目录）。
 	 * 文档缺失或为空时先按该层模板起底（模板注释不参与 parseRelationships，无副作用）；已有内容原样保留、新条目追加在末尾。
 	 * 返回实际写入的 vault 相对路径（供 Notice 展示）。
 	 */
@@ -1187,7 +1421,7 @@ private emptyState(storyName: string): StoryState {
 		opts?: { volId?: string | null; chapterKey?: string | null }
 	): Promise<string> {
 		if (!entries.length) throw new Error("没有可写入的关系条目");
-		const base = this.storyPath(storyName);
+		const base = this.deskDocsPath(storyName); // 书级《人物关系》在「案头资料/」
 		let path = "";
 		let template = CHAPTER_RELATIONSHIPS_TEMPLATE; // 书籍级与章级同模板（与建章/ensureRootDocs 播种一致）
 		if (scope === "book") {
@@ -1198,7 +1432,7 @@ private emptyState(storyName: string): StoryState {
 			const vol = (await this.loadVolumes(storyName))[volId];
 			if (!vol) throw new Error(`卷不存在：${volId}`);
 			await this.ensureVolumeFolder(storyName, vol);
-			path = this.resolveVolumeDocPath(`${base}/${this.volumeFolderName(vol)}`, vol.name, "人物关系.md");
+			path = this.resolveVolumeDocPath(this.volumeDirPath(storyName, vol), vol.name, "人物关系.md");
 			template = VOL_RELATIONSHIPS_TEMPLATE;
 		} else {
 			const key = String(opts?.chapterKey ?? "").trim();
@@ -1217,7 +1451,7 @@ private emptyState(storyName: string): StoryState {
 	/**
 	 * 章节目录内模板文件路径解析（v0.1.9+ 新格式：正文 <章节目录名>.md、其余 <章节目录名>-<后缀>.md，如 第01章-初见-大纲.md）：
 	 * 仅对「第NN章-*」目录下的标准模板逻辑基名生效；按 新格式 → 旧前缀格式(<标题>-<基名>) → 裸基名 依次回退，都不存在时返回新格式路径（供创建）。
-	 * 书根资料（大纲.md 等）与卷目录文件不受影响（卷目录由调用方显式经 resolveVolumeDocPath 处理）。
+	 * 书级资料（「案头资料/」下 大纲.md 等）与卷目录文件不受影响（卷目录由调用方显式经 resolveVolumeDocPath 处理）。
 	 */
 	private resolveChapterDocPath(path: string): string {
 		const idx = path.lastIndexOf("/");
@@ -1239,14 +1473,14 @@ private emptyState(storyName: string): StoryState {
 		return target;
 	}
 
-	/** 卷目录内模板文件路径解析（v0.1.9+ 新格式：<卷目录名>-<后缀>.md，如 风起-大纲.md）：新格式 → 旧前缀(<卷名>-<基名>) → 裸基名 依次回退，都不存在返回新格式 */
+	/** 卷目录内模板文件路径解析（v0.2.x+ 新布局：`文档/` 子目录内裸基名，如 文档/卷大纲.md）：裸基名 → 旧前缀(<卷名>-<基名>) → 旧新格式(<卷目录名>-<后缀>) 依次回退，都不存在返回 `文档/` 裸基名 */
 	private resolveVolumeDocPath(volDir: string, volName: string, base: string): string {
 		const folder = safeFilename(volName);
-		const target = `${volDir}/${volumeDocPhysicalName(folder, base)}`;
+		const target = `${volDir}/${VOLUME_DOCS_DIR_NAME}/${base}`; // 新布局裸基名：文档/卷大纲.md
 		if (this.vault.getAbstractFileByPath(target)) return target;
 		const intermediate = `${volDir}/${folder}-${base}`; // 旧前缀格式：风起-卷大纲.md
 		if (this.vault.getAbstractFileByPath(intermediate)) return intermediate;
-		const legacy = `${volDir}/${base}`; // 裸基名：卷大纲.md
+		const legacy = `${volDir}/${volumeDocPhysicalName(folder, base)}`; // 旧新格式：风起-大纲.md
 		if (this.vault.getAbstractFileByPath(legacy)) return legacy;
 		return target;
 	}
@@ -1383,6 +1617,7 @@ private emptyState(storyName: string): StoryState {
 	// ---------- 卷（卷.md）----------
 
 	async loadVolumes(storyName: string): Promise<Record<string, doc.VolumeInfo>> {
+		await this.ensureLayout(storyName); // 布局收口：旧格式书先自动迁移再读卷（卷.md 留书根，路径不受迁移影响）
 		return doc.parseVolumes(await this.readDoc(`${this.storyPath(storyName)}/卷.md`));
 	}
 
@@ -1420,7 +1655,7 @@ private emptyState(storyName: string): StoryState {
 		const n = name.trim();
 		if (!n) throw new Error("卷名不能为空");
 		if (!((await this.loadState(storyName))?.use_volumes)) throw new Error(NO_VOL_MODE_MSG); // v0.0.16+ 无卷模式禁止建卷
-		if (n === PROLOGUE_DIR_NAME) throw new Error(`卷名不可为「${PROLOGUE_DIR_NAME}」（保留名：书根「引言」文件夹占用该名）`);
+		if (n === PROLOGUE_DIR_NAME) throw new Error(`卷名不可为「${PROLOGUE_DIR_NAME}」（保留名：「书稿/引言」文件夹占用该名）`);
 		const vols = await this.loadVolumes(storyName);
 		for (const v of Object.values(vols)) if (v.name === n) throw new Error(`已有同名卷：${n}（卷实体目录以卷名命名，须唯一）`);
 		let id = String(volumeId).trim();
@@ -1453,14 +1688,14 @@ private emptyState(storyName: string): StoryState {
 		let newName = oldName;
 		if (patch.name !== undefined && patch.name.trim()) {
 			newName = patch.name.trim();
-			if (newName === PROLOGUE_DIR_NAME) throw new Error(`卷名不可改为「${PROLOGUE_DIR_NAME}」（保留名：书根「引言」文件夹占用该名）`);
+			if (newName === PROLOGUE_DIR_NAME) throw new Error(`卷名不可改为「${PROLOGUE_DIR_NAME}」（保留名：「书稿/引言」文件夹占用该名）`);
 			for (const v of Object.values(vols)) if (v.id !== vol.id && v.name === newName) throw new Error(`已有同名卷：${newName}`);
 		}
 		if (patch.description !== undefined) vol.description = String(patch.description).trim();
 		vol.name = newName;
 		await this.saveVolumes(storyName, vols);
 		// 卷实体目录随卷名走：改名后同步移动目录（失败则回滚元数据并报错）
-		const base = this.storyPath(storyName);
+		const base = this.manuscriptPath(storyName); // 卷实体目录在「书稿/」下
 		const oldDir = `${base}/${this.volumeFolderName({ ...vol, name: oldName })}`;
 		const newDir = `${base}/${this.volumeFolderName(vol)}`;
 		if (oldDir !== newDir && (await this.vault.adapter.exists(oldDir))) {
@@ -1481,7 +1716,7 @@ private emptyState(storyName: string): StoryState {
 	}
 
 	/**
-	 * v0.0.15 核心迁移助手：把一章在容器间移动（书根↔卷实体目录），保持「位置即归属」。
+	 * v0.0.15 核心迁移助手：把一章在容器间移动（「书稿/」直属↔卷实体目录），保持「位置即归属」。
 	 * 目标容器已有同号章时自动取该容器最大号+1 改名落位（复合键随之重映射：state.chapters / current_chapter / 伏笔.md 精确匹配项）。
 	 * 不重写跨文档的裸「第N章」引用——同容器内引用语义不变，跨卷显式引用（如「第二卷·第5章」）不受影响。
 	 */
@@ -1492,13 +1727,12 @@ private emptyState(storyName: string): StoryState {
 	): Promise<{ oldKey: string; newKey: string; num: number }> {
 		const ch = await this.chapterDirOf(storyName, srcKey);
 		if (!ch) throw new Error(`章节不存在：${srcKey}`);
-		const base = this.storyPath(storyName);
-		let destBase = base;
+		let destBase = this.manuscriptPath(storyName); // 未归属章落「书稿/」直属
 		if (destVolId) {
 			const vols = await this.loadVolumes(storyName);
 			const vol = vols[destVolId];
 			if (!vol) throw new Error(`未找到卷：${destVolId}`);
-			destBase = `${base}/${this.volumeFolderName(vol)}`;
+			destBase = this.volumeDirPath(storyName, vol); // 卷实体目录在「书稿/」下
 			await this.ensureVolumeFolder(storyName, vol);
 		}
 		let num = ch.num;
@@ -1532,7 +1766,7 @@ private emptyState(storyName: string): StoryState {
 		return { oldKey: srcKey, newKey, num };
 	}
 
-	/** 删除卷并解绑其下章节（删卷≠删章）：各章经 relocateChapterContainer 移回书根（同号冲突自动改号），卷目录整体扔回收站（含残留杂散文件），元数据一次清理 */
+	/** 删除卷并解绑其下章节（删卷≠删章）：各章经 relocateChapterContainer 移回「书稿/」直属（同号冲突自动改号），卷目录整体扔回收站（含残留杂散文件），元数据一次清理 */
 	async deleteVolume(storyName: string, key: string): Promise<{ deleted: boolean; movedKeys: string[] }> {
 		const vols = await this.loadVolumes(storyName);
 		const vol = this.findVolumeIn(vols, key);
@@ -1543,7 +1777,7 @@ private emptyState(storyName: string): StoryState {
 				const r = await this.relocateChapterContainer(storyName, ch.key, null); // 位置即归属：物理回移+键重映射一次完成
 				movedKeys.push(r.newKey);
 			}
-			const volDir = `${this.storyPath(storyName)}/${this.volumeFolderName(vol)}`;
+			const volDir = this.volumeDirPath(storyName, vol); // 卷实体目录在「书稿/」下
 			// 章已经 relocate 到根目录，卷目录内只剩杂散文件；用 trashFile 把整个卷目录扔回收站（用户主动「删除卷」该有的语义，非空残留不再保留原地）
 			const vf = this.vault.getAbstractFileByPath(volDir);
 			if (vf instanceof TFolder) { try { await this.app.fileManager.trashFile(vf); } catch { /* 文件被外部持锁等极少数情况，残留原地由用户手动清理 */ } }
@@ -1588,7 +1822,7 @@ private emptyState(storyName: string): StoryState {
 		delete vols[vol.id];
 		await this.saveVolumes(storyName, vols);
 		try {
-			const volDir = `${this.storyPath(storyName)}/${this.volumeFolderName(vol)}`;
+			const volDir = this.volumeDirPath(storyName, vol); // 卷实体目录在「书稿/」下
 			// 章已经 trashFile 入回收站，卷目录内只剩杂散文件；用 trashFile 把整个卷目录扔回收站（用户主动「级联删除卷」该有的语义，非空残留不再保留原地）
 			const vf = this.vault.getAbstractFileByPath(volDir);
 			if (vf instanceof TFolder) { try { await this.app.fileManager.trashFile(vf); } catch { /* 文件被外部持锁等极少数情况，残留原地由用户手动清理 */ } }
@@ -1664,24 +1898,24 @@ private emptyState(storyName: string): StoryState {
 		return vol.id;
 	}
 
-	/** 取消归属：章节目录移回书根（同号冲突自动改号），元数据与《章节信息》同步清空 */
+	/** 取消归属：章节目录移回「书稿/」直属（同号冲突自动改号），元数据与《章节信息》同步清空 */
 	async unassignChapterVolume(storyName: string, srcKey: string): Promise<void> {
 		try {
 			await this.relocateChapterContainer(storyName, srcKey, null);
-		} catch (e) { console.warn(`[ArticleWriter] 取消归属 ${srcKey} 时章节目录移回书根失败：`, e); }
+		} catch (e) { console.warn(`[ArticleWriter] 取消归属 ${srcKey} 时章节目录移回「书稿/」直属失败：`, e); }
 	}
 
 	// ---------- 按卷整理目录（平面结构升级 / 布局修复）----------
 
 	/**
-	 * 检测「平面结构」残留：章节已归卷（《章节信息》或状态文档有有效卷 ID）但目录仍留在书根。
-	 * 返回需要移动的复合键列表；空数组＝已是按卷目录结构（未归属章留书根属正常）。
+	 * 检测「平面结构」残留：章节已归卷（《章节信息》或状态文档有有效卷 ID）但目录仍留在「书稿/」直属。
+	 * 返回需要移动的复合键列表；空数组＝已是按卷目录结构（未归属章留「书稿/」直属属正常）。
 	 */
 	async needsVolumeOrganize(storyName: string): Promise<string[]> {
 		const vols = await this.loadVolumes(storyName).catch((): Record<string, doc.VolumeInfo> => ({}));
 		if (!Object.keys(vols).length) return [];
 		const state = await this.loadState(storyName);
-		const base = this.storyPath(storyName);
+		const base = this.manuscriptPath(storyName); // 「书稿/」直属＝未归属章的正常落点
 		const out: string[] = [];
 		for (const ch of await this.listChapters(storyName)) {
 			if (ch.vol || ch.parentPath !== base) continue; // 已在卷实体目录内 → 非平面残留
@@ -1696,7 +1930,7 @@ private emptyState(storyName: string): StoryState {
 	}
 
 	/**
-	 * 按卷整理（幂等的迁移/修复命令）：把「归属与位置不一致」的章节目录移到其归属容器 <书>/<卷名>/，同号冲突自动改号。
+	 * 按卷整理（幂等的迁移/修复命令）：把「归属与位置不一致」的章节目录移到其归属容器 <书>/书稿/<卷名>/，同号冲突自动改号。
 	 * 位于未知容器内的章节只报告不移动；卷名冲突（净化后同名）直接报错要求先改名。返回汇总。
 	 */
 	async organizeByVolumes(
@@ -1704,7 +1938,7 @@ private emptyState(storyName: string): StoryState {
 	): Promise<{ movedKeys: string[]; unassignedAtRoot: number; unknownContainers: Array<{ folder: string; keys: string[] }> }> {
 		if (!((await this.loadState(storyName))?.use_volumes)) return { movedKeys: [], unassignedAtRoot: 0, unknownContainers: [] }; // v0.0.16+：无卷模式不做按卷整理（保持扁平）
 		const vols = await this.loadVolumes(storyName).catch((): Record<string, doc.VolumeInfo> => ({}));
-		const base = this.storyPath(storyName);
+		const base = this.manuscriptPath(storyName); // 「书稿/」直属＝未归属章的正常落点
 		// 卷名 → 实体目录名须一一对应，否则无法确定落点
 		const usedNames = new Map<string, string[]>();
 		for (const v of Object.values(vols)) {
@@ -1726,7 +1960,7 @@ private emptyState(storyName: string): StoryState {
 			if (!assigned && state.chapters[ch.key]?.volume) assigned = String(state.chapters[ch.key].volume);
 			const vol = assigned ? this.findVolumeIn(vols, assigned) : null;
 			if (atRoot && !vol) {
-				unassignedAtRoot++; // 未归属章留书根＝新布局的正常形态
+				unassignedAtRoot++; // 未归属章留「书稿/」直属＝新布局的正常形态
 				continue;
 			}
 			if (!atRoot && !ch.vol) {
@@ -1745,27 +1979,26 @@ private emptyState(storyName: string): StoryState {
 	}
 
 	/**
-	 * v0.0.16+：把该书所有卷实体目录内的章节整体拍平回书根（无卷模式落地的破坏性迁移）。
+	 * v0.0.16+：把该书所有卷实体目录内的章节整体拍平回「书稿/」直属（无卷模式落地的破坏性迁移）。
 	 * 复用 relocateChapterContainer 逐章回移（同号冲突自动改号、复合键/伏笔/《章节信息》一次重映射），
-	 * 顺序=listChapters 的全局阅读序（书根在前、各卷按 order 依次、组内本地号升序），保证结果确定可复现。
-	 * 幂等可续跑：已回移到书根的章变为根域键，下次过滤 vol!=null 后不再处理；中断后可重跑 /volume off 补齐。
+	 * 顺序=listChapters 的全局阅读序（书稿直属在前、各卷按 order 依次、组内本地号升序），保证结果确定可复现。
+	 * 幂等可续跑：已回移到「书稿/」直属的章变为根域键，下次过滤 vol!=null 后不再处理；中断后可重跑 /volume off 补齐。
 	 */
 	async flattenToRoot(storyName: string): Promise<{ movedKeys: string[]; deletedVolumes: number; movedDocs: number }> {
 		const vols = await this.loadVolumes(storyName);
 		if (!Object.keys(vols).length) return { movedKeys: [], deletedVolumes: 0, movedDocs: 0 }; // 本就无卷 → 无需迁移
-		const base = this.storyPath(storyName);
 		const ordered = (await this.listChapters(storyName)).filter((c) => c.vol != null); // listChapters 已按全局阅读序排好
 		const movedKeys: string[] = [];
 		for (const ch of ordered) {
 			const r = await this.relocateChapterContainer(storyName, ch.key, null); // 位置即归属：物理回移+键重映射一次完成
 			movedKeys.push(r.newKey);
 		}
-		// v0.1.3+：拍平前先 salvaging 各卷残留的直属文件（设定五件套/卷摘要等）回书根保留；跨卷同名者加「<卷名>-」前缀避免覆盖，而非随目录一起进回收站
+		// v0.1.3+：拍平前先 salvaging 各卷残留的文件（设定五件套/卷摘要等，含「文档/」子目录）回「案头资料/」保留；跨卷同名者加「<卷名>-」前缀避免覆盖，而非随目录一起进回收站
 		const movedDocs = await this.salvageVolumeDocsToRoot(storyName, vols);
 		// 清空各卷实体目录（连同其残留内容）进回收站，再移除 卷.md 元数据
 		let deletedVolumes = 0;
 		for (const v of Object.values(vols)) {
-			const volDir = `${base}/${this.volumeFolderName(v)}`;
+			const volDir = this.volumeDirPath(storyName, v); // 卷实体目录在「书稿/」下
 			const f = this.vault.getAbstractFileByPath(volDir);
 			if (f instanceof TFolder) { try { await this.app.fileManager.trashFile(f); } catch { /* 残留原地保留 */ } }
 			deletedVolumes++;
@@ -1779,19 +2012,24 @@ private emptyState(storyName: string): StoryState {
 		return { movedKeys, deletedVolumes, movedDocs };
 	}
 
-	/** v0.1.3+：拍平迁移前把各卷实体目录里剩余的直属文件（非章节目录，如建卷播种的设定五件套/卷摘要等）回移到书根保留；跨卷或书根已存在同名者加「<卷名>-」前缀避免覆盖。返回成功迁移的文件数 */
+	/** v0.1.3+：拍平迁移前把各卷实体目录里剩余的文件（非章节目录，如建卷播种的设定五件套/卷摘要等）回移到「案头资料/」保留；
+	 * 新布局下卷级文档在 <书稿>/<卷>/文档/ 子目录内，须连同直属文件一并回移，否则会随卷目录进回收站丢数据。
+	 * 跨卷或目标已存在同名者加「<卷名>-」前缀避免覆盖。返回成功迁移的文件数 */
 	private async salvageVolumeDocsToRoot(storyName: string, vols: Record<string, doc.VolumeInfo>): Promise<number> {
-		const base = this.storyPath(storyName);
+		const desk = this.deskDocsPath(storyName); // 回移落点＝「案头资料/」（书级文档统一归口）
+		if (!(await this.vault.adapter.exists(desk))) await this.vault.createFolder(desk); // 极端情况下（未迁移即拍平）先确保落点存在
 		let moved = 0;
 		for (const v of Object.values(vols)) {
-			const folder = this.vault.getAbstractFileByPath(`${base}/${this.volumeFolderName(v)}`);
-			if (!(folder instanceof TFolder)) continue; // 章节已先行回移，此处只剩卷内直属文件
+			const folder = this.vault.getAbstractFileByPath(this.volumeDirPath(storyName, v));
+			if (!(folder instanceof TFolder)) continue; // 章节已先行回移，此处只剩卷内直属文件与「文档/」子目录
 			const files = folder.children.filter((x): x is TFile => x instanceof TFile);
+			const docsSub = folder.children.find((x): x is TFolder => x instanceof TFolder && x.name === VOLUME_DOCS_DIR_NAME);
+			if (docsSub) files.push(...docsSub.children.filter((x): x is TFile => x instanceof TFile)); // 「文档/」内的卷级文档一并回移
 			for (const file of files) {
-				let target = `${base}/${file.name}`;
+				let target = `${desk}/${file.name}`;
 				if (await this.vault.adapter.exists(target)) {
-					target = `${base}/${safeFilename(v.name)}-${file.name}`; // 跨卷/书根同名 → 前面增加卷名后再挪出
-					if (await this.vault.adapter.exists(target)) throw new Error(`拍平冲突：书根已存在 ${target}，无法迁移 ${file.path}`);
+					target = `${desk}/${safeFilename(v.name)}-${file.name}`; // 跨卷/目标同名 → 前面增加卷名后再挪出
+					if (await this.vault.adapter.exists(target)) throw new Error(`拍平冲突：案头资料已存在 ${target}，无法迁移 ${file.path}`);
 				}
 				await this.vault.rename(file, target);
 				await this.settleTree([{ path: file.path, expect: false }, { path: target, expect: true }]); // 等虚拟文件系统同步再处理下一个/后续删目录
@@ -1837,9 +2075,9 @@ private emptyState(storyName: string): StoryState {
 		if (vol) { // /analyze-cast：卷级场景（归属本卷的场景设定）落卷实体目录，与 loadAllScenes 的卷级读取口径一致
 			const v = (await this.loadVolumes(storyName))[vol];
 			if (!v) throw new Error(`卷不存在：${vol}（无法定位其《场景》文件）`);
-			return this.resolveVolumeDocPath(`${this.storyPath(storyName)}/${this.volumeFolderName(v)}`, v.name, "场景.md");
+			return this.resolveVolumeDocPath(this.volumeDirPath(storyName, v), v.name, "场景.md");
 		}
-		return `${this.storyPath(storyName)}/场景.md`;
+		return `${this.deskDocsPath(storyName)}/场景.md`; // 书级全局场景在「案头资料/」
 	}
 
 	private async saveScenesFile(
@@ -1864,10 +2102,10 @@ private emptyState(storyName: string): StoryState {
 
 	async loadAllScenes(storyName: string): Promise<Record<string, doc.SceneDoc>> {
 		const result: Record<string, doc.SceneDoc> = {};
-		const base = this.storyPath(storyName);
+		const base = this.deskDocsPath(storyName); // 书级全局《场景》在「案头资料/」
 		Object.assign(result, doc.parseScenes(await this.readDoc(`${base}/场景.md`), 0));
 		for (const [volId, vol] of Object.entries(await this.loadVolumes(storyName))) { // v0.0.15：卷级设定五件套并入（章节级同名条目优先级更高）
-			const parsed = doc.parseScenes(await this.readDoc(this.resolveVolumeDocPath(`${base}/${this.volumeFolderName(vol)}`, vol.name, "场景.md")), 0);
+			const parsed = doc.parseScenes(await this.readDoc(this.resolveVolumeDocPath(this.volumeDirPath(storyName, vol), vol.name, "场景.md")), 0);
 			for (const s of Object.values(parsed)) s.vol = volId;
 			Object.assign(result, parsed);
 		}
@@ -1925,7 +2163,7 @@ private emptyState(storyName: string): StoryState {
 		}
 		if (patch.content !== undefined) scene.content = String(patch.content).trim();
 		if (patch.notes !== undefined) scene.notes = String(patch.notes).trim();
-		// v0.0.15：跨章移动须同时看「本地号」与「卷归属」；patch.vol 约定 undefined=不变、""/null=显式移到书根
+		// v0.0.15：跨章移动须同时看「本地号」与「卷归属」；patch.vol 约定 undefined=不变、""/null=显式移到「书稿/」直属（未归卷）
 		const newVol = patch.vol !== undefined ? (patch.vol || undefined) : scene.vol;
 		if (patch.chapter_num !== undefined && patch.chapter_num >= 0 && (patch.chapter_num !== scene.chapter_num || newVol !== scene.vol)) {
 			// 跨章节（或跨容器）移动：从原文件移除、写入新文件
@@ -1985,9 +2223,9 @@ private emptyState(storyName: string): StoryState {
 		if (vol) { // v0.2.0+：卷级人物（归属本卷的角色设定）落卷实体目录，与 loadAllCharacters 的卷级读取口径一致
 			const v = (await this.loadVolumes(storyName))[vol];
 			if (!v) throw new Error(`卷不存在：${vol}（无法定位其《人物》文件）`);
-			return this.resolveVolumeDocPath(`${this.storyPath(storyName)}/${this.volumeFolderName(v)}`, v.name, "人物.md");
+			return this.resolveVolumeDocPath(this.volumeDirPath(storyName, v), v.name, "人物.md");
 		}
-		return `${this.storyPath(storyName)}/人物.md`;
+		return `${this.deskDocsPath(storyName)}/人物.md`; // 书级全局人物在「案头资料/」
 	}
 
 	private async saveCharactersFile(
@@ -2012,10 +2250,10 @@ private emptyState(storyName: string): StoryState {
 
 	async loadAllCharacters(storyName: string): Promise<Record<string, doc.CharacterDoc>> {
 		const result: Record<string, doc.CharacterDoc> = {};
-		const base = this.storyPath(storyName);
+		const base = this.deskDocsPath(storyName); // 书级全局《人物》在「案头资料/」
 		Object.assign(result, doc.parseCharacters(await this.readDoc(`${base}/人物.md`), 0));
 		for (const [volId, vol] of Object.entries(await this.loadVolumes(storyName))) { // v0.0.15：卷级设定五件套并入（章节级同名条目优先级更高）
-			const parsed = doc.parseCharacters(await this.readDoc(this.resolveVolumeDocPath(`${base}/${this.volumeFolderName(vol)}`, vol.name, "人物.md")), 0);
+			const parsed = doc.parseCharacters(await this.readDoc(this.resolveVolumeDocPath(this.volumeDirPath(storyName, vol), vol.name, "人物.md")), 0);
 			for (const c of Object.values(parsed)) c.vol = volId;
 			Object.assign(result, parsed);
 		}
@@ -2029,14 +2267,14 @@ private emptyState(storyName: string): StoryState {
 
 	// ---------- /analyze-cast 分层读写（人物/场景按 ref 定位书/卷/章三层）----------
 
-	/** 读全部三层《人物.md》（书根 + 每卷 + 每章），保持层间独立、逐层打标 ref；文件缺失的层返回空条目 */
+	/** 读全部三层《人物.md》（书级 + 每卷 + 每章），保持层间独立、逐层打标 ref；文件缺失的层返回空条目 */
 	async loadCharacterLayerDocs(storyName: string): Promise<CastLayerDoc<doc.CharacterDoc>[]> {
 		const out: CastLayerDoc<doc.CharacterDoc>[] = [];
-		const base = this.storyPath(storyName);
+		const base = this.deskDocsPath(storyName); // 书级全局《人物》在「案头资料/」
 		out.push({ ref: { scope: "book" }, entries: doc.parseCharacters(await this.readDoc(`${base}/人物.md`), 0) });
 		for (const [volId, vol] of Object.entries(await this.loadVolumes(storyName))) {
 			const entries = doc.parseCharacters(
-				await this.readDoc(this.resolveVolumeDocPath(`${base}/${this.volumeFolderName(vol)}`, vol.name, "人物.md")),
+				await this.readDoc(this.resolveVolumeDocPath(this.volumeDirPath(storyName, vol), vol.name, "人物.md")),
 				0
 			);
 			for (const c of Object.values(entries)) c.vol = volId; // 运行态标签（不落盘）
@@ -2053,11 +2291,11 @@ private emptyState(storyName: string): StoryState {
 	/** 读全部三层《场景.md》，口径同 loadCharacterLayerDocs */
 	async loadSceneLayerDocs(storyName: string): Promise<CastLayerDoc<doc.SceneDoc>[]> {
 		const out: CastLayerDoc<doc.SceneDoc>[] = [];
-		const base = this.storyPath(storyName);
+		const base = this.deskDocsPath(storyName); // 书级全局《场景》在「案头资料/」
 		out.push({ ref: { scope: "book" }, entries: doc.parseScenes(await this.readDoc(`${base}/场景.md`), 0) });
 		for (const [volId, vol] of Object.entries(await this.loadVolumes(storyName))) {
 			const entries = doc.parseScenes(
-				await this.readDoc(this.resolveVolumeDocPath(`${base}/${this.volumeFolderName(vol)}`, vol.name, "场景.md")),
+				await this.readDoc(this.resolveVolumeDocPath(this.volumeDirPath(storyName, vol), vol.name, "场景.md")),
 				0
 			);
 			for (const s of Object.values(entries)) s.vol = volId;
@@ -2107,15 +2345,15 @@ private emptyState(storyName: string): StoryState {
 		await this.saveScenesFile(storyName, 0, entries, null);
 	}
 
-	/** 读全部三层《人物关系.md》（书根 + 每卷 + 每章）合并为条目列表，供跨层去重；文件缺失的层跳过 */
+	/** 读全部三层《人物关系.md》（书级 + 每卷 + 每章）合并为条目列表，供跨层去重；文件缺失的层跳过 */
 	async readAllRelationshipEntries(storyName: string): Promise<doc.RelationshipEntry[]> {
 		const out: doc.RelationshipEntry[] = [];
-		const base = this.storyPath(storyName);
+		const base = this.deskDocsPath(storyName); // 书级《人物关系》在「案头资料/」
 		let bookText = await this.readDoc(`${base}/人物关系.md`);
 		if (!bookText.trim()) bookText = await this.readDoc(`${base}/角色关系.md`); // 旧别名兜底（与写作上下文同口径）
 		out.push(...doc.parseRelationships(bookText));
 		for (const vol of Object.values(await this.loadVolumes(storyName))) {
-			out.push(...doc.parseRelationships(await this.readDoc(this.resolveVolumeDocPath(`${base}/${this.volumeFolderName(vol)}`, vol.name, "人物关系.md"))));
+			out.push(...doc.parseRelationships(await this.readDoc(this.resolveVolumeDocPath(this.volumeDirPath(storyName, vol), vol.name, "人物关系.md"))));
 		}
 		for (const ch of await this.listChapters(storyName)) {
 			out.push(...doc.parseRelationships(await this.readDoc(this.resolveChapterDocPath(`${ch.dir.path}/人物关系.md`))));
@@ -2135,7 +2373,7 @@ private emptyState(storyName: string): StoryState {
 		const name = safeFilename(String(input.name ?? "").trim());
 		if (!name) throw new Error("角色名不能为空");
 		const chapNum = Math.max(0, Math.floor(Number(input.chapter) || 0));
-		// v0.2.0+：chapter=0 时 vol 非空 = 卷级人物（归属本卷的角色设定，落卷实体目录）；无卷才落书根
+		// v0.2.0+：chapter=0 时 vol 非空 = 卷级人物（归属本卷的角色设定，落卷实体目录）；无卷才落书级（「案头资料/」）
 		const vol = input.vol?.trim() || undefined;
 		const all = await this.loadAllCharacters(storyName);
 		if (all[name]) throw new Error(`同名角色已存在：${name}`);
@@ -2167,7 +2405,7 @@ private emptyState(storyName: string): StoryState {
 		const all = await this.loadAllCharacters(storyName);
 		const char = this.findCharacterIn(all, key);
 		if (!char) return null;
-		// v0.0.15：跨章移动须同时看「本地号」与「卷归属」；patch.vol 约定 undefined=不变、""/null=显式移到书根（保持旧版语义：移动时不合并其他字段改动）
+		// v0.0.15：跨章移动须同时看「本地号」与「卷归属」；patch.vol 约定 undefined=不变、""/null=显式移到「书稿/」直属（未归卷）（保持旧版语义：移动时不合并其他字段改动）
 		const newVol = patch.vol !== undefined ? (patch.vol || undefined) : char.vol;
 		if (patch.chapter !== undefined && patch.chapter >= 0 && (patch.chapter !== char.chapter || newVol !== char.vol)) {
 			const fromPath = await this.characterFilePath(storyName, char.chapter, char.vol);
@@ -2269,11 +2507,11 @@ private emptyState(storyName: string): StoryState {
 	}
 
 	async loadForeshadows(storyName: string): Promise<doc.ForeshadowItem[]> {
-		return doc.parseForeshadows(await this.readDoc(`${this.storyPath(storyName)}/伏笔.md`), await this.buildVolIndex(storyName));
+		return doc.parseForeshadows(await this.readDoc(`${this.deskDocsPath(storyName)}/伏笔.md`), await this.buildVolIndex(storyName));
 	}
 
 	private async saveForeshadowsFile(storyName: string, items: doc.ForeshadowItem[]): Promise<void> {
-		const path = `${this.storyPath(storyName)}/伏笔.md`;
+		const path = `${this.deskDocsPath(storyName)}/伏笔.md`; // 书级《伏笔》在「案头资料/」
 		if (items.length === 0) {
 			await this.removeDocIfExists(path);
 			return;
@@ -2343,17 +2581,17 @@ private emptyState(storyName: string): StoryState {
 		return extracted.length;
 	}
 
-	// ---------- 世界观（世界观.md）----------
+	// ---------- 世界观（案头资料/世界观.md）----------
 
 	async readWorldDoc(storyName: string): Promise<doc.WorldSettingDoc> {
-		const text = await this.readDoc(`${this.storyPath(storyName)}/世界观.md`);
+		const text = await this.readDoc(`${this.deskDocsPath(storyName)}/世界观.md`); // 书级《世界观》在「案头资料/」
 		// v0.2.x+：附带清洗后全文——parseWorld 只识别固定字段行，自由格式设定（人物/时间线/自定义小节）会全部丢失；提示词注入优先用 fullText，保证任意写法的世界观都进上下文
 		return { ...doc.parseWorld(text), fullText: doc.stripComments(text).trim() };
 	}
 
 	/** /world set <字段> <值>：世界/类型/规则/势力/地点/历史/力量体系 */
 	async setWorldField(storyName: string, field: string, value: string): Promise<boolean> {
-		const path = `${this.storyPath(storyName)}/世界观.md`;
+		const path = `${this.deskDocsPath(storyName)}/世界观.md`; // 书级《世界观》在「案头资料/」
 		const ws = await this.readWorldDoc(storyName);
 		switch (field.trim()) {
 			case "世界":
@@ -2470,7 +2708,7 @@ private emptyState(storyName: string): StoryState {
 		if (oldTitle === newTitle) return newTitle;
 		const oldFolder = ch.dir.name; // 第01章-旧名
 		const newFolder = `第${String(num).padStart(2, "0")}章-${newTitle}`;
-		const newPath = `${ch.parentPath}/${newFolder}`; // 保留所在容器（书根/卷实体目录）
+		const newPath = `${ch.parentPath}/${newFolder}`; // 保留所在容器（「书稿/」直属/卷实体目录）
 		await this.vault.rename(ch.dir, newPath);
 		const renamed = this.vault.getAbstractFileByPath(newPath); // instanceof 收窄替代断言（本地 dts 返回 TAbstractFile | null）
 		if (renamed instanceof TFolder) {
@@ -2516,11 +2754,11 @@ private emptyState(storyName: string): StoryState {
 		const viaIndex = (await this.listChapters(storyName)).find((c) => c.key === chapterKey);
 		if (viaIndex && (await this.vault.adapter.exists(viaIndex.dir.path))) return { path: viaIndex.dir.path, title: viaIndex.title };
 		try {
-			const want = String(parsed.num).padStart(2, "0"); // 索引滞后兜底：逐容器扫真实文件系统（书根+各卷实体目录）
-			const base = this.storyPath(storyName);
+			const want = String(parsed.num).padStart(2, "0"); // 索引滞后兜底：逐容器扫真实文件系统（「书稿/」直属+各卷实体目录）
+			const base = this.manuscriptPath(storyName);
 			const vols = await this.loadVolumes(storyName).catch((): Record<string, doc.VolumeInfo> => ({}));
 			const volByPath = new Map<string, string>();
-			for (const v of Object.values(vols)) volByPath.set(`${base}/${this.volumeFolderName(v)}`, v.id);
+			for (const v of Object.values(vols)) volByPath.set(this.volumeDirPath(storyName, v), v.id);
 			for (const contPath of await this.containerPaths(storyName, vols)) {
 				let listed: { folders?: string[] };
 				try { listed = await this.vault.adapter.list(contPath); } catch { continue; }
@@ -2558,11 +2796,10 @@ private emptyState(storyName: string): StoryState {
 		return out + text.slice(last);
 	}
 
-	/** 某容器（书根/卷实体目录）下全部 md：容器级文档 + 各章节目录内文件——作用域引用重写的扫描范围 */
+	/** 某容器（「书稿/」直属/卷实体目录）下全部 md：容器级文档 + 各章节目录内文件——作用域引用重写的扫描范围 */
 	private async scopeMarkdownFiles(storyName: string, volId: string | null): Promise<TFile[]> {
-		const base = this.storyPath(storyName);
 		const vols = await this.loadVolumes(storyName).catch((): Record<string, doc.VolumeInfo> => ({}));
-		const contPath = volId && vols[volId] ? `${base}/${this.volumeFolderName(vols[volId])}` : base;
+		const contPath = volId && vols[volId] ? this.volumeDirPath(storyName, vols[volId]) : this.manuscriptPath(storyName);
 		const cont = this.vault.getAbstractFileByPath(contPath);
 		if (!(cont instanceof TFolder)) return [];
 		const files: TFile[] = cont.children.filter((c): c is TFile => c instanceof TFile && /\.(md|markdown)$/i.test(c.name));
@@ -2600,7 +2837,7 @@ private emptyState(storyName: string): StoryState {
 		const src = await this.resolveChapterDir(storyName, fromKey);
 		if (!src) throw new Error(`章节目录不存在：${fromKey}`);
 		const oldPath = src.path;
-		const parentPath = oldPath.includes("/") ? oldPath.slice(0, oldPath.lastIndexOf("/")) : this.storyPath(storyName); // 保留所在容器（书根/卷实体目录）
+		const parentPath = oldPath.includes("/") ? oldPath.slice(0, oldPath.lastIndexOf("/")) : this.manuscriptPath(storyName); // 保留所在容器（「书稿/」直属/卷实体目录）
 		const newPath = `${parentPath}/第${String(toNum).padStart(2, "0")}章-${safeFilename(src.title || `第${toNum}章`)}`;
 		await this.vault.adapter.rename(oldPath, newPath); // 真实文件系统层整树改名（含 .space 等隐藏项），索引经 adapter 事件同步
 		if (!(await this.settleTree([{ path: oldPath, expect: false }, { path: newPath, expect: true }]))) {
@@ -2619,7 +2856,7 @@ private emptyState(storyName: string): StoryState {
 	}
 
 	/**
-	 * 重编号：每个容器（书根/各卷实体目录）独立压缩为连续 1..N（升序单遍有序迁移、无临时槽，中断不留大号幽灵章；以磁盘为准）。
+	 * 重编号：每个容器（「书稿/」直属/各卷实体目录）独立压缩为连续 1..N（升序单遍有序迁移、无临时槽，中断不留大号幽灵章；以磁盘为准）。
 	 * v0.0.15：执行前把全书 md 备份到 _backup/卷内重排_<时间戳>/（角色改名同款 file-level copy，老书卷内迁移入口）；
 	 * 裸「第X章」引用只在受影响容器的文件里按其局部映射重写——跨卷显式写法（「第二卷·第5章」「章节：<卷名>第5章」）不识别、不改写；
 	 * 伏笔.md 条目按复合键结构化重映射。
@@ -2644,7 +2881,7 @@ private emptyState(storyName: string): StoryState {
 			s.list.sort((a, b) => a.num - b.num);
 			for (let i = 0; i < s.list.length; i++) if (s.list[i].num !== i + 1) (anyGap = true);
 		}
-		if (!anyGap) return { ok: false, msg: "各容器内章节号均已连续（书根与各卷各自 1..N），无需调整" };
+		if (!anyGap) return { ok: false, msg: "各容器内章节号均已连续（「书稿/」直属与各卷各自 1..N），无需调整" };
 
 		// 执行前全书 md 备份（引用重写出错时可整体恢复）
 		const d = new Date();
@@ -2845,7 +3082,7 @@ private emptyState(storyName: string): StoryState {
 		const fileName = safeFilename(
 			built.packed.length > 1 && first !== last ? `${title}-第${first}-${last}章-合集` : `${title}-第${first}章-合集`
 		) + ".md";
-		return this.writePackFile(this.storyPath(storyName), fileName, outputPath, built);
+		return this.writePackFile(this.deskDocsPath(storyName), fileName, outputPath, built); // 未指定输出路径时默认落「案头资料/」
 	}
 
 	/** 导出卷合集：该卷实体目录下全部章节（按位置判归属，与 /scan 口径一致）正文合一 MD；默认文件名 <书名>-<卷名>-合集.md */
@@ -2857,18 +3094,18 @@ private emptyState(storyName: string): StoryState {
 		if (!chapters.length) throw new Error(`卷「${vol.name}」下没有章节，无法导出（可先执行「按卷整理目录」归位）`);
 		const state = (await this.loadState(storyName)) ?? this.emptyState(storyName);
 		const fileName = safeFilename(`${this.bookTitle(storyName, state)}-${vol.name}-合集`) + ".md";
-		return this.writePackFile(this.storyPath(storyName), fileName, outputPath, await this.buildPackParts(chapters));
+		return this.writePackFile(this.deskDocsPath(storyName), fileName, outputPath, await this.buildPackParts(chapters)); // 未指定输出路径时默认落「案头资料/」
 	}
 
-	/** 导出书稿/卷节点「导出…」共用引擎：所选范围全部章节《章节.md》正文合一 MD，阅读序排列。spec 语义同 /pack——**未锁卷**（forcedVolId===undefined）时留空/all/全部=整本（不回落 current_volume、区别于 /pack；支持卷名前缀+区间/列表）；**锁定某卷**（forcedVolId!==undefined）时留空/all=该卷全部章节、区间/列表按该卷本地号解析（无歧义）。有卷模式按容器装配：**每个卷组前都带「# 第N卷 · 卷名」标题行，无章的空卷也照样输出其卷名行**（卷号按《卷.md》order 序号），书根未归卷章节排最前不带标题；无卷模式（use_volumes===false）平铺不带任何卷标题。**每章正文开头自带的章节号行（「第N章 标题」等，见 md_docs.stripLeadingChapterHeading）先剥掉，章号只用代码生成的「## 第N章 标题」**。**默认文件名按口径区分**：限定某卷=`<书名>-<卷名>-范围.md`（范围取实际有正文章节号：单章 第N章／连续 第X-Y章／离散 第1、4、5章），整本或书根域=`<书名>-书稿.md`；重导覆盖同名文件 */
+	/** 导出书稿/卷节点「导出…」共用引擎：所选范围全部章节《章节.md》正文合一 MD，阅读序排列。spec 语义同 /pack——**未锁卷**（forcedVolId===undefined）时留空/all/全部=整本（不回落 current_volume、区别于 /pack；支持卷名前缀+区间/列表）；**锁定某卷**（forcedVolId!==undefined）时留空/all=该卷全部章节、区间/列表按该卷本地号解析（无歧义）。有卷模式按容器装配：**每个卷组前都带「# 第N卷 · 卷名」标题行，无章的空卷也照样输出其卷名行**（卷号按《卷.md》order 序号），「书稿/」直属未归卷章节排最前不带标题；无卷模式（use_volumes===false）平铺不带任何卷标题。**每章正文开头自带的章节号行（「第N章 标题」等，见 md_docs.stripLeadingChapterHeading）先剥掉，章号只用代码生成的「## 第N章 标题」**。**默认文件名按口径区分**：限定某卷=`<书名>-<卷名>-范围.md`（范围取实际有正文章节号：单章 第N章／连续 第X-Y章／离散 第1、4、5章），整本或未归卷域=`<书名>-书稿.md`；重导覆盖同名文件 */
 	async packStory(storyName: string, spec: string, forcedVolId?: string | null, outputPath = "") {
 		const expr = String(spec ?? "").trim();
 		if (forcedVolId === undefined && (!expr || /^(all|全部)$/i.test(expr))) {
-			return this.packStoryByKeys(storyName, (await this.listChapters(storyName)).map((c) => c.key), { whole: true }, outputPath); // 整本（含书根未归卷 + 各卷，空卷亦出卷名行）
+			return this.packStoryByKeys(storyName, (await this.listChapters(storyName)).map((c) => c.key), { whole: true }, outputPath); // 整本（含「书稿/」直属未归卷 + 各卷，空卷亦出卷名行）
 		}
 		const res = await this.resolvePackSelection(storyName, expr, forcedVolId); // 锁卷时留空/all=该卷全章
 		if ("ambiguous" in res) throw new Error("PACK_AMBIGUOUS_CONTAINER"); // 调用方应 pickAction 选容器后以 forcedVolId 重入
-		return this.packStoryByKeys(storyName, res.keys, { whole: false, volId: res.volId ?? "" }, outputPath); // ""=书根容器
+		return this.packStoryByKeys(storyName, res.keys, { whole: false, volId: res.volId ?? "" }, outputPath); // ""=未归卷（「书稿/」直属）
 	}
 
 	private async packStoryByKeys(
@@ -2883,7 +3120,7 @@ private emptyState(storyName: string): StoryState {
 			if (state.use_volumes !== false) vols = await this.volumeList(storyName); // 无卷模式一律平铺输出（与写字台展示语义一致）；《卷.md》缺失按无卷兜底
 		} catch { /* ignore */ }
 		const volSeq = new Map(vols.map((v, i) => [v.id, i + 1])); // 卷号=卷列表序号（与写字台「第N卷 · 卷名」一致）
-		const all = await this.listChapters(storyName); // 阅读序：书根在前 + 各卷按《卷.md》order、组内本地号升序
+		const all = await this.listChapters(storyName); // 阅读序：「书稿/」直属在前 + 各卷按《卷.md》order、组内本地号升序
 		const picked = new Set(keys);
 		if (!all.some((c) => picked.has(c.key))) throw new Error("没有可导出的章节");
 		const entriesOf = (volId: string | null) => all.filter((c) => (c.vol ?? null) === volId && picked.has(c.key));
@@ -2906,13 +3143,13 @@ private emptyState(storyName: string): StoryState {
 		const volumeHeader = (v: doc.VolumeInfo): string => `# ${volSeq.get(v.id) ? `第${doc.numToCn(volSeq.get(v.id)!)}卷 · ` : ""}${v.name || v.id}`;
 
 		if (scope.whole) {
-			for (const ch of entriesOf(null)) await appendChapter(ch); // 书根未归卷章节：不带标题、排在最前
+			for (const ch of entriesOf(null)) await appendChapter(ch); // 「书稿/」直属未归卷章节：不带标题、排在最前
 			for (const v of vols) { // 有卷模式：每卷组前贴「第N卷 · 卷名」H1 行——无章的空卷也照样输出其卷名行
 				parts.push(volumeHeader(v));
 				for (const ch of entriesOf(v.id)) await appendChapter(ch);
 			}
 		} else {
-			const volId = scope.volId ?? null; // ""=书根容器
+			const volId = scope.volId ?? null; // ""=未归卷（「书稿/」直属）
 			if (volId) {
 				const v = vols.find((x) => x.id === volId);
 				if (v) parts.push(volumeHeader(v)); // 限定单卷导出同样带该卷标题行
@@ -2921,7 +3158,7 @@ private emptyState(storyName: string): StoryState {
 		}
 		if (!packed.length) throw new Error("所选章节均无正文，未生成文件");
 		const title = this.bookTitle(storyName, state);
-		let base = `${title}-书稿`; // 整本 / 书根域（含无卷平铺）默认名
+		let base = `${title}-书稿`; // 整本 / 未归卷域（含无卷平铺）默认名
 		if (!scope.whole && scope.volId) { // 限定了某卷 → 按「书名-卷名-范围」命名（范围取实际有正文章节号：单章 第N章、连续 第X-Y章、离散 第1、4、5章）
 			const v = vols.find((x) => x.id === scope.volId);
 			const nums = [...packed.map((p) => p.num)].sort((a, b) => a - b);
@@ -2932,7 +3169,7 @@ private emptyState(storyName: string): StoryState {
 			base = `${title}${v?.name ? `-${v.name}` : ""}-${rangePart}`;
 		}
 		const fileName = safeFilename(base) + ".md";
-		return this.writePackFile(this.storyPath(storyName), fileName, outputPath, { parts, packed, skipped });
+		return this.writePackFile(this.deskDocsPath(storyName), fileName, outputPath, { parts, packed, skipped }); // 未指定输出路径时默认落「案头资料/」
 	}
 
 	/** /pack 与导出卷共用的合辑装配：逐章读《章节.md》正文（去 H1 标题行、再去正文开头自带的章节号行）、以分隔线拼接；空正文章节跳过并计入 skipped */
@@ -2979,25 +3216,27 @@ private emptyState(storyName: string): StoryState {
 
 	/** 以磁盘为准刷新故事状态.md：补齐缺失模板文档、重算元数据与总字数 */
 	async rescanStory(storyName: string): Promise<{ chapters: number; totalWords: number; createdDocs: number; volumeFixed?: number }> {
+		await this.ensureLayout(storyName, true); // 布局收口（/scan 修复入口）：force 绕过缓存强制重探
 		const base = this.storyPath(storyName);
 		const folder = this.storyFolder(storyName);
 		if (!folder) throw new Error(`小说目录不存在：${base}`);
 		let created = 0;
 		const state = (await this.loadState(storyName)) ?? this.emptyState(storyName);
+		const desk = this.deskDocsPath(storyName); // 书级文档补建落点＝「案头资料/」
 		for (const [fname, tpl] of [
 			["大纲.md", outlineTemplate(this.bookTitle(storyName, state))],
 			["世界观.md", WORLD_TEMPLATE],
-			["卷.md", VOLUME_TEMPLATE],
 			["伏笔.md", FORESHADOW_TEMPLATE],
 			["笔记.md", NOTES_TEMPLATE],
 		] as Array<[string, string]>) {
-			if ((await this.ensureDoc(`${base}/${fname}`, tpl)) === "created") created++;
+			if ((await this.ensureDoc(`${desk}/${fname}`, tpl)) === "created") created++;
 		}
+		if ((await this.ensureDoc(`${base}/卷.md`, VOLUME_TEMPLATE)) === "created") created++; // 系统管理的《卷.md》留书根
 		const diskChapters = await this.listChapters(storyName);
 		const vols = await this.loadVolumes(storyName);
 		// v0.0.15：既有卷实体目录的卷级设定五件套缺失补建（与建卷时同模板，同一清单来源 volumeDocTemplates）
 		for (const vol of Object.values(vols)) {
-			const volDir = `${base}/${this.volumeFolderName(vol)}`;
+			const volDir = this.volumeDirPath(storyName, vol); // 卷实体目录在「书稿/」下
 			for (const [fname, tpl] of this.volumeDocTemplates(vol)) {
 				if ((await this.ensureDoc(this.resolveVolumeDocPath(volDir, vol.name, fname), tpl)) === "created") created++;
 			}
@@ -3049,7 +3288,7 @@ private emptyState(storyName: string): StoryState {
 	// ---------- 写作上下文加载（/write /continue /rewrite /review 共用，对应 Python get_context_for_writing 的磁盘读取）----------
 
 	private async readGlobalOutlineRaw(storyName: string): Promise<string> {
-		const raw = await this.readDoc(`${this.storyPath(storyName)}/大纲.md`);
+		const raw = await this.readDoc(`${this.deskDocsPath(storyName)}/大纲.md`); // 书级《大纲》在「案头资料/」
 		let lines = doc.stripComments(raw.trim()).trim().split("\n");
 		if (lines.length && lines[0].startsWith("# ")) lines.shift();
 		return lines.join("\n").trim();
@@ -3069,7 +3308,7 @@ private emptyState(storyName: string): StoryState {
 		const vols = await this.loadVolumes(storyName);
 		const vol = this.findVolumeIn(vols, volId);
 		if (!vol) return "";
-		const volDir = `${this.storyPath(storyName)}/${this.volumeFolderName(vol)}`;
+		const volDir = this.volumeDirPath(storyName, vol); // 卷实体目录在「书稿/」下
 		const lines = doc.stripComments((await this.readDoc(this.resolveVolumeDocPath(volDir, vol.name, "卷大纲.md"))).trim()).split("\n");
 		while (lines.length && /^#\s/.test(lines[0])) lines.shift(); // 去 H1 标题行
 		return lines.join("\n").trim();
@@ -3080,7 +3319,7 @@ private emptyState(storyName: string): StoryState {
 		const vols = await this.loadVolumes(storyName);
 		const vol = this.findVolumeIn(vols, volId);
 		if (!vol) return "";
-		const volDir = `${this.storyPath(storyName)}/${this.volumeFolderName(vol)}`;
+		const volDir = this.volumeDirPath(storyName, vol); // 卷实体目录在「书稿/」下
 		return (await this.readDoc(this.resolveVolumeDocPath(volDir, vol.name, "卷大纲.md"))).trim();
 	}
 
@@ -3089,7 +3328,7 @@ private emptyState(storyName: string): StoryState {
 		const vols = await this.loadVolumes(storyName);
 		const vol = this.findVolumeIn(vols, volId);
 		if (!vol) throw new Error(`卷不存在：${volId}`);
-		const volDir = `${this.storyPath(storyName)}/${this.volumeFolderName(vol)}`;
+		const volDir = this.volumeDirPath(storyName, vol); // 卷实体目录在「书稿/」下
 		const body = String(bodyText ?? "").replace(/\s+$/, "");
 		await this.writeDoc(this.resolveVolumeDocPath(volDir, vol.name, "卷大纲.md"), `# ${vol.name} 卷大纲\n\n${body}\n`);
 	}
@@ -3101,7 +3340,7 @@ private emptyState(storyName: string): StoryState {
 
 	/** v0.2.x+「生成书籍大纲」：读全书《大纲.md》原始文本（不清洗，保留注释与 H1——供追加模式在原文末尾续写）；文件缺失返回空串 */
 	async readGlobalOutlineFile(storyName: string): Promise<string> {
-		return (await this.readDoc(`${this.storyPath(storyName)}/大纲.md`)).trim();
+		return (await this.readDoc(`${this.deskDocsPath(storyName)}/大纲.md`)).trim(); // 书级《大纲》在「案头资料/」
 	}
 
 	/** v0.2.x+「生成书籍大纲」：全量写全书《大纲.md》（H1 `# <书名> 大纲` + 正文 + 标记帮助尾注，与初始模板 outlineTemplate 一致；正文尾部空白已去） */
@@ -3109,7 +3348,7 @@ private emptyState(storyName: string): StoryState {
 		const state = await this.loadState(storyName);
 		const title = ((state?.title ?? "").trim()) || "未命名小说";
 		const body = String(bodyText ?? "").replace(/\s+$/, "");
-		await this.writeDoc(`${this.storyPath(storyName)}/大纲.md`, appendOutlineMarkerHelp(`# ${title} 大纲\n\n${body}\n`));
+		await this.writeDoc(`${this.deskDocsPath(storyName)}/大纲.md`, appendOutlineMarkerHelp(`# ${title} 大纲\n\n${body}\n`)); // 书级《大纲》在「案头资料/」
 	}
 
 	/** /export-ai-prompts：把实拼的 AI 提示词文档写到书根各阶段独立文件（案头资料、非书稿；重复导出整体覆盖） */
@@ -3119,10 +3358,10 @@ private emptyState(storyName: string): StoryState {
 		}
 	}
 
-	// ---------- v0.2.13+ 策划指南 策划指南.md（书级单文件 <书名>/策划指南.md；仅供大纲类命令注入【策划规范】，不进写作命令/聊天面板） ----------
+	// ---------- v0.2.13+ 策划指南 策划指南.md（书级单文件 案头资料/策划指南.md；仅供大纲类命令注入【策划规范】，不进写作命令/聊天面板） ----------
 
 	planningGuidePath(storyName: string): string {
-		return `${this.storyPath(storyName)}/策划指南.md`;
+		return `${this.deskDocsPath(storyName)}/策划指南.md`; // 书级《策划指南》在「案头资料/」
 	}
 
 	/** v0.2.13+「策划指南」：读书级《策划指南.md》清洗文本（去注释 + 去首部 H1 标题行，与 readGlobalOutline 同口径）；缺失返回空串 */
@@ -3246,7 +3485,7 @@ private emptyState(storyName: string): StoryState {
 			const vols = await this.loadVolumes(storyName);
 			const vol = vols[volId];
 			if (!vol) return "";
-			const raw = await this.readDoc(this.resolveVolumeDocPath(`${this.storyPath(storyName)}/${this.volumeFolderName(vol)}`, vol.name, "卷摘要.md")); // 新格式 <卷名>-摘要.md，缺失则自动回退旧前缀/裸基名
+			const raw = await this.readDoc(this.resolveVolumeDocPath(this.volumeDirPath(storyName, vol), vol.name, "卷摘要.md")); // 文档/裸基名 → legacy 前缀 → 旧新格式
 			if (!raw.trim()) return "";
 			const m = /<!--\s*内容哈希[:：]\s*([0-9a-f]{32})\s*-->/.exec(raw);
 			if (!m || m[1] !== (await this.computeVolumeDigest(storyName, volId))) return "";
@@ -3309,7 +3548,7 @@ private emptyState(storyName: string): StoryState {
 		if (!vol) throw new Error(`卷不存在：${volId}`);
 		const hash = await this.computeVolumeDigest(storyName, volId);
 		await this.writeDoc(
-			`${this.storyPath(storyName)}/${this.volumeFolderName(vol)}/${volumeDocPhysicalName(this.volumeFolderName(vol), "卷摘要.md")}`,
+			this.resolveVolumeDocPath(this.volumeDirPath(storyName, vol), vol.name, "卷摘要.md"), // 文档/裸基名 → legacy 前缀 → 旧新格式
 			`# ${vol.name || volId} 卷摘要\n\n<!-- 内容哈希：${hash} -->\n\n${summary}\n`
 		);
 	}
@@ -3322,7 +3561,7 @@ private emptyState(storyName: string): StoryState {
 	 * v0.1.4+：①前文窗口章数 N=data.json settings.prevChapters（getPrevChapters 注入、缺省 3）且**限本容器**——卷模式不再拉取他卷章节，缺口以最近各前卷《卷摘要》填充（prevVolSummaries，由近及远）；
 	 * ②**摘要全部延迟生成**（不在写盘命令后 eager 刷新）：窗口章/前卷/本卷需要时经 ensureFresh* 按需触发 LLM 并经 onProgress 给用户进度反馈——窗口章无正文时回落《章节大纲》作来源（预览即大纲文本），缺失/过期经 ensureFreshChapterSummary 生成落盘；
 	 * ③**卷摘要=本卷全部成员章新鲜章节摘要的全量重建**（ensureFreshVolumeSummary，指纹=各章「key|md5(摘要)」拼接 md5；旧版基于正文哈希的文件首次使用自愈重建一次）；
-	 * ④角色范围收窄——跨容器不深入他章《人物.md》：书根文档恒含、写卷内时排除书根区章节级条目、他卷仅取其卷级《人物.md》条目且仅限阅读序在前者。
+	 * ④角色范围收窄——跨容器不深入他章《人物.md》：书级文档恒含、写卷内时排除「书稿/」直属章节级条目、他卷仅取其卷级《人物.md》条目且仅限阅读序在前者。
 	 */
 	async loadWritingData(
 		storyName: string,
@@ -3336,7 +3575,7 @@ private emptyState(storyName: string): StoryState {
 		}
 	): Promise<import("./prompts").WritingContextInput & { savedForeshadows: number }> {
 		const state = await this.validatedState(storyName);
-		const ordered = await this.listChapters(storyName); // 阅读序：书根在前 + 各卷按《卷.md》order、组内本地号升序
+		const ordered = await this.listChapters(storyName); // 阅读序：「书稿/」直属在前 + 各卷按《卷.md》order、组内本地号升序
 		const idx = ordered.findIndex((c) => c.key === chapterKey);
 		if (idx < 0) throw new Error(`章节不存在：${chapterKey}`);
 		const ch = ordered[idx];
@@ -3421,7 +3660,7 @@ private emptyState(storyName: string): StoryState {
 			if (picked.length) prevVolSummaries = picked;
 		}
 
-		// v0.1.4+：角色范围收窄——跨容器不深入他章《人物.md》：书根文档恒含；写卷内时排除书根区章节级条目；
+		// v0.1.4+：角色范围收窄——跨容器不深入他章《人物.md》：书级文档恒含；写卷内时排除「书稿/」直属章节级条目；
 		// 本卷全量保留；他卷仅取其卷级《人物.md》条目（chapter=0）且仅限阅读序在前者（未来卷不注入）
 		const curVolId = ch.vol ?? "";
 		const prevVolIds = new Set<string>();
@@ -3430,13 +3669,13 @@ private emptyState(storyName: string): StoryState {
 			if (v && v !== curVolId) prevVolIds.add(v);
 		}
 		const characters = Object.values(await this.loadAllCharacters(storyName)).filter((c) => {
-			if (!c.vol) return c.chapter <= 0 ? true : curVolId === ""; // 书根《人物.md》恒含；书根区章节级条目仅在书根/平面写作时保留
+			if (!c.vol) return c.chapter <= 0 ? true : curVolId === ""; // 书级《人物.md》恒含；「书稿/」直属章节级条目仅在「书稿/」直属/平面写作时保留
 			return c.vol === curVolId || (c.chapter <= 0 && prevVolIds.has(c.vol));
 		});
 
 		// v0.0.15 三层上下文：人物关系按 书/卷/章 三份清洗文本返回，跨层逐行去重由 buildWritingContext 完成（优先级 章 > 卷 > 书）
-		let relationshipsRaw = await this.readDoc(`${this.storyPath(storyName)}/人物关系.md`);
-		if (!relationshipsRaw.trim()) relationshipsRaw = await this.readDoc(`${this.storyPath(storyName)}/角色关系.md`);
+		let relationshipsRaw = await this.readDoc(`${this.deskDocsPath(storyName)}/人物关系.md`); // 书级《人物关系》在「案头资料/」
+		if (!relationshipsRaw.trim()) relationshipsRaw = await this.readDoc(`${this.deskDocsPath(storyName)}/角色关系.md`); // 旧别名兜底
 		const bookRelationships = cleanRelationshipsDoc(relationshipsRaw);
 		const chapterRelationships = cleanRelationshipsDoc(await this.readDoc(`${ch.dir.path}/人物关系.md`));
 		let volumeName = "";
@@ -3445,7 +3684,7 @@ private emptyState(storyName: string): StoryState {
 		let volSummary = "";
 		if (ch.vol && vols[ch.vol]) {
 			volumeName = vols[ch.vol].name || ch.vol;
-			const volDir = `${this.storyPath(storyName)}/${this.volumeFolderName(vols[ch.vol])}`;
+			const volDir = this.volumeDirPath(storyName, vols[ch.vol]); // 卷实体目录在「书稿/」下
 			volRelationships = cleanRelationshipsDoc(await this.readDoc(this.resolveVolumeDocPath(volDir, vols[ch.vol].name, "人物关系.md")));
 			const lines = doc.stripComments((await this.readDoc(this.resolveVolumeDocPath(volDir, vols[ch.vol].name, "卷大纲.md"))).trim()).split("\n");
 			while (lines.length && /^#\s/.test(lines[0])) lines.shift(); // 去 H1 标题行
@@ -3584,7 +3823,7 @@ export interface SceneInput {
 	scene_id: string;
 	description?: string;
 	chapter_num: number;
-	vol?: string; // v0.0.15：chapter_num 的卷容器（本地号按容器独立编号；全局/书根可省）
+	vol?: string; // v0.0.15：chapter_num 的卷容器（本地号按容器独立编号；全局/未归卷（「书稿/」直属）可省）
 	characters?: string[];
 	content?: string;
 	notes?: string;
