@@ -12,6 +12,8 @@ LLM 写作类命令（`write-chapter`/`continue-writing`/`rewrite-chapter`/`poli
 
 - **`typo-check`（错别字检测）**：LLM 全文扫描当前章错字并加下划线标记、附建议改正。与其余命令的差异——**非流式**（`chatCompletion` 一次性返回，因需确定性校验全文回显）、**输出协议为回显式**：`<MARKED>…</MARKED>` 内逐字回显全文并把每个错字包成 `<u>错</u>`（其余字符一字不改），其后跟 JSON 数组 `[{"wrong":"…","right":"…"}]`（无错字为 `[]`）。**确定性校验**：剥掉 MARKED 段内 `<u>/</u>` 后必须与原文逐字一致（容忍模型把标记各占一行引入的首尾单个换行），不一致自动重试最多 3 次；3 次仍失败 → Notice「✗ …全文回显漂移，章节文件未改动」不动文件。落盘格式 `<span style="text-decoration:underline" title="建议改为：X">错字</span>`（无建议时省略 title）——**结果性标记有意落盘**（区别于去AI味的过程性标红、保存前剥掉），读回经 `stripAiWordMarks` 自动剥离故重跑幂等、摘要/字数/导出不受影响。建议映射：suggestions 条数==marks 条数按序一一对应，否则按 wrong===mark 文本匹配（每条只用一次），都匹配不到则该处无 title。面板预览＝顶部「共发现 N 处错别字：1. X → Y」清单 + `---` + 带 span 的全文（纯文本渲染、span 以源码可见属预期），确认后 `setChapterBody` 全量覆盖。max_tokens 取 `max(cfg.max_tokens, ceil(正文长×2)+1024)` 保证回显预算。
 
+- **`export-ai-prompts`（导出AI提示词，确定性无 LLM）**：把上述全部 AI 阶段（章域 8 + 大纲域 6 + 摘要域 3）在当前小说盘上数据下**会实发的 system/user 提示词**逐节导出到书根《AI提示词.md》（`manager.savePromptExportDoc`，案头资料、重复导出整体覆盖），供逐个喂本地模型比对输出。行为约定：①导出全程零 LLM 调用，与各 cmdXxx 复用同一构建函数与参数；②弹窗输入取默认基准——文本弹窗留空、章数弹窗 `defaultCount=max(现有章数,1)`（文档头部集中声明此口径）；③按盘上现状判定「现在会不会触发」，不会触发的阶段只写跳过原因（`exportSkipSection`），例如激活章已有正文时 /write 不出提示词、去AI味无命中、AI 拆章在章标记已存在时不触发、摘要已新鲜时延迟生成不再调用；④增量链（卷设计→逐章、AI 拆章逐章、analyze-cast 逐章、书级大纲续写）只导出首步，依赖前一步输出处用占位符注明；⑤每节标注模型配置来源（阶段映射 vs 全局激活 + cfg.name/model_name）与运行时显式参数覆盖；⑥章域基准=写字台当前激活章（无选择器）、大纲/卷摘要域基准=当前卷；⑦不触发任何写盘副作用（不调 `ensurePlanningGuide`、不生成摘要），只读判定。实现：`cmdExportPrompts`/`buildPromptExportDoc`（每节 `trySec` 独立 try/catch 保证单节失败不拖垮整篇、`fenceBlock` 按内容反引号自动升级围栏），见 [command-reference.md](./command-reference.md)。
+
 ## 引用索引（相关文档）
 
 | 层 | 文件 | 承载内容 |

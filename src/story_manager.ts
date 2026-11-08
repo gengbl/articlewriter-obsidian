@@ -3112,6 +3112,13 @@ private emptyState(storyName: string): StoryState {
 		await this.writeDoc(`${this.storyPath(storyName)}/大纲.md`, appendOutlineMarkerHelp(`# ${title} 大纲\n\n${body}\n`));
 	}
 
+	/** /export-ai-prompts：把实拼的 AI 提示词文档写到书根各阶段独立文件（案头资料、非书稿；重复导出整体覆盖） */
+	async savePromptExportDocs(storyName: string, entries: Array<{ path: string; content: string }>): Promise<void> {
+		for (const { path, content } of entries) {
+			await this.writeDoc(path, content);
+		}
+	}
+
 	// ---------- v0.2.13+ 策划指南 策划指南.md（书级单文件 <书名>/策划指南.md；仅供大纲类命令注入【策划规范】，不进写作命令/聊天面板） ----------
 
 	planningGuidePath(storyName: string): string {
