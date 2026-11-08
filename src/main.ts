@@ -6029,6 +6029,7 @@ async cmdRenameChapterFile(): Promise<void> {
 		const story = await this.requireStory();
 		if (!story) return;
 		try {
+			// 注意：以下标题是「选中→导出」的唯一匹配键，必须与 buildPromptExportDoc 里各 trySec("…") 的标题逐字节一致（含 · 等符号两侧空格）；任一处改动都要同步另一处，否则该功能点会被静默跳过。
 			const features = [
 				"创作章节 (/write)",
 				"续写当前章 (/continue)",
@@ -6110,6 +6111,7 @@ async cmdRenameChapterFile(): Promise<void> {
 		};
 
 		// ===== 章域 =====
+		// 注意：下面每个 trySec("…") 的标题是「选中→导出」的匹配键，必须与 cmdExportPrompts 里 features 清单逐字节一致；改动任一处都要同步另一处，否则该功能点被静默跳过。
 		await trySec("创作章节 (/write)", async () => {
 			const title = "创作章节 (/write)";
 			if (noChapter) return this.exportSkipSection(title, noChapter);
@@ -6423,8 +6425,8 @@ async cmdRenameChapterFile(): Promise<void> {
 		await trySec("从书级大纲生成卷 (/book-outline-to-volumes)", async () => {
 			return this.exportSkipSection("从书级大纲生成卷 (/book-outline-to-volumes)", "该命令是对书级《大纲.md》每条卷声明自动建卷并逐卷生成卷大纲的批量流程（autoCreateVolumesAndGenOutlines）；每卷的提示词与上面「自动生成卷大纲」同形态（上下文按各卷替换），不另出不带弹窗上下文的重复段。");
 		});
-		await trySec("从卷大纲生成章节 · AI 拆分兜底 (/vol-outline-to-chapters)", async () => {
-			const title = "从卷大纲生成章节 · AI 拆分兜底 (/vol-outline-to-chapters)";
+		await trySec("从卷大纲生成章节·AI 拆分兜底 (/vol-outline-to-chapters)", async () => {
+			const title = "从卷大纲生成章节·AI 拆分兜底 (/vol-outline-to-chapters)";
 			let vol: { id: string; name: string };
 			let raw: string;
 			let sourceLabel: string;
