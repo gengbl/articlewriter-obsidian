@@ -2995,8 +2995,13 @@ async cmdRenameChapterFile(): Promise<void> {
 		const userText = (await this.manager.readGuideAt(this.manager.userGuidePath())) ?? "";
 		const systemText = await this.readSystemGuideText(); // 读不到回落内置默认（写作命令不打扰）
 		let genre = "";
-		try { genre = (await this.manager.loadState(storyName))?.genre ?? ""; } catch { /* 状态读取失败按无题材处理 */ }
-		const r = await this.persistAggregatedGuide(storyName, bookText, userText, systemText, genre);
+		let writingStyle = "";
+		try {
+			const st = await this.manager.loadState(storyName);
+			genre = st?.genre ?? "";
+			writingStyle = st?.writing_style ?? "";
+		} catch { /* 状态读取失败按无题材处理 */ }
+		const r = await this.persistAggregatedGuide(storyName, bookText, userText, systemText, genre, writingStyle);
 		return { bookText, userText, systemText, guideText: r.guideText, bannedGuideText: r.merged["禁用词"] || "" };
 	}
 
