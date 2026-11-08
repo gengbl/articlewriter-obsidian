@@ -18,7 +18,7 @@ import { GUIDE_TYPES, matchGuideTypes } from "./guide_types_default";
 import { DEFAULT_USAGE_GUIDE } from "./usage_guide_default";
 import { assembleSystemPrompt, chatCompletion, chatStream, describeLlmError, isRetryableLlmError, normalizeBaseURL, testConnection } from "./llm_client";
 import type { Message } from "./llm_client";
-import { findAiSentences, findAiWordHits, mergeGuideCategories, simplifyEmphaticRepetition, simplifyNegationContrast } from "./banned_words";
+import { findAiWordHits, mergeGuideCategories, simplifyEmphaticRepetition, simplifyNegationContrast, findAiSentences } from "./banned_words";
 import { appendOutlineInstruction, applyTypoMarks, BOOK_OUTLINE_GEN_SYSTEM_PROMPT, buildBookOutlineContinuePrompt, buildBookOutlineExtendPrompt, buildBookOutlineGenPrompt, buildChapterPrompt, buildChapterSummaryPrompt, buildContinuePrompt, buildDeaiPrompt, buildPlanningGuidePrompt, buildPolishPrompt, buildReviewPrompt, buildRewritePrompt, buildStoryTypeSystemPrompt, buildTypoScanPrompt, buildVolOutlineChapterPrompt, buildVolOutlineDesignPrompt, buildVolRebuildPrompt, buildWritingContext, CHAPTER_SUMMARY_SYSTEM_PROMPT, checkOutlineCoverage, cleanAiText, cleanRelationshipsDoc, embedAggHash, findChapterRefLeaks, findChapterRefSentences, buildChapterRefFixPrompt, fixChapterRefs, formatRetryNote, parseAggHash, parseChapterWithSummary, parseTypoScan, serializeAggregateGuide, stripHeading, TYPO_SCAN_SYSTEM_PROMPT, validateStoryTypeFormat, VOL_OUTLINE_GEN_SYSTEM_PROMPT, VOL_SUMMARY_SYSTEM_PROMPT, BookOutlineGenInput, ChapterRefFixReport, PlanningGuideInput, VolOutlineGenInput, wordRangeFromGuides } from "./prompts";
 import { cnToNum, extractPlannedChapterCount, maxDeclaredEndChapter, mergeVolOutlineChapters, parseChapterSelection, parseRelationships, parseTimelines, parseVolumeDeclarations, splitList, splitVolOutlineByChapter, stripComments, type TimelineEntry, type VolumeDeclaration } from "./md_docs";
 import type { RelationshipEntry, VolumeInfo } from "./md_docs";
@@ -6496,6 +6496,7 @@ async cmdRenameChapterFile(): Promise<void> {
 		}));
 	}
 
+	// ---------- /typo-check 错别字检测 ----------
 	async cmdTypoCheck(): Promise<void> {
 		if (!(await this.ensureWorkDir())) return;
 		const story = await this.requireStory();
