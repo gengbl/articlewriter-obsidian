@@ -2385,8 +2385,9 @@ async cmdRenameChapterFile(): Promise<void> {
 	}
 
 	/** 合并三层→按题材追加命中类型的「类型要点」节→序列化为可再解析的 MD；按需把带 hash 头的汇总文件写入书目录；返回注入用正文（去 HTML 注释）与合并结果。
+	 * guideText=全文（对话/大纲路径用，禁用词类目经【创作规范】单次注入）；writerGuideText=剥离禁用词类目（正文生成路径用——该内容已由禁用词块 buildMergedBannedBlock 完整承载，防双份注入）。
 	 * genre：书籍题材自由文本（故事状态.md），未命中任何类型→不注入类型要点（typeText 空串） */
-	private async persistAggregatedGuide(story: string, bookText: string, userText: string, systemText: string, genre: string, writingStyle?: string): Promise<{ guideText: string; merged: Record<string, string> }> {
+	private async persistAggregatedGuide(story: string, bookText: string, userText: string, systemText: string, genre: string, writingStyle?: string): Promise<{ guideText: string; writerGuideText: string; merged: Record<string, string> }> {
 		const layers = [bookText, userText, systemText].filter((t) => t.trim()); // 顺序=优先级：小说级 > 用户级 > 系统级
 		const merged = mergeGuideCategories(layers);
 		let typeText = ""; // 命中类型的要点（去注释正文），多个命中依次追加
@@ -2406,7 +2407,8 @@ async cmdRenameChapterFile(): Promise<void> {
 				await this.manager.writeGuideAt(p, embedAggHash(body, h));
 			}
 		} catch { /* 汇总落盘失败不影响提示词构建 */ }
-		return { guideText: stripComments(body).trim(), merged };
+		const writerBody = merged["禁用词"] ? serializeAggregateGuide({ ...merged, "禁用词": "" }) : body; // 正文生成路径剥离禁用词类目（已由禁用词块完整承载）；落盘文件仍用全文 body
+		return { guideText: stripComments(body).trim(), writerGuideText: stripComments(writerBody).trim(), merged };
 	}
 
 	/** 读三层→合并→落盘汇总文件，返回注入正文与禁用词类目文本（写作命令/对话面板共用）；题材取自故事状态（读取失败按无题材→不注入类型要点） */
@@ -2989,8 +2991,8 @@ async cmdRenameChapterFile(): Promise<void> {
 		return setup;
 	}
 
-	/** 三层创作规范（小说级 > 用户级 > 系统级插件文件，顺序即优先级）：合并并落盘《写作指南汇总》，guideText=该汇总去注释正文（提示词仅注入它），bannedGuideText=合并后禁用词类目 */
-	private async loadWriterGuides(storyName: string): Promise<{ bookText: string; userText: string; systemText: string; guideText: string; bannedGuideText: string }> {
+	/** 三层创作规范（小说级 > 用户级 > 系统级插件文件，顺序即优先级）：合并并落盘《写作指南汇总》，guideText=该汇总去注释全文（对话/大纲路径注入），writerGuideText=剥离禁用词类目的正文（正文生成路径注入——该内容已由禁用词块承载，防双份），bannedGuideText=合并后禁用词类目 */
+	private async loadWriterGuides(storyName: string): Promise<{ bookText: string; userText: string; systemText: string; guideText: string; writerGuideText: string; bannedGuideText: string }> {
 		const bookText = (await this.manager.readGuideAt(this.manager.bookGuidePath(storyName))) ?? "";
 		const userText = (await this.manager.readGuideAt(this.manager.userGuidePath())) ?? "";
 		const systemText = await this.readSystemGuideText(); // 读不到回落内置默认（写作命令不打扰）
@@ -3002,19 +3004,19 @@ async cmdRenameChapterFile(): Promise<void> {
 			writingStyle = st?.writing_style ?? "";
 		} catch { /* 状态读取失败按无题材处理 */ }
 		const r = await this.persistAggregatedGuide(storyName, bookText, userText, systemText, genre, writingStyle);
-		return { bookText, userText, systemText, guideText: r.guideText, bannedGuideText: r.merged["禁用词"] || "" };
+		return { bookText, userText, systemText, guideText: r.guideText, writerGuideText: r.writerGuideText, bannedGuideText: r.merged["禁用词"] || "" };
 	}
 
-	/** 组装正文生成系统提示词：编写类型格式块+禁用词 → config.system_prompt → 内置默认；末尾附【创作规范】原文 */
+	/** 组装正文生成系统提示词：编写类型格式块+禁用词 → config.system_prompt → 内置默认；末尾附【创作规范】（用剥离禁用词类目的 writerGuideText——该内容已由禁用词块完整承载，防双份注入） */
 	private writerSystemPrompt(
 		baseSp: string | undefined,
-		guides: { guideText: string; bannedGuideText: string },
+		guides: { guideText: string; writerGuideText: string; bannedGuideText: string },
 		writingStyle?: string,
 		title?: string,
 		charNames?: Array<string | null>
 	): string {
 		const custom = buildStoryTypeSystemPrompt({ storyType: writingStyle, guideText: guides.guideText, title, charNames, bannedGuideText: guides.bannedGuideText });
-		return assembleSystemPrompt(custom || undefined, guides.guideText, baseSp);
+		return assembleSystemPrompt(custom || undefined, guides.writerGuideText, baseSp);
 	}
 
 	/** 对话面板系统提示词（与写作命令同一套规则）：编写类型块+禁用词 → settings.system_prompt → 内置默认，末尾附【创作规范】；非交互取 lastStory（不弹选择器），无当前小说时仅用户级/系统级两层 */
