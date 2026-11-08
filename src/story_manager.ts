@@ -3541,6 +3541,13 @@ private emptyState(storyName: string): StoryState {
 		}
 	}
 
+	/** v0.2.23+ 只读检查：某卷是否有任何成员章存在「已生成且未过期」的《章节摘要》（收集口径与 doEnsureFreshVolumeSummary 一致）——只读导出场景填占位符的门槛：无成员摘要的卷运行时也跳过（不占槽/不出节），占位符同样不得填入 */
+	private async volumeHasFreshMemberSummary(storyName: string, volId: string): Promise<boolean> {
+		const members = (await this.listChapters(storyName)).filter((c) => parseChKey(c.key).vol === volId);
+		for (const c of members) if ((await this.readFreshSummary(storyName, c.key)).trim()) return true;
+		return false;
+	}
+
 	/** 保存卷摘要并写入当前内容哈希头（指纹口径与 computeVolumeDigest 一致） */
 	async saveVolumeSummary(storyName: string, volId: string, summary: string): Promise<void> {
 		const vols = await this.loadVolumes(storyName);
@@ -3570,6 +3577,8 @@ private emptyState(storyName: string): StoryState {
 			includeCurrentSummary?: boolean;
 			/** 允许按需触发摘要的 LLM 生成（默认 true）。**只读展示场景必须传 false**——否则一个"读上下文算字数"的动作会顺带烧 token 生成摘要并把生成过程面板顶出来（如 LLM 对话框刷新提示词标签） */
 			ensureSummaries?: boolean;
+			/** v0.2.23+ 只读导出场景（/export-ai-prompts）：与 ensureSummaries=false 联用，摘要缺失时把该占位文本填入对应槽位（窗口章摘要/本卷摘要/前卷摘要）而非留空——导出文档据此明示「此处有摘要、尚未生成」；运行时写作命令不传 */
+			missingSummaryPlaceholder?: string;
 			/** 调用方自行注入本章大纲时传 true（/write 的「章节大纲：」块、/rewrite·/review 的前后章桥接块）——跳过《章节大纲.md》进 folderDocs，避免同一份大纲在用户提示词里注入两次；/continue 不传（其提示词不注入大纲，唯一来源就是 folderDocs 的【本章大纲】） */
 			dropOutlineDoc?: boolean;
 		}
@@ -3635,6 +3644,7 @@ private emptyState(storyName: string): StoryState {
 					? await this.ensureFreshChapterSummary(storyName, t.key, labelOf(t.key))
 					: await this.readFreshSummary(storyName, t.key);
 				if (s) summaries[t.ord] = s;
+				else if (!ensureSummaries && opts?.missingSummaryPlaceholder) summaries[t.ord] = opts.missingSummaryPlaceholder; // v0.2.23+：只读导出对缺失的窗口章/当前章摘要填占位符（不触发 LLM 生成）
 			}
 		}
 
@@ -3656,6 +3666,7 @@ private emptyState(storyName: string): StoryState {
 					? await this.ensureFreshVolumeSummary(storyName, vid) // v0.1.4+：需要即生成——前卷摘要缺失/过期时同样延迟重建（带进度反馈），不再因无文件而静默为空
 					: await this.readFreshVolumeSummary(storyName, vid); // 只读场景：仅取已有新鲜卷摘要，缺失即跳过
 				if (t.trim()) picked.push({ name: volNames[vid] || vid, text: t.trim() });
+				else if (!ensureSummaries && opts?.missingSummaryPlaceholder && (await this.volumeHasFreshMemberSummary(storyName, vid))) picked.push({ name: volNames[vid] || vid, text: opts.missingSummaryPlaceholder }); // v0.2.23+：只读导出对缺失的前卷摘要填占位符——仅限有成员章新鲜摘要的卷（无成员摘要的卷运行时也跳过、不占槽）
 			}
 			if (picked.length) prevVolSummaries = picked;
 		}
@@ -3692,6 +3703,7 @@ private emptyState(storyName: string): StoryState {
 			if (state.use_summaries !== false && includeVolSummary) {
 				// v0.1.4+：延迟生成——本卷全部章节摘要为输入全量重建，需要时才触发 LLM（带进度反馈）；默认关闭不注入整卷 digest、也不触发其重建
 				volSummary = ensureSummaries ? await this.ensureFreshVolumeSummary(storyName, ch.vol) : await this.readFreshVolumeSummary(storyName, ch.vol);
+				if (!volSummary.trim() && !ensureSummaries && opts?.missingSummaryPlaceholder && (await this.volumeHasFreshMemberSummary(storyName, ch.vol))) volSummary = opts.missingSummaryPlaceholder; // v0.2.23+：只读导出对缺失的本卷摘要填占位符（仅限有成员章新鲜摘要的卷）
 			}
 		}
 		this.onProgress?.(null); // v0.1.4+：本轮上下文组装的摘要生成阶段结束 → 隐藏进度提示（插件侧另有空闲超时兜底）

@@ -6097,6 +6097,8 @@ async cmdRenameChapterFile(): Promise<void> {
 		const globalSetup = this.getLlmSetup();
 		const globalLabel = "全局激活模型（不走阶段映射，直接取激活配置）";
 		const noLlm = (title: string): string => this.exportSkipSection(title, "未找到可用 LLM 配置（无配置时所有 AI 步骤都不会调用模型）。");
+		// v0.2.23+：导出全程不触发摘要的 LLM 生成——组装写作上下文时已存新鲜摘要照放，缺失处填此占位符明示「此处有摘要、尚未生成」（卷摘要槽位与运行时一致：无成员章摘要的卷运行时也跳过、不占槽，故不填）
+		const summaryPlaceholder = "（此处有摘要，尚未生成）";
 		const bridgeOf = async (key: string, ordinal: number): Promise<{ prev?: { label: string; text?: string }; cur?: { label: string; text?: string }; nxt?: { label: string; text?: string } }> => {
 			const bridge: { prev?: { label: string; text?: string }; cur?: { label: string; text?: string }; nxt?: { label: string; text?: string } } = {};
 			try {
@@ -6119,7 +6121,7 @@ async cmdRenameChapterFile(): Promise<void> {
 			if (!outlineOf.trim()) return this.exportSkipSection(title, "当前章没有《章节大纲.md》内容，且导出按弹窗默认值（不代填「章节大纲」「写作要点」）——两者皆空时 /write 只创建/就绪章节，不调用 LLM。");
 			const setup = this.getPhaseLlmSetup(2);
 			if (!setup) return noLlm(title);
-			const data = await this.manager.loadWritingData(story, activeKey, { includeCurrentSummary: false, dropOutlineDoc: true });
+			const data = await this.manager.loadWritingData(story, activeKey, { includeCurrentSummary: false, dropOutlineDoc: true, ensureSummaries: false, missingSummaryPlaceholder: summaryPlaceholder }); // v0.2.23+：只读导出——不触发摘要 LLM 生成，缺失处填占位符
 			const context = buildWritingContext(data);
 			let prevRefs: Array<{ label: string; text?: string }> = [];
 			try {
@@ -6151,7 +6153,7 @@ async cmdRenameChapterFile(): Promise<void> {
 			if (outlineOf.trim() && checkOutlineCoverage(bodyOf, outlineOf).allCovered) return this.exportSkipSection(title, "盘上《章节大纲.md》的要点已被现有正文全部覆盖，且导出按弹窗默认（续写要点留空）——运行时此时提示「大纲要点已全部完成」，不调用 LLM。");
 			const setup = this.getPhaseLlmSetup(2);
 			if (!setup) return noLlm(title);
-			const data = await this.manager.loadWritingData(story, activeKey, { includeCurrentSummary: true });
+			const data = await this.manager.loadWritingData(story, activeKey, { includeCurrentSummary: true, ensureSummaries: false, missingSummaryPlaceholder: summaryPlaceholder }); // v0.2.23+：只读导出——不触发摘要 LLM 生成，缺失处填占位符
 			const context = buildWritingContext(data);
 			let prevRefs: Array<{ label: string; text?: string }> = [];
 			try {
@@ -6185,7 +6187,7 @@ async cmdRenameChapterFile(): Promise<void> {
 			if (!bodyOf.trim()) return this.exportSkipSection(title, "当前激活章还没有正文，/rewrite 提示「还没有内容」，不调用 LLM。");
 			const setup = this.getPhaseLlmSetup(2);
 			if (!setup) return noLlm(title);
-			const data = await this.manager.loadWritingData(story, activeKey, { includeCurrentSummary: true, dropOutlineDoc: true }); // 本章大纲由桥接块【当前情节】注入，不经 folderDocs 二次注入
+			const data = await this.manager.loadWritingData(story, activeKey, { includeCurrentSummary: true, dropOutlineDoc: true, ensureSummaries: false, missingSummaryPlaceholder: summaryPlaceholder }); // v0.2.23+：只读导出——不触发摘要 LLM 生成，缺失处填占位符；本章大纲由桥接块【当前情节】注入，不经 folderDocs 二次注入
 			const context = buildWritingContext(data);
 			const bridge = await bridgeOf(activeKey, data.chapterNum);
 			const prompt = buildRewritePrompt({
@@ -6212,7 +6214,7 @@ async cmdRenameChapterFile(): Promise<void> {
 			if (!bodyOf.trim()) return this.exportSkipSection(title, "当前激活章还没有内容，/polish 不调用 LLM。");
 			const setup = this.getPhaseLlmSetup(2);
 			if (!setup) return noLlm(title);
-			const data = await this.manager.loadWritingData(story, activeKey, { includeCurrentSummary: true });
+			const data = await this.manager.loadWritingData(story, activeKey, { includeCurrentSummary: true, ensureSummaries: false, missingSummaryPlaceholder: summaryPlaceholder }); // v0.2.23+：只读导出——不触发摘要 LLM 生成，缺失处填占位符
 			const sp = this.writerSystemPrompt(setup.systemPrompt, guides, state.writing_style, state.title, data.characters.map((c) => c.name));
 			const prompt = buildPolishPrompt({ text: bodyOf, style: undefined, summary: data.summaries[data.chapterNum] ?? "", storyType: state.writing_style });
 			return this.exportSection(title, setup.cfg, phaseName(2), ["「润色风格」弹窗取默认值（留空=由模型自行判断风格）。结果面板确认后才覆盖保存；摘要延迟到下次上下文组装时生成。"], [
@@ -6293,7 +6295,7 @@ async cmdRenameChapterFile(): Promise<void> {
 			if (!bodyOf.trim()) return this.exportSkipSection(title, "当前激活章还没有正文，/review 不调用 LLM。");
 			const setup = globalSetup;
 			if (!setup) return noLlm(title);
-			const data = await this.manager.loadWritingData(story, activeKey, { includeCurrentSummary: false, dropOutlineDoc: true });
+			const data = await this.manager.loadWritingData(story, activeKey, { includeCurrentSummary: false, dropOutlineDoc: true, ensureSummaries: false, missingSummaryPlaceholder: summaryPlaceholder }); // v0.2.23+：只读导出——不触发摘要 LLM 生成，缺失处填占位符
 			const context = buildWritingContext(data);
 			const bridge = await bridgeOf(activeKey, data.chapterNum);
 			const prompt = buildReviewPrompt({
@@ -6567,6 +6569,7 @@ async cmdRenameChapterFile(): Promise<void> {
 				"- 增量链（卷设计→逐章、AI 拆分逐章、analyze-cast 逐章、书级大纲续写）只导出首步；依赖前一步输出的位置用占位符注明。",
 				"- 章域基准 = 写字台当前激活章" + (activeKey ? `「${chLabel}」` : "（未设定，相关阶段已跳过）") + "；大纲/卷摘要域基准 = 当前卷。",
 				"- 章节摘要/卷摘要不是命令：它们在写作上下文组装时按需延迟生成，导出展示其最新形态的提示词。",
+				"- 写作上下文中的摘要：导出全程不触发摘要的 LLM 生成——已存新鲜摘要照放；缺失处填占位符 " + summaryPlaceholder + "（无成员章摘要的卷运行时也跳过、不占槽，故不填占位符）。",
 				"- 本文档不是书稿（案头资料）：重新导出会整体覆盖。",
 			].join("\n"),
 		});
