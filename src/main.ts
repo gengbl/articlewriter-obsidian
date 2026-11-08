@@ -6117,7 +6117,7 @@ async cmdRenameChapterFile(): Promise<void> {
 		await trySec("创作章节 (/write)", async () => {
 			const title = "创作章节 (/write)";
 			if (noChapter) return this.exportSkipSection(title, noChapter);
-			if (bodyOf.trim()) return this.exportSkipSection(title, "当前激活章已有正文：/write 此时不会调用 LLM（要接着写用 /continue，整章重写用 /rewrite）。");
+			const hasBody = bodyOf.trim().length > 0; // v0.2.23+：激活章已有正文也照常组装导出（节内备注运行时不会触发）——调试 /write 提示词不必先切到空章
 			if (!outlineOf.trim()) return this.exportSkipSection(title, "当前章没有《章节大纲.md》内容，且导出按弹窗默认值（不代填「章节大纲」「写作要点」）——两者皆空时 /write 只创建/就绪章节，不调用 LLM。");
 			const setup = this.getPhaseLlmSetup(2);
 			if (!setup) return noLlm(title);
@@ -6141,7 +6141,10 @@ async cmdRenameChapterFile(): Promise<void> {
 				withSummary: state.use_summaries !== false,
 			});
 			const sp = this.writerSystemPrompt(setup.systemPrompt, guides, state.writing_style, state.title, data.characters.map((c) => c.name));
-			return this.exportSection(title, setup.cfg, phaseName(2), ["弹窗取默认值：新建标题（沿用现有章）、章节大纲（留空=用盘上《章节大纲.md》）、写作要点（留空）。"], [
+			return this.exportSection(title, setup.cfg, phaseName(2), [
+				...(hasBody ? ["当前激活章已有正文：运行时 /write 此时不会触发（要接着写用 /continue，整章重写用 /rewrite）；此处导出的是假设触发时实发的提示词。"] : []),
+				"弹窗取默认值：新建标题（沿用现有章）、章节大纲（留空=用盘上《章节大纲.md》）、写作要点（留空）。",
+			], [
 				{ heading: "系统提示词（system）", content: sp },
 				{ heading: "用户提示词（user）", content: built.prompt },
 			]);
@@ -6564,7 +6567,7 @@ async cmdRenameChapterFile(): Promise<void> {
 				`本文件由「导出AI提示词」(/export-ai-prompts) 生成于 ${new Date().toISOString()}，小说：《${state.title}》。`,
 				"",
 				"- 每个阶段给出**运行时实拼**的 system/user 提示词（与各命令同一构建函数与参数），可直接逐个复制喂本地模型比对输出。",
-				"- 导出全程不调用 LLM；按当前盘上数据判定「现在会不会触发」，不会触发的阶段只写跳过原因。",
+				"- 导出全程不调用 LLM；按当前盘上数据判定「现在会不会触发」，不会触发的阶段只写跳过原因——唯一例外是 /write：激活章已有正文时运行时不触发，但仍照常组装导出提示词（节内备注），便于随时调试。",
 				"- 弹窗输入取默认基准：文本弹窗留空；章数弹窗取 " + String(defaultCount) + "（= 现有章数）。运行时改了弹窗输入/盘上数据后需重新导出。",
 				"- 增量链（卷设计→逐章、AI 拆分逐章、analyze-cast 逐章、书级大纲续写）只导出首步；依赖前一步输出的位置用占位符注明。",
 				"- 章域基准 = 写字台当前激活章" + (activeKey ? `「${chLabel}」` : "（未设定，相关阶段已跳过）") + "；大纲/卷摘要域基准 = 当前卷。",
