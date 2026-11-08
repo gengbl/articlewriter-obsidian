@@ -357,12 +357,13 @@
 	background: var(--background-modifier-hover);
 }
 
-/* 案头资料中的文件夹行：图标前缀 + 文件夹名；仅展示（点击无动作），右键提供新建/删除 */
+/* 案头资料中的文件夹行：图标前缀 + caret + 文件夹名；点行/箭头展开收起直属文件列表（v0.2.23+，默认折叠），右键提供新建/删除 */
 .aw-st-folder {
 	padding: 2px 8px;
 	display: flex;
 	align-items: center;
 	gap: 4px;
+	cursor: pointer;
 }
 
 .aw-st-folder::before {

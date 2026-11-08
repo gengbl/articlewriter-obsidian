@@ -43,6 +43,7 @@ export interface StatusFileEntry {
 export interface StatusFolderEntry {
 	path: string;
 	name: string;
+	files?: StatusFileEntry[]; // v0.2.23+：该文件夹直属 md 文件（按名排序），供写字台文件夹行点击展开查看；缺失/空=无文件，行不可展开
 }
 export interface StatusChapterEntry {
 	key: string; // v0.0.15：复合键 "volId:N" / "N"（章节唯一身份）
@@ -147,7 +148,7 @@ export class StatusView extends ItemView {
 	/** 可滚动树主体区（案头资料 / 书稿小节）：仅此区域内部滚动 */
 	private treeEl!: HTMLElement;
 	private busy = false;
-	/** 折叠状态（会话内保持，不落盘；各书小节/章节键均带书名前缀互不连动）：collapsed 键="stories"/"gdocs:<书名>"/"chapters:<书名>"（分组标题收起态）、"vol:<书名>:<卷ID>"（卷节点下章节列表收起态，默认展开），expanded 键="c:<书名>:<章号>"（章节文件列表，默认折叠）。小说切换只走「书籍列表」标题行下拉框，组内仅渲染当前激活小说的小节 */
+	/** 折叠状态（会话内保持，不落盘；各书小节/章节键均带书名前缀互不连动）：collapsed 键="stories"/"gdocs:<书名>"/"chapters:<书名>"（分组标题收起态）、"vol:<书名>:<卷ID>"（卷节点下章节列表收起态，默认展开），expanded 键="c:<书名>:<章号>"（章节文件列表，默认折叠）、"gf:<书名>:<文件夹路径>"（案头资料文件夹文件列表 v0.2.23+，默认折叠）。小说切换只走「书籍列表」标题行下拉框，组内仅渲染当前激活小说的小节 */
 	private collapsed = new Set<string>();
 	private expanded = new Set<string>();
 	/** 最近一次成功拉取的快照：开合是纯展示态，优先用它本地重渲染、不再读盘（getData 要逐章统计字数，手机上明显卡顿） */
@@ -619,7 +620,7 @@ export class StatusView extends ItemView {
 		}
 	}
 
-	/** 章节文件列表开合（点行与点箭头共用）：expanded 记手动展开态，无文件的章不可展开；重渲染走缓存不走读盘 */
+	/** 可折叠文件列表开合（点行与点箭头共用；章节文件列表与案头资料文件夹文件列表同一机制）：expanded 记手动展开态，无文件者不可展开；重渲染走缓存不走读盘 */
 	private toggleChapFiles(key: string, open: boolean, hasFiles: boolean): void {
 		if (open) this.expanded.delete(key);
 		else if (hasFiles) this.expanded.add(key); // 收起且无文件时点了也不变
@@ -654,7 +655,7 @@ export class StatusView extends ItemView {
 		const el = parent.createDiv({ cls: "aw-st-file" });
 		el.setText(f.name);
 		const promptDoc = ctx == null ? true : (ctx.key == null
-			? PROMPT_DOCS_ROOT.has(f.name) // 书根：资料文档名不前缀
+			? (ctx.folder != null ? false : PROMPT_DOCS_ROOT.has(f.name)) // 书根：资料文档名不前缀；文件夹内文件不参与写作提示词注入（loadWritingData 只按固定路径读顶层）
 			: PROMPT_DOCS_CHAPTER.has(chapterLogicalBase(f.name, ctx.folder ?? "", ctx.title ?? "")));
 		if (ctx && !promptDoc) { // 反向口径：书根（案头资料）/章节目录中不参与写作提示词的文件着强调色，标准模板文档正常显示（悬停有说明）；章节文件按新格式逻辑基名比对
 			el.addClass("aw-st-npdoc");
@@ -668,7 +669,7 @@ export class StatusView extends ItemView {
 			el.addEventListener("contextmenu", (e) => {
 				e.stopPropagation(); // 不透传到所在分组/章节块的菜单
 				this.showContextMenu(e, [
-					{ label: "新建文章…", run: () => this.runStatusAction({ kind: "new-file", story: ctx.story, key: ctx.key }) },
+					{ label: "新建文章…", run: () => this.runStatusAction({ kind: "new-file", story: ctx.story, key: ctx.key, folder: ctx.folder }) }, // folder 仅文件夹内文件行有值：新建落该文件夹（书根/章节目录行为 undefined 走原口径）
 					{ label: `删除 ${f.name}`, danger: true, run: () => this.runStatusAction({ kind: "delete-file", path: f.path }) },
 				]);
 			});
@@ -676,9 +677,22 @@ export class StatusView extends ItemView {
 	}
 
 	private appendFolderRow(parent: HTMLElement, folder: StatusFolderEntry, storyName: string): void {
+		const key = `gf:${storyName}:${folder.path}`; // v0.2.23+：文件夹文件列表默认折叠（expanded 记手动展开态）；不同书/文件夹互不连动
+		const files = folder.files ?? [];
+		const open = this.expanded.has(key);
 		const el = parent.createDiv({ cls: "aw-st-folder" });
-		el.setText(folder.name);
-		// 文件夹行仅展示：点击无动作（Obsidian 无公开 API 在文件浏览器定位文件夹），右键提供新建/删除
+		el.createSpan({ text: open && files.length ? "▾" : "▸", cls: "aw-st-caret" }).addEventListener("click", (e) => {
+			e.stopPropagation(); // 点箭头只展开/折叠文件列表
+			this.toggleChapFiles(key, open, files.length > 0);
+		});
+		el.appendText(folder.name);
+		el.addEventListener("click", () => {
+			this.toggleChapFiles(key, open, files.length > 0); // 点行同样开合（与箭头共用）；文件夹无激活语义，开合即全部点击动作
+		});
+		if (open) {
+			const kids = parent.createDiv({ cls: "aw-st-kids" });
+			for (const f of files) this.appendFileRow(kids, f, { story: storyName, key: null, folder: folder.path }); // 文件行走书根口径（key=null）+ folder 落点：右键「新建文章…」建在该文件夹内
+		}
 		el.addEventListener("contextmenu", (e) => {
 			e.stopPropagation();
 			this.showContextMenu(e, [

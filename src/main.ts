@@ -3232,6 +3232,7 @@ async cmdRenameChapterFile(): Promise<void> {
 		const knownVolNames = new Set(vols.map((v) => this.manager.volumeFolderName(v))); // 已建卷的实体目录名集合，用于过滤书根文件夹（旧布局未迁移时生效）
 		const globalFiles: StatusFileEntry[] = [];
 		const globalFolders: StatusFolderEntry[] = [];
+		const folderFiles = (fd: TFolder): StatusFileEntry[] => fd.children.filter((c): c is TFile => c instanceof TFile).map((c) => ({ path: c.path, name: c.name })).sort((a, b) => a.name.localeCompare(b.name, "zh")); // v0.2.23+：文件夹直属 md（按名排序），供写字台行展开查看
 		for (const d of srcDirs) {
 			for (const f of d.children) {
 				if (f instanceof TFile) {
@@ -3239,9 +3240,9 @@ async cmdRenameChapterFile(): Promise<void> {
 				} else if (f instanceof TFolder && d === storyDir) {
 					if (f.name === DESK_DOCS_DIR_NAME || f.name === MANUSCRIPT_DIR_NAME) continue; // 新布局两容器
 					if (CHAPTER_DIR_RE.test(f.name) || knownVolNames.has(f.name) || f.name === PROLOGUE_DIR_NAME) continue;
-					globalFolders.push({ path: f.path, name: f.name });
+					globalFolders.push({ path: f.path, name: f.name, files: folderFiles(f) });
 				} else if (f instanceof TFolder) {
-					globalFolders.push({ path: f.path, name: f.name }); // 「案头资料/」直属文件夹原样展示
+					globalFolders.push({ path: f.path, name: f.name, files: folderFiles(f) }); // 「案头资料/」直属文件夹原样展示
 				}
 			}
 		}
