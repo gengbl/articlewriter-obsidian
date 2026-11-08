@@ -557,7 +557,8 @@ const countCnChars = (s: string): number => (s.match(CN_CHAR_RE()) || []).length
 
 /**
  * 生成唯一的禁用词提示块：代码内置表（buildBannedWordsBlock）+ 各层指南
- * "禁用词"分类中的补充内容；指南中与代码表完全重复的纯词列表行跳过（防重复），
+ * "禁用词"分类中的补充内容；指南中与代码表完全重复的纯词列表行、以及与内置清单
+ * 同题的标题行（如「## 十、网文高频禁用词清单…」，含书籍级空骨架的同名标题）跳过（防重复），
  * 保留说明文字（即使其中提到代码表已有的词）与代码表没有的补充词。
  */
 export function buildMergedBannedBlock(guideBannedText = ""): string {
@@ -569,6 +570,8 @@ export function buildMergedBannedBlock(guideBannedText = ""): string {
 	for (const rawLine of guide.split("\n")) {
 		const stripped = rawLine.trim();
 		if (!stripped) continue;
+		// 与内置清单同题的标题行 → 结构标题而非补充规则 → 跳过（否则会在【指南补充】里再出现一个近同名段）
+		if (/^#{1,6}\s/.test(stripped) && stripped.includes("网文高频禁用词")) continue;
 		const lineTokens = extractBannedTokens(stripped);
 		if (lineTokens.length >= 2 && lineTokens.every((t) => codeTokens.has(t))) {
 			// 纯列表行（去掉词后几乎无其他汉字）→ 跳过；说明性句子（含汉字较多）→ 保留
