@@ -974,7 +974,7 @@ export class StoryManager {
 		return { key, created: true };
 	}
 
-	/** 章节目录七件套模板清单（建章播种 / scan 补缺 / 写字台「新建文章…」优先列表同一来源）。《时间线》为可选手写参考资料、不参与提示词注入 */
+	/** 章节目录七件套模板清单（建章播种 / scan 补缺 / 写字台「新建文章…」优先列表同一来源）。《时间线》为可选手写参考资料、《章节信息》为位置元数据（v0.2.23+ 起）——两者均不参与提示词注入 */
 	chapterDocTemplates(num: number, title: string): Array<[string, string]> {
 		const heading = title.trim() ? `第${num}章 ${title}` : `第${num}章`; // H1 口径与章节大纲模板一致
 		return [
@@ -3611,7 +3611,7 @@ private emptyState(storyName: string): StoryState {
 			{ file: "章节大纲.md", text: opts?.dropOutlineDoc ? "" : await this.readDoc(`${ch.dir.path}/章节大纲.md`) },
 			{ file: "人物.md", text: chCharRaw },
 			{ file: "场景.md", text: chSceneRaw },
-			{ file: "章节信息.md", text: await this.readDoc(`${ch.dir.path}/章节信息.md`) },
+			// v0.2.23+：《章节信息.md》不再进写作上下文（CHAPTER_DOC_LABELS 已移除其标签），此处亦不再读取
 		];
 		const folderDocs = buildChapterFolderDocs(entries, ch.key).docs; // 复合键：本章容器作为 [伏] 标记默认归属
 		const chapterOutlineText = await this.readChapterOutlineForPrompt(storyName, ch.key);

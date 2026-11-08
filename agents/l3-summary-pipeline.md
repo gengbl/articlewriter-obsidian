@@ -6,7 +6,7 @@
 
 ## 三层写作上下文结构（v0.0.15+）
 
-- **三层写作上下文结构（v0.0.15+）**：buildWritingContext 输出分三节——`== 故事情况 · 书籍级 ==`（全书大纲/书籍角色设定/书籍场景/【人物关系·书】）、`== 故事情况 · 卷级（<卷名>） ==`（本卷大纲/卷摘要/本卷人物关系/本卷角色设定/本卷场景，仅当前章在卷内出现）、`== 故事情况 · 章级（…第N章） ==`（本章目录文档原文 folderDocs + 【本章人物关系】），末尾伏笔提示。**去重规则**：①结构化角色/场景列表按「所属容器」分层（c.vol===activeVolId→卷层，否则书层），并排除归属当前章的条目（excludeCharNames/excludeSceneIds，其完整信息已由章层 folderDocs 原文承载）；②人物关系三份清洗文本逐行跨层去重（dedupeLinesAgainst，优先级 章 > 卷 > 书，normalizeRelLine 归一化前缀符号与空白后比较）。folderDocs 已剔除《人物关系.md》改经 chapterRelationships 单独传入。
+- **三层写作上下文结构（v0.0.15+）**：buildWritingContext 输出分三节——`== 故事情况 · 书籍级 ==`（全书大纲/书籍角色设定/书籍场景/【人物关系·书】）、`== 故事情况 · 卷级（<卷名>） ==`（本卷大纲/卷摘要/本卷人物关系/本卷角色设定/本卷场景，仅当前章在卷内出现）、`== 故事情况 · 章级（…第N章） ==`（本章目录文档原文 folderDocs + 【本章人物关系】），末尾伏笔提示。**v0.2.23+：《章节信息.md》不再进 folderDocs**（原【本章章节信息】块移除——位置/卷归属等元数据对写作无增益；prompts.ts CHAPTER_DOC_LABELS 与 PROMPT_DOCS_CHAPTER 同步剔除，loadWritingData entries 亦不再读取该文件；文件本身仍属建章七件套模板、照常管理）。**去重规则**：①结构化角色/场景列表按「所属容器」分层（c.vol===activeVolId→卷层，否则书层），并排除归属当前章的条目（excludeCharNames/excludeSceneIds，其完整信息已由章层 folderDocs 原文承载）；②人物关系三份清洗文本逐行跨层去重（dedupeLinesAgainst，优先级 章 > 卷 > 书，normalizeRelLine 归一化前缀符号与空白后比较）。folderDocs 已剔除《人物关系.md》改经 chapterRelationships 单独传入。
 
 ## v0.1.4+ 写作上下文窗口、摘要自动生成与角色范围收窄
 
