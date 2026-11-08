@@ -897,6 +897,78 @@ export class ConfirmModal extends Modal {
 
 // ---------- LLM 流式生成预览已并入统一生成过程面板（src/gen_progress_view.ts GenProgressView 的 WritingStreamSink 流式阶段），不再使用独立 Modal。
 
+/** 导出 AI 提示词功能点选择弹窗：checkbox 列表 + 全选/全不选按钮，提交回调返回选中标题数组（空数组视为取消） */
+export class ExportPromptsSelectModal extends Modal {
+	private submitted = false;
+	private selected = new Set<string>();
+
+	constructor(
+		app: App,
+		private features: Array<{ title: string; description?: string }>,
+		private onSubmit: (selected: string[]) => void | Promise<void>,
+		private onCancel?: () => void
+	) {
+		super(app);
+	}
+
+	onOpen(): void {
+		const { contentEl } = this;
+		contentEl.createEl("h3", { text: "选择要导出的功能点" });
+		contentEl.createDiv({ cls: "aw-prompt-hint", text: "勾选需要导出的功能点；未勾选的将跳过（AI提示词导出说明始终包含）。" });
+
+		const btnRow = contentEl.createDiv({ cls: "aw-export-prompts-btns" });
+		btnRow.createEl("button", { text: "全选" }).addEventListener("click", () => {
+			this.selected = new Set(this.features.map((f) => f.title));
+			this.refreshCheckboxes();
+		});
+		btnRow.createEl("button", { text: "全不选" }).addEventListener("click", () => {
+			this.selected = new Set();
+			this.refreshCheckboxes();
+		});
+
+		for (const feat of this.features) {
+			const row = contentEl.createDiv({ cls: "aw-export-prompts-row" });
+			const cb = row.createEl("input", { type: "checkbox", cls: "aw-export-prompts-cb" });
+			cb.checked = this.selected.has(feat.title);
+			cb.addEventListener("change", () => {
+				if (cb.checked) this.selected.add(feat.title);
+				else this.selected.delete(feat.title);
+			});
+			const label = row.createEl("label", { cls: "aw-export-prompts-label" });
+			label.setText(feat.title);
+			if (feat.description) {
+				const desc = row.createEl("span", { cls: "aw-export-prompts-desc" });
+				desc.setText(feat.description);
+			}
+		}
+
+		new Setting(contentEl)
+			.addButton((b) => b.setCta().setButtonText("导出选中").onClick(() => this.submit()))
+			.addButton((b) => b.setButtonText("取消").onClick(() => this.close()));
+	}
+
+	private refreshCheckboxes(): void {
+		const rows = Array.from(this.contentEl.querySelectorAll<HTMLDivElement>(".aw-export-prompts-row"));
+		rows.forEach((row, i) => {
+			const cb = row.querySelector<HTMLInputElement>(".aw-export-prompts-cb");
+			if (cb) cb.checked = this.selected.has(this.features[i]?.title ?? "");
+		});
+	}
+
+	private submit(): void {
+		const result = [...this.selected];
+		if (!result.length) return; // 空选视为取消
+		this.submitted = true;
+		this.close();
+		void this.onSubmit(result);
+	}
+
+	override onClose(): void {
+		this.contentEl.empty();
+		if (!this.submitted && this.onCancel) this.onCancel();
+	}
+}
+
 /** 只读 Markdown 展示面板（用于无 vault 文件载体的内容，如系统级创作规范） */
 export class MarkdownViewerModal extends Modal {
 	constructor(

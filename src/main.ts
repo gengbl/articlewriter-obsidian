@@ -1,5 +1,5 @@
 import { App, Modal, Notice, Platform, Plugin, PluginSettingTab, TAbstractFile, TFile, TFolder, View, WorkspaceLeaf, WorkspaceSidedock, type SettingDefinitionItem, type SettingDefinitionPage } from "obsidian";
-import { ActionItem, ActionMenuModal, AddCharacterModal, ChapterListModal, ConfirmModal, FolderPickerModal, MarkdownViewerModal, MultiFieldModal, NewFilePickerModal, NewStoryInput, NewStoryModal, PanelLine, StoryPickerModal, TextAreaPrompt, TextPanelModal, TextInputModal, VolumeBatchCreateModal } from "./modals";
+import { ActionItem, ActionMenuModal, AddCharacterModal, ChapterListModal, ConfirmModal, ExportPromptsSelectModal, FolderPickerModal, MarkdownViewerModal, MultiFieldModal, NewFilePickerModal, NewStoryInput, NewStoryModal, PanelLine, StoryPickerModal, TextAreaPrompt, TextPanelModal, TextInputModal, VolumeBatchCreateModal } from "./modals";
 import type { AddCharacterResult, CharacterScopeOption } from "./modals";
 import { LlmChatView } from "./llm_chat_view";
 import { GenProgressView, formatElapsedMs, type WritingStreamSink } from "./gen_progress_view";
@@ -5986,7 +5986,35 @@ async cmdRenameChapterFile(): Promise<void> {
 		const story = await this.requireStory();
 		if (!story) return;
 		try {
-			const entries = await this.buildPromptExportDoc(story);
+			const features = [
+				"创作章节 (/write)",
+				"续写当前章 (/continue)",
+				"重写当前章 (/rewrite)",
+				"润色当前章 (/polish)",
+				"去AI化当前章 (/deai)",
+				"修正章节引用 (/fix-refs)",
+				"错别字检测 (/typo)",
+				"审阅当前章 (/review)",
+				"生成策划指南 (/planning-guide)",
+				"生成策划指南（仅世界观） (/planning-guide-worldview)",
+				"生成书籍大纲 (/book-outline-generate)",
+				"自动生成卷大纲 (/vol-outline-generate)",
+				"从书级大纲生成卷 (/book-outline-to-volumes)",
+				"从卷大纲生成章节·AI 拆分兜底 (/vol-outline-to-chapters)",
+				"分析人物与场景 (/analyze-cast)",
+				"章节摘要（上下文组装时延迟生成）",
+				"卷摘要（上下文组装时延迟整体重建）",
+			];
+			const selected = await new Promise<string[] | null>((resolve) => {
+				new ExportPromptsSelectModal(
+					this.app,
+					features.map((t) => ({ title: t })),
+					(sel) => resolve(sel),
+					() => resolve(null)
+				).open();
+			});
+			if (!selected) return;
+			const entries = await this.buildPromptExportDoc(story, selected);
 			await this.manager.savePromptExportDocs(story, entries);
 			const paths = entries.map((e) => e.path).join("、");
 			new Notice(`✓ AI 提示词已导出（${String(entries.length)} 个文件）\n${paths}\n可逐个复制 system/user 内容喂给本地模型比对输出`, 10000);
@@ -5995,7 +6023,7 @@ async cmdRenameChapterFile(): Promise<void> {
 		}
 	}
 
-	private async buildPromptExportDoc(story: string): Promise<Array<{ title: string; content: string; path: string }>> {
+	private async buildPromptExportDoc(story: string, selectedFeatures?: string[]): Promise<Array<{ title: string; content: string; path: string }>> {
 		const state = await this.manager.validatedState(story);
 		const volNames = await this.volNameMap(story);
 		const chapters = await this.manager.listChapters(story);
@@ -6008,7 +6036,9 @@ async cmdRenameChapterFile(): Promise<void> {
 		const outlineOf = activeKey ? await this.manager.readChapterOutlineForPrompt(story, activeKey) : "";
 
 		const entries: Array<{ title: string; content: string }> = [];
+		const selectedSet = selectedFeatures ? new Set(selectedFeatures) : null;
 		const trySec = async (title: string, fn: () => Promise<string>): Promise<void> => {
+			if (selectedSet && !selectedSet.has(title)) return; // 未选中则跳过（不写入任何条目）
 			try {
 				entries.push({ title, content: await fn() });
 			} catch (e) {
