@@ -498,6 +498,9 @@ function splitGuideBlocks(text: string): GuideBlock[] {
  *   （曾致用户层禁用词骨架标题吞掉系统层通用同名标题、正文失去小节结构）；
  *   节序按优先级首次出现排列。禁用词的词级去重在 buildMergedBannedBlock 中再完成。
  * - 故事风格 / 个人特色：高优先级层有内容则采用，跳过其余层（避免风格冲突与重复）
+ * - 「作者身份」小节（标题含此四字）在通用类内置顶：各层小节按优先级首次出现排列，身份块只在
+ *   系统层存在时会排到全部书籍/用户层小节之后（曾致其落到【创作规范】中段、用户以为未注入提示词），
+ *   按原意图（作者强化信息位于创作规范最前方、每次生成前先生效）把该块抬到通用类最前。
  */
 export function mergeGuideCategories(layers: string[]): Record<string, string> {
 	const extracted = layers.map((l) => extractGuideCategories(l));
@@ -524,6 +527,10 @@ export function mergeGuideCategories(layers: string[]): Record<string, string> {
 			}
 		}
 		const out: string[] = [];
+		// 「作者身份」块置顶（保持多个同名块相对顺序）：它通常只在系统层存在，按首现排列会落到最后
+		const idIdx: number[] = [];
+		for (let i = 0; i < slots.length; i++) if (slots[i].title.includes("作者身份")) idIdx.push(i);
+		for (let k = idIdx.length - 1; k >= 0; k--) slots.unshift(slots.splice(idIdx[k], 1)[0]);
 		for (const s of slots) out.push(...s.lines);
 		merged[cat] = out.join("\n").trim();
 	}

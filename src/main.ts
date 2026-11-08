@@ -2425,7 +2425,7 @@ async cmdRenameChapterFile(): Promise<void> {
 		}
 		if (typeText) merged["通用"] = (merged["通用"] ? merged["通用"].trimEnd() + "\n\n" : "") + typeText;
 		const body = serializeAggregateGuide(merged);
-		const h = { b: md5(bookText), u: md5(userText), s: md5(systemText), t: md5(typeText), v: "2" }; // v=合并算法版本：块级分组上线，旧汇总强制重建一次
+		const h = { b: md5(bookText), u: md5(userText), s: md5(systemText), t: md5(typeText), v: "3" }; // v=合并算法版本：块级分组上线 v2、作者身份块置顶 v3，各自强制重建旧汇总一次
 		try {
 			const p = this.aggregatePath(story);
 			const existing = await this.manager.readGuideAt(p); // null=尚未生成
