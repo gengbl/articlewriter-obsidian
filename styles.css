@@ -1558,3 +1558,10 @@
 	gap: var(--size-2-2);
 	flex-wrap: wrap;
 }
+
+/* 导出 AI 提示词功能点选择弹窗：按钮行 */
+.aw-export-prompts-btns {
+	display: flex;
+	gap: var(--size-2-3);
+	margin-bottom: var(--size-2-2);
+}
