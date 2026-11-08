@@ -2,10 +2,10 @@
 
 ## 仓库与凭据
 
-- Gitea 远端 `http://192.168.0.3:3000/geng_bl/articlewritter-obsidian.git`，分支 main；版本标签 `vX.Y.Z`
+- GitHub 远端 `git@github.com:gengbl/articlewriter-obsidian.git`，分支 main；版本标签 `vX.Y.Z`（tag 打在版本号 bump commit 上，不指 HEAD）
 - git 操作使用 `~/.git-credentials` 中 geng_bl 的既有凭据；REST API 用 curl `-u user:pass` Basic 鉴权即可通过
 - **凭据提取陷阱**：URL 里端口是百分号编码（`%3a`），从整行解析 user/pass 时只取 `@` 之前的部分，否则主机名混进密码导致 401
-- `.gitignore` 排除 `node_modules/`、`/release/`、`articlewriter-v*.zip`：**只有源码 + manifest.json + 文档进 git，zip 永不入库**（本地留一份 + Gitea Release 附件各一份）
+- `.gitignore` 排除 `node_modules/`、`/release/`、`articlewriter-v*.zip`：**只有源码 + manifest.json + 文档进 git，zip 永不入库**（本地留一份）
 
 ## 版本号规则
 
@@ -26,44 +26,21 @@
 5. `git commit -m "vX.Y.Z：中文摘要"`（非发布的普通提交直接写功能描述即可）
 6. `git push origin main`
 
-注：上述第 4–6 步的 git 操作一律在 Gitea 专用克隆 `/tmp/opencode/aw-gitea` 内执行（本地工作树 `.git` 的 origin 指向 GitHub、历史与 Gitea 无共同祖先，直推必被 non-fast-forward 拒绝；详见 l3-build-deploy.md「一切 Gitea 侧 git 操作走专用克隆」条）。
+
 
 ## 发布打包与上线流程（用户要求"打包发布"时）
 
 1. bump `manifest.json` version
 2. `npm run build` 重建（esbuild 自动拷入新版 manifest.json、styles.css；写作指南 WRITING_GUIDE.md 自本次起不再拷入 release/）+ `npm run lint` 必须零违规——四类 no-unsafe-* 任一命中即中止发布、修复后重跑
 3. **整体压缩 `release/` 全部文件**：`cd release && zip ../articlewriter-v<版本>.zip *`——release/ 现仅含 main.js / manifest.json / styles.css（不含 WRITING_GUIDE.md），直接整目录打包即可
-4. 提交打标签：`git add manifest.json …` → commit → `git push origin main` → `git tag v<版本> && git push origin v<版本>`；随后按 l3-build-deploy「GitHub 镜像同步（强制）」把该 commit 同消息同步到镜像并推**无 v 前缀** tag `<版本>`——CI 自动重建、签名并创建 GitHub Release，再回到第 5 步补 Gitea Release
-5. 创建 Gitea Release（**必须维护**：每个发布版本都要有对应 Release + zip 附件；但**不需要在 Gitea 侧搭建或拉起任何自动化工作流**，手动执行下述脚本即可）：**REST API 会忽略上传的文件，只能走 Web 会话表单流**（脚本如下；凭据用上面提到的 user/pass）：
+4. 提交打标签：`git add manifest.json …` → commit → `git push origin main` → `git tag v<版本> && git push origin v<版本>`（tag 打在版本号 bump commit 上，不指 HEAD）；随后按 l3-build-deploy「GitHub 镜像同步（强制）」把该 commit 同消息同步到镜像并推**无 v 前缀** tag `<版本>`——CI 自动重建、签名并创建 GitHub Release
+5. **验证**：确认 GitHub Release 存在且恰为三个散文件（main.js / manifest.json / styles.css）
+6. 需要修正已发布的资产时：Web UI 删除旧 Release 后重新上传
 
-```bash
-B=http://192.168.0.3:3000; CJ=/tmp/opencode/cj.txt
-# ① 登录拿会话 cookie（已有有效会话可跳过）
-CSRF=$(curl -s -c $CJ $B/user/login | grep '_csrf' | grep -o 'value="[^"]*"' | head -1 | cut -d'"' -f2)
-curl -s -b $CJ -c $CJ -e "$B/user/login" --data-urlencode "_csrf=$CSRF" \
-  --data-urlencode "user_name=geng_bl" --data-urlencode "password=<密码>" \
-  -o /dev/null -w "%{http_code}\n" $B/user/login    # 期望 303
-PAGE=$B/geng_bl/articlewritter-obsidian/releases/new
-# ② 取新建页及其 _csrf（整条链每步都带 -b -c：只读 -b 会在会话 cookie 轮换后导致 400 Invalid CSRF token）
-curl -s -b $CJ -c $CJ $PAGE -o /tmp/opencode/relnew.html
-CSRF=$(grep '_csrf' /tmp/opencode/relnew.html | grep -o 'value="[^"]*"' | head -1 | cut -d'"' -f2)
-# ③ 上传临时文件 → uuid（字段名是 file，不是 attachment！实测坑位：不要给 part 写显式 ;type=，无需指定 MIME）
-UUID=$(curl -s -b $CJ -c $CJ --referer "$PAGE" -X POST $B/geng_bl/articlewritter-obsidian/releases/attachments \
-  -F "_csrf=$CSRF" -F "file=@articlewriter-v<版本>.zip" \
-  | python3 -c "import json,sys;print(json.load(sys.stdin)['uuid'])")
-# ④ 提交表单创建 Release（隐藏域 files=<uuid> 关联附件；期望 303）
-curl -s -b $CJ -c $CJ --referer "$PAGE" -X POST $PAGE -F "_csrf=$CSRF" -F "tag_name=v<版本>" \
-  -F "tag_target=main" -F "title=v<版本>" -F "content=<发布说明>" -F "files=$UUID" \
-  -o /dev/null -w "%{http_code}\n"
-```
+## GitHub Release 要求（社区插件目录校验）
 
-6. **验证**：`GET $B/api/v1/repos/geng_bl/articlewritter-obsidian/releases` 确认该 tag 的 asset 字节数与本地 zip `stat -c %s` 一致
-7. 需要修正已发布的附件时：API `DELETE .../releases/{id}` 删掉整个 release → 重做 ②–⑥（没有单独增删资产的端点）
-
-## GitHub 镜像 Release 要求（社区插件目录校验）
-
-- GitHub 镜像仓库 `gengbl/articlewriter-obsidian`（标签**无 v 前缀**，如 `0.0.7`；历史为工作树拷贝式独立提交，非 clone），其 tag 对应的 Release **必须把 `main.js`、`manifest.json`、`styles.css` 作为独立资产直接上传**——校验器只认 Release assets 里的散文件，zip 内的不算；**不要把 `articlewriter-v<版本>.zip` 传进 GitHub Release**（自 v0.0.10 起 CI 不再打包/上传 zip；zip 附件只在 Gitea Release 维护）。
-- **现已自动化**：`.github/workflows/release.yml` 在新 tag 推送时触发（也可 Actions → Run workflow 手动跑）：checkout → npm ci → npm run build（官方未 patch 的 obsidian d.ts 下 tsc 零错误已验证）→ gh release create/update，资产只传 `main.js` / `manifest.json` / `styles.css` 三个散文件（v0.0.14 后不再包含写作指南 WRITING_GUIDE.md——它仅随 Gitea zip 分发；**不打包、不上传 zip**；已存在的 release 走 --clobber 覆盖同名资产，不会删除旧版残留的其他文件[如 0.0.14 Release 上仍挂着的 WRITING_GUIDE.md 需手动删除]）→ `actions/attest-build-provenance` 对 main.js/styles.css/manifest.json 签名（消除目录校验「Missing artifact attestations」建议项）。workflow `permissions:` 必须同时声明 `contents: write` + `id-token: write` + **`attestations: write`**——缺最后一项时 attest 步骤报「Failed to persist attestation: Resource not accessible by integration」（persist/create-storage-record 经 REST create-an-attestation 落库所需；Rekor/Fulcio 透明日志条目不受影响、照常生成），v0.0.9 补齐后推 tag 验证通过。注意 tag 触发的运行取的是**打 tag 那一刻**的 workflow 文件，修完 CI 须推新 tag 或走 workflow_dispatch 才生效。tag 与 manifest version 不一致立即失败；无 tag 手动运行时以 HEAD 的 manifest version 为目标。
+- GitHub 仓库 `gengbl/articlewriter-obsidian`（标签**无 v 前缀**，如 `0.0.7`；历史为工作树拷贝式独立提交，非 clone），其 tag 对应的 Release **必须把 `main.js`、`manifest.json`、`styles.css` 作为独立资产直接上传**——校验器只认 Release assets 里的散文件，zip 内的不算；**不要把 `articlewriter-v<版本>.zip` 传进 GitHub Release**（CI 不打包/上传 zip）。
+- **现已自动化**：`.github/workflows/release.yml` 在新 tag 推送时触发（也可 Actions → Run workflow 手动跑）：checkout → npm ci → npm run build（官方未 patch 的 obsidian d.ts 下 tsc 零错误已验证）→ gh release create/update，资产只传 `main.js` / `manifest.json` / `styles.css` 三个散文件（v0.0.14 后不再包含写作指南 WRITING_GUIDE.md；**不打包、不上传 zip**；已存在的 release 走 --clobber 覆盖同名资产，不会删除旧版残留的其他文件[如 0.0.14 Release 上仍挂着的 WRITING_GUIDE.md 需手动删除]）→ `actions/attest-build-provenance` 对 main.js/styles.css/manifest.json 签名（消除目录校验「Missing artifact attestations」建议项）。workflow `permissions:` 必须同时声明 `contents: write` + `id-token: write` + **`attestations: write`**——缺最后一项时 attest 步骤报「Failed to persist attestation: Resource not accessible by integration」（persist/create-storage-record 经 REST create-an-attestation 落库所需；Rekor/Fulcio 透明日志条目不受影响、照常生成），v0.0.9 补齐后推 tag 验证通过。注意 tag 触发的运行取的是**打 tag 那一刻**的 workflow 文件，修完 CI 须推新 tag 或走 workflow_dispatch 才生效。tag 与 manifest version 不一致立即失败；无 tag 手动运行时以 HEAD 的 manifest version 为目标。
 - CI 不可用时的手动回落：Web UI `https://github.com/gengbl/articlewriter-obsidian/releases/new?tag=<版本>&target=main`，上传本地 `release/` 三个散文件（main.js / manifest.json / styles.css；WRITING_GUIDE.md 不再上 GitHub，同样不传 zip），发布说明用下方模板。
 - manifest minAppVersion 必须覆盖代码用到的全部 API 的 @since 版本（当前 =1.13.0：声明式设置 getSettingDefinitions 等 @since 1.13.0、fileManager.trashFile @since 1.6.6），否则 `obsidianmd/no-unsupported-api` 报错。
 
@@ -75,11 +52,7 @@ curl -s -b $CJ -c $CJ --referer "$PAGE" -X POST $PAGE -F "_csrf=$CSRF" -F "tag_n
 - 中文要点，每条一个改动（功能 / 修复 / 行为变更），保持精简
 ```
 
-## 坑位记录（Gitea 1.25.x 实测）
+## 坑位记录
 
-- REST API `POST /releases` 忽略 multipart 里的文件 part；也没有独立资产上传端点（`POST /releases/{id}/assets` 报 500）→ 一律走上面的 Web 会话流
-- `/releases/attachments` 临时上传的文件字段名是 **`file`**（用 `attachment` 会 500 "FormFile: http: no such file"）；表单提交时用隐藏域 **`files=<uuid>`** 关联（直接发 `attachment=` part 会被静默忽略、release 建出来但无附件）
-- CSRF token 必须取自对应页面本身，且带匹配的 Referer
-- **整条链每步都同时带 `-b $CJ -c $CJ`**（2026-11-02 实测）：只带只读 `-b` 时，登录成功后 Gitea 若轮换会话 Cookie，后续 POST 提交会返回 `400 Invalid CSRF token`（响应体仅这一句话、非表单页）；附件上传端点返回 uuid 不代表最终 submit 必过，以 submit 返回 303 为准
 - zsh 行首不要写未加引号的 `===`（= 展开报错）；本机 curl 不支持 `-F "body<文件"` 语法（报 "badly used here"），正文用 shell 变量经 -F 传或改用 JSON
 - 标签已存在 release 时必须先删再重建；删除后重新取新建页（csrf 可能变化）
