@@ -6890,7 +6890,6 @@ class ArticleWriterSettingTab extends PluginSettingTab {
 						titleEl.setText(phase.name);
 						// 阶段名称输入
 						const nameRow = container.createEl("div", { cls: "aw-phase-tab-row" });
-						nameRow.createEl("span", { text: "阶段名称", cls: "aw-phase-tab-label" });
 						const nameInput = nameRow.createEl("input", { type: "text", cls: "mod-setting-input" });
 						nameInput.value = phase.name;
 						nameInput.placeholder = `阶段${idx + 1}`;
