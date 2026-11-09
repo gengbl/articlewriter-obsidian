@@ -6861,7 +6861,7 @@ class ArticleWriterSettingTab extends PluginSettingTab {
 			type: "group",
 			heading: "写作阶段模型配置（v0.2.22+）",
 			items: [{
-				name: "写作阶段模型配置",
+				name: "",
 				render: (setting) => {
 					const tabContainer = setting.controlEl.createEl("div", { cls: "aw-phase-tabs-container" });
 					const tabHeader = tabContainer.createEl("div", { cls: "aw-phase-tabs-header" });
