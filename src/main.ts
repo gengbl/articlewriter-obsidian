@@ -1,4 +1,4 @@
-import { App, Modal, Notice, Platform, Plugin, PluginSettingTab, TAbstractFile, TFile, TFolder, View, WorkspaceLeaf, WorkspaceSidedock, type SettingDefinitionItem, type SettingDefinitionPage } from "obsidian";
+import { App, Modal, Notice, Platform, Plugin, PluginSettingTab, TAbstractFile, TFile, TFolder, View, WorkspaceLeaf, WorkspaceSidedock, type SettingDefinitionItem, type SettingDefinitionPage, type SettingDefinitionRender, ButtonComponent } from "obsidian";
 import { ActionItem, ActionMenuModal, AddCharacterModal, ChapterListModal, ConfirmModal, ExportPromptsSelectModal, FolderPickerModal, MarkdownViewerModal, MultiFieldModal, NewFilePickerModal, NewStoryInput, NewStoryModal, PanelLine, StoryPickerModal, TextAreaPrompt, TextPanelModal, TextInputModal, VolumeBatchCreateModal } from "./modals";
 import type { AddCharacterResult, CharacterScopeOption } from "./modals";
 import { LlmChatView } from "./llm_chat_view";
@@ -6774,6 +6774,87 @@ class ArticleWriterSettingTab extends PluginSettingTab {
 		return this.plugin.settings.llm ?? (this.plugin.settings.llm = buildDefaultLlmConf());
 	}
 
+	/** 构建 identity_boost 自定义渲染设置项：默认只读显示，点击「编辑」后显示 textarea，支持保存和使用默认值 */
+	private identityBoostSetting(phaseIdx: number, currentValue: string, phaseName: string): SettingDefinitionRender {
+		const key = `writing_phases.${phaseIdx}.identity_boost`;
+		const defaults = buildDefaultLlmConf();
+		const default_value = (defaults.writing_phases ?? [])[phaseIdx]?.identity_boost ?? "";
+		return {
+			name: `${phaseName}·身份加强`,
+			desc: "注入到该阶段 system prompt 末尾的【身份加强】块；留空=不注入",
+			render: (setting) => {
+				let editing = false;
+				const displayEl = setting.controlEl.createEl("div", { cls: "aw-identity-boost-display" });
+				let btnSaveHandler: (() => Promise<void>) | null = null;
+				let btnResetRef: ButtonComponent | null = null;
+				let btnEditRef: ButtonComponent | null = null;
+				setting.addButton((btn) => {
+					btnEditRef = btn;
+					btn.setButtonText("编辑").onClick(async () => {
+						editing = true;
+						displayEl.empty();
+						const ta = setting.controlEl.createEl("textarea", { cls: "aw-identity-boost-textarea" });
+						ta.rows = 8;
+						ta.value = currentValue;
+						setting.addButton((b) => {
+							b.setButtonText("保存").setCta().onClick(async () => {
+								const newVal = ta.value.trim() || undefined;
+								await this.setControlValue(key, newVal);
+								currentValue = newVal ?? "";
+								editing = false;
+								displayEl.empty();
+								displayEl.createEl("pre", { text: currentValue || "（留空=不注入）" });
+								btnEditRef!.setButtonText("编辑");
+								// 移除保存/重置按钮
+								setting.controlEl.querySelectorAll(".aw-identity-boost-btn").forEach((el) => el.remove());
+								btnSaveHandler = null;
+								btnResetRef = null;
+							});
+							b.buttonEl.addClass("aw-identity-boost-btn");
+						});
+						setting.addButton((b) => {
+							btnResetRef = b;
+							b.setButtonText("使用默认值").onClick(async () => {
+								await this.setControlValue(key, default_value);
+								currentValue = default_value;
+								editing = false;
+								displayEl.empty();
+								displayEl.createEl("pre", { text: currentValue || "（留空=不注入）" });
+								btnEditRef!.setButtonText("编辑");
+								setting.controlEl.querySelectorAll(".aw-identity-boost-btn").forEach((el) => el.remove());
+								btnSaveHandler = null;
+								btnResetRef = null;
+							});
+							b.buttonEl.addClass("aw-identity-boost-btn");
+						});
+						// 保存 handler 引用供快捷键调用
+						const saveBtn = setting.controlEl.querySelector(".aw-identity-boost-btn");
+						if (saveBtn) {
+							btnSaveHandler = async () => {
+								const newVal = ta.value.trim() || undefined;
+								await this.setControlValue(key, newVal);
+								currentValue = newVal ?? "";
+								editing = false;
+								displayEl.empty();
+								displayEl.createEl("pre", { text: currentValue || "（留空=不注入）" });
+								btnEditRef!.setButtonText("编辑");
+								setting.controlEl.querySelectorAll(".aw-identity-boost-btn").forEach((el) => el.remove());
+								btnSaveHandler = null;
+								btnResetRef = null;
+							};
+						}
+						ta.addEventListener("keydown", (e: KeyboardEvent) => {
+							if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) btnSaveHandler?.();
+						});
+					});
+				});
+				// 初始渲染：显示内容
+				displayEl.createEl("pre", { text: currentValue || "（留空=不注入）" });
+				return () => { /* cleanup */ };
+			},
+		};
+	}
+
 	getSettingDefinitions(): SettingDefinitionItem[] {
 		const cfgs = this.conf().llm_configs ?? [];
 		const defs: SettingDefinitionItem[] = [];
@@ -6795,13 +6876,13 @@ class ArticleWriterSettingTab extends PluginSettingTab {
 		const phases = this.conf().writing_phases ?? [];
 		defs.push({ type: "group", heading: "写作阶段模型配置（v0.2.22+）", items: [
 			{ name: "策划方案生成阶段", desc: "planning-guide / planning-guide-worldview：AI 生成《策划指南.md》", control: { key: "writing_phases.0.llm_config_name", type: "dropdown", options: llmNameMap, defaultValue: "" } },
-			{ name: "策划方案生成·身份加强", desc: "注入到该阶段 system prompt 末尾的【身份加强】块；留空=不注入", control: { key: "writing_phases.0.identity_boost", type: "textarea", rows: 4, placeholder: "留空=不注入" } },
+			this.identityBoostSetting(0, phases[0]?.identity_boost ?? "", "策划方案生成"),
 			{ name: "书籍大纲和卷级大纲生成阶段", desc: "book-outline-generate / book-outline-to-volumes：书级/卷级大纲生成", control: { key: "writing_phases.1.llm_config_name", type: "dropdown", options: llmNameMap, defaultValue: "" } },
-			{ name: "书籍大纲和卷级大纲生成·身份加强", desc: "注入到该阶段 system prompt 末尾的【身份加强】块；留空=不注入", control: { key: "writing_phases.1.identity_boost", type: "textarea", rows: 4, placeholder: "留空=不注入" } },
+			this.identityBoostSetting(1, phases[1]?.identity_boost ?? "", "书籍大纲和卷级大纲生成"),
 			{ name: "文章大纲生成阶段", desc: "generate-chapter-outline：章节大纲生成", control: { key: "writing_phases.2.llm_config_name", type: "dropdown", options: llmNameMap, defaultValue: "" } },
-			{ name: "文章大纲生成·身份加强", desc: "注入到该阶段 system prompt 末尾的【身份加强】块；留空=不注入", control: { key: "writing_phases.2.identity_boost", type: "textarea", rows: 4, placeholder: "留空=不注入" } },
+			this.identityBoostSetting(2, phases[2]?.identity_boost ?? "", "文章大纲生成"),
 			{ name: "编写文章阶段", desc: "generate-chapter-streamed：正文生成", control: { key: "writing_phases.3.llm_config_name", type: "dropdown", options: llmNameMap, defaultValue: "" } },
-			{ name: "编写文章·身份加强", desc: "注入到该阶段 system prompt 末尾的【身份加强】块；留空=不注入", control: { key: "writing_phases.3.identity_boost", type: "textarea", rows: 4, placeholder: "留空=不注入" } },
+			this.identityBoostSetting(3, phases[3]?.identity_boost ?? "", "编写文章"),
 		] });
 
 		defs.push({ type: "list", heading: "模型配置（llm_configs，存于插件数据目录 data.json）", emptyState: "没有模型配置。", addItem: { name: "新建配置", action: () => void this.addLlmConfig() }, onDelete: (i) => void this.removeLlmConfig(i), onReorder: (o, n) => void this.reorderLlmConfigs(o, n), items: cfgs.map((cfg, i) => this.configPage(cfg, i)) });
