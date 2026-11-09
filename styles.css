@@ -1591,6 +1591,10 @@
 }
 
 /* 写作阶段 tab 页布局 */
+.aw-phase-tabs-setting {
+	padding: 0 !important;
+	border-top: none !important;
+}
 .aw-phase-tabs-container {
 	margin-top: 16px;
 	display: block;

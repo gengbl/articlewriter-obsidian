@@ -6860,6 +6860,7 @@ class ArticleWriterSettingTab extends PluginSettingTab {
 			items: [{
 				name: "",
 				render: (setting) => {
+					setting.settingEl.addClass("aw-phase-tabs-setting");
 					const tabContainer = setting.controlEl.createEl("div", { cls: "aw-phase-tabs-container" });
 					const tabHeader = tabContainer.createEl("div", { cls: "aw-phase-tabs-header" });
 					const tabContent = tabContainer.createEl("div", { cls: "aw-phase-tabs-content" });
