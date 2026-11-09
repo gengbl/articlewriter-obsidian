@@ -179,12 +179,16 @@ export async function testConnection(cfg: LlmConfigDoc): Promise<LlmTestResult> 
  * customSp（编写类型格式块等命令级提示）> baseSp（设置文档全局 system_prompt）> DEFAULT_SYSTEM_PROMPT；
  * guideText（三层 WRITING_GUIDE 合并原文：故事级 > 用户级 > 系统级 data.json）存在时追加【创作规范】段。
  */
-export function assembleSystemPrompt(customSp?: string, guideText = "", baseSp?: string): string {
+export function assembleSystemPrompt(customSp?: string, guideText = "", baseSp?: string, identityBoost?: string): string {
 	const b = (baseSp || "").trim();
 	let sp = (customSp && customSp.trim()) || (b ? b : DEFAULT_SYSTEM_PROMPT);
 	const g = (guideText || "").trim();
 	if (g) {
 		sp += "\n\n【创作规范】\n以下是本项目要求必须遵守的创作规范，请在生成时严格遵循；若与前面的【编写类型】格式要求冲突，以【编写类型】为准：\n" + g;
+	}
+	const ib = (identityBoost || "").trim();
+	if (ib) {
+		sp += "\n\n【身份加强】\n" + ib;
 	}
 	return sp;
 }

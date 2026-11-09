@@ -26,6 +26,7 @@ export interface LlmConfigDoc {
 export interface WritingPhase {
 	name: string; // 阶段显示名（如「策划方案生成」）
 	llm_config_name?: string; // 指定使用的模型配置名（留空=回落 active_llm）
+	identity_boost?: string; // 该阶段的 AI 身份加强提示词，注入到 system prompt 末尾
 }
 
 export interface PluginConfig {
