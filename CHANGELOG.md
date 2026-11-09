@@ -2,6 +2,8 @@
 
 每次功能更新 / bug 修复完成后按「AGENTS.md · 工作更新写回约定」追加一行：日期 + 一句话摘要（一次任务的多个改动可合并成一条）。新条目追加在文件末尾。
 
+- 2026-11-09：identity_boost 设置行交互改版——默认只读显示（`<pre>` 块），点击「编辑」后切换为 textarea，支持「保存」写入 data.json 与「使用默认值」回退；Ctrl+Enter / Meta+Enter 快捷键保存；npm run build tsc 零错误＋node --check OK＋npm run lint 零违规，release/ 三件套部署 geng_bl vault（md5 一致）。**需重载插件**。同步 agents/command-reference.md。
+
 - 2026-11-09：修复旧用户升级后 writing_phases 存在但 identity_boost 缺失时默认值未填充问题——loadSettings 迁移逻辑改为检测各阶段 identity_boost 是否为空，为空则从 buildDefaultLlmConf() 补充；npm run build tsc 零错误＋node --check OK＋npm run lint 零违规，release/ 三件套部署 geng_bl vault（md5 一致）。**需重载插件**。同步 agents/l3-writing-commands-impl.md/l3-main-ts-flow.md/command-reference.md。
 
 - 2026-08-30（归档压缩）：v0.0.3–v0.0.11 早期批次——状态面板路径修复/固定头+滚动树拆分/vault 变更防抖自动刷新（v0.0.3）；状态页展示三修（字体对齐侧栏变量/本地时间 formatLocalDateTime/书名行改版）；打包纳入 WRITING_GUIDE.md＋新增 RELEASE.md；v0.0.5 目录审核修复（banned_words/prompts 移除 lookbehind 改「(?:^|[^X])」前缀组、JS 内联样式迁入 styles.css 静态类、manifest 英文描述+MIT LICENSE+英文 README）；Lint 清理与声明式设置页 getSettingDefinitions（v0.0.6，trashFile 迁移/去 as any/冗余断言）；minAppVersion→1.13.0（v0.0.7）；README 英文默认+README_ZN 互链；GitHub Actions release.yml（attest 来源签名、tag 与 manifest 不一致即失败）；Lint 告警清零（matchAll→exec 循环、全角空格 U+3000→半角、tsconfig lib≤ES2018 约定，v0.0.8）；CI permissions 补 attestations:write（v0.0.9）；AGENTS.md 拆 agents/ 子文件体系；FN_BAD_CHARS_RE no-control-regex 改 String.fromCharCode 拼接；js-yaml→yaml 换库；README 审核披露声明（仅用户自配端点 LLM 请求/无遥测/vault 列举披露 §3）；v0.0.10 打包；发布约定澄清（Gitea Release 手动维护不建自动化工作流、GitHub CI 只上三散文件不传 zip、v0.0.11 纯文档发布）。
