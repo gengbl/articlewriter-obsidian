@@ -6874,70 +6874,74 @@ class ArticleWriterSettingTab extends PluginSettingTab {
 		// v0.2.22+：写作阶段模型配置（四阶段独立模型，tab 页管理）
 		const phases = this.conf().writing_phases ?? [];
 		defs.push({
-			name: "写作阶段模型配置（v0.2.22+）",
-			render: (setting) => {
-				const tabContainer = setting.controlEl.createEl("div", { cls: "aw-phase-tabs-container" });
-				const tabHeader = tabContainer.createEl("div", { cls: "aw-phase-tabs-header" });
-				const tabContent = tabContainer.createEl("div", { cls: "aw-phase-tabs-content" });
-				const tabNames = ["策划方案生成", "书籍大纲和卷级大纲生成", "文章大纲生成", "编写文章"];
-				let activeTab = 0;
-				// 创建 tab 按钮
-				tabNames.forEach((name, idx) => {
-					const btn = tabHeader.createEl("button", { cls: "aw-phase-tab-btn" + (idx === 0 ? " is-active" : "") });
-					btn.setText(name);
-					btn.onclick = () => {
-						if (activeTab === idx) return;
-						activeTab = idx;
-						tabHeader.querySelectorAll(".aw-phase-tab-btn").forEach((b, i) => {
-							b.classList.toggle("is-active", i === idx);
-						});
-						tabContent.empty();
-						renderPhaseTab(idx, tabContent, llmNameMap);
-					};
-				});
-				// 渲染当前 phase tab
-				const renderPhaseTab = (idx: number, container: HTMLElement, options: Record<string, string>) => {
-					const phase = phases[idx] ?? { name: `阶段${idx + 1}` };
-					// 阶段名称标题（单独一行）
-					const titleEl = container.createEl("h4", { cls: "aw-phase-tab-title" });
-					titleEl.setText(phase.name);
-					// 阶段名称输入
-					const nameRow = container.createEl("div", { cls: "aw-phase-tab-row" });
-					nameRow.createEl("span", { text: "阶段名称", cls: "aw-phase-tab-label" });
-					const nameInput = nameRow.createEl("input", { type: "text", cls: "mod-setting-input" });
-					nameInput.value = phase.name;
-					nameInput.placeholder = `阶段${idx + 1}`;
-					nameInput.oninput = () => {
-						const phases = this.conf().writing_phases ?? [];
-						if (!phases[idx]) phases[idx] = { name: `阶段${idx + 1}` };
-						phases[idx].name = nameInput.value.trim() || `阶段${idx + 1}`;
-						this.plugin.saveData(this.plugin.settings);
-						// 更新 tab 按钮文字
-						tabHeader.querySelectorAll(".aw-phase-tab-btn")[idx].setText(nameInput.value.trim() || `阶段${idx + 1}`);
-						// 同步更新标题
-						titleEl.setText(nameInput.value.trim() || `阶段${idx + 1}`);
-					};
-					// 模型配置下拉
-					const modelRow = container.createEl("div", { cls: "aw-phase-tab-row" });
-					modelRow.createEl("span", { text: "模型配置", cls: "aw-phase-tab-label" });
-					const modelSelect = modelRow.createEl("select", { cls: "mod-setting-input" });
-					Object.entries(options).forEach(([k, v]) => {
-						const opt = modelSelect.createEl("option", { value: k });
-						opt.setText(v);
+			type: "group",
+			heading: "写作阶段模型配置（v0.2.22+）",
+			items: [{
+				name: "写作阶段模型配置",
+				render: (setting) => {
+					const tabContainer = setting.controlEl.createEl("div", { cls: "aw-phase-tabs-container" });
+					const tabHeader = tabContainer.createEl("div", { cls: "aw-phase-tabs-header" });
+					const tabContent = tabContainer.createEl("div", { cls: "aw-phase-tabs-content" });
+					const tabNames = ["策划方案生成", "书籍大纲和卷级大纲生成", "文章大纲生成", "编写文章"];
+					let activeTab = 0;
+					// 创建 tab 按钮
+					tabNames.forEach((name, idx) => {
+						const btn = tabHeader.createEl("button", { cls: "aw-phase-tab-btn" + (idx === 0 ? " is-active" : "") });
+						btn.setText(name);
+						btn.onclick = () => {
+							if (activeTab === idx) return;
+							activeTab = idx;
+							tabHeader.querySelectorAll(".aw-phase-tab-btn").forEach((b, i) => {
+								b.classList.toggle("is-active", i === idx);
+							});
+							tabContent.empty();
+							renderPhaseTab(idx, tabContent, llmNameMap);
+						};
 					});
-					modelSelect.value = phase.llm_config_name ?? "";
-					modelSelect.onchange = () => {
-						const phases = this.conf().writing_phases ?? [];
-						if (!phases[idx]) phases[idx] = { name: `阶段${idx + 1}` };
-						phases[idx].llm_config_name = modelSelect.value || undefined;
-						this.plugin.saveData(this.plugin.settings);
+					// 渲染当前 phase tab
+					const renderPhaseTab = (idx: number, container: HTMLElement, options: Record<string, string>) => {
+						const phase = phases[idx] ?? { name: `阶段${idx + 1}` };
+						// 阶段名称标题（单独一行）
+						const titleEl = container.createEl("h4", { cls: "aw-phase-tab-title" });
+						titleEl.setText(phase.name);
+						// 阶段名称输入
+						const nameRow = container.createEl("div", { cls: "aw-phase-tab-row" });
+						nameRow.createEl("span", { text: "阶段名称", cls: "aw-phase-tab-label" });
+						const nameInput = nameRow.createEl("input", { type: "text", cls: "mod-setting-input" });
+						nameInput.value = phase.name;
+						nameInput.placeholder = `阶段${idx + 1}`;
+						nameInput.oninput = () => {
+							const phases = this.conf().writing_phases ?? [];
+							if (!phases[idx]) phases[idx] = { name: `阶段${idx + 1}` };
+							phases[idx].name = nameInput.value.trim() || `阶段${idx + 1}`;
+							this.plugin.saveData(this.plugin.settings);
+							// 更新 tab 按钮文字
+							tabHeader.querySelectorAll(".aw-phase-tab-btn")[idx].setText(nameInput.value.trim() || `阶段${idx + 1}`);
+							// 同步更新标题
+							titleEl.setText(nameInput.value.trim() || `阶段${idx + 1}`);
+						};
+						// 模型配置下拉
+						const modelRow = container.createEl("div", { cls: "aw-phase-tab-row" });
+						modelRow.createEl("span", { text: "模型配置", cls: "aw-phase-tab-label" });
+						const modelSelect = modelRow.createEl("select", { cls: "mod-setting-input" });
+						Object.entries(options).forEach(([k, v]) => {
+							const opt = modelSelect.createEl("option", { value: k });
+							opt.setText(v);
+						});
+						modelSelect.value = phase.llm_config_name ?? "";
+						modelSelect.onchange = () => {
+							const phases = this.conf().writing_phases ?? [];
+							if (!phases[idx]) phases[idx] = { name: `阶段${idx + 1}` };
+							phases[idx].llm_config_name = modelSelect.value || undefined;
+							this.plugin.saveData(this.plugin.settings);
+						};
+						// identity_boost 设置
+						const ibContainer = container.createEl("div", { cls: "aw-identity-boost-container" });
+						this.renderIdentityBoost(ibContainer, idx, phase.identity_boost ?? "", phase.name);
 					};
-					// identity_boost 设置
-					const ibContainer = container.createEl("div", { cls: "aw-identity-boost-container" });
-					this.renderIdentityBoost(ibContainer, idx, phase.identity_boost ?? "", phase.name);
-				};
-				renderPhaseTab(0, tabContent, llmNameMap);
-			},
+					renderPhaseTab(0, tabContent, llmNameMap);
+				},
+			}],
 		});
 
 		defs.push({ type: "list", heading: "模型配置（llm_configs，存于插件数据目录 data.json）", emptyState: "没有模型配置。", addItem: { name: "新建配置", action: () => void this.addLlmConfig() }, onDelete: (i) => void this.removeLlmConfig(i), onReorder: (o, n) => void this.reorderLlmConfigs(o, n), items: cfgs.map((cfg, i) => this.configPage(cfg, i)) });
