@@ -2734,33 +2734,34 @@ async cmdRenameChapterFile(): Promise<void> {
 		const conf = this.settings.llm ?? null;
 		const cfgs = conf?.llm_configs ?? [];
 		if (!conf || !cfgs.length) return null;
-		const cfg = cfgs.find((c) => c.name === conf.active_llm) ?? cfgs[0];
+		const cfgName = conf.chat_model || conf.active_llm;
+		const cfg = cfgName ? (cfgs.find((c) => c.name === cfgName) ?? cfgs[0]) : cfgs[0];
 		return { cfg, systemPrompt: conf.system_prompt, descStyle: conf.desc_style };
 	}
 
-	/** 按写作阶段获取模型配置：优先使用阶段指定的 llm_config_name，否则回落 active_llm；无可用配置返回 null */
+	/** 按写作阶段获取模型配置：优先使用阶段指定的 llm_config_name，否则回落 chat_model / active_llm；无可用配置返回 null */
 	private getPhaseLlmSetup(phaseIndex: number): { cfg: LlmConfigDoc; systemPrompt?: string; descStyle?: string } | null {
 		const conf = this.settings.llm ?? null;
 		const cfgs = conf?.llm_configs ?? [];
 		if (!conf || !cfgs.length) return null;
 		const phases = conf.writing_phases ?? [];
 		const phase = phases[phaseIndex];
-		let cfgName = phase?.llm_config_name?.trim() || conf.active_llm;
+		let cfgName = phase?.llm_config_name?.trim() || conf.chat_model || conf.active_llm;
 		const cfg = cfgName ? (cfgs.find((c) => c.name === cfgName) ?? cfgs[0]) : cfgs[0];
 		return { cfg, systemPrompt: conf.system_prompt, descStyle: conf.desc_style };
 	}
 
 	/**
-	 * LLM 对话框顶部下拉切换模型 → 写回 data.json 的 `active_llm`（并即时保存）：
-	 * 写作命令 / 连接测试读的就是这个激活项，故选择后下一次「编写本章」等命令立刻使用新模型；
-	 * 该值随 data.json 持久化，Obsidian 重启后对话框下拉与写作命令都从它加载。
+	 * LLM 对话框顶部下拉切换模型 → 写回 data.json 的 `chat_model`（并即时保存）：
+	 * 对话框此后使用新模型；该值随 data.json 持久化，Obsidian 重启后对话框下拉从它加载。
+	 * 写作命令按阶段映射取模型，不再依赖全局激活态。
 	 */
 	async setActiveLlmFromChat(name: string): Promise<void> {
 		const conf = this.settings.llm;
-		if (!conf || !name || conf.active_llm === name) return;
-		conf.active_llm = name;
+		if (!conf || !name || conf.chat_model === name) return;
+		conf.chat_model = name;
 		await this.saveSettings();
-		new Notice(`已切换激活模型：${name}（写作命令将使用它）`, 4000);
+		new Notice(`已切换对话框模型：${name}`, 4000);
 	}
 
 	/** 让已打开的 LLM 对话框下拉与激活项同步（设置页改激活模型 / 新建删除配置后调用；对话框自身切换无需调用） */
@@ -6832,17 +6833,18 @@ class ArticleWriterSettingTab extends PluginSettingTab {
 
 		const llmNameMap = cfgs.reduce<Record<string, string>>((m, c) => { m[c.name] = c.name; return m; }, {}); // ES2019 同名 API 的低版本等价写法：构造 name→name 恒等映射
 		defs.push({ type: "group", heading: "LLM 全局设置", items: [
-			{ name: "当前激活配置（active_llm）", desc: "连接测试与写作命令使用该配置", control: { key: "llm.active_llm", type: "dropdown", options: llmNameMap, defaultValue: "" } },
+			{ name: "对话框使用的模型配置", desc: "LLM 对话窗口下拉默认选中的模型；写作命令按阶段映射独立选择，不受此影响", control: { key: "llm.chat_model", type: "dropdown", options: llmNameMap, defaultValue: "" } },
 			{ name: "写作系统提示词 system_prompt", desc: "全局基础系统提示词：无编写类型格式块时使用；留空=内置默认。对齐 CLI config.json 的 system_prompt", control: { key: "llm.system_prompt", type: "textarea", rows: 5, placeholder: "留空使用内置默认" } },
 			{ name: "描述方式 desc_style", desc: "normal / complete（对齐 CLI）", control: { key: "llm.desc_style", type: "dropdown", options: { normal: "normal", complete: "complete" }, defaultValue: "normal" } },
 		] });
 
-		// v0.2.22+：写作阶段模型配置（三阶段独立模型）
+		// v0.2.22+：写作阶段模型配置（四阶段独立模型）
 		const phases = this.conf().writing_phases ?? [];
 		defs.push({ type: "group", heading: "写作阶段模型配置（v0.2.22+）", items: [
 			{ name: "策划方案生成阶段", desc: "planning-guide / planning-guide-worldview：AI 生成《策划指南.md》", control: { key: "writing_phases.0.llm_config_name", type: "dropdown", options: llmNameMap, defaultValue: "" } },
 			{ name: "书籍大纲和卷级大纲生成阶段", desc: "book-outline-generate / book-outline-to-volumes：书级/卷级大纲生成", control: { key: "writing_phases.1.llm_config_name", type: "dropdown", options: llmNameMap, defaultValue: "" } },
-			{ name: "文章大纲生成和编写文章阶段", desc: "generate-chapter-streamed：章节大纲与正文生成", control: { key: "writing_phases.2.llm_config_name", type: "dropdown", options: llmNameMap, defaultValue: "" } },
+			{ name: "文章大纲生成阶段", desc: "generate-chapter-outline：章节大纲生成", control: { key: "writing_phases.2.llm_config_name", type: "dropdown", options: llmNameMap, defaultValue: "" } },
+			{ name: "编写文章阶段", desc: "generate-chapter-streamed：正文生成", control: { key: "writing_phases.3.llm_config_name", type: "dropdown", options: llmNameMap, defaultValue: "" } },
 		] });
 
 		defs.push({ type: "list", heading: "模型配置（llm_configs，存于插件数据目录 data.json）", emptyState: "没有模型配置。", addItem: { name: "新建配置", action: () => void this.addLlmConfig() }, onDelete: (i) => void this.removeLlmConfig(i), onReorder: (o, n) => void this.reorderLlmConfigs(o, n), items: cfgs.map((cfg, i) => this.configPage(cfg, i)) });
@@ -6852,7 +6854,6 @@ class ArticleWriterSettingTab extends PluginSettingTab {
 	}
 
 	private configPage(cfg: LlmConfigDoc, i: number): SettingDefinitionPage<string> {
-		const active = this.conf().active_llm === cfg.name;
 		const strFields: Array<[keyof LlmConfigDoc, string, string]> = [
 			["base_url", "服务地址 base_url", "如 http://localhost:8509 或 https://api.deepseek.com（已含 /vN 不重复拼接）"],
 			["model_name", "模型 model_name", "本地服务可留空（用其已加载模型）"],
@@ -6860,8 +6861,7 @@ class ArticleWriterSettingTab extends PluginSettingTab {
 		];
 		const numFields: Array<[keyof LlmConfigDoc, string]> = [["temperature", "温度 temperature"], ["max_tokens", "最大 token max_tokens"]];
 		const items: SettingDefinitionItem[] = [];
-		items.push({ name: "名称 name", desc: "配置显示名，同步更新激活态与写作阶段引用", control: { key: `cfg.${i}.name`, type: "text", placeholder: "配置名称" } });
-		items.push({ name: "设为激活（active_llm）", desc: active ? "当前激活中" : "保存后，连接测试与写作命令将使用该配置", disabled: active || undefined, action: () => void this.setActiveLlm(cfg.name) });
+		items.push({ name: "名称 name", desc: "配置显示名，同步更新写作阶段引用", control: { key: `cfg.${i}.name`, type: "text", placeholder: "配置名称" } });
 		items.push({ name: "测试连接", desc: "对该配置执行 GET /models 连通性测试并弹通知（列出可用模型）", action: () => void this.plugin.runLlmTest(cfg) });
 		for (const [k, label] of numFields) items.push({ name: label, control: { key: `cfg.${i}.${String(k)}`, type: "text", placeholder: String(k) } });
 		for (const [k, label, ph] of strFields) items.push({ name: label, desc: ph, control: { key: `cfg.${i}.${String(k)}`, type: "text", placeholder: ph } });
@@ -6875,7 +6875,7 @@ class ArticleWriterSettingTab extends PluginSettingTab {
 		if (thinkCur && !Object.prototype.hasOwnProperty.call(thinkOptions, thinkCur)) thinkOptions[thinkCur] = `${thinkCur}（存量值）`;
 		items.push({ name: "思考模式 thinking", desc: "仅 DeepSeek 端点生效：off=不思考，更快更省 token；留空=跟随服务端默认（deepseek-flash 默认开思考）", control: { key: `cfg.${i}.thinking`, type: "dropdown", options: thinkOptions } });
 		items.push({ name: "删除配置", desc: "从列表中移除该模型配置；若被写作阶段引用则自动清空对应阶段的 llm_config_name", action: () => void this.removeLlmConfig(i) });
-		return { type: "page", name: `${cfg.name}${active ? " ◀ 当前" : ""}`, desc: cfg.base_url || "（未填服务地址）", displayValue: () => [cfg.model_name && `模型 ${cfg.model_name}`, cfg.base_url].filter(Boolean).join(" · "), status: cfg.base_url ? null : ("warning" as const), items };
+		return { type: "page", name: cfg.name, desc: cfg.base_url || "（未填服务地址）", displayValue: () => [cfg.model_name && `模型 ${cfg.model_name}`, cfg.base_url].filter(Boolean).join(" · "), status: cfg.base_url ? null : ("warning" as const), items };
 	}
 
 	getControlValue(key: string): unknown {
@@ -6885,9 +6885,10 @@ class ArticleWriterSettingTab extends PluginSettingTab {
 		if (key === "prevChapters") return s.prevChapters == null ? "" : String(s.prevChapters); // v0.1.4+：空=按内置默认 3
 		if (key === "includeVolumeSummary") return !!s.includeVolumeSummary; // v0.1.4+：卷摘要注入开关（缺省=false）
 		const c = this.conf();
-		if (key === "llm.active_llm") {
+		if (key === "llm.chat_model") {
 			const names = (c.llm_configs ?? []).map((x) => x.name);
-			return c.active_llm && names.includes(c.active_llm) ? c.active_llm : (names[0] ?? "");
+			const cur = c.chat_model || c.active_llm;
+			return cur && names.includes(cur) ? cur : (names[0] ?? "");
 		}
 		if (key === "llm.system_prompt") return c.system_prompt ?? "";
 		if (key === "llm.desc_style") return c.desc_style || "normal";
@@ -6935,7 +6936,7 @@ class ArticleWriterSettingTab extends PluginSettingTab {
 			return;
 		}
 		const c = this.conf();
-		if (key === "llm.active_llm") { c.active_llm = str || undefined; this.plugin.syncChatModelSelect(); } // 设置页改激活模型 → 已打开的 LLM 对话框下拉同步跟随
+		if (key === "llm.chat_model") { c.chat_model = str || undefined; this.plugin.syncChatModelSelect(); } // 设置页改对话框模型 → 已打开的 LLM 对话框下拉同步跟随
 		else if (key === "llm.system_prompt") c.system_prompt = str.trim() || undefined;
 		else if (key === "llm.desc_style") c.desc_style = str || "normal";
 		// v0.2.22+：写作阶段模型配置

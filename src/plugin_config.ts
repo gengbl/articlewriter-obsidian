@@ -22,7 +22,7 @@ export interface LlmConfigDoc {
 	retry_delay?: number;
 }
 
-/** 写作阶段：三阶段独立模型配置 */
+/** 写作阶段：四阶段独立模型配置 */
 export interface WritingPhase {
 	name: string; // 阶段显示名（如「策划方案生成」）
 	llm_config_name?: string; // 指定使用的模型配置名（留空=回落 active_llm）
@@ -30,13 +30,14 @@ export interface WritingPhase {
 
 export interface PluginConfig {
 	version: 1;
-	active_llm?: string; // 当前激活的模型配置名（llm_configs[].name）
+	active_llm?: string; // 兼容字段：旧版激活态，设置页不再暴露；对话框模型改用 chat_model
+	chat_model?: string; // 对话框使用的模型配置名（llm_configs[].name），留空=回落 active_llm
 	llm_configs?: LlmConfigDoc[];
 	system_prompt?: string; // 写作系统提示词（空=用内置默认）
 	desc_style?: string; // "normal" | "complete"
 	system_guide?: string; // 系统级写作指南（三层创作规范中最低优先级层，预置 CLI 内置内容）
 	system_guide_path?: string; // 系统级指南文件路径（vault 相对路径）；设
-	writing_phases?: WritingPhase[]; // 写作阶段模型配置（三阶段独立模型）置且可读时优先于内嵌 system_guide
+	writing_phases?: WritingPhase[]; // 写作阶段模型配置（四阶段独立模型）置且可读时优先于内嵌 system_guide
 }
 
 /** 首次运行（data.json 无 llm 段）时预置的标准模板：字段结构与 Python 用户配置文件一致，api_key/model_name 留空待填。
@@ -70,7 +71,8 @@ export function buildDefaultLlmConf(): PluginConfig {
 		writing_phases: [
 			{ name: "策划方案生成", llm_config_name: "" },
 			{ name: "书籍大纲和卷级大纲生成", llm_config_name: "" },
-			{ name: "文章大纲生成和编写文章", llm_config_name: "" },
+			{ name: "文章大纲生成", llm_config_name: "" },
+			{ name: "编写文章", llm_config_name: "" },
 		],
 	};
 }

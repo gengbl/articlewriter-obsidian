@@ -44,7 +44,7 @@ export class LlmChatView extends ItemView {
 	private refPaths: string[] = [];
 
 	private getActiveStory?: () => Promise<{ story: string; chapterNum: number; chapterTitle: string } | null>;
-	/** v0.2.0+：切换模型时写回 data.json 的 active_llm（由 main.ts 注入）——写作命令读的是同一个激活项，两边从此保持一致、下次启动按它加载 */
+	/** v0.2.0+：切换模型时写回 data.json 的 chat_model（由 main.ts 注入）——对话框此后使用新模型，随 data.json 持久化 */
 	private setActiveModel?: (name: string) => void | Promise<void>;
 	/** 「保存到文件」弹窗的默认路径前缀（由 main.ts 注入）：当前书目录 > work_dir > vault 根 */
 	private getDefaultSaveDir?: () => Promise<string>;
@@ -165,16 +165,16 @@ export class LlmChatView extends ItemView {
 	}
 
 	/**
-	 * 重建模型下拉。选中项**一律以持久化的 `active_llm` 为准**（不再"优先保持原选择"）：
-	 * 对话框切换时会写回 active_llm，所以保持原选择的效果自然成立，同时设置页改动激活模型也能在这里立刻体现——
-	 * 两处永远指向同一个模型（写作命令读的就是 active_llm）。public 供 main.ts 在设置变更后同步。
+	 * 重建模型下拉。选中项**一律以持久化的 `chat_model` 为准**（不再"优先保持原选择"）：
+	 * 对话框切换时会写回 chat_model，所以保持原选择的效果自然成立，同时设置页改动对话框模型也能在这里立刻体现——
+	 * 两处永远指向同一个模型。public 供 main.ts 在设置变更后同步。
 	 */
 	refreshModels(): void {
 		if (!this.built) return;
 		const conf = this.getConf();
 		this.cfgs = (conf?.llm_configs ?? []).length ? (conf!.llm_configs as LlmConfigDoc[]) : [{} as LlmConfigDoc];
 		let idx = 0;
-		const want = conf?.active_llm;
+		const want = conf?.chat_model || conf?.active_llm;
 		if (want) {
 			const i = this.cfgs.findIndex((c) => c.name === want);
 			if (i >= 0) idx = i;
