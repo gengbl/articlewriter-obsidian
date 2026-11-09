@@ -5995,7 +5995,7 @@ async cmdRenameChapterFile(): Promise<void> {
 	}
 
 	private exportPhaseName(phaseIndex: number): string {
-		return this.settings.llm?.writing_phases?.[phaseIndex]?.name ?? `阶段${String(phaseIndex + 1)}`;
+		return this.settings.llm?.writing_phases?.[phaseIndex]?.name ?? "";
 	}
 
 	/** 导出文档的一节：模型配置来源（阶段映射 / 全局激活 + cfg.name/model_name）、备注、system/user 提示词代码块 */
