@@ -204,7 +204,6 @@ export default class ArticleWriterPlugin extends Plugin {
 		this.addCommand({ id: "vol-outline-generate", name: "自动生成卷大纲（/vol-outline-generate：依据全局设定 AI 流式生成目标卷的 N 章卷大纲；无卷时按书级大纲自动建卷并逐卷生成）", callback: () => this.cmdGenerateVolOutline() });
 		this.addCommand({ id: "vol-outline-sync", name: "同步卷大纲章节（/vol-outline-sync：卷大纲续写后，把新增的「第N章」标记建成新章节）", callback: () => this.cmdSyncVolOutlineChapters() });
 		this.addCommand({ id: "book-outline-to-volumes", name: "从书级大纲生成卷（/book-outline-to-volumes：解析书级《大纲.md》的卷声明，逐卷生成全部卷及其卷大纲——缺失卷自动创建、只补缺失章）", callback: () => this.cmdBookOutlineToVolumes() });
-		this.addCommand({ id: "planning-guide", name: "策划指南（/planning-guide：AI 流式生成书级《策划指南.md》——固定十节既定规划约束，供书级/卷级大纲生成遵循；已存在时确认后整体重写）", callback: () => this.cmdPlanningGuide() });
 		this.addCommand({ id: "planning-guide-worldview", name: "生成策划指南·仅世界观（/planning-guide-worldview：早期规划场景——输入仅书籍信息＋世界观设定，AI 流式生成书级《策划指南.md》）", callback: () => this.cmdPlanningGuideWorldview() });
 		this.addCommand({ id: "complete-outline-docs", name: "补全大纲资料（检查书根参与大纲生成的资料——大纲/策划指南/世界观/人物关系——缺失者按模板创建，已存在不覆盖）", callback: () => this.cmdCompleteOutlineDocs() });
 
@@ -4806,44 +4805,6 @@ async cmdRenameChapterFile(): Promise<void> {
 		return content.replace(/\s+$/, "");
 	}
 
-	/** v0.2.13+「策划指南」(/planning-guide)：AI 流式生成书级《策划指南.md》——固定十节既定规划约束（全书主线/升级路径/主角转变弧/反转与伏笔总规划/新意点与反套路条款/节奏与张力曲线/人物行动逻辑/信息与知识状态规则/世界观红线/连续性基线），供书级/卷级大纲生成遵循。
-	 * 已有非空时弹确认（整体重写 / 取消）；重写以现有内容为既定事实约束（可调整表述、不得改变已确立事实）。流式展示完自动落盘（无保存/不保存 CTA）。不改任何 state */
-	async cmdPlanningGuide(): Promise<void> {
-		if (!(await this.ensureWorkDir())) return;
-		const story = await this.requireStory();
-		if (!story || !(await this.ensureVolumeLayout(story))) return;
-		try {
-			const state = await this.manager.validatedState(story);
-			const existing = await this.manager.readPlanningGuide(story);
-			if (existing.trim()) {
-				const items: ActionItem[] = [
-					{ label: "整体重写", sub: "以现有《策划指南.md》为既定事实约束重新生成并覆盖" },
-					{ label: "取消", sub: "保留现有内容不变" },
-				];
-				const choice = await this.pickAction("书级《策划指南.md》已存在，如何处理？", items);
-				if (choice == null || choice === 1) { new Notice("已取消生成策划指南", 6000); return; }
-			}
-			const setup = this.getPhaseLlmSetup(0); // v0.2.22+：策划方案生成阶段
-			if (!setup) return;
-			const input = await this.buildPlanningGuideInput(story, state, existing.trim() || undefined);
-			const promptText = buildPlanningGuidePrompt(input);
-			console.debug("[articlewriter] 策划指南生成请求规模", { model: setup.cfg.model_name || "(默认)", regenerate: !!existing.trim(), promptLen: promptText.length });
-			const modal = await this.beginWritingPanel(existing.trim() ? "重新生成策划指南" : "生成策划指南");
-			if (!modal) { new Notice("无法打开生成面板，本次操作已取消", 8000); return; }
-			const content = await this.streamWithEmptyRetry(setup.cfg, () => [
-				{ role: "system", content: BOOK_OUTLINE_GEN_SYSTEM_PROMPT },
-				{ role: "user", content: promptText },
-			], modal, "生成策划指南");
-			if (modal.signal.aborted) return;
-			if (!content.trim()) return;
-			await this.manager.setPlanningGuide(story, content);
-			modal.finishAuto("✓ 策划指南已保存", "本轮用时");
-			new Notice(`✓ ${existing.trim() ? "已重写" : "已生成"}书级《策划指南.md》，后续书级/卷级大纲生成将遵循其既定规划`, 12000);
-		} catch (e) {
-			this.notifyError("生成策划指南失败", e);
-		}
-	}
-
 	/** v0.2.x+「生成策划指南（仅世界观）」(/planning-guide-worldview)：早期规划场景——输入仅书籍信息＋世界观设定（不含大纲/卷/章节），AI 流式生成书级《策划指南.md》。
 	 * 已有非空时同样弹确认（整体重写 / 取消）；重写以现有内容为既定事实约束（不丢已确立事实）。需指定目标总章数（各节位置以其为基准表述）。流式展示完自动落盘 */
 	async cmdPlanningGuideWorldview(): Promise<void> {
@@ -6073,7 +6034,6 @@ async cmdRenameChapterFile(): Promise<void> {
 				"修正章节引用 (/fix-refs)",
 				"错别字检测 (/typo)",
 				"审阅当前章 (/review)",
-				"生成策划指南 (/planning-guide)",
 				"生成策划指南（仅世界观） (/planning-guide-worldview)",
 				"生成书籍大纲 (/book-outline-generate)",
 				"自动生成卷大纲 (/vol-outline-generate)",
