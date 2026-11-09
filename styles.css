@@ -1590,17 +1590,17 @@
 	background: var(--background-secondary-alt);
 }
 
-/* 写作阶段 tab 页布局 */
-.aw-phase-tabs-setting {
-	padding: 0 !important;
-	border-top: none !important;
+/* 写作阶段 tab 页布局（复合选择器 .setting-item.aw-phase-tabs-setting 优先级 (0,2,0)，高于核心 .setting-item 的 (0,1,0)，无需强制覆盖声明） */
+.setting-item.aw-phase-tabs-setting {
+	padding: 0;
+	border-top: none;
 }
 .aw-phase-tabs-setting > .setting-item-info {
-	display: none !important;
+	display: none;
 }
 .aw-phase-tabs-setting > .setting-item-control {
-	width: 100% !important;
-	justify-content: flex-start !important;
+	width: 100%;
+	justify-content: flex-start;
 }
 .aw-phase-tabs-container {
 	margin-top: 16px;
@@ -1666,8 +1666,8 @@
 	margin-top: 12px;
 	padding-top: 12px;
 	border-top: 1px solid var(--background-modifier-border);
-	width: 100% !important;
-	max-width: 100% !important;
+	width: 100%;
+	max-width: 100%;
 }
 .aw-identity-boost-desc {
 	font-size: var(--font-smaller);
@@ -1676,7 +1676,7 @@
 }
 .aw-identity-boost-display {
 	margin-bottom: 8px;
-	width: 100% !important;
+	width: 100%;
 }
 .aw-identity-boost-display pre {
 	white-space: pre-wrap;
@@ -1694,9 +1694,9 @@
 	flex-wrap: wrap;
 }
 .aw-identity-boost-textarea {
-	width: 100% !important;
-	min-width: 0 !important;
-	max-width: 100% !important;
+	width: 100%;
+	min-width: 0;
+	max-width: 100%;
 	min-height: 120px;
 	margin-bottom: 8px;
 	box-sizing: border-box;
