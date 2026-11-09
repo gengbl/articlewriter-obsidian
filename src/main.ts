@@ -6774,7 +6774,7 @@ class ArticleWriterSettingTab extends PluginSettingTab {
 		return this.plugin.settings.llm ?? (this.plugin.settings.llm = buildDefaultLlmConf());
 	}
 
-	/** 渲染 identity_boost 设置项到指定容器：默认只读显示，点击「编辑」后显示 textarea，支持保存、使用默认值和重置 */
+	/** 渲染 identity_boost 设置项到指定容器：默认只读显示，点击「编辑」后显示 textarea，支持保存和使用默认值 */
 	private renderIdentityBoost(container: HTMLElement, phaseIdx: number, currentValue: string, phaseName: string): void {
 		const key = `writing_phases.${phaseIdx}.identity_boost`;
 		const defaults = buildDefaultLlmConf();
@@ -6787,7 +6787,6 @@ class ArticleWriterSettingTab extends PluginSettingTab {
 		const displayEl = container.createEl("div", { cls: "aw-identity-boost-display" });
 		const btnEl = container.createEl("div", { cls: "aw-identity-boost-btns" });
 		let btnSaveHandler: (() => Promise<void>) | null = null;
-		let btnClearRef: HTMLButtonElement | null = null;
 		// 渲染只读模式：显示内容 + 编辑按钮
 		const renderReadOnly = () => {
 			displayEl.empty();
@@ -6811,7 +6810,6 @@ class ArticleWriterSettingTab extends PluginSettingTab {
 					editing = false;
 					renderReadOnly();
 					btnSaveHandler = null;
-					btnClearRef = null;
 				};
 				// 使用默认值按钮
 				const defaultBtn = btnEl.createEl("button", { cls: "aw-identity-boost-btn" });
@@ -6822,19 +6820,6 @@ class ArticleWriterSettingTab extends PluginSettingTab {
 					editing = false;
 					renderReadOnly();
 					btnSaveHandler = null;
-					btnClearRef = null;
-				};
-				// 重置按钮（清空）
-				const clearBtn = btnEl.createEl("button", { cls: "aw-identity-boost-btn" });
-				btnClearRef = clearBtn;
-				clearBtn.setText("重置");
-				clearBtn.onclick = async () => {
-					await this.setControlValue(key, undefined);
-					currentValue = "";
-					editing = false;
-					renderReadOnly();
-					btnSaveHandler = null;
-					btnClearRef = null;
 				};
 				// 保存 handler 引用供快捷键调用
 				btnSaveHandler = async () => {
@@ -6844,7 +6829,6 @@ class ArticleWriterSettingTab extends PluginSettingTab {
 					editing = false;
 					renderReadOnly();
 					btnSaveHandler = null;
-					btnClearRef = null;
 				};
 				ta.addEventListener("keydown", (e: KeyboardEvent) => {
 					if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) btnSaveHandler?.();
