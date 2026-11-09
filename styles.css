@@ -1627,18 +1627,6 @@
 .aw-phase-tabs-content {
 	padding: 4px 0;
 }
-.aw-phase-tab-row {
-	display: flex;
-	align-items: center;
-	gap: 12px;
-	margin-bottom: 12px;
-}
-.aw-phase-tab-label {
-	width: 80px;
-	flex-shrink: 0;
-	font-size: var(--font-ui-small);
-	color: var(--text-muted);
-}
 /* identity_boost 设置项布局 */
 .aw-identity-boost-container {
 	margin-top: 12px;
