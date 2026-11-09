@@ -1385,8 +1385,6 @@ export interface PlanningGuideInput {
 	volumes?: Array<{ name: string; description?: string }>; // 全部卷（阅读序）
 	chapters?: Array<{ label: string; summary?: string }>; // 已有章节（阅读序）+ 已存摘要；label 为展示标签（跨卷时含卷名前缀）
 	existingGuide?: string; // 现有《策划指南.md》清洗文本（重新生成模式：既定事实约束）
-	chapterCount?: number; // v0.2.x+：目标总章数——各节位置（抬升节点/伏笔埋设与回收/高潮落位等）一律以该总章数为基准表述
-	flatMode?: boolean; // v0.2.x+：平铺（无卷）模式——全书无卷结构，位置一律用章号表述、禁用任何卷划分/卷引用
 	tensionRules?: string; // 情节张力/节奏规则（插件数据目录 TENSION_RULES.md 播种文件内容，注入【张力规则】块——「六·节奏与张力曲线」等节须逐条对照）
 	// 注：「仅世界观生成」（/planning-guide-worldview）不设独立标志——行为由 globalOutline/volumes/chapters 缺省驱动（无对应输入块、连续性基线改以世界观为据）
 }
