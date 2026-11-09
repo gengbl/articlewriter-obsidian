@@ -1589,3 +1589,13 @@
 .aw-export-prompts-row:hover {
 	background: var(--background-secondary-alt);
 }
+
+/* identity_boost 只读显示：保留换行但允许换行折行 */
+.aw-identity-boost-display pre {
+	white-space: pre-wrap;
+	word-break: break-word;
+	margin: 0;
+	font-family: var(--font-monospace);
+	font-size: var(--font-smaller);
+	color: var(--text-muted);
+}
