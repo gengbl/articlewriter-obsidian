@@ -2,7 +2,7 @@
 
 每次功能更新 / bug 修复完成后按「AGENTS.md · 工作更新写回约定」追加一行：日期 + 一句话摘要（一次任务的多个改动可合并成一条）。新条目追加在文件末尾。
 
-- 2026-11-09：写作阶段模型配置改为 tab 页管理——四个阶段（策划方案生成/书籍大纲和卷级大纲生成/文章大纲生成/编写文章）各占一 tab，tab 内阶段名称改为标题单独一行（移除描述文字、标签及默认占位文字），组标题也移除描述文字且与 tab 页分列两行；identity_boost 编辑模式移除重置按钮及说明文字，仅保留保存和使用默认值；styles.css 增 `.aw-phase-tabs-*` 系列样式；npm run build tsc 零错误＋node --check OK＋npm run lint 零违规，release/ 三件套部署 geng_bl vault（md5 一致）。**需重载插件**。
+- 2026-11-09：写作阶段模型配置改为 tab 页管理——四个阶段（策划方案生成/书籍大纲和卷级大纲生成/文章大纲生成/编写文章）各占一 tab，tab 内阶段名称改为标题单独一行（移除描述文字、标签及默认占位文字），组标题也移除描述文字且与 tab 页分列两行；identity_boost 编辑模式移除重置按钮及说明文字，仅保留保存和使用默认值；exportPhaseName 移除阶段默认占位文字；styles.css 增 `.aw-phase-tabs-*` 系列样式；npm run build tsc 零错误＋node --check OK＋npm run lint 零违规，release/ 三件套部署 geng_bl vault（md5 一致）。**需重载插件**。
 
 - 2026-11-09：修复旧用户升级后 writing_phases 存在但 identity_boost 缺失时默认值未填充问题——loadSettings 迁移逻辑改为检测各阶段 identity_boost 是否为空，为空则从 buildDefaultLlmConf() 补充；npm run build tsc 零错误＋node --check OK＋npm run lint 零违规，release/ 三件套部署 geng_bl vault（md5 一致）。**需重载插件**。同步 agents/l3-writing-commands-impl.md/l3-main-ts-flow.md/command-reference.md。
 
