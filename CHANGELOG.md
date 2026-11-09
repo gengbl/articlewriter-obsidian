@@ -2,6 +2,8 @@
 
 每次功能更新 / bug 修复完成后按「AGENTS.md · 工作更新写回约定」追加一行：日期 + 一句话摘要（一次任务的多个改动可合并成一条）。新条目追加在文件末尾。
 
+- 2026-11-09：修复旧用户升级后 writing_phases 缺失时 identity_boost 默认值未加载问题——loadSettings 新增迁移逻辑，检测 writing_phases 不存在时从 buildDefaultLlmConf() 补充四阶段配置（含 identity_boost 默认值）；npm run build tsc 零错误＋node --check OK＋npm run lint 零违规，release/ 三件套部署 geng_bl vault（md5 一致）。**需重载插件**。同步 agents/l3-writing-commands-impl.md/l3-main-ts-flow.md/command-reference.md。
+
 - 2026-08-30（归档压缩）：v0.0.3–v0.0.11 早期批次——状态面板路径修复/固定头+滚动树拆分/vault 变更防抖自动刷新（v0.0.3）；状态页展示三修（字体对齐侧栏变量/本地时间 formatLocalDateTime/书名行改版）；打包纳入 WRITING_GUIDE.md＋新增 RELEASE.md；v0.0.5 目录审核修复（banned_words/prompts 移除 lookbehind 改「(?:^|[^X])」前缀组、JS 内联样式迁入 styles.css 静态类、manifest 英文描述+MIT LICENSE+英文 README）；Lint 清理与声明式设置页 getSettingDefinitions（v0.0.6，trashFile 迁移/去 as any/冗余断言）；minAppVersion→1.13.0（v0.0.7）；README 英文默认+README_ZN 互链；GitHub Actions release.yml（attest 来源签名、tag 与 manifest 不一致即失败）；Lint 告警清零（matchAll→exec 循环、全角空格 U+3000→半角、tsconfig lib≤ES2018 约定，v0.0.8）；CI permissions 补 attestations:write（v0.0.9）；AGENTS.md 拆 agents/ 子文件体系；FN_BAD_CHARS_RE no-control-regex 改 String.fromCharCode 拼接；js-yaml→yaml 换库；README 审核披露声明（仅用户自配端点 LLM 请求/无遥测/vault 列举披露 §3）；v0.0.10 打包；发布约定澄清（Gitea Release 手动维护不建自动化工作流、GitHub CI 只上三散文件不传 zip、v0.0.11 纯文档发布）。
 - 2026-11-06（归档压缩）：2026-09-02～2026-09-28 批次——rename 订阅修复＋v0.0.12 发布（GitHub Release 资产扩为含 WRITING_GUIDE.md 四散文件）＋发布约定澄清（Gitea Release 手动维护、REST 校验附件字节数）＋移除 gitea-release.yml＋创作规范三层重构（系统级固定插件数据目录文件＋每书《写作指南汇总.md》唯一注入源＋generate/regenerate 命令）→v0.0.13；生成使用说明/文档化、写字台更名＋提速、插入章节/删除补洞、幽灵章根治（make-md 空心目录/settleTree/assertUniqueNums/quarantineHollowChapters）、卷实体目录＋按卷整理＋flatBlocked 门禁、v0.0.15 复合键身份模型、批量建卷页、第0章支持；三层写作上下文重构＋卷摘要自动提取、无卷模式（use_volumes//volume off|on）、ActionMenuModal 交互系列、社区校验器修复（window.setTimeout/文件夹深度/README 安全声明/停止发布 WRITING_GUIDE.md）、卷内文档节点系列（可折叠/置顶/样式/补全卷文档）、改书名、跨分栏刷新；空指示段自动注释、提示词上下文四项修正（prevN 可配）、摘要纯延迟生成＋卷摘要全量重建＋在途去重＋GenProgressView 统一生成过程面板、导出书稿/卷合集命名与两问弹窗 hint 改版、卷节点右键合并为单项「导出…」、补全资料七件套、.aw-st-pdoc/.aw-st-npdoc 标识色演变、NewFilePickerModal 新建单弹窗多轮迭代定稿→v0.1.7/v0.1.8；v0.1.8 发布；写字台小说状态区（可折叠/含标点字符数/信息行合并）、章节/卷模板文件名新格式 NN-标题-后缀＋旧格式检测迁移＋建章修复；人物关系面板（卡片/图表双模式、SVG 环形图缩放平移、朋友类型、边 tip 自定义浮层、双击开文档、添加人物弹窗＋多字段弹窗紧凑样式系列、删卷入回收站）；写作命令连接失败诊断系列（超时放宽 30 分钟/退避重试/lone surrogate 清洗/真因＝激活模型指向未启动本地服务＋三处防呆）、LLM 对话框与激活模型双向同步持久化、切书不再触发摘要生成（ensureSummaries 只读路径）；关系图「人物状态」区展示《人物.md》设定（loadCharacterEntries）；每本书独立工作区（workspaces/<书名>.json、applyStorySwitch 统一入口、closeIfNoArchive、目录自检、IO 报错上报）→v0.2.0；时间线面板（三层《时间线.md》合并、模板播种八件套、时间点日期格式、双击定位、画布缩放平移 v0.2.2）、文档移除 Python CLI 引用；《时间线》播种 -undefined 文件名修复、lint 清理＋冗余断言专项核查规则固化。
 - 2026-10-08：时间线面板按事件来源层级区分重要性——条目带 `is-<scope>` 类（书/卷/章三档）：书籍级节点圆点最大（10px）＋事件正文加粗、卷级基准（8px 强调色）、章级圆点最小（6px 弱化灰）＋正文弱化；汇总行含各层分布。src/timeline_view.ts/styles.css，npm run build tsc 零错误＋node --check OK，release/ 三件套部署 geng_bl vault（UI 冒烟待用户确认）。同步 README.md/README_ZN.md/docs/使用说明.md/agents/code-structure.md/agents/ui-conventions.md。
@@ -129,3 +131,12 @@
 - 2026-11-09：移除策划指南命令（/planning-guide）——仅保留「生成策划指南·仅世界观」（/planning-guide-worldview）作为策划指南入口；main.ts 移除命令注册与 `cmdPlanningGuide` 方法体，export-ai-prompts 预览视图同步清理。tsc 零错误＋node --check/lint 零违规。
 - 2026-11-09：策划指南生成不再读取旧策划文档内容——`cmdPlanningGuideWorldview` 移除已有非空确认弹窗与 `existingGuide` 传参，始终直接以书籍信息＋世界观设定为据全新生成并覆盖。tsc 零错误＋node --check/lint 零违规。
 - 2026-11-09（v0.2.24 发布）：写作阶段增加 identity_boost 配置项——`WritingPhase` 接口新增可选 `identity_boost` 字段；设置页每个写作阶段展示独立 textarea；运行时注入到 system prompt 末尾的【身份加强】块；`assembleSystemPrompt()` / `writerSystemPrompt()` / `getPhaseLlmSetup()` / `getLlmSetup()` / `loadWriterSetup()` 签名与调用点全部同步更新；export-ai-prompts 预览视图同步展示。tsc 零错误＋node --check/lint 零违规。
+
+## v0.2.24 (2026-11-09)
+
+- 写作阶段模型配置新增  字段：四阶段（策划方案生成/书籍大纲和卷级大纲生成/文章大纲生成/编写文章）各自独立配置 AI 身份加强提示词，运行时注入到 system prompt 末尾的【身份加强】块
+- 设置页写作阶段模型配置区为每阶段增加 identity_boost textarea 输入框
+- export-ai-prompts 预览视图同步展示 identity_boost 内容
+- 四阶段默认值分别填充策划总监/图书策划编辑+故事架构师/内容主编/专栏作者身份提示词
+- **修复**：旧用户升级后 writing_phases 缺失时自动从默认配置补充（含 identity_boost 默认值）
+
