@@ -1590,7 +1590,10 @@
 	background: var(--background-secondary-alt);
 }
 
-/* identity_boost 只读显示：保留换行但允许换行折行 */
+/* identity_boost 设置项布局 */
+.aw-identity-boost-display {
+	margin-bottom: 8px;
+}
 .aw-identity-boost-display pre {
 	white-space: pre-wrap;
 	word-break: break-word;
@@ -1598,4 +1601,15 @@
 	font-family: var(--font-monospace);
 	font-size: var(--font-smaller);
 	color: var(--text-muted);
+	text-align: left;
+}
+.aw-identity-boost-btns {
+	display: flex;
+	gap: 6px;
+	flex-wrap: wrap;
+}
+.aw-identity-boost-textarea {
+	width: 100%;
+	min-height: 120px;
+	margin-bottom: 8px;
 }

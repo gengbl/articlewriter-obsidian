@@ -6774,7 +6774,7 @@ class ArticleWriterSettingTab extends PluginSettingTab {
 		return this.plugin.settings.llm ?? (this.plugin.settings.llm = buildDefaultLlmConf());
 	}
 
-	/** 构建 identity_boost 自定义渲染设置项：默认只读显示，点击「编辑」后显示 textarea，支持保存和使用默认值 */
+	/** 构建 identity_boost 自定义渲染设置项：默认只读显示，点击「编辑」后显示 textarea，支持保存、使用默认值和重置 */
 	private identityBoostSetting(phaseIdx: number, currentValue: string, phaseName: string): SettingDefinitionRender {
 		const key = `writing_phases.${phaseIdx}.identity_boost`;
 		const defaults = buildDefaultLlmConf();
@@ -6784,72 +6784,75 @@ class ArticleWriterSettingTab extends PluginSettingTab {
 			desc: "注入到该阶段 system prompt 末尾的【身份加强】块；留空=不注入",
 			render: (setting) => {
 				let editing = false;
+				// 显示区域（上）+ 按钮区域（下）
 				const displayEl = setting.controlEl.createEl("div", { cls: "aw-identity-boost-display" });
+				const btnEl = setting.controlEl.createEl("div", { cls: "aw-identity-boost-btns" });
 				let btnSaveHandler: (() => Promise<void>) | null = null;
-				let btnResetRef: ButtonComponent | null = null;
-				let btnEditRef: ButtonComponent | null = null;
-				setting.addButton((btn) => {
-					btnEditRef = btn;
-					btn.setButtonText("编辑").onClick(async () => {
-						editing = true;
-						displayEl.empty();
-						const ta = setting.controlEl.createEl("textarea", { cls: "aw-identity-boost-textarea" });
-						ta.rows = 8;
-						ta.value = currentValue;
-						setting.addButton((b) => {
-							b.setButtonText("保存").setCta().onClick(async () => {
-								const newVal = ta.value.trim() || undefined;
-								await this.setControlValue(key, newVal);
-								currentValue = newVal ?? "";
-								editing = false;
-								displayEl.empty();
-								displayEl.createEl("pre", { text: currentValue || "（留空=不注入）" });
-								btnEditRef!.setButtonText("编辑");
-								// 移除保存/重置按钮
-								setting.controlEl.querySelectorAll(".aw-identity-boost-btn").forEach((el) => el.remove());
-								btnSaveHandler = null;
-								btnResetRef = null;
+				let btnClearRef: ButtonComponent | null = null;
+				// 渲染只读模式：显示内容 + 编辑按钮
+				const renderReadOnly = () => {
+					displayEl.empty();
+					displayEl.createEl("pre", { text: currentValue || "（留空=不注入）" });
+					btnEl.empty();
+					setting.addButton((btn) => {
+						btn.setButtonText("编辑").onClick(async () => {
+							editing = true;
+							displayEl.empty();
+							const ta = displayEl.createEl("textarea", { cls: "aw-identity-boost-textarea" });
+							ta.rows = 8;
+							ta.value = currentValue;
+							// 保存按钮
+							setting.addButton((saveBtn) => {
+								saveBtn.setButtonText("保存").setCta().onClick(async () => {
+									const newVal = ta.value.trim() || undefined;
+									await this.setControlValue(key, newVal);
+									currentValue = newVal ?? "";
+									editing = false;
+									renderReadOnly();
+									btnSaveHandler = null;
+									btnClearRef = null;
+								});
 							});
-							b.buttonEl.addClass("aw-identity-boost-btn");
-						});
-						setting.addButton((b) => {
-							btnResetRef = b;
-							b.setButtonText("使用默认值").onClick(async () => {
-								await this.setControlValue(key, default_value);
-								currentValue = default_value;
-								editing = false;
-								displayEl.empty();
-								displayEl.createEl("pre", { text: currentValue || "（留空=不注入）" });
-								btnEditRef!.setButtonText("编辑");
-								setting.controlEl.querySelectorAll(".aw-identity-boost-btn").forEach((el) => el.remove());
-								btnSaveHandler = null;
-								btnResetRef = null;
+							// 使用默认值按钮
+							setting.addButton((defaultBtn) => {
+								defaultBtn.setButtonText("使用默认值").onClick(async () => {
+									await this.setControlValue(key, default_value);
+									currentValue = default_value;
+									editing = false;
+									renderReadOnly();
+									btnSaveHandler = null;
+									btnClearRef = null;
+								});
 							});
-							b.buttonEl.addClass("aw-identity-boost-btn");
-						});
-						// 保存 handler 引用供快捷键调用
-						const saveBtn = setting.controlEl.querySelector(".aw-identity-boost-btn");
-						if (saveBtn) {
+							// 重置按钮（清空）
+							setting.addButton((clearBtn) => {
+								btnClearRef = clearBtn;
+								clearBtn.setButtonText("重置").onClick(async () => {
+									await this.setControlValue(key, undefined);
+									currentValue = "";
+									editing = false;
+									renderReadOnly();
+									btnSaveHandler = null;
+									btnClearRef = null;
+								});
+							});
+							// 保存 handler 引用供快捷键调用
 							btnSaveHandler = async () => {
 								const newVal = ta.value.trim() || undefined;
 								await this.setControlValue(key, newVal);
 								currentValue = newVal ?? "";
 								editing = false;
-								displayEl.empty();
-								displayEl.createEl("pre", { text: currentValue || "（留空=不注入）" });
-								btnEditRef!.setButtonText("编辑");
-								setting.controlEl.querySelectorAll(".aw-identity-boost-btn").forEach((el) => el.remove());
+								renderReadOnly();
 								btnSaveHandler = null;
-								btnResetRef = null;
+								btnClearRef = null;
 							};
-						}
-						ta.addEventListener("keydown", (e: KeyboardEvent) => {
-							if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) btnSaveHandler?.();
+							ta.addEventListener("keydown", (e: KeyboardEvent) => {
+								if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) btnSaveHandler?.();
+							});
 						});
 					});
-				});
-				// 初始渲染：显示内容
-				displayEl.createEl("pre", { text: currentValue || "（留空=不注入）" });
+				};
+				renderReadOnly();
 				return () => { /* cleanup */ };
 			},
 		};
