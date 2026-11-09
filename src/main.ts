@@ -300,6 +300,11 @@ export default class ArticleWriterPlugin extends Plugin {
 			// 旧数据补字段：系统级写作指南（CLI 内置层），不覆盖用户已有内容
 			this.settings.llm.system_guide = DEFAULT_SYSTEM_GUIDE;
 			await this.saveData(this.settings);
+		} else if (!this.settings.llm.writing_phases) {
+			// v0.2.24+：旧数据补字段：写作阶段模型配置（含 identity_boost 默认值），不覆盖用户已有内容
+			const defaults = buildDefaultLlmConf();
+			this.settings.llm.writing_phases = defaults.writing_phases;
+			await this.saveData(this.settings);
 		}
 	}
 
