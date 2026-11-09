@@ -6875,7 +6875,6 @@ class ArticleWriterSettingTab extends PluginSettingTab {
 		const phases = this.conf().writing_phases ?? [];
 		defs.push({
 			name: "写作阶段模型配置（v0.2.22+）",
-			desc: "planning-guide / book-outline-generate / generate-chapter-outline / generate-chapter-streamed 四个阶段独立模型配置",
 			render: (setting) => {
 				const tabContainer = setting.controlEl.createEl("div", { cls: "aw-phase-tabs-container" });
 				const tabHeader = tabContainer.createEl("div", { cls: "aw-phase-tabs-header" });
