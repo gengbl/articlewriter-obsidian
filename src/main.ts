@@ -6881,7 +6881,7 @@ class ArticleWriterSettingTab extends PluginSettingTab {
 					});
 					// 渲染当前 phase tab
 					const renderPhaseTab = (idx: number, container: HTMLElement, options: Record<string, string>) => {
-						const phase = phases[idx] ?? { name: `阶段${idx + 1}` };
+						const phase = phases[idx] ?? { name: "" };
 						// 阶段名称标题（单独一行）
 						const titleEl = container.createEl("h4", { cls: "aw-phase-tab-title" });
 						titleEl.setText(phase.name);
@@ -6910,7 +6910,7 @@ class ArticleWriterSettingTab extends PluginSettingTab {
 						modelSelect.value = phase.llm_config_name ?? "";
 						modelSelect.onchange = () => {
 							const phases = this.conf().writing_phases ?? [];
-							if (!phases[idx]) phases[idx] = { name: `阶段${idx + 1}` };
+							if (!phases[idx]) phases[idx] = { name: "" };
 							phases[idx].llm_config_name = modelSelect.value || undefined;
 							this.plugin.saveData(this.plugin.settings);
 						};
@@ -7024,7 +7024,7 @@ class ArticleWriterSettingTab extends PluginSettingTab {
 				const idx = Number(phaseCfgMatch[1]);
 				const field = phaseCfgMatch[2];
 				if (!c.writing_phases) c.writing_phases = [];
-				while (c.writing_phases.length <= idx) c.writing_phases.push({ name: `阶段${idx + 1}` });
+				while (c.writing_phases.length <= idx) c.writing_phases.push({ name: "" });
 				(c.writing_phases[idx] as unknown as Record<string, unknown>)[field] = str.trim() || undefined;
 				await this.plugin.saveSettings();
 				return;
