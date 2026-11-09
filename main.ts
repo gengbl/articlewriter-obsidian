@@ -1,0 +1,7052 @@
+import { App, Modal, Notice, Platform, Plugin, PluginSettingTab, TAbstractFile, TFile, TFolder, View, WorkspaceLeaf, WorkspaceSidedock, type SettingDefinitionItem, type SettingDefinitionPage } from "obsidian";
+import { ActionItem, ActionMenuModal, AddCharacterModal, ChapterListModal, ConfirmModal, ExportPromptsSelectModal, FolderPickerModal, MarkdownViewerModal, MultiFieldModal, NewFilePickerModal, NewStoryInput, NewStoryModal, PanelLine, StoryPickerModal, TextAreaPrompt, TextPanelModal, TextInputModal, VolumeBatchCreateModal } from "./modals";
+import type { AddCharacterResult, CharacterScopeOption } from "./modals";
+import { LlmChatView } from "./llm_chat_view";
+import { GenProgressView, formatElapsedMs, type WritingStreamSink } from "./gen_progress_view";
+import { StatusView, type StatusAction, type StatusChapterEntry, type StatusDetail, type StatusFileEntry, type StatusFolderEntry, type StatusSnapshot, type StatusStoryEntry } from "./status_view";
+import { RelationshipView, type RelCharInfo, type RelGroup, type RelRow, type RelSnapshot, type RelStoryEntry } from "./relationship_view";
+import { TimelineView, type TlRow, type TlSnapshot, type TlStoryEntry } from "./timeline_view";
+import { chapterOutlineTemplate, countPureWords, FORESHADOW_TEMPLATE, formatLocalDateTime, md5, NOTES_TEMPLATE, outlineTemplate, WORLD_TEMPLATE } from "./story_types";
+import { safeFilename } from "./story_types";
+import { StoryManager, NO_VOL_MODE_MSG, CHAPTER_DIR_RE, PROLOGUE_DIR_NAME, DESK_DOCS_DIR_NAME, MANUSCRIPT_DIR_NAME } from "./story_manager";
+import { chKey, parseChKey, type StoryState } from "./state_doc";
+import { buildDefaultLlmConf } from "./plugin_config";
+import type { LlmConfigDoc, PluginConfig } from "./plugin_config";
+import { DEFAULT_SYSTEM_GUIDE } from "./system_guide_default";
+import { DEFAULT_TENSION_RULES } from "./tension_rules_default";
+import { EMPTY_GUIDE_TEMPLATE } from "./guide_template_default";
+import { GUIDE_TYPES, matchGuideTypes } from "./guide_types_default";
+import { DEFAULT_USAGE_GUIDE } from "./usage_guide_default";
+import { assembleSystemPrompt, chatCompletion, chatStream, describeLlmError, isRetryableLlmError, normalizeBaseURL, testConnection } from "./llm_client";
+import type { Message } from "./llm_client";
+import { findAiWordHits, mergeGuideCategories, simplifyEmphaticRepetition, simplifyNegationContrast, findAiSentences } from "./banned_words";
+import { appendOutlineInstruction, applyTypoMarks, BOOK_OUTLINE_GEN_SYSTEM_PROMPT, buildBookOutlineContinuePrompt, buildBookOutlineExtendPrompt, buildBookOutlineGenPrompt, buildChapterPrompt, buildChapterSummaryPrompt, buildContinuePrompt, buildDeaiPrompt, buildPlanningGuidePrompt, buildPolishPrompt, buildReviewPrompt, buildRewritePrompt, buildStoryTypeSystemPrompt, buildTypoScanPrompt, buildVolOutlineChapterPrompt, buildVolOutlineDesignPrompt, buildVolRebuildPrompt, buildWritingContext, CHAPTER_SUMMARY_SYSTEM_PROMPT, checkOutlineCoverage, cleanAiText, cleanRelationshipsDoc, embedAggHash, findChapterRefLeaks, findChapterRefSentences, buildChapterRefFixPrompt, fixChapterRefs, formatRetryNote, parseAggHash, parseChapterWithSummary, parseTypoScan, serializeAggregateGuide, stripHeading, TYPO_SCAN_SYSTEM_PROMPT, validateStoryTypeFormat, VOL_OUTLINE_GEN_SYSTEM_PROMPT, VOL_SUMMARY_SYSTEM_PROMPT, BookOutlineGenInput, ChapterRefFixReport, PlanningGuideInput, VolOutlineGenInput, wordRangeFromGuides } from "./prompts";
+import { cnToNum, extractPlannedChapterCount, maxDeclaredEndChapter, mergeVolOutlineChapters, parseChapterSelection, parseRelationships, parseTimelines, parseVolumeDeclarations, splitList, splitVolOutlineByChapter, stripComments, type TimelineEntry, type VolumeDeclaration } from "./md_docs";
+import type { RelationshipEntry, VolumeInfo } from "./md_docs";
+import { CAST_ANALYZE_SYSTEM_PROMPT, aggregateCastAnalyses, buildCastChapterPrompt, buildCharacterWritePlan, buildRelationshipWritePlan, buildSceneWritePlan, parseCastChapterAnalysis, relPairKey } from "./cast_analyzer";
+import type { CastChapterAnalysis } from "./cast_analyzer";
+
+interface ArticleWriterSettings {
+	workDir: string; // 写小说的文件夹（对齐 CLI --work_dir / /dir）；空=未初始化，首次用命令时弹选择器
+	lastStory: string;
+	autoOpenOnCreate: boolean;
+	prevChapters?: number; // v0.1.4+：写作提示词「前文内容」窗口章数 N（缺省/非法按 CLI 默认 3；0=不注入前文）。卷模式窗口限本卷、跨卷缺口以各前卷《卷摘要》填充
+	includeVolumeSummary?: boolean; // v0.1.4+：是否把整卷《卷摘要》注入写作上下文（含跨卷前卷摘要）；默认关——对齐 Python 原版严格 prev_n 语义，只注入最近 N 章
+	llm?: PluginConfig; // LLM 多组模型配置 + system_prompt/desc_style（替代 ~/.articlewriter/config.json，存插件数据目录 data.json）
+}
+
+const DEFAULT_SETTINGS: ArticleWriterSettings = {
+	workDir: "",
+	lastStory: "",
+	autoOpenOnCreate: true,
+	prevChapters: 3,
+};
+
+/** 「添加人物」关系类型下拉的可选值：均能命中 relationship_view.ts 的类型正则（保证图视图边色/图标可识别），空值=未标注 */
+const RELATION_TYPE_OPTIONS = ["师徒", "同门", "朋友", "同伴", "恋人", "亲族", "主仆", "敌对", "对手", "盟友"];
+
+export default class ArticleWriterPlugin extends Plugin {
+	settings: ArticleWriterSettings = { ...DEFAULT_SETTINGS };
+	manager!: StoryManager;
+	private statusRefreshTimer: number | null = null; // 工作目录内文件变更 → 防抖刷新已打开状态面板的定时器
+	private relRefreshTimer: number | null = null; // 同上，人物关系面板（v0.1.9+）
+	private tlRefreshTimer: number | null = null; // 同上，时间线面板（v0.2.x+）
+	private flatBlocked: string | null = null; // 仍为平面结构且整理失败的书名：章节/卷结构操作锁定，直至「按卷整理目录」成功
+	private wsSaveTimer: number | null = null; // v0.2.1+：layout-change → 防抖存档当前书工作区的定时器
+	private lastWorkspaceRestoreAt = 0; // v0.2.1+：最近一次 changeLayout 恢复的时间戳（抑制自身触发的 layout-change 回存）
+	private wsIoErrorNoticed = false; // v0.2.1+：工作区 IO 失败通知每会话只弹一次（防抖存档高频触发会刷屏），细节恒进 console
+
+	/** v0.1.4+：data.json settings.prevChapters → 有效窗口章数 N（缺省/非法回落 CLI 默认 3；0=不注入前文） */
+	private effectivePrevN(): number {
+		const n = Math.floor(Number(this.settings.prevChapters ?? 3));
+		return Number.isFinite(n) && n >= 0 ? n : 3;
+	}
+
+	private async readOutlineRelationships(story: string, volume?: VolumeInfo | false | null): Promise<{ bookRelationships: string; volRelationships: string }> {
+		const base = this.manager.storyPath(story);
+		const readText = async (path: string): Promise<string> => {
+			const file = this.app.vault.getAbstractFileByPath(path);
+			if (file instanceof TFile) return await this.app.vault.read(file);
+			return "";
+		};
+
+		let bookRelationships = await readText(`${base}/人物关系.md`);
+		if (!bookRelationships.trim()) bookRelationships = await readText(`${base}/角色关系.md`);
+
+		let volRelationships = "";
+		if (volume && typeof volume === "object" && volume.name) {
+			const volumeName = volume.name.trim();
+			const volDir = `${base}/${this.manager.volumeFolderName(volume)}`;
+			const candidates = [
+				`${volDir}/${this.manager.volumeFolderName(volume)}-人物关系.md`,
+				`${volDir}/人物关系.md`,
+				`${volDir}/${safeFilename(volumeName)}-人物关系.md`,
+			];
+			for (const candidate of candidates) {
+				const raw = await readText(candidate);
+				if (raw.trim()) {
+					volRelationships = raw;
+					break;
+				}
+			}
+		}
+
+		return {
+			bookRelationships: cleanRelationshipsDoc(bookRelationships),
+			volRelationships: cleanRelationshipsDoc(volRelationships),
+		};
+	}
+
+	async onload(): Promise<void> {
+		await this.loadSettings();
+		this.manager = new StoryManager({
+			app: this.app,
+			getStoryRoot: () => this.settings.workDir,
+			onStateChanged: () => this.notifyContextChanged(),
+			getPrevChapters: () => this.effectivePrevN(), // v0.1.4+：实时读 data.json，改设置即时生效
+			includeVolumeSummary: () => !!this.settings.includeVolumeSummary, // v0.1.4+：卷摘要注入开关（默认关）
+			generateChapterSummary: async ({ label, sourceText, viaOutline }) => { // v0.1.4+：缺失/过期章节摘要的 LLM 延迟生成入口（对齐 CLI _summarize_chapter），无配置/失败返回 null
+				const setup = this.getLlmSetup();
+				if (!setup) return null;
+				try {
+					const t = await chatCompletion(
+						setup.cfg,
+						[
+							{ role: "system" as const, content: CHAPTER_SUMMARY_SYSTEM_PROMPT },
+							{ role: "user" as const, content: buildChapterSummaryPrompt(label, sourceText, viaOutline) },
+						],
+						// reasoning_effort:"none"——摘要是小预算（600 token）的机械压缩任务，思考型模型（llama-server --reasoning-format deepseek 等）
+						// 会把全部预算耗在 reasoning_content 上、content 恒空 → chatCompletion 抛「LLM 未返回内容」→ 摘要永远不落盘。
+						// 实测（llama-server 0.3.0-dev + Qwen jinja 模板）：enable_thinking:false 不被服务端透传给模板（仍思考），
+						// 而 reasoning_effort:"none" 被识别并关思考（finish_reason=stop、content 正常）；OpenAI o 系列原生支持该字段，
+						// 其余兼容端点（DeepSeek/Ollama/vLLM 等）忽略未知字段、无副作用
+						{ max_tokens: 600, temperature: 0.4, reasoning_effort: "none" }
+					);
+					return (t || "").trim() || null;
+				} catch (e) {
+					console.warn("[articlewriter] 章节摘要生成失败：", e);
+					return null;
+				}
+			},
+			generateVolumeSummary: async ({ volumeName, chapters }) => { // v0.1.4+：卷摘要全量重建——输入本卷全部成员章的新鲜 AI 摘要，取代旧增量合并滚动法
+				const setup = this.getLlmSetup();
+				if (!setup) return null;
+				try {
+					const lines = chapters.map((c) => ({ label: c.label, title: c.title, summary: c.summary }));
+					const t = await chatCompletion(
+						setup.cfg,
+						[
+							{ role: "system" as const, content: VOL_SUMMARY_SYSTEM_PROMPT },
+							{ role: "user" as const, content: buildVolRebuildPrompt(volumeName, lines) },
+						],
+						// reasoning_effort:"none"——同章节摘要：小预算（900 token）任务，思考型模型会把预算耗在 reasoning_content 上导致 content 恒空
+						{ max_tokens: 900, temperature: 0.4, reasoning_effort: "none" }
+					);
+					return (t || "").trim() || null;
+				} catch (e) {
+					console.warn("[articlewriter] 卷摘要生成失败：", e);
+					return null;
+				}
+			},
+			onProgress: (msg) => { void this.notifyGenProgress(msg); }, // v0.1.4+：延迟生成的进度反馈（持久 Notice + 空闲超时兜底）；回调契约为 void，显式丢弃 Promise
+		});
+		await this.ensureSystemGuideFile(); // 首次运行把系统级写作指南从 data.json/内置默认播种到插件数据目录文件
+		await this.ensureGuideTypeFiles(); // 首次运行把四个「类型要点」文件从内置默认播种到插件数据目录 guide-types/
+		await this.ensureTensionRulesFile(); // 首次运行把情节张力/节奏规则从内置默认播种到插件数据目录 TENSION_RULES.md（生成大纲/策划指南时注入）
+		void this.ensureUsageDocOnStartup(); // 工作目录已设且《使用说明.md》缺失时：自动生成并打开（首跑引导）；真·首启无工作目录则等 pickWorkDir 投放
+
+		this.addCommand({ id: "set-work-dir", name: "选择工作目录（work_dir，对齐 CLI --work_dir）", callback: () => this.pickWorkDir(false) });
+		this.addCommand({ id: "switch-story", name: "切换当前小说（/dir：选书并加载其状态）", callback: () => this.cmdSwitchStory() });
+
+		this.addCommand({ id: "new-story", name: "创建新小说（建书：小说文件夹+模板文档）", callback: () => this.cmdNewStory() });
+		this.addCommand({ id: "new-chapter", name: "新建章节（章节目录+正文/大纲等文档）", callback: () => this.cmdNewChapter() });
+		this.addCommand({ id: "insert-chapter", name: "插入章节（在选中章之前/之后新建，后续章节号自动顺延）", callback: () => void this.cmdInsertChapter() });
+		this.addCommand({ id: "list-chapters", name: "章节列表（选择打开正文）", callback: () => this.cmdListChapters() });
+		this.addCommand({ id: "open-outline", name: "打开总大纲 大纲.md", callback: () => this.cmdOpenOutline() });
+		this.addCommand({ id: "open-worldview", name: "打开世界观 世界观.md", callback: () => this.cmdOpenDoc("世界观.md", WORLD_TEMPLATE) });
+		this.addCommand({ id: "open-foreshadow", name: "打开伏笔记录 伏笔.md", callback: () => this.cmdOpenDoc("伏笔.md", FORESHADOW_TEMPLATE) });
+		this.addCommand({ id: "open-notes", name: "打开笔记 笔记.md", callback: () => this.cmdOpenDoc("笔记.md", NOTES_TEMPLATE) });
+		this.addCommand({ id: "next-chapter", name: "下一章（并打开正文）", callback: () => this.cmdNextOrPrev(1) });
+		this.addCommand({ id: "prev-chapter", name: "上一章（并打开正文）", callback: () => this.cmdNextOrPrev(-1) });
+		this.addCommand({ id: "count-current", name: "统计当前章节字数（纯文字）", callback: () => this.cmdCount() });
+		this.addCommand({ id: "count-all", name: "统计全书各章字数与合计", callback: () => this.cmdCountAll() });
+		this.addCommand({ id: "save-current", name: "保存当前章节（编辑器内容强制落盘）", callback: () => this.cmdSave() });
+		this.addCommand({ id: "status", name: "小说状态（标题/类型/当前章节/总字数）", callback: () => this.cmdStatus() });
+
+		this.addCommand({ id: "volume-list", name: "卷列表（含各卷章节数与当前标记）", callback: () => this.cmdVolumeList() });
+		this.addCommand({ id: "volume-add", name: "新建卷（并设为当前卷，可顺带建章归属）", callback: () => this.cmdVolumeAdd() });
+		this.addCommand({ id: "volume-manage", name: "管理卷（启用/改名/改描述/分配章节/删除）", callback: () => this.cmdVolumeManage() });
+		this.addCommand({ id: "organize-volumes", name: "按卷整理目录（把书根下已归属各卷的章节移入对应卷实体目录；幂等可重复执行）", callback: () => void this.cmdOrganizeVolumes() });
+		this.addCommand({ id: "volume-mode-off", name: "设为无卷模式（/volume off：拍平并删除全部卷，保持纯 书籍→章节 扁平结构；破坏性、需确认）", callback: () => void this.cmdVolumeMode(false) });
+		this.addCommand({ id: "volume-mode-on", name: "启用有卷模式（/volume on：允许建卷/归卷/按卷整理目录）", callback: () => void this.cmdVolumeMode(true) });
+
+		this.addCommand({ id: "scene-list", name: "场景列表（全部章节+全局未归属）", callback: () => this.cmdSceneList() });
+		this.addCommand({ id: "scene-add", name: "新增场景（ID/简介/角色/正文/归属章节）", callback: () => this.cmdSceneAdd() });
+		this.addCommand({ id: "scene-manage", name: "管理场景（切换/查看/编辑/移动/删除）", callback: () => this.cmdSceneManage() });
+
+		this.addCommand({ id: "character-list", name: "人物列表（全部章节+全局）", callback: () => this.cmdCharacterList() });
+		this.addCommand({ id: "character-add", name: "新增人物（身份/性别/性格/外貌/背景/能力等）", callback: () => this.cmdCharacterAdd() });
+		this.addCommand({ id: "character-manage", name: "管理人员（查看/编辑/移动/改名/删除）", callback: () => this.cmdCharacterManage() });
+		this.addCommand({ id: "character-rename", name: "角色改名（全书 MD 文档同步替换旧名并自动备份）", callback: () => this.cmdCharacterRename() });
+		this.addCommand({ id: "analyze-cast", name: "分析人物与场景（/analyze-cast：逐章 LLM 深度分析正文，发现新人物/场景、提取字段，按出现范围定层写入三层文档，新关系追加到对应层《人物关系.md》）", callback: () => void this.cmdAnalyzeCast() });
+
+		this.addCommand({ id: "foreshadow-list", name: "伏笔列表（全书 伏笔.md，含状态）", callback: () => this.cmdForeshadowList() });
+		this.addCommand({ id: "foreshadow-add", name: "添加伏笔（章节/角色/原因）", callback: () => this.cmdForeshadowAdd() });
+		this.addCommand({ id: "foreshadow-manage", name: "管理伏笔（标记完成/取消/删除）", callback: () => this.cmdForeshadowManage() });
+
+		this.addCommand({ id: "world-show", name: "世界观总览（世界/类型/规则/势力/地点/历史/力量体系）", callback: () => this.cmdWorldShow() });
+		this.addCommand({ id: "world-set", name: "设置世界观字段（世界/类型/规则/势力/地点/历史/力量体系）", callback: () => this.cmdWorldSet() });
+
+		this.addCommand({ id: "outline-append-current", name: "追加当前章大纲（自动去重并提取 [伏] 伏笔）", callback: () => this.cmdOutlineAppendCurrent() });
+		this.addCommand({ id: "open-chapter-outline", name: "打开当前章 章节大纲.md", callback: () => this.cmdOpenChapterOutline() });
+		this.addCommand({ id: "volume-outline-to-chapters", name: "从卷大纲生成章节（/vol-outline-to-chapters：按「第N章」标记拆分卷大纲，缺失章节自动创建并写入各章大纲；无卷模式拆书级《大纲.md》、章节落书根）", callback: () => this.cmdVolumeOutlineToChapters() });
+		this.addCommand({ id: "book-outline-generate", name: "生成书籍大纲（/book-outline-generate：依据全局设定与已有章节 AI 流式生成书级《大纲.md》——平铺模式逐章规划、有卷模式输出卷声明）", callback: () => this.cmdGenerateBookOutline() });
+		this.addCommand({ id: "vol-outline-generate", name: "自动生成卷大纲（/vol-outline-generate：依据全局设定 AI 流式生成目标卷的 N 章卷大纲；无卷时按书级大纲自动建卷并逐卷生成）", callback: () => this.cmdGenerateVolOutline() });
+		this.addCommand({ id: "vol-outline-sync", name: "同步卷大纲章节（/vol-outline-sync：卷大纲续写后，把新增的「第N章」标记建成新章节）", callback: () => this.cmdSyncVolOutlineChapters() });
+		this.addCommand({ id: "book-outline-to-volumes", name: "从书级大纲生成卷（/book-outline-to-volumes：解析书级《大纲.md》的卷声明，逐卷生成全部卷及其卷大纲——缺失卷自动创建、只补缺失章）", callback: () => this.cmdBookOutlineToVolumes() });
+		this.addCommand({ id: "planning-guide", name: "策划指南（/planning-guide：AI 流式生成书级《策划指南.md》——固定十节既定规划约束，供书级/卷级大纲生成遵循；已存在时确认后整体重写）", callback: () => this.cmdPlanningGuide() });
+		this.addCommand({ id: "planning-guide-worldview", name: "生成策划指南·仅世界观（/planning-guide-worldview：早期规划场景——输入仅书籍信息＋世界观设定，AI 流式生成书级《策划指南.md》）", callback: () => this.cmdPlanningGuideWorldview() });
+		this.addCommand({ id: "complete-outline-docs", name: "补全大纲资料（检查书根参与大纲生成的资料——大纲/策划指南/世界观/人物关系——缺失者按模板创建，已存在不覆盖）", callback: () => this.cmdCompleteOutlineDocs() });
+
+		this.addCommand({ id: "chapter-delete", name: "删除章节（移入回收站并清理元数据）", callback: () => this.cmdChapterDelete() });
+		this.addCommand({ id: "chapter-rename", name: "重命名章节标题（同步目录名与文档引用）", callback: () => this.cmdChapterRename() });
+		this.addCommand({ id: "chapter-renumber", name: "重排全部章节编号为连续序号（含交叉引用改写）", callback: () => this.cmdChapterRenumber() });
+		this.addCommand({ id: "rename-chapter-file", name: "重命名章节文件（将旧格式改为第NN章-章节名格式）", callback: () => this.cmdRenameChapterFile() });
+
+		this.addCommand({ id: "pack-chapters", name: "打包章节合集（/pack：正文合辑单 MD，留空=当前章，支持 all/区间 3-7/列表 1、4、5；输出路径可自定义）", callback: () => this.cmdPackChapters() });
+		this.addCommand({ id: "pack-volume", name: "导出卷合集（该卷全部章节正文合一 MD，默认 <书名>-<卷名>-合集.md；写字台卷节点右键同义入口）", callback: () => this.cmdPackVolume() });
+		this.addCommand({ id: "rescan-story", name: "扫描重建小说状态文档（以磁盘为准）", callback: () => this.cmdRescanStory() });
+		this.addCommand({ id: "state-complete", name: "补全故事状态可用参数（升级旧故事状态文档：把缺失的书级提示词组装选项补写进 frontmatter）", callback: () => this.cmdCompleteState() });
+		this.addCommand({ id: "set-style", name: "设置编写类型（网文小说/剧本/普通小说/散文随笔…）", callback: () => this.cmdSetStyle() });
+		this.addCommand({ id: "article-to-screenplay", name: "文章转剧本（按当前打开 Markdown 自动生成“原文件名+剧本.md”）", callback: () => this.cmdArticleToScreenplay() });
+		this.addCommand({ id: "agents-view", name: "查看创作规范 WRITING_GUIDE.md（对齐 CLI /agents view：小说级/用户级/系统级三层）", callback: () => this.cmdAgentsView() });
+		this.addCommand({ id: "agents-edit", name: "编辑创作规范 WRITING_GUIDE.md（对齐 CLI /agents edit：小说级/用户级/系统级三层）", callback: () => this.cmdAgentsEdit() });
+		this.addCommand({ id: "generate-writing-guide", name: "生成写作指南（在用户级 work_dir 与当前书目录各建一份同格式空模板；已存在非空则跳过并提示）", callback: () => this.cmdGenerateWritingGuide() });
+		this.addCommand({ id: "regenerate-system-guide", name: "重新生成系统写作指南（按代码内置默认覆盖插件数据目录中的系统级 WRITING_GUIDE.md，需确认）", callback: () => this.cmdRegenerateSystemGuide() });
+		this.addCommand({ id: "generate-writing-guide-summary", name: "生成写作指南汇总（根据当前小说的创作规范，生成《写作指南汇总.md》）", callback: () => this.cmdGenerateWritingGuideSummary() });
+		this.addCommand({ id: "generate-usage-doc", name: "生成使用说明（在 work_dir 根建「使用说明.md」；已存在非空则跳过并提示）", callback: () => this.cmdGenerateUsageDoc() });
+		this.addCommand({ id: "llm-test", name: "LLM 连接测试（/llm test：GET /models 验证当前激活配置）", callback: () => this.cmdLlmTest() });
+
+		this.addCommand({ id: "write-chapter", name: "创作章节（/write：按大纲+指令 LLM 流式生成，自动去AI味后保存）", callback: () => this.cmdWrite() });
+		this.addCommand({ id: "write-chapters-consecutive", name: "连续编写（/write-consecutive：按章节生成，每次只写当前章并停止，待下一次继续）", callback: () => this.cmdWriteConsecutive() });
+		this.addCommand({ id: "continue-writing", name: "续写当前章（/continue：按两级大纲在正文末尾继续）", callback: () => this.cmdContinueWriting() });
+		this.addCommand({ id: "rewrite-chapter", name: "重写本章（/rewrite：基于大纲与旧文整体重构）", callback: () => this.cmdRewriteChapter() });
+		this.addCommand({ id: "polish-text", name: "润色当前章（/polish：仅优化文字表达不改情节）", callback: () => this.cmdPolishText() });
+		this.addCommand({ id: "deai-clean", name: "去AI味（/deai：含 AI 常用词的句子打回 LLM 重写并原位替换）", callback: () => this.cmdDeaiClean() });
+		this.addCommand({ id: "fix-chapter-refs", name: "修复章节编号引用（/fix-refs：检测正文「第N章」类元引用，LLM 逐句改写后原位替换；留空=全部章节，填数字=指定章）", callback: () => this.cmdFixChapterRefs() });
+		this.addCommand({ id: "typo-check", name: "错别字检测（/typo-check：LLM 扫描本章错字并加下划线标记，附建议改正）", callback: () => this.cmdTypoCheck() });
+		this.addCommand({ id: "review-chapter", name: "审阅本章（/review：全局视角查逻辑/连贯性问题出报告）", callback: () => this.cmdReviewChapter() });
+		this.addCommand({ id: "export-ai-prompts", name: "导出AI提示词（/export-ai-prompts：按当前小说数据实拼各 AI 命令的 system/user 提示词存入案头资料《AI提示词.md》，不调用 LLM，供本地模型调试）", callback: () => void this.cmdExportPrompts() });
+		this.addCommand({ id: "llm-chat", name: "打开 LLM 对话窗口（常驻面板：多轮流式聊天，可停靠任意区域、切换已保存的模型配置）", callback: () => void this.openLlmPanel() });
+		this.addCommand({ id: "status-page", name: "打开写字台（当前书/章节/文件一览，点击小说或章节可切换激活）", callback: () => void this.openStatusPanel() });
+		this.addCommand({ id: "relationship-panel", name: "打开人物关系面板（汇总书/卷/章三层关系，按类型·状态带图标展示，点击打开来源文档）", callback: () => void this.openRelationshipPanel() });
+		this.addCommand({ id: "timeline-panel", name: "打开时间线面板（汇总书/卷/章三层《时间线.md》事件流，按时间点数值升序自上而下展示）", callback: () => void this.openTimelinePanel() });
+
+		this.registerView(LlmChatView.VIEW_TYPE, (leaf) => new LlmChatView(leaf, () => this.settings.llm, () => this.getChatSystemPrompt(), () => this.getActiveStoryInfo(), (name) => this.setActiveLlmFromChat(name), () => this.chatDefaultSaveDir()));
+		this.registerView(GenProgressView.VIEW_TYPE, (leaf) => new GenProgressView(leaf)); // v0.1.4+：摘要延迟生成的工作过程面板（notifyGenProgress 驱动）
+		this.registerView(StatusView.VIEW_TYPE, (leaf) => new StatusView(leaf, () => this.getStatusSnapshot(), (name) => this.statusSwitchStory(name), (story, key) => this.statusActivateChapter(story, key), (a) => this.handleStatusAction(a)));
+		this.registerView(RelationshipView.VIEW_TYPE, (leaf) => new RelationshipView(leaf, () => this.getRelationshipSnapshot(), () => this.openAddCharacterDialog(), (name) => this.renameCharacterFlow(name))); // v0.1.9+：人物关系面板（展示只读，切书在写字台/命令里做；v0.2.0+ 头部「添加人物」注入写动作）
+		this.registerView(TimelineView.VIEW_TYPE, (leaf) => new TimelineView(leaf, () => this.getTimelineSnapshot())); // v0.2.x+：时间线面板（展示只读，切书在写字台/命令里做）
+		this.addRibbonIcon("message-square", "打开 LLM 对话窗口（常驻面板）", () => void this.openLlmPanel());
+		this.addRibbonIcon("book-open", "打开写字台（当前书/章节/文件）", () => void this.openStatusPanel());
+		this.addRibbonIcon("users", "打开人物关系面板（书/卷/章三层关系）", () => void this.openRelationshipPanel());
+		this.addRibbonIcon("history", "打开时间线面板（书/卷/章三层《时间线.md》事件流）", () => void this.openTimelinePanel());
+		this.addSettingTab(new ArticleWriterSettingTab(this));
+
+		// 工作目录内文件变更（编辑器写作自动落盘等）→ 防抖刷新所有已打开面板（写字台字数 + 人物关系 + 时间线），让改动实时跟进
+		const watchFile = (file: TAbstractFile) => {
+			if (file instanceof TFile && file.path.endsWith(".md") && this.pathUnderWorkDir(file.path)) this.schedulePanelRefresh();
+		};
+		this.registerEvent(this.app.vault.on("modify", watchFile));
+		this.registerEvent(this.app.vault.on("create", watchFile));
+		this.registerEvent(this.app.vault.on("delete", watchFile));
+		// 主窗口重命名/移动（文件列表右键改名、拖拽）：触发时 file.path 已是新路径，须同时看 oldPath 判断是否涉及工作目录（覆盖跨边界移入/移出 workDir），任一侧为 .md 即可能改变面板枚举
+		const watchRename = (file: TAbstractFile, oldPath: string) => {
+			if (!(file instanceof TFile)) return;
+			if ((this.pathUnderWorkDir(file.path) || this.pathUnderWorkDir(oldPath)) && (file.path.endsWith(".md") || oldPath.endsWith(".md"))) this.schedulePanelRefresh();
+		};
+		this.registerEvent(this.app.vault.on("rename", watchRename));
+		// v0.2.1+ 每本书独立工作区：布局任意变化（开/关/分栏/tab 切换等）→ 防抖把当前窗口状态存入「当前小说」的工作区文件；自身 changeLayout 恢复触发的回声事件被时间窗过滤
+		this.registerEvent(this.app.workspace.on("layout-change", () => {
+			if (Date.now() - this.lastWorkspaceRestoreAt < 3000) return; // 刚恢复过布局，跳过回存避免抖动
+			const s = (this.settings.lastStory || "").trim();
+			if (!s) return;
+			if (this.wsSaveTimer != null) window.clearTimeout(this.wsSaveTimer);
+			this.wsSaveTimer = window.setTimeout(() => { void this.captureBookWorkspace(s); }, 1500);
+		}));
+		void this.checkWorkspaceDirOnStartup(); // v0.2.1+ 启动自检：检测 workspaces/ 缺失则创建（仅 console 留痕，不落盘任何文件；原 .heartbeat.txt 诊断机制在 IO 通路验证后移除）
+		// v0.2.20 启动即把写字台放进左栏切换列表（移动端抽屉可见可选）：等布局就绪后补位，不抢焦点、不展开抽屉
+		this.app.workspace.onLayoutReady(() => { void this.ensureStatusInLeftSidebar(); });
+	}
+
+	/** 插件加载时检测一次工作区存档目录：缺失则递归创建；失败走统一上报（noteWsIoError），成功不打日志避免噪音 */
+	private async checkWorkspaceDirOnStartup(): Promise<void> {
+		try {
+			await this.manager.ensureVaultDir(`${this.app.vault.configDir}/plugins/${this.manifest.id}/workspaces`);
+		} catch (e) {
+			this.noteWsIoError("工作区目录检测", e);
+		}
+	}
+
+	async loadSettings(): Promise<void> {
+		const saved = ((await this.loadData()) ?? {}) as Partial<ArticleWriterSettings> & { storyDir?: string };
+		this.settings = Object.assign({}, DEFAULT_SETTINGS, saved);
+		if (!this.settings.workDir && saved.storyDir) this.settings.workDir = saved.storyDir; // 兼容旧设置键名
+		if (!this.settings.llm) {
+			// 首次运行（或 data.json 无 llm 段）：按 Python 用户配置文件结构预置标准模板，api_key/model_name 留空待填；不迁移旧的 ArticleWriter设置.md
+			this.settings.llm = buildDefaultLlmConf();
+			await this.saveData(this.settings);
+			new Notice("已预置 3 组模型配置模板（local / deepseek / qwen-dashscope）\n请在 Obsidian 设置 → ArticleWriter 填写 api_key/模型名", 8000);
+		} else if (this.settings.llm.system_guide === undefined) {
+			// 旧数据补字段：系统级写作指南（CLI 内置层），不覆盖用户已有内容
+			this.settings.llm.system_guide = DEFAULT_SYSTEM_GUIDE;
+			await this.saveData(this.settings);
+		}
+	}
+
+	async saveSettings(): Promise<void> {
+		await this.saveData(this.settings);
+		this.notifyContextChanged(); // lastStory 等设置变更后同步刷新 LLM 面板顶部小说·章节行
+	}
+
+	// ---------- v0.2.1+ 每本书独立工作区：以书名命名的窗口布局存档，切书/加载书时恢复 ----------
+	// 载体为插件数据目录裸文件 <configDir>/plugins/<id>/workspaces/<书名>.json（同 WRITING_GUIDE.md 走 DataAdapter，不被索引收录）。
+	// 内容＝{ v, platform, layout }——layout 即 workspace.getLayout() 全量布局对象；捕获时机＝离开该书（统一切换入口）与布局防抖自动存档。
+	// Obsidian 自身启动时仍按全局会话恢复上次布局（不在此处干预），本功能只覆盖应用内的切书/加载书动作。
+
+	/** 工作区 IO 失败的统一上报：console.error 全量细节；Notice 带真实报错文本且每会话仅首次弹出 */
+	private noteWsIoError(where: string, e: unknown): void {
+		console.error(`[articlewriter] ${where}：`, e);
+		const msg = e instanceof Error ? `${e.name}: ${e.message}` : String(e);
+		if (!this.wsIoErrorNoticed) {
+			this.wsIoErrorNoticed = true;
+			new Notice(`ArticleWriter：工作区存档读写失败（${msg.slice(0, 160)}），本次按书工作区不可用——详见开发者工具控制台 [articlewriter] 日志`, 12000);
+		}
+	}
+
+	/** 「书名」的工作区存档路径（文件名=书籍名字本身，与顶层目录同名可互认） */
+	bookWorkspacePath(story: string): string {
+		return `${this.app.vault.configDir}/plugins/${this.manifest.id}/workspaces/${story}.json`;
+	}
+
+	/** 把当前窗口布局存入指定书的工作区文件；尽力而为，失败走 noteWsIoError 统一上报、不阻断调用方流程 */
+	async captureBookWorkspace(story: string): Promise<void> {
+		const s = story.trim();
+		if (!s) return;
+		if (!this.app.workspace.layoutReady) return; // 启动早期布局未就绪：静默跳过（后续防抖会再触发）
+		try {
+			const doc = { v: 1, platform: Platform.isDesktopApp ? "desktop" : "mobile", layout: this.app.workspace.getLayout() };
+			await this.manager.writePluginFile(this.bookWorkspacePath(s), JSON.stringify(doc)); // 高频防抖路径：成功不打日志，失败走 noteWsIoError
+		} catch (e) {
+			this.noteWsIoError(`保存「${s}」的工作区`, e);
+		}
+	}
+
+	/** 关闭主编辑区内所有打开的文档页签（侧栏停靠与浮动窗口不动，与工作区 getLayout/changeLayout 的作用域一致），给新书留空编辑器 */
+	private closeOpenDocs(): void {
+		try {
+			const targets: WorkspaceLeaf[] = [];
+			this.app.workspace.iterateRootLeaves((leaf) => { if (leaf.getViewState().type === "markdown") targets.push(leaf); }); // 先收集再逐个 detach：detach 会改动容器结构
+			for (const leaf of targets) leaf.detach();
+		} catch { /* 尽力而为的辅助动作，失败不影响切书主流程 */ }
+	}
+
+	/** 加载指定书的已存工作区布局（若有且同端类型）。closeIfNoArchive=true 时无存档则先关闭主编辑区全部打开文档再返回 false（仅显式切书入口传 true；命令隐式解析当前书不关，避免误清用户会话）；跨端/损坏一律保持现状。成功恢复弹 Notice 反馈 */
+	async loadBookWorkspace(story: string, closeIfNoArchive = false): Promise<boolean> {
+		const s = story.trim();
+		if (!s) return false;
+		if (!this.app.workspace.layoutReady) return false; // 启动早期布局未就绪：静默跳过
+		let text: string | null = null;
+		try { text = await this.manager.readPluginFile(this.bookWorkspacePath(s)); } catch (e) { this.noteWsIoError(`读取「${s}」的工作区`, e); return false; }
+		if (!text || !text.trim()) { if (closeIfNoArchive) this.closeOpenDocs(); return false; } // 显式切书且目标无存档：清掉旧书文档页签，空编辑器开始；隐式解析则保持现状
+		// 存档损坏 / 格式异常 / 跨端 / 缺 layout 段：一律保持现状静默返回 false（不阻断切书主流程）
+		let env: { v?: number; platform?: string; layout?: Record<string, unknown> };
+		try {
+			const raw: unknown = JSON.parse(text); // 声明为 unknown 后逐层收窄，避免 any 直赋（any→unknown 赋值被规则豁免）
+			if (!raw || typeof raw !== "object" || Array.isArray(raw)) return false;
+			env = raw; // 上方类型守卫已把 unknown 窄化为 object，env 各字段全可选可直接赋值（无需断言）
+		} catch { return false; }
+		if (env.platform && env.platform !== (Platform.isDesktopApp ? "desktop" : "mobile")) return false; // 桌面/移动布局结构不同，互不恢复
+		const layout = env.layout;
+		if (!layout || typeof layout !== "object" || Array.isArray(layout)) return false;
+		this.lastWorkspaceRestoreAt = Date.now(); // 先打时间戳再换布局：changeLayout 引发的 layout-change 回声被过滤
+		try {
+			await this.app.workspace.changeLayout(layout);
+			void this.ensureStatusInLeftSidebar(); // v0.2.20：changeLayout 全量替换会抹掉左栏（存档未含写字台时），立即补回保持常驻
+			new Notice(`已加载「${s}」的工作区`, 4000);
+			return true;
+		} catch (e) {
+			this.noteWsIoError(`恢复「${s}」的布局（changeLayout）`, e);
+			return false;
+		}
+	}
+
+	/** 切换/加载当前小说的统一入口（所有改 lastStory 的路径一律走这里）：先把旧书的窗口状态存进其工作区 → 写回 lastStory+saveSettings → 再恢复新书的工作区（若有）。closeIfNoArchive=true 时目标书无存档则关闭主编辑区全部打开文档（仅 /dir 选择器、写字台下拉框、新建书三个显式切书入口传 true；activeStory 等命令隐式解析不传，避免误清用户会话）。重选同一本书为无操作 */
+	async applyStorySwitch(next: string, closeIfNoArchive = false): Promise<void> {
+		const target = next.trim();
+		const cur = (this.settings.lastStory || "").trim();
+		if (!target || cur === target) return;
+		await this.captureBookWorkspace(cur); // cur 为空时内部直接返回；正常流程不打日志（失败走 noteWsIoError）
+		this.settings.lastStory = target;
+		await this.saveSettings();
+		await this.loadBookWorkspace(target, closeIfNoArchive);
+	}
+
+	// ---------- work_dir（首次使用必须选定写小说的文件夹）----------
+
+	private async ensureWorkDir(): Promise<string | null> {
+		const dir = this.settings.workDir.replace(/\/+$/, "");
+		if (!dir) return this.pickWorkDir(true); // 首次使用：弹选择器初始化
+		const f = this.app.vault.getAbstractFileByPath(dir);
+		if (!(f instanceof TFolder)) {
+			new Notice(`工作目录已不存在：${dir}，请重新选择`);
+			return this.pickWorkDir(false);
+		}
+		return dir;
+	}
+
+	pickWorkDir(firstUse: boolean): Promise<string | null> {
+		return new Promise((resolve) => {
+			new FolderPickerModal(
+				this.app,
+				async (path) => {
+					const prevStory = (this.settings.lastStory || "").trim();
+					this.settings.workDir = path.replace(/\/+$/, "");
+					await this.captureBookWorkspace(prevStory); // v0.2.1+：作废旧小说记忆前，先把其窗口状态归档进该书工作区
+					this.settings.lastStory = ""; // 切换工作目录后清空旧小说记忆（对齐 CLI /dir）
+					await this.saveSettings();
+					let msg = firstUse ? `已初始化工作目录：${path || "vault 根"}` : `已切换工作目录：${path || "vault 根"}`;
+					if (await this.seedUsageDoc()) msg += "；已在该目录创建《使用说明.md》"; // 设置/切换后把使用说明投放到 work_dir（已有非空则跳过）
+					try {
+						const stories = await this.manager.listStories();
+						if (stories.length === 0) {
+							msg += "；该目录下还没有书，请先用「创建新小说」建书";
+						} else if (stories.length === 1) {
+							await this.applyStorySwitch(stories[0]); // 唯一一本书时直接加载（对齐 CLI /dir 到已有小说目录），并恢复其工作区
+							msg += `；已加载唯一的小说：${stories[0]}`;
+						} else {
+							msg += `；共 ${stories.length} 本书，可用「切换当前小说」选择`;
+						}
+					} catch {
+						/* 列表失败不影响切换结果 */
+					}
+					new Notice(msg, 8000);
+					resolve(path);
+				},
+				() => resolve(null)
+			).open();
+		});
+	}
+
+	/** 切换当前小说（对齐 CLI /dir <work_dir>/<书名>：选书、设为当前并展示其状态） */
+	async cmdSwitchStory(): Promise<void> {
+		const dir = await this.ensureWorkDir();
+		if (!dir) return;
+		let stories: string[];
+		try {
+			stories = await this.manager.listStories();
+		} catch (e) {
+			this.notifyError("获取小说列表失败", e);
+			return;
+		}
+		if (stories.length === 0) {
+			new Notice(`工作目录下还没有书，请先用「创建新小说」建书`);
+			return;
+		}
+		const items: ActionItem[] = [];
+		for (const s of stories) {
+			let sub = "";
+			try {
+				const state = await this.manager.loadState(s);
+				const chCount = Object.keys(state?.chapters ?? {}).length;
+				sub = `${chCount} 章`;
+				if (state && state.current_chapter != null) sub += ` 当前第${String(state.current_chapter).padStart(2, "0")}章`;
+			} catch {
+				sub = "（状态读取失败）";
+			}
+			items.push({ label: s, sub, marker: s === this.settings.lastStory ? "▶ 当前" : undefined });
+		}
+		const idx = await this.pickAction("切换当前小说（/dir）", items);
+		if (idx == null) return;
+		await this.applyStorySwitch(stories[idx], true); // v0.2.1+：归档旧书工作区 + 写回 + 恢复所选书的工作区；显式切换→目标无存档则清空打开文档
+		new Notice(`已切换到：${stories[idx]}`, 6000);
+		await this.enforceVolumeLayoutOnSwitch(stories[idx]); // 平面结构 → 强制自动按卷整理（不可跳过）
+		await this.cmdStatus(); // /dir 加载该书后展示章节与当前状态
+	}
+
+	// ---------- 活动小说解析：记住上次选择；多书时弹选择器 ----------
+
+	private async activeStory(): Promise<string | null> {
+		const stories = await this.manager.listStories();
+		if (stories.length === 0) return null;
+		if (this.settings.lastStory && stories.includes(this.settings.lastStory)) return this.settings.lastStory;
+		if (stories.length === 1) {
+			await this.applyStorySwitch(stories[0]); // v0.2.1+：加载唯一书时一并恢复其工作区
+			return stories[0];
+		}
+		return new Promise((resolve) => {
+			new StoryPickerModal(
+				this.app,
+				stories,
+				async (name) => {
+					await this.applyStorySwitch(name); // v0.2.1+：选书即切书，归档旧书并恢复所选书的工作区
+					resolve(name);
+				},
+				() => resolve(null)
+			).open();
+		});
+	}
+
+	/** 无小说时先引导建书 */
+	private async requireStory(): Promise<string | null> {
+		let story = await this.activeStory();
+		if (story == null) {
+			new Notice("还没有小说，请先用「创建新小说」建书");
+			story = await this.cmdNewStory();
+		}
+		return story || null;
+	}
+
+	// ---------- 按卷实体目录：布局门禁与整理命令 ----------
+
+	/** 「按卷整理目录」核心执行（命令入口与切换强制迁移共用），完成后弹结果摘要 */
+	private async runOrganizeVolumes(story: string): Promise<void> {
+		const r = await this.manager.organizeByVolumes(story);
+		const parts: string[] = [];
+		if (r.movedKeys.length) parts.push(`${r.movedKeys.length} 章移入卷实体目录`);
+		if (r.unassignedAtRoot) parts.push(`${r.unassignedAtRoot} 个未归属章节留在书根（正常）`);
+		for (const uc of r.unknownContainers) parts.push(`未识别容器「${uc.folder}」含 ${uc.keys.join("、")}`);
+		new Notice(parts.length ? `按卷整理完成：${parts.join("；")}` : "目录已按卷就位，无需移动", 8000);
+	}
+
+	/** 全书一个卷都没有时：弹一次批量新建卷页面（手动加名单、确定后按序创建；取消/空列表 = 跳过直接继续），供手动整理与切换强制迁移共用 */
+	private async promptCreateVolumesIfEmpty(story: string): Promise<void> {
+		if ((await this.manager.volumeList(story)).length > 0) return;
+		new Notice(`《${story}》当前没有任何卷：可先在弹出的页面里建几个卷（取消 = 跳过、直接继续）`, 6000);
+		const names = await this.pickNewVolumeNames(story);
+		if (!names || !names.length) return;
+		await this.createVolumesInOrder(story, names);
+	}
+
+	/** 主动新建卷的统一入口页：列表式批量输入（手动添加卷名、可调顺序/删除，确定 → 按列表顺序依次创建）；返回 null = 取消或空列表 */
+	private async pickNewVolumeNames(story: string): Promise<string[] | null> {
+		let existing: string[] = [];
+		try {
+			existing = (await this.manager.volumeList(story)).map((v) => v.name);
+		} catch { /* 读取失败不阻断弹框，重名校验由 addVolume 兜底报错 */ }
+		return await new Promise<string[] | null>((resolve) => {
+			let settled = false;
+			const finish = (v: string[] | null) => {
+				if (!settled) {
+					settled = true;
+					resolve(v);
+				}
+			};
+			new VolumeBatchCreateModal(this.app, story, existing, (names) => finish(names.length ? names : null), () => finish(null)).open();
+		});
+	}
+
+	/** 按列表顺序逐个建卷（单个失败不中断其余），最后成功创建的设为当前卷，末尾汇总通知；返回最后一个成功卷的 id（全失败为 null） */
+	private async createVolumesInOrder(story: string, names: string[]): Promise<string | null> {
+		const ok: string[] = [];
+		const failed: string[] = [];
+		let lastId: string | null = null;
+		for (const n of names) {
+			try {
+				const vol = await this.manager.addVolume(story, n, ""); // 唯一名校验 + 自动建同名实体目录
+				ok.push(vol.name);
+				lastId = vol.id;
+			} catch (e) {
+				failed.push(`${n}（${e instanceof Error ? e.message : String(e)}）`);
+			}
+		}
+		if (lastId != null) await this.manager.activateVolume(story, lastId); // 最后成功的成为当前卷
+		const parts: string[] = [];
+		if (ok.length) parts.push(`已创建 ${ok.join("、")}`);
+		if (failed.length) parts.push(`未建成：${failed.join("；")}`);
+		new Notice(parts.join("；"), 8000);
+		return lastId;
+	}
+
+	/** v0.0.16+：切换该书工作模式。enabled=false=无卷（若有卷则先拍平迁移回书根并删除全部卷实体目录——破坏性、需二次确认）；enabled=true=有卷（仅置位）。完成后刷新写字台 */
+	async cmdVolumeMode(enabled: boolean): Promise<void> {
+		if (!(await this.ensureWorkDir())) return;
+		const story = await this.requireStory();
+		if (!story) return;
+		try {
+			const cur = (await this.manager.loadState(story))?.use_volumes ?? false;
+			if (cur === enabled) {
+				new Notice(`《${story}》已是「${enabled ? "有卷" : "无卷"}」模式，无需切换。`, 6000);
+				return;
+			}
+			let volCount = 0;
+			let chInVols = 0;
+			try {
+				volCount = (await this.manager.volumeList(story)).length;
+				chInVols = (await this.manager.listChapters(story)).filter((c) => c.vol != null).length;
+			} catch { /* 统计失败不阻断开关本身 */ }
+			if (!enabled && volCount > 0) { // 破坏性：拍平并删除全部卷 → 必须二次确认
+				const ok = await this.confirmBox(
+					`把《${story}》的全部 ${volCount} 个卷拍平回书根？`,
+					`${chInVols} 章将从各卷目录移回书根并在书内重新连续编号；各卷残留的直属文档（如卷大纲/人物等设定五件套）也将挪出到书根，跨卷同名者前面加「<卷名>-」前缀以免覆盖；随后 ${volCount} 个卷实体目录与卷.md 元数据清除进回收站。此操作不可撤销（可去 Obsidian 回收站找回）。`,
+					"确认切换为无卷"
+				);
+				if (!ok) return;
+			}
+			const r = await this.manager.setVolumeMode(story, enabled);
+			this.flatBlocked = null;
+			new Notice(
+				enabled
+					? `已启用「有卷模式」：现在可用「新建卷」「管理卷」「按卷整理目录」。`
+					: r.flattened
+						? `已切换为「无卷模式」：拍平 ${r.movedKeys.length} 章${r.movedDocs ? `、挪出 ${r.movedDocs} 份卷内文档` : ""}回书根、移除 ${r.deletedVolumes} 个卷，保持纯 书籍→章节 结构。`
+						: `已切换为「无卷模式」（本就无卷，仅锁定扁平结构）。`,
+				10000
+			);
+		} catch (e) {
+			this.notifyError("切换工作模式失败", e);
+		}
+	}
+
+	/** v0.0.16+：无卷模式书触发卷操作时先自动切到「有卷」模式（setVolumeMode(true) 仅置位、非破坏性），再继续原逻辑 */
+	private async ensureVolumeModeEnabled(story: string): Promise<void> {
+		if ((await this.manager.loadState(story))?.use_volumes !== false) return;
+		await this.manager.setVolumeMode(story, true);
+		new Notice(`《${story}》已启用「有卷」模式，继续…`, 6000);
+	}
+
+	async cmdOrganizeVolumes(): Promise<void> {
+		if (!(await this.ensureWorkDir())) return;
+		const story = await this.requireStory();
+		if (!story) return;
+		await this.ensureVolumeModeEnabled(story); // v0.0.16+：无卷模式先自动转为有卷再整理
+		try {
+			await this.promptCreateVolumesIfEmpty(story); // 无卷 → 先弹批量建卷页（手动加名单，取消 = 跳过）
+			if (!(await this.manager.volumeList(story)).length) new Notice("该书没有卷：全部章节将留在书根。如需分卷管理请先到「新建卷」建卷再整理。", 8000);
+			await this.runOrganizeVolumes(story);
+			this.flatBlocked = null;
+			await this.assignUnassignedChapters(story); // 书根残留的无归属章节 → 逐个让用户选择归入哪个卷
+		} catch (e) {
+			this.notifyError("按卷整理失败", e);
+		}
+	}
+
+	/** 按卷整理收尾：对仍留书根的无归属章节，引导用户逐章选择归入哪个卷（物理移目录+写归属字段）；仅一卷时一次确认整体移动 */
+	private async assignUnassignedChapters(story: string): Promise<void> {
+		try {
+			const base = this.manager.storyPath(story);
+			const unassigned = (await this.manager.listChapters(story)).filter((c) => c.parentPath === base && !c.vol).sort((a, b) => a.num - b.num);
+			if (!unassigned.length) return;
+			const vols = await this.manager.volumeList(story);
+			if (!vols.length) {
+				new Notice(`书根还有 ${unassigned.length} 个未归属章节且暂无可分配的卷：请先「新建卷」后再运行「按卷整理目录」。`, 8000);
+				return;
+			}
+			let assigned = 0;
+			if (vols.length === 1) {
+				const ok = await this.confirmBox(
+					`把 ${unassigned.length} 个未归属章节全部移入唯一的卷「${vols[0].name}」？`,
+					"章节目录将物理移入该卷实体目录并写入归属字段。",
+					"全部移入"
+				);
+				if (!ok) return;
+				for (const ch of unassigned) {
+					try { await this.manager.setChapterVolume(story, ch.key, vols[0].id); assigned++; } catch { /* 单章失败保留原地，继续其余 */ }
+				}
+			} else {
+				const ok = await this.confirmBox(
+					`发现 ${unassigned.length} 个留在书根的未归属章节`,
+					"现在可以逐章选择它们归入哪个卷（章节目录会物理移入对应卷目录）；也可以稍后在「管理卷→分配章节」里处理。",
+					"开始分配"
+				);
+				if (!ok) return;
+				const STOP = vols.length + 1; // 选项下标：卷们 / 留书根 / 停止分配
+				for (let i = 0; i < unassigned.length; i++) {
+					const ch = unassigned[i];
+					const idx = await this.pickAction(
+						`${this.chapterLabel(ch.num, ch.title)} 放到哪个卷？`,
+						[
+							...vols.map((v) => ({ label: v.name, sub: v.description || v.id })),
+							{ label: "留在书根", sub: "本章暂不归属任何卷" },
+							{ label: "停止分配", sub: `剩余 ${unassigned.length - i - 1} 章保持原样` },
+						]
+					);
+					if (idx == null || idx === STOP) break; // Esc 或选「停止分配」→ 结束本轮
+					if (idx >= vols.length) continue; // 「留在书根」
+					try { await this.manager.setChapterVolume(story, ch.key, vols[idx].id); assigned++; } catch { /* 单章失败保留原地，继续其余 */ }
+				}
+			}
+			new Notice(`未归属章节处理完成：${assigned} 章已移入卷目录${assigned < unassigned.length ? `，其余 ${unassigned.length - assigned} 章仍留书根` : ""}`, 8000);
+		} catch (e) {
+			this.notifyError("分配未归属章节失败", e);
+		}
+	}
+
+	/** 结构操作门禁：该书若仍有平面残留（书根下带卷归属的章节），先引导执行整理；取消则阻断本次操作 */
+	private async ensureVolumeLayout(story: string): Promise<boolean> {
+		if (this.flatBlocked === story) {
+			new Notice("该书的章节目录尚未按卷整理完毕，章节/卷操作已锁定：请先运行「按卷整理目录」命令。", 10000);
+			return false;
+		}
+		try {
+			const nums = await this.manager.needsVolumeOrganize(story);
+			if (!nums.length) return true;
+			const ok = await this.confirmBox(
+				`《${story}》还有 ${nums.length} 个已归属卷的章节留在书根`,
+				"启用「章节按卷实体目录归位」前，需要先把这些章节移入对应卷目录。点击确定将立即自动整理，之后继续你刚才的操作。",
+				"立即整理"
+			);
+			if (!ok) {
+				new Notice(`已取消：请先手动运行「按卷整理目录」（共 ${nums.length} 章待归位）后再进行章节/卷操作。`, 10000);
+				return false;
+			}
+			await this.runOrganizeVolumes(story);
+			return (await this.manager.needsVolumeOrganize(story)).length === 0;
+		} catch (e) {
+			this.notifyError("检查章节目录布局失败", e);
+			return false;
+		}
+	}
+
+	/** 切换书籍后调用：检测到平面结构则强制自动按卷整理（不可跳过）；**全书无卷时先弹批量建卷页**（VolumeBatchCreateModal：手动加名单、确定后按序创建；取消/空列表 = 跳过），覆盖两种残留——有卷但章留书根、或零卷却存在未识别章节目录；失败时锁定该书的结构操作 */
+	private async enforceVolumeLayoutOnSwitch(story: string): Promise<void> {
+		try {
+			// 修复历史缺陷：误建的「NN章-标题」目录（缺「第」）补回前缀
+			try {
+				const repaired = await this.manager.repairUnprefixedChapterFolders(story);
+				if (repaired > 0) new Notice(`已修复 ${repaired} 个章节目录名（补回「第」前缀）`, 8000);
+			} catch (e) {
+				this.notifyError("章节目录名修复失败", e);
+			}
+			// 旧格式模板文档检测与批量迁移（章节文件 → NN-标题-后缀.md；卷文件 → 卷名-后缀.md）
+			try {
+				const legacyDocs = await this.manager.detectOldFormatDocs(story);
+				if (legacyDocs.length > 0) {
+					const ok = await this.confirmBox(
+						"检测到《" + story + "》有 " + legacyDocs.length + " 处旧格式文档",
+						"旧格式模板文件名为裸名（如 章节.md / 卷大纲.md），新格式会在前面加上所属章节名/卷名（如 初见-章节.md / 风起-卷大纲.md）。是否立即批量更新？更新仅重命名文件，不改动内容。",
+						"批量更新"
+					);
+					if (ok) {
+						const result = await this.manager.migrateOldFormatDocs(legacyDocs);
+						let noticeText = "已更新 " + result.migrated + " 处旧格式文档";
+						if (result.errors.length) noticeText += "，失败 " + result.errors.length + " 处";
+						new Notice(noticeText, 8000);
+						if (result.errors.length) this.notifyError("部分文档迁移失败", new Error(result.errors.join("; ")));
+					}
+				}
+			} catch (e) {
+				this.notifyError("旧格式文档检测失败", e);
+			}
+
+			const st0 = await this.manager.loadState(story);
+			if (st0 && !st0.use_volumes) { // v0.0.16+：无卷模式的书刻意保持纯 书→章 扁平结构，跳过建卷/按卷整理引导
+				this.flatBlocked = null;
+				return;
+			}
+			const nums = await this.manager.needsVolumeOrganize(story); // 有卷时的平面残留（needsVolumeOrganize 对零卷书恒返回 []）
+			let strayContainer = false;
+			if (!nums.length) {
+				strayContainer = (await this.manager.volumeList(story)).length === 0 &&
+					(await this.manager.listChapters(story)).some((c) => c.parentPath !== this.manager.storyPath(story) && !c.vol); // 零卷 + 遗留子目录含章节 → 也视为待整理
+			}
+			if (!nums.length && !strayContainer) {
+				this.flatBlocked = null;
+				return;
+			}
+			
+
+
+
+await this.promptCreateVolumesIfEmpty(story); // 零卷 → 先弹建卷框（新建与遗留目录同名的卷，其内章节立即归属）
+			new Notice(nums.length ? `《${story}》仍为平面结构（${nums.length} 章带卷归属），正在自动按卷整理…` : `《${story}》存在未识别章节目录，正在自动按卷整理…`, 5000);
+			await this.runOrganizeVolumes(story);
+			this.flatBlocked = (await this.manager.needsVolumeOrganize(story)).length ? story : null;
+		} catch (e) {
+			this.flatBlocked = story;
+			this.notifyError("自动按卷整理失败", e);
+			new Notice("章节/卷操作已临时锁定：请稍后手动运行「按卷整理目录」命令。", 12000);
+		}
+	}
+
+	// ---------- 交互辅助 ----------
+
+	private prompt(title: string, placeholder: string, hint?: string, initial?: string): Promise<string | null> { // v0.1.6+：可选 hint 渲染在输入框上方（详细说明），placeholder 只留极短占位；initial 预填初始值（光标置末尾）
+		return new Promise((resolve) => {
+			new TextInputModal(
+				this.app,
+				title,
+				placeholder,
+				(value) => resolve(value),
+				() => resolve(null),
+				hint,
+				initial
+			).open();
+		});
+	}
+
+	/** 收集目标章数核心（v0.2.11+，自 v0.2.10+ AI 兜底拆分泛化）：弹窗输入正整数（v0.2.x+ 起不设上限），非法输入重弹，取消返回 null；cancelText 为取消时的 Notice 文案 */
+	private async promptChapterCountInput(title: string, hint: string, cancelText: string, fieldLabel = "目标章数（正整数，如 5）"): Promise<number | null> {
+		for (;;) {
+			const raw = await this.prompt(title, fieldLabel, hint);
+			if (raw == null || raw === "") { new Notice(cancelText, 4000); return null; } // 取消（静默中止会让用户误以为命令卡死）
+			if (!/^\d+$/.test(raw.trim())) { new Notice(`章数无效：请输入正整数（收到「${raw}」）`, 6000); continue; }
+			const n = Number(raw.trim());
+			if (Number.isSafeInteger(n) && n >= 1) return n;
+			new Notice(`章数无效：请输入正整数（收到「${raw}」）`, 6000);
+		}
+	}
+
+	/** v0.2.x+ 大纲「继续生成」模式选择：目标大纲非空时先问完整生成还是按已有进度继续生成；返回 0=完整 / 1=继续 / null=取消 */
+	private async promptOutlineGenMode(title: string): Promise<number | null> {
+		return this.pickAction(`${title}：现有大纲非空，请选择生成方式`, [
+			{ label: "完整生成", sub: "重新生成整份大纲（保存时再选覆盖/追加）" },
+			{ label: "继续生成（按已有进度）", sub: "从已有大纲最后一章之后，按指定章数向后追加新内容" },
+		]);
+	}
+
+	/** v0.2.x+「补全故事状态可用参数」专用：收集书级 prev_chapters（非负整数，0=不注入前文），预填当前全局生效值；非法输入重弹，取消返回 null */
+	private async promptPrevChaptersInput(story: string): Promise<number | null> {
+		for (;;) {
+			const raw = await this.prompt(
+				"使用章节摘要数量（prev_chapters）",
+				"前文窗口章数 N（非负整数，如 3）",
+				[
+					`《${story}》的故事状态文档缺少书级参数 prev_chapters（写作提示词「前文内容」窗口章数）。`,
+					`输入非负整数：0＝不注入前文；当前按全局设置生效（N=${this.effectivePrevN()}，已预填在输入框）。`,
+					"输入后按回车确认、Esc 取消：",
+				].join("\n"),
+				String(this.effectivePrevN())
+			);
+			if (raw == null) { new Notice("已取消补全故事状态参数", 4000); return null; }
+			if (!/^\d+$/.test(raw.trim())) { new Notice(`数值无效：请输入非负整数（收到「${raw}」）`, 6000); continue; }
+			return parseInt(raw.trim(), 10);
+		}
+	}
+
+	/** AI 兜底拆分收集目标章数（v0.2.10+）：行为不变，promptChapterCountInput 薄包装 */
+	private async promptChapterCount(volName: string): Promise<number | null> {
+		return this.promptChapterCountInput("AI 拆分卷大纲", `「${volName}」的卷大纲未检测到「第N章」标记，将调用 AI 自动拆分。\n请指定要拆分的章数（正整数，不设上限），输入后按回车确认、Esc 取消：`, "已取消 AI 拆分卷大纲");
+	}
+
+	/** v0.2.x+「从书级大纲生成卷」/「自动生成卷大纲」无卷兜底共用：单个弹窗一次性问全所有卷的目标章数（逗号/顿号/空格分隔、数量须等于卷数、每卷正整数，v0.2.x+ 起不设上限）；非法输入重弹，取消返回 null。title＝弹窗标题与取消提示前缀（默认「从书级大纲生成卷」） */
+	private async promptAllVolumeChapterCounts(decls: VolumeDeclaration[], title = "从书级大纲生成卷"): Promise<number[] | null> {
+		const names = decls.map((d, i) => `${i + 1}. ${d.name}`).join("\n");
+		for (;;) {
+			const raw = await this.prompt(title, `各卷目标章数（${decls.length} 个整数，如 8,6）`, [
+				"书级《大纲.md》中识别到以下卷，请按顺序为每一卷输入目标章数（正整数，不设上限）：",
+				names,
+				`共 ${decls.length} 个数，用逗号 / 顿号 / 空格分隔（如 ${decls.map(() => "8").join(",")}）。`,
+			].join("\n"));
+			if (raw == null || raw.trim() === "") { new Notice(`已取消${title}`, 4000); return null; } // 取消（静默中止会让用户误以为命令卡死）
+			const parts = raw.split(/[,，、\s]+/).filter(Boolean);
+			if (parts.length !== decls.length) { new Notice(`请输入 ${decls.length} 个章数（每卷一个，收到 ${parts.length} 个：「${raw}」）`, 6000); continue; }
+			const nums: number[] = [];
+			let bad = false;
+			for (const p of parts) {
+				const v = /^\d+$/.test(p) ? Number(p) : NaN;
+				if (!(Number.isSafeInteger(v) && v >= 1)) { bad = true; break; }
+				nums.push(v);
+			}
+			if (!bad) return nums;
+			new Notice(`章数无效：请为每卷输入正整数（收到「${raw}」）`, 6000);
+		}
+	}
+
+	private pickNewDoc(title: string, options: Array<{ name: string; exists: boolean }>): Promise<{ kind: "custom"; name: string } | { kind: "std"; name: string } | null> { // v0.1.8+：新建文档单弹窗——全宽输入框（内部提示「自定义文件名…」）+下方「确定」按钮，标准文档名可点选回填；与标准文档同名时走 std 路径由调用方二次确认后按模板创建
+		return new Promise((resolve) => {
+			new NewFilePickerModal(this.app, title, options, (r) => resolve(r), () => resolve(null)).open();
+		});
+	}
+
+	private pickNewStoryInput(): Promise<NewStoryInput | null> {
+		return new Promise((resolve) => {
+			new NewStoryModal(this.app, (input) => resolve(input), () => resolve(null)).open();
+		});
+	}
+
+	// ---------- 命令实现 ----------
+
+	async cmdNewStory(): Promise<string | null> {
+		if (!(await this.ensureWorkDir())) return null;
+		const input = await this.pickNewStoryInput();
+		if (!input) return null;
+		try {
+			const name = await this.manager.createStory(input.title, input.genre, input.style);
+			await this.applyStorySwitch(name, true); // v0.2.1+：新书成为当前书——先归档原当前书的窗口状态；新书必无存档→关闭旧书打开的文档，空编辑器开始
+			new Notice(`已创建小说「${name}」：文件夹与模板文档就绪`);
+			if (this.settings.autoOpenOnCreate) {
+				await this.manager.openMarkdown(`${this.manager.storyPath(name)}/大纲.md`);
+			}
+			return name;
+		} catch (e) {
+			new Notice(`创建失败：${(e as Error).message}`);
+			return null;
+		}
+	}
+
+	async cmdNewChapter(): Promise<void> {
+		if (!(await this.ensureWorkDir())) return;
+		const story = await this.requireStory();
+		if (!story || !(await this.ensureVolumeLayout(story))) return;
+		const chapters = await this.manager.listChapters(story);
+		const curVol = ((await this.manager.loadState(story))?.current_volume ?? "").trim(); // 有当前卷 → 新章直接落卷实体目录并写归属字段（v0.0.15：编号在容器内自动顺延）
+		const base = this.manager.storyPath(story);
+		const inScope = curVol ? chapters.filter((c) => c.vol === curVol) : chapters.filter((c) => !c.vol && c.parentPath === base);
+		const nextNum = inScope.length ? Math.max(...inScope.map((c) => c.num)) + 1 : 1;
+		let volName = "";
+		try { if (curVol) volName = this.manager.findVolumeIn(await this.manager.loadVolumes(story), curVol)?.name ?? curVol; } catch { volName = curVol; }
+		const scopeLabel = curVol ? `卷「${volName}」` : "书根";
+		const title = await this.prompt(`新建章节（将成为 ${scopeLabel}第${nextNum}章）`, "章节标题");
+		if (title == null || !title.trim()) return;
+		try {
+			const bodyPath = await this.manager.createChapter(story, title.trim(), curVol);
+			new Notice(`已创建 ${scopeLabel}第${String(nextNum).padStart(2, "0")}章-${title.trim()}：章节目录与文档就绪`);
+			if (this.settings.autoOpenOnCreate) await this.manager.openMarkdown(bodyPath);
+		} catch (e) {
+			new Notice(`创建失败：${(e as Error).message}`);
+		}
+	}
+
+	/** 在当前激活章（无则先选）之前/之后插入新空章节：本容器内 ≥插入位的各章整体 +1、引用同步重写（manager.insertChapter），完成后聚焦新章 */
+	async cmdInsertChapter(): Promise<void> {
+		if (!(await this.ensureWorkDir())) return;
+		const story = await this.requireStory();
+		if (!story || !(await this.ensureVolumeLayout(story))) return;
+		try {
+			const chapters = await this.manager.listChapters(story);
+			if (!chapters.length) {
+				new Notice("还没有章节，先用「新建章节」创建第一章");
+				return;
+			}
+			const volNames = await this.volNameMap(story);
+			const cur = (await this.manager.loadState(story))?.current_chapter ?? null;
+			let refIdx: number | null = cur != null ? chapters.findIndex((c) => c.key === cur) : -1;
+			if (refIdx < 0) {
+				refIdx = await this.pickAction(
+					"选择参照章节（在其之前/之后插入）",
+					chapters.map((c) => ({ label: this.keyLabel(c.key, volNames, c.title), marker: cur === c.key ? "▶ 当前" : undefined }))
+				);
+				if (refIdx == null) return;
+			}
+			const ref = chapters[refIdx];
+			const posIdx = await this.pickAction(`相对 ${this.keyLabel(ref.key, volNames)} 的插入位置`, [
+				{ label: `之前 → 新章成为第${String(ref.num).padStart(2, "0")}章，原该章及本容器后续各 +1` },
+				{ label: `之后 → 新章成为第${String(ref.num + 1).padStart(2, "0")}章，其后的章各 +1` },
+			]);
+			if (posIdx == null) return;
+			const newNum = posIdx === 0 ? ref.num : ref.num + 1;
+			const t = await this.prompt(`新建第${newNum}章`, "章节标题");
+			if (t == null) return;
+			const title = t.trim() || String(newNum); // 留空沿用建章惯例：以编号作标题
+			const r = await this.manager.insertChapter(story, ref.key, posIdx === 0 ? "before" : "after", title);
+			new Notice(`${this.keyLabel(r.key, volNames, title)} 已插入；本卷内后续章节号与文档引用已顺延更新`, 6000);
+			if (this.settings.autoOpenOnCreate) await this.manager.openMarkdown(r.path);
+		} catch (e) {
+			this.notifyError("插入章节失败", e);
+		}
+	}
+
+	async cmdListChapters(): Promise<void> {
+		if (!(await this.ensureWorkDir())) return;
+		const story = await this.requireStory();
+		if (!story) return;
+		const chapters = await this.manager.listChapters(story);
+		if (chapters.length === 0) {
+			new Notice("还没有章节，先用「新建章节」创建第一章");
+			return;
+		}
+		const state = await this.manager.loadState(story);
+		const volNames = await this.volNameMap(story);
+		new ChapterListModal(
+			this.app,
+			chapters.map((c) => ({ num: c.num, key: c.key, title: c.title, path: c.dir.path, isCurrent: state?.current_chapter === c.key, display: this.keyLabel(c.key, volNames, c.title) })),
+			async (item) => {
+				const bodyPath = await this.manager.switchChapter(story, item.key ?? String(item.num));
+				if (bodyPath) await this.manager.openMarkdown(bodyPath);
+			}
+		).open();
+	}
+
+	/** 打开总大纲（缺失时按书名生成模板，对齐 CLI create_book_docs 的 大纲.md 初始内容） */
+	async cmdOpenOutline(): Promise<void> {
+		if (!(await this.ensureWorkDir())) return;
+		const story = await this.activeStory();
+		if (!story) return;
+		try {
+			const state = await this.manager.loadState(story);
+			await this.manager.openStoryDoc(story, "大纲.md", outlineTemplate((state?.title ?? "").trim() || story));
+		} catch (e) {
+			new Notice(`打开失败：${(e as Error).message}`);
+		}
+	}
+
+	async cmdOpenDoc(docName: string, template: string): Promise<void> {
+		if (!(await this.ensureWorkDir())) return;
+		const story = await this.activeStory();
+		if (!story) return;
+		try {
+			await this.manager.openStoryDoc(story, docName, template);
+		} catch (e) {
+			new Notice(`打开失败：${(e as Error).message}`);
+		}
+	}
+
+	async cmdNextOrPrev(dir: 1 | -1): Promise<void> {
+		if (!(await this.ensureWorkDir())) return;
+		const story = await this.requireStory();
+		if (!story) return;
+		const result = await this.manager.nextOrPrev(story, dir);
+		if (!result) {
+			new Notice("已到边界，没有更多章节");
+			return;
+		}
+		await this.manager.openMarkdown(result.path);
+		new Notice(`已切换到第${String(result.num).padStart(2, "0")}章`);
+	}
+
+	async cmdCount(): Promise<void> {
+		if (!(await this.ensureWorkDir())) return;
+		const story = await this.requireStory();
+		if (!story) return;
+		const state = await this.manager.loadState(story);
+		if (state?.current_chapter == null) {
+			new Notice("还没有当前章节，先新建或切换章节");
+			return;
+		}
+		const rows = await this.manager.countWords(story, state.current_chapter);
+		const row = rows[0];
+		new Notice(row ? `第${String(row.num).padStart(2, "0")}章 ${row.title}：纯文字 ${row.words} 字` : "该章节无正文", 5000);
+	}
+
+	async cmdCountAll(): Promise<void> {
+		if (!(await this.ensureWorkDir())) return;
+		const story = await this.requireStory();
+		if (!story) return;
+		const rows = await this.manager.countWords(story);
+		if (rows.length === 0) {
+			new Notice("还没有章节");
+			return;
+		}
+		let total = 0;
+		for (const r of rows) total += r.words;
+		new StatusModal(this.app, [
+			"各章字数（只计纯文字字符）：",
+			...rows.map((r) => `  第${String(r.num).padStart(2, "0")}章 ${r.title} ${r.words} 字`),
+			`合计：${total} 字`,
+		]).open();
+	}
+
+	async cmdSave(): Promise<void> {
+		const words = await this.manager.saveCurrentChapter();
+		if (words < 0) {
+			new Notice("当前打开的不是 章节.md，无法保存");
+			return;
+		}
+		new Notice(`已保存当前章节（纯文字 ${words} 字）`);
+	}
+
+	async cmdStatus(): Promise<void> {
+		if (!(await this.ensureWorkDir())) return;
+		const story = await this.activeStory();
+		if (!story) return;
+		const state = await this.manager.loadState(story);
+		if (!state) {
+			new Notice("未找到小说状态文档（故事状态.md / story_state.json）");
+			return;
+		}
+		const chapters = await this.manager.listChapters(story);
+		let total = 0;
+		for (const ch of chapters) {
+			const f = await this.manager.chapterBodyFile(story, ch.key);
+			if (f instanceof TFile) total += countPureWords(await this.app.vault.read(f));
+		}
+		const lines: string[] = [
+			`书名：${state.title}`,
+			`题材：${state.genre || "-"} 编写类型：${state.writing_style || "-"}`,
+			`当前章节：${state.current_chapter != null ? `第${String(state.current_chapter).padStart(2, "0")}章` : "无"}`,
+		];
+		let volName = "";
+		try {
+			if (state.current_volume) {
+				const vols = await this.manager.loadVolumes(story);
+				volName = this.manager.findVolumeIn(vols, state.current_volume)?.name ?? state.current_volume;
+			}
+		} catch {
+			volName = state.current_volume || "";
+		}
+		lines.push(`当前卷：${volName || "-"} 当前场景：${state.current_scene || "-"}`);
+		lines.push(`章节数：${chapters.length} 总字数（纯文字）：${total}`);
+		lines.push(`创建：${formatLocalDateTime(state.created_at, true)} 更新：${formatLocalDateTime(state.updated_at, true)}`);
+		new StatusModal(this.app, lines).open();
+	}
+
+	// ---------- 通用交互辅助 ----------
+
+	private chapterLabel(num: number, title?: string): string {
+		return `第${String(num).padStart(2, "0")}章${title ? ` ${title}` : ""}`;
+	}
+
+	/** v0.0.15：卷内编号的展示名（带卷前缀）："第二卷·第03章 标题" / "第05章 标题" */
+	private keyLabel(key: string, volNames?: Record<string, string>, title?: string): string {
+		const p = parseChKey(key);
+		const base = this.chapterLabel(p.num, title);
+		return p.vol ? `${volNames?.[p.vol] || p.vol}·${base}` : base;
+	}
+
+	/** 一次性构建 卷id→卷名 映射，供各命令展示用；失败返回空表（降级为显示卷 id） */
+	private async volNameMap(story: string): Promise<Record<string, string>> {
+		try {
+			const vols = await this.manager.loadVolumes(story);
+			const out: Record<string, string> = {};
+			for (const [id, v] of Object.entries(vols)) out[id] = v.name;
+			return out;
+		} catch {
+			return {};
+		}
+	}
+
+	/** v0.0.15：场景/人物「归属章节」的展示名（本地号+容器卷前缀），0=全局 */
+	private refLabel(num: number, vol: string | null | undefined, volNames?: Record<string, string>): string {
+		if (!num) return "全局";
+		return this.keyLabel(chKey(vol ?? null, num), volNames);
+	}
+
+	/** v0.0.15：把用户输入的裸章号解析到具体容器（跨卷同号逐个确认）；0=全局直通；不存在/取消 → null */
+	private async resolveLocalNum(story: string, n: number, volNames: Record<string, string>): Promise<{ num: number; vol?: string } | null> {
+		if (n === 0) return { num: 0 };
+		const cands = (await this.manager.listChapters(story)).filter((c) => c.num === n);
+		if (!cands.length) return null;
+		if (cands.length === 1) return { num: n, vol: cands[0].vol };
+		const ci = await this.pickAction(`「第${String(n).padStart(2, "0")}章」在多个容器里都存在，请选择`, cands.map((c) => ({ label: this.keyLabel(c.key, volNames, c.title) })));
+		return ci == null ? null : { num: n, vol: cands[ci].vol };
+	}
+
+	private notifyError(prefix: string, e: unknown): void {
+		new Notice(`${prefix}：${describeLlmError(e)}`, 8000); // 带 cause/code/HTTP 状态，避免只有一句 "Connection error." 无法定位
+	}
+
+	private pickAction(title: string, items: ActionItem[]): Promise<number | null> {
+		return new Promise((resolve) => {
+			new ActionMenuModal(this.app, title, items, (i) => resolve(i), () => resolve(null)).open();
+		});
+	}
+
+	private confirmBox(title: string, message: string, label = "确认"): Promise<boolean> {
+		return new Promise((resolve) => {
+			new ConfirmModal(this.app, title, message, label, () => resolve(true), () => resolve(false)).open();
+		});
+	}
+
+	/** 无当前章节时弹框询问章号（v0.0.15：返回复合键；裸号按容器解析，跨卷同号逐个确认） */
+	private async requireChapterKey(story: string): Promise<string | null> {
+		const state = await this.manager.loadState(story);
+		if (state?.current_chapter != null) return state.current_chapter;
+		const volNames = await this.volNameMap(story);
+		const t = await this.prompt("没有当前章节", "请输入章节号（卷内本地号）");
+		if (t == null) return null;
+		const n = parseInt(t, 10);
+		const ref = Number.isFinite(n) && n > 0 ? await this.resolveLocalNum(story, n, volNames) : null;
+		if (!ref) { new Notice(`第${n ?? "?"}章不存在`); return null; }
+		return chKey(ref.vol ?? null, ref.num);
+	}
+
+	// ---------- 卷（/volume）----------
+
+	async cmdVolumeList(): Promise<void> {
+		if (!(await this.ensureWorkDir())) return;
+		const story = await this.requireStory();
+		if (!story) return;
+		try {
+			const vols = await this.manager.volumeList(story);
+			if (!vols.length) {
+				new Notice("还没有卷，先用「新建卷」创建");
+				return;
+			}
+			const state = await this.manager.validatedState(story);
+			const chapters = await this.manager.listChapters(story); // v0.0.15：按卷过滤用实体目录清单（state.chapters 键已为复合键）
+			const lines: Array<string | PanelLine> = [];
+			for (const v of vols) {
+				lines.push({ text: `${state.current_volume === v.id ? "◀ " : ""}${v.name}`, bold: true });
+				if (v.description) lines.push(`  描述：${v.description}`);
+				const assigned = chapters.filter((c) => c.vol === v.id).map((c) => this.chapterLabel(c.num));
+				lines.push(assigned.length ? `  归属章节：${assigned.join("、")}` : "  暂无归属章节");
+			}
+			lines.push("");
+			lines.push(`当前卷：${state.current_volume || "无"}（共 ${vols.length} 卷）`);
+			new TextPanelModal(this.app, "卷列表", lines).open();
+		} catch (e) {
+			this.notifyError("读取失败", e);
+		}
+	}
+
+	async cmdVolumeAdd(): Promise<void> {
+		if (!(await this.ensureWorkDir())) return;
+		const story = await this.requireStory();
+		if (!story) return;
+		await this.ensureVolumeModeEnabled(story); // v0.0.16+：无卷模式先自动转为有卷再建卷
+		if (!(await this.ensureVolumeLayout(story))) return;
+		const names = await this.pickNewVolumeNames(story); // 列表式批量新建卷页面（手动加名单、确定后按序创建）
+		if (!names || !names.length) return;
+		try {
+			const lastId = await this.createVolumesInOrder(story, names);
+			if (lastId == null) return; // 全部失败：汇总通知已给出原因
+			let volName = lastId;
+			try {
+				volName = this.manager.findVolumeIn(await this.manager.loadVolumes(story), lastId)?.name ?? lastId;
+			} catch { /* 名称回退用 id */ }
+			const doChapter = await this.confirmBox("顺带建章", `是否立即创建一个新章节并归属到最后一个新建的卷「${volName}」？`, "创建");
+			if (!doChapter) return;
+			const chapters = await this.manager.listChapters(story);
+			const inVol = chapters.filter((c) => c.vol === lastId); // v0.0.15：编号在目标卷内自动顺延
+			const nextNum = inVol.length ? Math.max(...inVol.map((c) => c.num)) + 1 : 1;
+			const t = await this.prompt(`新建第${nextNum}章（卷「${volName}」）`, "章节标题");
+			if (t == null) return;
+			const title = t.trim() || String(nextNum);
+			const bodyPath = await this.manager.createChapter(story, title, lastId); // 直接落卷实体目录并写归属字段（位置即归属）
+			new Notice(`${this.chapterLabel(nextNum, title)} 已创建并归属卷「${volName}」`);
+			if (this.settings.autoOpenOnCreate) await this.manager.openMarkdown(bodyPath);
+		} catch (e) {
+			this.notifyError("操作失败", e);
+		}
+	}
+
+	async cmdVolumeManage(): Promise<void> {
+		if (!(await this.ensureWorkDir())) return;
+		const story = await this.requireStory();
+		if (!story) return;
+		await this.ensureVolumeModeEnabled(story); // v0.0.16+：无卷模式先自动转为有卷再管理卷
+		if (!(await this.ensureVolumeLayout(story))) return;
+		try {
+			const vols = await this.manager.volumeList(story);
+			if (!vols.length) {
+				new Notice("还没有卷，先用「新建卷」创建");
+				return;
+			}
+			const state = await this.manager.validatedState(story);
+			const idx = await this.pickAction(
+				"选择要管理的卷",
+				vols.map((v) => ({ label: v.name, sub: v.description || v.id, marker: state.current_volume === v.id ? "▶ 当前" : undefined }))
+			);
+			if (idx == null) return;
+			const vol = vols[idx];
+			const chAll = await this.manager.listChapters(story); // v0.0.15：归属清单按复合键管理（本地号在卷内独立）
+			const assigned = chAll.filter((c) => c.vol === vol.id).map((c) => ({ key: c.key, num: c.num, title: c.title }));
+			const act = await this.pickAction(`管理卷「${vol.name}」`, [
+				{ label: "启用此卷（设为当前卷并切到其最后一章）" },
+				{ label: "重命名卷" },
+				{ label: "编辑描述" },
+				{ label: `把某章节分配到本卷${assigned.length ? `（现有 ${assigned.length} 章）` : ""}` },
+				{ label: "解除本卷中某章节的归属", disabled: !assigned.length },
+				{ label: "导出此卷合集（全部章节正文合一 MD，/pack 同款格式）", disabled: !assigned.length },
+				{ label: "删除此卷（其章节变为未分配）" },
+			]);
+			if (act == null) return;
+			switch (act) {
+				case 0: {
+					const r = await this.manager.activateVolume(story, vol.id);
+					new Notice(r.num != null ? `已启用「${vol.name}」，切换到${this.chapterLabel(r.num)}` : `已将「${vol.name}」设为当前卷（暂无归属章节）`);
+					if (r.path) await this.manager.openMarkdown(r.path);
+					break;
+				}
+				case 1: {
+					const n = await this.prompt("重命名卷", "新名称");
+					if (!n || !n.trim()) break;
+					const u = await this.manager.updateVolume(story, vol.id, { name: n.trim() });
+					new Notice(u ? `已改名为「${u.name}」` : "改名失败：卷不存在");
+					break;
+				}
+				case 2: {
+					const d = await new Promise<string | null>((resolve) => {
+						new TextAreaPrompt(this.app, "编辑描述", "卷的描述…", vol.description || "", "保存", (v) => resolve(v), () => resolve(null)).open();
+					});
+					if (d == null) break;
+					await this.manager.updateVolume(story, vol.id, { description: d });
+					new Notice("描述已更新");
+					break;
+				}
+ 			case 3: {
+ 				const t = await this.prompt("分配章节", "章节号：支持 all/全部、区间如 3-7（或 三至七）、列表如 1，4，5；跨卷同号时逐个确认");
+ 				if (t == null || !t.trim()) break;
+ 				const sel = parseChapterSelection(t, [...new Set(chAll.map((c) => c.num))].sort((a, b) => a - b)); // 复用打包合集同款表达式解析（去重升序）
+ 				if (sel.invalid.length) new Notice(`无法识别的片段已忽略：${sel.invalid.join("、")}`, 6000);
+ 				if (!sel.nums.length) {
+ 					new Notice("没有可分配的章节");
+ 					break;
+ 				}
+ 				const volNames2 = await this.volNameMap(story);
+ 				const resolvedKeys: string[] = [];
+ 				let skippedAmb = 0;
+ 				for (const n of sel.nums) {
+ 					const cands = chAll.filter((c) => c.num === n);
+ 					if (!cands.length) continue;
+ 					if (cands.length === 1) {
+ 						resolvedKeys.push(cands[0].key);
+ 					} else {
+ 						const ci = await this.pickAction(
+ 							`「第${String(n).padStart(2, "0")}章」在多个容器里都存在，选要移入本卷的那个`,
+ 							cands.map((c) => ({ label: `${this.keyLabel(c.key, volNames2, c.title)}${c.vol === vol.id ? "（已在本卷）" : ""}` }))
+ 						);
+ 						if (ci == null || ci < 0) { skippedAmb++; continue; } // Esc/取消 → 跳过该号继续其余
+ 						resolvedKeys.push(cands[ci].key);
+ 					}
+ 				}
+ 				if (!resolvedKeys.length) { new Notice("没有可分配的章节"); break; }
+ 				if (resolvedKeys.length > 1) {
+ 					const labels = resolvedKeys.map((k) => this.keyLabel(k, volNames2));
+ 					const shown = labels.length <= 12 ? labels.join("、") : `${labels.slice(0, 12).join("、")} …等共 ${labels.length} 章`;
+ 					const ok = await this.confirmBox(
+ 						`把以下 ${resolvedKeys.length} 个章节分配到卷「${vol.name}」？`,
+ 						shown + "。章节目录将物理移入该卷实体目录并写入归属字段。",
+ 						"确认分配"
+ 					);
+ 					if (!ok) break;
+ 				}
+ 				let done = 0;
+ 				for (const k of resolvedKeys) try { await this.manager.setChapterVolume(story, k, vol.id); done++; } catch { /* 单章失败保留原地，继续其余 */ }
+ 				new Notice(`${done}/${resolvedKeys.length} 章已归属卷「${vol.name}」${skippedAmb ? `；跳过未选择 ${skippedAmb} 号` : ""}${done < resolvedKeys.length ? "（个别失败请重试）" : ""}`, 8000);
+ 				break;
+ 			}
+				case 4: {
+					const ci = await this.pickAction(
+						"选择要解除归属的章节",
+						assigned.map((c) => ({ label: this.chapterLabel(c.num, c.title) }))
+					);
+					if (ci == null) break;
+					await this.manager.unassignChapterVolume(story, assigned[ci].key);
+					new Notice("已解除该章节的卷归属");
+					break;
+				}
+			case 5: {
+				const outText = await this.prompt(`导出卷「${vol.name}」`, "输出位置（留空用默认文件名）", [
+				"将该卷全部章节的《章节.md》正文合一 MD（按章序排列），输出路径规则：",
+				"· 留空 —— 存到该小说目录下 <书名>-<卷名>-合集.md（再次导出会覆盖同名文件）",
+				"· 以 .md 结尾 —— 视为完整文件名，原样使用",
+				"· 其他 —— 视为目标目录，自动拼上默认文件名 <书名>-<卷名>-合集.md",
+			].join("\n"));
+				if (outText == null) break;
+				const r = await this.manager.packVolume(story, vol.id, outText.trim());
+				const words = r.packed.reduce((s, p) => s + p.words, 0);
+				new Notice(`已生成 ${r.path}（共 ${r.packed.length} 章，纯文字 ${words} 字${r.skipped.length ? `；跳过无正文：${r.skipped.map((n) => this.chapterLabel(n)).join("、")}` : ""}）`, 8000);
+				await this.manager.openMarkdown(r.path);
+				break;
+			}
+				default: {
+					const ok = await this.confirmBox(
+						"删除卷？",
+						`删除后，其下 ${assigned.length} 个章节的卷字段将被清空（章节本身保留）。此操作不可撤销。`,
+						"删除"
+					);
+					if (!ok) break;
+					const r = await this.manager.deleteVolume(story, vol.id);
+					new Notice(r.deleted ? `已删除，共 ${r.movedKeys.length} 章被移出该卷` : "删除失败：卷不存在");
+				}
+			}
+		} catch (e) {
+			this.notifyError("操作失败", e);
+		}
+	}
+
+	// ---------- 场景（/scene）----------
+
+	async cmdSceneList(): Promise<void> {
+		if (!(await this.ensureWorkDir())) return;
+		const story = await this.requireStory();
+		if (!story) return;
+		try {
+			const scenes = Object.values(await this.manager.loadAllScenes(story)).sort((a, b) => a.chapter_num - b.chapter_num || a.scene_id.localeCompare(b.scene_id));
+			if (!scenes.length) {
+				new Notice("还没有场景，先用「新增场景」创建");
+				return;
+			}
+			const state = await this.manager.validatedState(story);
+			const volNames = await this.volNameMap(story); // v0.0.15：归属展示带卷前缀
+			const lines: Array<string | PanelLine> = [];
+			for (const s of scenes) {
+				lines.push({ text: `${state.current_scene === s.scene_id ? "◀ " : ""}${s.scene_id}`, bold: true });
+				const bits = [this.refLabel(s.chapter_num, s.vol, volNames), s.characters?.length ? `角色：${s.characters.join("、")}` : "", s.description || ""].filter(Boolean);
+				if (bits.length) lines.push(`  ${bits.join(" ")}`);
+			}
+			lines.push("");
+			lines.push(`当前场景：${state.current_scene || "无"}（共 ${scenes.length} 个）`);
+			new TextPanelModal(this.app, "场景列表", lines).open();
+		} catch (e) {
+			this.notifyError("读取失败", e);
+		}
+	}
+
+	async cmdSceneAdd(): Promise<void> {
+		if (!(await this.ensureWorkDir())) return;
+		const story = await this.requireStory();
+		if (!story) return;
+		const state = await this.manager.loadState(story);
+		const defKey = state?.current_chapter ?? null; // v0.0.15：复合键 "volId:N" / "N"
+		const volNames = await this.volNameMap(story);
+		const curRef = defKey != null ? (() => { const p = parseChKey(defKey); return { num: p.num, vol: p.vol ?? undefined }; })() : null;
+		const vals = await new Promise<Record<string, string> | null>((resolve) => {
+			new MultiFieldModal(
+				this.app,
+				"新增场景",
+				[
+					{ key: "id", label: "场景 ID/标题", placeholder: "如：夜半天台" },
+					{ key: "desc", label: "简介", placeholder: "一句话说明场景氛围/用途" },
+					{ key: "chars", label: "在场角色", placeholder: '多个用「、」分隔' },
+					{ key: "chap", label: "归属章节号（卷内本地号）", placeholder: `留空=${curRef ? `当前 ${this.refLabel(curRef.num, curRef.vol, volNames)}` : "无（全局）"}，0=全局未归属` },
+					{ key: "notes", label: "备注" },
+				],
+				"下一步（正文）",
+				(v) => resolve(v),
+				() => resolve(null)
+			).open();
+		});
+		if (!vals || !vals.id.trim()) return;
+		const content = await new Promise<string | null>((resolve) => {
+			new TextAreaPrompt(this.app, "场景正文（可选）", "描写该场景的环境/道具/关键动作…", "", "完成", (v) => resolve(v ?? ""), () => resolve(null)).open();
+		});
+		if (content == null) return;
+		let chapNum = 0; let chapVol: string | undefined;
+		const ct = (vals.chap ?? "").trim();
+		if (ct !== "") {
+			const n = parseInt(ct, 10);
+			if (!Number.isFinite(n) || n < 0) {
+				new Notice(`无效的章节号：${ct}`);
+				return;
+			}
+			const ref = await this.resolveLocalNum(story, n, volNames); // v0.0.15：裸章号 → 具体容器
+			if (!ref) { new Notice(`第${n}章不存在`); return; }
+			chapNum = ref.num; chapVol = ref.vol;
+		} else if (curRef) {
+			chapNum = curRef.num; chapVol = curRef.vol;
+		}
+		try {
+			await this.manager.addScene(story, {
+				scene_id: vals.id.trim(),
+				description: vals.desc,
+				characters: splitList(vals.chars || ""),
+				chapter_num: chapNum,
+				vol: chapVol,
+				notes: vals.notes,
+				content,
+			});
+			new Notice(`已创建场景「${vals.id.trim()}」（${this.refLabel(chapNum, chapVol ?? null, volNames)}）`);
+		} catch (e) {
+			this.notifyError("创建失败", e);
+		}
+	}
+
+	async cmdSceneManage(): Promise<void> {
+		if (!(await this.ensureWorkDir())) return;
+		const story = await this.requireStory();
+		if (!story) return;
+		try {
+			const scenes = Object.values(await this.manager.loadAllScenes(story));
+			if (!scenes.length) {
+				new Notice("还没有场景，先用「新增场景」创建");
+				return;
+			}
+			scenes.sort((a, b) => a.chapter_num - b.chapter_num || a.scene_id.localeCompare(b.scene_id));
+			const state = await this.manager.validatedState(story);
+			const volNames = await this.volNameMap(story); // v0.0.15：归属展示带卷前缀（s.vol 为加载时打标的运行态容器）
+			const idx = await this.pickAction(
+				"选择要管理的场景",
+				scenes.map((s) => ({ label: s.scene_id, sub: `${this.refLabel(s.chapter_num, s.vol, volNames)} · ${s.description || ""}`.trim(), marker: state.current_scene === s.scene_id ? "▶ 当前" : undefined }))
+			);
+			if (idx == null) return;
+			const scene = scenes[idx];
+			const act = await this.pickAction(`管理场景「${scene.scene_id}」`, [
+				{ label: "切换为当前场景（仅运行态）" },
+				{ label: "查看详情" },
+				{ label: "编辑信息（简介/角色/备注/归属章节）" },
+				{ label: "删除此场景" },
+			]);
+			if (act == null) return;
+			switch (act) {
+				case 0: {
+					await this.manager.switchScene(story, scene.scene_id);
+					new Notice(`当前场景已切换到「${scene.scene_id}」（不影响当前章节）`);
+					break;
+				}
+				case 1: {
+					const lines: Array<string | PanelLine> = [
+						{ text: scene.scene_id, bold: true },
+						`归属：${this.refLabel(scene.chapter_num, scene.vol, volNames)}`,
+					];
+					for (const [k, v] of Object.entries({ 简介: scene.description, 角色: scene.characters?.join("、"), 备注: scene.notes })) if (v) lines.push(`${k}：${v}`);
+					lines.push("", "---", "", scene.content || "（无正文）");
+					new TextPanelModal(this.app, `场景详情 · ${scene.scene_id}`, lines).open();
+					break;
+				}
+				case 2: {
+					const vals = await new Promise<Record<string, string> | null>((resolve) => {
+						new MultiFieldModal(
+							this.app,
+							`编辑场景「${scene.scene_id}」`,
+							[
+								{ key: "desc", label: "简介" },
+								{ key: "chars", label: "在场角色", placeholder: '多个用「、」分隔' },
+								{ key: "notes", label: "备注" },
+								{ key: "chap", label: "归属章节号（卷内本地号）", placeholder: `当前=${this.refLabel(scene.chapter_num, scene.vol, volNames)}，留空不变；跨容器移动需同时改卷归属时请配合「管理卷→分配」` },
+							],
+							"保存",
+							(v) => resolve(v),
+							() => resolve(null),
+							{ desc: scene.description ?? "", chars: (scene.characters ?? []).join("、"), notes: scene.notes ?? "", chap: "" }
+						).open();
+					});
+					if (!vals) break;
+					await this.manager.updateScene(story, scene.scene_id, { description: vals.desc, characters: splitList(vals.chars || ""), notes: vals.notes });
+					const ct = (vals.chap ?? "").trim();
+					if (ct !== "") {
+						const n = parseInt(ct, 10);
+						if (!Number.isFinite(n) || n < 0) new Notice(`无效的章节号：${ct}`);
+						else {
+							const ref = await this.resolveLocalNum(story, n, volNames); // v0.0.15：裸章号 → 具体容器（跨卷同号逐个确认）
+							if (!ref) new Notice(`第${n}章不存在，未移动`);
+							else if (ref.num === scene.chapter_num && (ref.vol ?? undefined) === (scene.vol ?? undefined)) { /* 同容器同号 → 不变 */ }
+							else {
+								await this.manager.updateScene(story, scene.scene_id, { chapter_num: ref.num, vol: ref.vol });
+								new Notice(`已移动到 ${this.refLabel(ref.num, ref.vol ?? null, volNames)}`);
+							}
+						}
+					} else new Notice("场景信息已保存");
+					break;
+				}
+				default: {
+					const ok = await this.confirmBox("删除场景？", `将删除「${scene.scene_id}」并清理其引用。`, "删除");
+					if (!ok) break;
+					const done = await this.manager.deleteScene(story, scene.scene_id);
+					new Notice(done ? "已删除该场景" : "删除失败：场景不存在");
+				}
+			}
+		} catch (e) {
+			this.notifyError("操作失败", e);
+		}
+	}
+
+	// ---------- 人物（/character）----------
+
+	async cmdCharacterList(): Promise<void> {
+		if (!(await this.ensureWorkDir())) return;
+		const story = await this.requireStory();
+		if (!story) return;
+		try {
+			const chars = Object.values(await this.manager.loadAllCharacters(story)).sort((a, b) => a.chapter - b.chapter || a.name.localeCompare(b.name));
+			if (!chars.length) {
+				new Notice("还没有人物，先用「新增人物」创建");
+				return;
+			}
+			const lines: Array<string | PanelLine> = [];
+			for (const c of chars) {
+				lines.push({ text: c.name, bold: true });
+				const bits = [c.chapter === 0 ? "全局" : this.chapterLabel(c.chapter), c.identity || "", c.gender ? `性别：${c.gender}` : ""].filter(Boolean);
+				if (bits.length) lines.push(`  ${bits.join(" ")}`);
+			}
+			lines.push("");
+			lines.push(`共 ${chars.length} 人`);
+			new TextPanelModal(this.app, "人物列表", lines).open();
+		} catch (e) {
+			this.notifyError("读取失败", e);
+		}
+	}
+
+	async cmdCharacterAdd(): Promise<void> {
+		if (!(await this.ensureWorkDir())) return;
+		const story = await this.requireStory();
+		if (!story) return;
+		const state = await this.manager.loadState(story);
+		const defKey = state?.current_chapter ?? null; // v0.0.15：复合键 "volId:N" / "N"
+		const volNames = await this.volNameMap(story);
+		const curRef = defKey != null ? (() => { const p = parseChKey(defKey); return { num: p.num, vol: p.vol ?? undefined }; })() : null;
+		const vals = await new Promise<Record<string, string> | null>((resolve) => {
+			new MultiFieldModal(
+				this.app,
+				"新增人物",
+				[
+					{ key: "name", label: "姓名（必填）" },
+					{ key: "identity", label: "身份" },
+					{ key: "age", label: "年龄" },
+					{ key: "gender", label: "性别" },
+					{ key: "personality", label: "性格" },
+					{ key: "appearance", label: "外貌" },
+					{ key: "background", label: "背景" },
+					{ key: "abilities", label: "能力/技能", placeholder: '多个用「、」分隔' },
+					{ key: "notes", label: "备注" },
+					{ key: "chap", label: "归属章节号（卷内本地号）", placeholder: `留空=${curRef ? `当前 ${this.refLabel(curRef.num, curRef.vol, volNames)}` : "无（全局）"}，0=全局` },
+				],
+				"创建",
+				(v) => resolve(v),
+				() => resolve(null)
+			).open();
+		});
+		if (!vals || !vals.name.trim()) return;
+		let chapNum = 0; let chapVol: string | undefined;
+		const ct = (vals.chap ?? "").trim();
+		if (ct !== "") {
+			const n = parseInt(ct, 10);
+			if (!Number.isFinite(n) || n < 0) {
+				new Notice(`无效的章节号：${ct}`);
+				return;
+			}
+			const ref = await this.resolveLocalNum(story, n, volNames); // v0.0.15：裸章号 → 具体容器
+			if (!ref) { new Notice(`第${n}章不存在`); return; }
+			chapNum = ref.num; chapVol = ref.vol;
+		} else if (curRef) {
+			chapNum = curRef.num; chapVol = curRef.vol;
+		}
+		try {
+			await this.manager.addCharacter(story, { name: vals.name.trim(), identity: vals.identity, age: vals.age, gender: vals.gender, personality: vals.personality, appearance: vals.appearance, background: vals.background, abilities: vals.abilities, notes: vals.notes, chapter: chapNum, vol: chapVol });
+			new Notice(`已创建人物「${vals.name.trim()}」（${this.refLabel(chapNum, chapVol ?? null, volNames)}）`);
+		} catch (e) {
+			this.notifyError("创建失败", e);
+		}
+	}
+
+	/** v0.2.x+ 角色改名（独立命令）：选择人物 → 输入新名 → 全小说 MD 同步替换 + 自动备份。与「管理人员→改名」、人物关系面板「改名」共用 renameCharacterFlow */
+	async cmdCharacterRename(): Promise<void> {
+		if (!(await this.ensureWorkDir())) return;
+		const story = await this.requireStory();
+		if (!story) return;
+		try {
+			const chars = Object.values(await this.manager.loadAllCharacters(story));
+			if (!chars.length) {
+				new Notice("还没有人物，先用「新增人物」创建", 6000);
+				return;
+			}
+			const volNames = await this.volNameMap(story);
+			const byName = new Map<string, { scope: string; identity?: string }>();
+			for (const c of chars) {
+				if (byName.has(c.name)) continue; // 同名跨层只列一次（改名本就全书生效）
+				byName.set(c.name, { scope: this.refLabel(c.chapter, c.vol, volNames), identity: c.identity });
+			}
+			const names = [...byName.keys()].sort((a, b) => a.localeCompare(b, "zh"));
+			const idx = await this.pickAction(
+				"选择要改名的角色",
+				names.map((n) => {
+					const info = byName.get(n);
+					const sub = [info?.scope, info?.identity].filter(Boolean).join(" · ");
+					return { label: n, sub: sub || undefined };
+				})
+			);
+			if (idx == null) return;
+			await this.renameCharacterFlow(names[idx], story);
+		} catch (e) {
+			this.notifyError("角色改名失败", e);
+		}
+	}
+
+	/** 角色改名核心流程（命令面板 / 管理人员菜单 / 人物关系面板「改名」共用）：提示新名 → manager.renameCharacter 全书 MD 替换并备份 → 汇总 Notice */
+	async renameCharacterFlow(oldName: string, storyArg?: string): Promise<void> {
+		if (!(await this.ensureWorkDir())) return;
+		const story = storyArg ?? (await this.requireStory());
+		if (!story) return;
+		try {
+			const newName = await this.prompt(`角色改名「${oldName}」`, "新名字", [
+				"将把全书 MD 文档中所有「旧名」替换为「新名」（含《人物》《人物关系》《场景》《大纲》与各章正文）。",
+				"替换按文本全量匹配（包含子串），请确认旧名不会误伤其他词；原文件会先备份到 _backup/角色改名_时间戳/。",
+				"输入后按回车确认、Esc 取消：",
+			].join("\n"), oldName);
+			if (newName == null) return;
+			const target = newName.trim();
+			if (!target) { new Notice("新名字不能为空", 6000); return; }
+			if (target === oldName) { new Notice("新名字与旧名相同，未做修改", 6000); return; }
+			const r = await this.manager.renameCharacter(story, oldName, target);
+			if (!r) { new Notice(`未找到「${oldName}」的任何出现位置，未做修改`, 8000); return; }
+			new Notice(`已将 ${String(r.hits)} 处「${oldName}」替换为「${target}」（涉及 ${String(r.files)} 个文件，原文件已备份到 _backup/角色改名_时间戳/）`, 10000);
+			for (const leaf of this.app.workspace.getLeavesOfType(RelationshipView.VIEW_TYPE)) {
+				if (leaf.view instanceof RelationshipView) leaf.view.handleRenamed(oldName, target); // 同步面板选中名，避免刷新后按旧名筛选为空
+			}
+			this.scheduleRelationshipPanelRefresh(0); // 立即刷新已打开的人物关系面板
+		} catch (e) {
+			this.notifyError("角色改名失败", e);
+		}
+	}
+
+	/** /analyze-cast：逐章 LLM 分析正文（严格 JSON），跨章聚合后按「出现范围」定层——
+	 * ≥2 容器→书级、单容器多章→容器级、仅 1 章→章级（平铺模式全部容器归书根）；
+	 * 同名条目移动+字段合并（现有优先、缺项补新，重复运行幂等自归位），关系按 A-B 对去重纯追加。
+	 * 全程同一生成面板逐章流式展示；某章 3 次输出均非合法 JSON 则跳过该章并在汇总中列出；
+	 * 用户中断（Esc/关面板）→ 不写任何文件（出现范围信息不完整）。 */
+	async cmdAnalyzeCast(): Promise<void> {
+		if (!(await this.ensureWorkDir())) return;
+		const story = await this.requireStory();
+		if (!story) return;
+		try {
+			const state = await this.manager.validatedState(story);
+			const useVolumes = state.use_volumes !== false;
+			if (useVolumes && !(await this.ensureVolumeLayout(story))) return;
+			const chapters = await this.manager.listChapters(story);
+			if (!chapters.length) { new Notice("这本书还没有章节，没有可分析的正文", 8000); return; }
+			const volNames = await this.volNameMap(story);
+			const targets: Array<{ key: string; label: string; content: string }> = [];
+			const emptyLabels: string[] = [];
+			for (const ch of chapters) {
+				const label = this.keyLabel(ch.key, volNames, ch.title);
+				const content = await this.manager.readChapterContent(story, ch.key);
+				if (!content.trim()) { emptyLabels.push(label); continue; } // 空正文章跳过
+				targets.push({ key: ch.key, label, content });
+			}
+			if (!targets.length) { new Notice("所有章节都还没有正文，无法分析", 8000); return; }
+
+			const setup = this.getPhaseLlmSetup(2); // v0.2.22+：文章大纲生成和编写文章阶段
+			if (!setup) return;
+
+			// 现有三层文档播种：已知人名/场景名（跨章名称归一）+ 已有关系对（去重基线）
+			const charLayers = await this.manager.loadCharacterLayerDocs(story);
+			const sceneLayers = await this.manager.loadSceneLayerDocs(story);
+			const existingRelPairs = new Set((await this.manager.readAllRelationshipEntries(story)).map((r) => relPairKey(r.a, r.b)));
+			const knownNames = new Set<string>();
+			for (const layer of charLayers) for (const c of Object.values(layer.entries)) knownNames.add(c.name);
+			const knownSceneIds = new Set<string>();
+			for (const layer of sceneLayers) for (const s of Object.values(layer.entries)) knownSceneIds.add(s.scene_id);
+
+			const view = await this.beginWritingPanel(`分析人物与场景 · ${story}`);
+			if (!view) { new Notice("无法打开生成面板，本次操作已取消", 8000); return; }
+			if (emptyLabels.length) new Notice(`${String(emptyLabels.length)} 个章节没有正文，将跳过：${emptyLabels.join("、")}`, 10000);
+
+			const analyses: Array<{ key: string; analysis: CastChapterAnalysis }> = [];
+			const skipped: string[] = [];
+			let aborted = false;
+			for (let i = 0; i < targets.length; i++) {
+				const t = targets[i];
+				const label = `分析${t.label}（${String(i + 1)}/${String(targets.length)}）`;
+				view.beginStream(label);
+				let raw = "";
+				let parsed: CastChapterAnalysis | null = null;
+				for (let attempt = 1; attempt <= 3; attempt++) {
+					raw = await this.streamWithEmptyRetry(setup.cfg, () => [
+						{ role: "system" as const, content: CAST_ANALYZE_SYSTEM_PROMPT },
+						{ role: "user" as const, content: buildCastChapterPrompt({
+							chapterLabel: t.label,
+							content: t.content,
+							knownNames: [...knownNames],
+							knownSceneIds: [...knownSceneIds],
+							retryNote: attempt > 1 ? "你上一次的输出不是合法 JSON。请严格按上述格式只输出一个 JSON 对象，不要代码围栏、不要任何解释文字。" : undefined,
+						}) },
+					], view, label);
+					if (view.signal.aborted) { aborted = true; break; } // 用户 Esc / 关面板 → 整轮中止
+					parsed = parseCastChapterAnalysis(raw);
+					if (parsed) break;
+					if (attempt < 3) {
+						new Notice(`${t.label}：输出不是合法 JSON（第${String(attempt)}次），正在重试…`, 6000);
+						view.reset(); // 丢弃非法输出，重试从零开始
+					}
+				}
+				if (aborted) break;
+				if (!parsed) {
+					skipped.push(t.label);
+					if (raw.trim()) view.fail("模型输出不是合法 JSON（已重试 3 次）"); // 连续空时 streamWithEmptyRetry 已 fail，不重复
+					continue;
+				}
+				for (const c of parsed.characters) knownNames.add(c.name);
+				for (const s of parsed.scenes) knownSceneIds.add(s.scene_id);
+				analyses.push({ key: t.key, analysis: parsed });
+			}
+			if (aborted) {
+				new Notice(`已停止：分析了 ${String(analyses.length)}/${String(targets.length)} 章，未写入任何文件（出现范围信息不完整）`, 12000);
+				return;
+			}
+			if (!analyses.length) {
+				view.fail("所有章节分析均失败，未写入任何文件");
+				new Notice(`✗ 分析失败：${String(targets.length)} 个章节的模型输出均无效，未写入任何文件`, 12000);
+				return;
+			}
+
+			// 聚合 + 定层 + 写盘计划 → 落盘（人物/场景整层重写、关系逐层追加）
+			const agg = aggregateCastAnalyses(analyses);
+			const charPlan = buildCharacterWritePlan(charLayers, agg, useVolumes);
+			const scenePlan = buildSceneWritePlan(sceneLayers, agg, useVolumes);
+			let charLayersWritten = 0;
+			let sceneLayersWritten = 0;
+			let relAdded = 0;
+			try {
+				for (const out of charPlan) if (out.changed) { await this.manager.saveCharacterLayer(story, out.ref, out.entries); charLayersWritten++; }
+				for (const out of scenePlan) if (out.changed) { await this.manager.saveSceneLayer(story, out.ref, out.entries); sceneLayersWritten++; }
+				for (const g of buildRelationshipWritePlan(existingRelPairs, agg, useVolumes)) {
+					if (!g.entries.length) continue;
+					await this.manager.appendRelationships(story, g.ref.scope, g.entries, { volId: g.ref.volId ?? null, chapterKey: g.ref.chapterKey ?? null });
+					relAdded += g.entries.length;
+				}
+			} catch (e) {
+				this.notifyError("分析结果落盘失败", e);
+				view.fail("落盘失败");
+				return;
+			}
+			view.finishAuto(`✓ 分析完成：人物 ${String(agg.characters.size)} · 场景 ${String(agg.scenes.size)} · 新关系 ${String(relAdded)}`, "全程用时");
+			let msg = `✓ 人物/场景分析完成：分析 ${String(analyses.length)}/${String(targets.length)} 章，人物 ${String(agg.characters.size)}（更新 ${String(charLayersWritten)} 层）、场景 ${String(agg.scenes.size)}（更新 ${String(sceneLayersWritten)} 层）、新增关系 ${String(relAdded)}`;
+			if (skipped.length) msg += `\n跳过 ${String(skipped.length)} 章（模型输出无效）：${skipped.join("、")}`;
+			new Notice(msg, 15000);
+		} catch (e) {
+			this.notifyError("人物/场景分析失败", e);
+		}
+	}
+
+	async cmdCharacterManage(): Promise<void> {
+		if (!(await this.ensureWorkDir())) return;
+		const story = await this.requireStory();
+		if (!story) return;
+		try {
+			const chars = Object.values(await this.manager.loadAllCharacters(story));
+			if (!chars.length) {
+				new Notice("还没有人物，先用「新增人物」创建");
+				return;
+			}
+			chars.sort((a, b) => a.chapter - b.chapter || a.name.localeCompare(b.name));
+			const volNames = await this.volNameMap(story); // v0.0.15：归属展示带卷前缀（c.vol 为加载时打标的运行态容器）
+			const idx = await this.pickAction(
+				"选择要管理的人物",
+				chars.map((c) => ({ label: c.name, sub: `${this.refLabel(c.chapter, c.vol, volNames)} · ${c.identity || ""}`.trim() }))
+			);
+			if (idx == null) return;
+			const char = chars[idx];
+			const act = await this.pickAction(`管理人员「${char.name}」`, [
+				{ label: "查看详情" },
+				{ label: "编辑信息（身份/年龄/性格/外貌/背景/能力等）" },
+				{ label: `移动归属章节（当前：${this.refLabel(char.chapter, char.vol, volNames)}）` },
+				{ label: "改名（全小说 MD 同步替换并自动备份）" },
+				{ label: "删除此人（并清理各场景中的引用）" },
+			]);
+			if (act == null) return;
+			switch (act) {
+				case 0: {
+					const lines: Array<string | PanelLine> = [{ text: char.name, bold: true }];
+					for (const [k, v] of Object.entries({ 归属: this.refLabel(char.chapter, char.vol, volNames), 身份: char.identity, 年龄: char.age, 性别: char.gender, 性格: char.personality, 外貌: char.appearance, 背景: char.background, 能力: char.abilities?.join("、"), 备注: char.notes })) if (v) lines.push(`${k}：${v}`);
+					new TextPanelModal(this.app, `人物详情 · ${char.name}`, lines).open();
+					break;
+				}
+				case 1: {
+					const vals = await new Promise<Record<string, string> | null>((resolve) => {
+						new MultiFieldModal(
+							this.app,
+							`编辑「${char.name}」`,
+							[
+								{ key: "identity", label: "身份" },
+								{ key: "age", label: "年龄" },
+								{ key: "gender", label: "性别" },
+								{ key: "personality", label: "性格" },
+								{ key: "appearance", label: "外貌" },
+								{ key: "background", label: "背景" },
+								{ key: "abilities", label: "能力/技能", placeholder: '多个用「、」分隔' },
+								{ key: "notes", label: "备注" },
+							],
+							"保存",
+							(v) => resolve(v),
+							() => resolve(null),
+							{ identity: char.identity ?? "", age: char.age ?? "", gender: char.gender ?? "", personality: char.personality ?? "", appearance: char.appearance ?? "", background: char.background ?? "", abilities: (char.abilities ?? []).join("、"), notes: char.notes ?? "" }
+						).open();
+					});
+					if (!vals) break;
+					await this.manager.updateCharacter(story, char.name, { identity: vals.identity, age: vals.age, gender: vals.gender, personality: vals.personality, appearance: vals.appearance, background: vals.background, abilities: splitList(vals.abilities || ""), notes: vals.notes });
+					new Notice(`已更新「${char.name}」`);
+					break;
+				}
+				case 2: {
+					const t = await this.prompt("移动归属章节", `新的章节号（卷内本地号，0=全局，当前=${this.refLabel(char.chapter, char.vol, volNames)}）`);
+					if (t == null) break;
+					const n = parseInt(t, 10);
+					if (!Number.isFinite(n) || n < 0) new Notice(`无效的章节号：${t}`);
+					else {
+						const ref = await this.resolveLocalNum(story, n, volNames); // v0.0.15：裸章号 → 具体容器（跨卷同号逐个确认）
+						if (!ref) new Notice(`第${n}章不存在`);
+						else if (ref.num === char.chapter && (ref.vol ?? undefined) === (char.vol ?? undefined)) { /* 同容器同号 → 不变 */ }
+						else {
+							await this.manager.updateCharacter(story, char.name, { chapter: ref.num, vol: ref.vol });
+							new Notice(`「${char.name}」已移动到 ${this.refLabel(ref.num, ref.vol ?? null, volNames)}`);
+						}
+					}
+					break;
+				}
+				case 3: {
+					await this.renameCharacterFlow(char.name, story); // 与命令面板「角色改名」/人物关系面板「改名」同一流程
+					break;
+				}
+				default: {
+					const ok = await this.confirmBox("删除人物？", `将删除「${char.name}」并清理各场景中的引用。如需保留请改用「改名」。`, "删除");
+					if (!ok) break;
+					const done = await this.manager.deleteCharacter(story, char.name);
+					new Notice(done ? "已删除该人物" : "删除失败：人物不存在");
+				}
+			}
+		} catch (e) {
+			this.notifyError("操作失败", e);
+		}
+	}
+
+	// ---------- 伏笔（/foreshadow）----------
+
+	async cmdForeshadowList(): Promise<void> {
+		if (!(await this.ensureWorkDir())) return;
+		const story = await this.requireStory();
+		if (!story) return;
+		try {
+			const items = await this.manager.loadForeshadows(story);
+			if (!items.length) {
+				new Notice("还没有伏笔记录");
+				return;
+			}
+			const volNames = await this.volNameMap(story); // v0.0.15：it.chapter 为复合键，展示带卷前缀
+			const lines: Array<string | PanelLine> = [];
+			items.forEach((it, i) => {
+				lines.push({ text: `${it.done ? "✔" : "○"} ${this.keyLabel(it.chapter, volNames)} #${(it.index ?? i) + 1}`, bold: !it.done });
+				const bits = [it.character ? `人物：${it.character}` : "", it.reason || ""].filter(Boolean);
+				if (bits.length) lines.push(`  ${bits.join(" ")}`);
+			});
+			lines.push("");
+			lines.push(`共 ${items.length} 条，其中已完成 ${items.filter((i) => i.done).length} 条`);
+			new TextPanelModal(this.app, "伏笔列表", lines).open();
+		} catch (e) {
+			this.notifyError("读取失败", e);
+		}
+	}
+
+	async cmdForeshadowAdd(): Promise<void> {
+		if (!(await this.ensureWorkDir())) return;
+		const story = await this.requireStory();
+		if (!story) return;
+		const key = await this.requireChapterKey(story); // v0.0.15：复合键
+		if (key == null) return;
+		const volNames = await this.volNameMap(story);
+		const label = this.keyLabel(key, volNames);
+		const character = await this.prompt(`${label} · 添加伏笔`, "涉及角色（可留空）");
+		if (character == null) return;
+		const reason = await new Promise<string | null>((resolve) => {
+			new TextAreaPrompt(this.app, `${label} · 伏笔事由`, "埋了什么、为什么重要…", "", "保存", (v) => resolve(v), () => resolve(null)).open();
+		});
+		if (reason == null || !reason.trim()) return;
+		try {
+			const idx = await this.manager.addForeshadow(story, key, character, reason);
+			new Notice(`已写入 伏笔.md：${label} 伏笔 #${idx + 1}`);
+		} catch (e) {
+			this.notifyError("添加失败", e);
+		}
+	}
+
+	async cmdForeshadowManage(): Promise<void> {
+		if (!(await this.ensureWorkDir())) return;
+		const story = await this.requireStory();
+		if (!story) return;
+		try {
+			const items = await this.manager.loadForeshadows(story);
+			if (!items.length) {
+				new Notice("还没有伏笔记录，先用「添加伏笔」创建");
+				return;
+			}
+			const volNames = await this.volNameMap(story); // v0.0.15：item.chapter 为复合键
+			const idx = await this.pickAction(
+				"选择要管理的伏笔",
+				items.map((it, i) => ({ label: `${it.done ? "✔" : "○"} ${this.keyLabel(it.chapter, volNames)} #${(it.index ?? i) + 1}`, sub: [it.character, it.reason].filter(Boolean).join(" ") }))
+			);
+			if (idx == null) return;
+			const item = items[idx];
+			const act = await this.pickAction(`管理 ${this.keyLabel(item.chapter, volNames)} 伏笔 #${(item.index ?? idx) + 1}`, [
+				item.done ? { label: "取消完成标记" } : { label: "标记为已完成" },
+				{ label: "删除这条伏笔" },
+			]);
+			if (act == null) return;
+			const pos = item.index ?? idx;
+			if (act === 0) {
+				const ok = await this.manager.setForeshadowDone(story, item.chapter, pos, !item.done);
+				new Notice(ok ? `已${!item.done ? "标记完成" : "取消完成"}` : "操作失败：未找到该条伏笔（可能已被其他操作改动，请重新打开列表）");
+			} else {
+				const confirmOk = await this.confirmBox("删除伏笔？", `[${[item.character, item.reason].filter(Boolean).join(" ") || "无内容"}]`, "删除");
+				if (!confirmOk) return;
+				const ok = await this.manager.deleteForeshadow(story, item.chapter, pos);
+				new Notice(ok ? "已删除该条伏笔" : "删除失败：未找到该条伏笔");
+			}
+		} catch (e) {
+			this.notifyError("操作失败", e);
+		}
+	}
+
+	// ---------- 世界观（/world）----------
+
+	async cmdWorldShow(): Promise<void> {
+		if (!(await this.ensureWorkDir())) return;
+		const story = await this.requireStory();
+		if (!story) return;
+		try {
+			const ws = await this.manager.readWorldDoc(story);
+			const lines: Array<string | PanelLine> = [];
+			for (const [k, v] of Object.entries({ 世界: ws.name, 类型: ws.world_type, 规则: ws.rules?.length ? ws.rules.join("；") : "", 势力: ws.factions?.length ? ws.factions.join("、") : "", 地点: ws.locations?.length ? ws.locations.join("、") : "" })) if (v) lines.push(`${k}：${v}`);
+			if (ws.history) lines.push("", "---", "", `历史：`, ws.history);
+			if (ws.magic_system) lines.push("", "---", "", `力量体系：`, ws.magic_system);
+			new TextPanelModal(this.app, "世界观总览", lines.length ? lines : ["（世界观.md 还是空的，用「设置世界观字段」填写）"]).open();
+		} catch (e) {
+			this.notifyError("读取失败", e);
+		}
+	}
+
+	async cmdWorldSet(): Promise<void> {
+		if (!(await this.ensureWorkDir())) return;
+		const story = await this.requireStory();
+		if (!story) return;
+		const field = await this.prompt("设置世界观", "字段名：世界 / 类型 / 规则 / 势力 / 地点 / 历史 / 力量体系");
+		if (!field?.trim()) return;
+		const value = await new Promise<string | null>((resolve) => {
+			new TextAreaPrompt(this.app, `世界观 · ${field.trim()}`, "规则/势力/地点多个项可用「、」或分号分隔；历史与力量体系支持多行…", "", "保存", (v) => resolve(v), () => resolve(null)).open();
+		});
+		if (value == null) return;
+		try {
+			const ok = await this.manager.setWorldField(story, field, value);
+			new Notice(ok ? `${field.trim()} 已写入 世界观.md` : `未知字段：${field.trim()}（可选：世界/类型/规则/势力/地点/历史/力量体系）`, 6000);
+		} catch (e) {
+			this.notifyError("写入失败", e);
+		}
+	}
+
+	// ---------- 大纲追加 / 章节大纲打开 ----------
+
+	async cmdOutlineAppendCurrent(): Promise<void> {
+		if (!(await this.ensureWorkDir())) return;
+		const story = await this.requireStory();
+		if (!story) return;
+		const key = await this.requireChapterKey(story); // v0.0.15：复合键
+		if (key == null) return;
+		const volNames = await this.volNameMap(story);
+		const label = this.keyLabel(key, volNames);
+		const content = await new Promise<string | null>((resolve) => {
+			new TextAreaPrompt(this.app, `${label} · 追加大纲`, "写剧情要点；需要埋伏笔用 [伏]…[/] 包裹，将自动提取到 伏笔.md", "", "保存并追加", (v) => resolve(v), () => resolve(null)).open();
+		});
+		if (content == null || !content.trim()) return;
+		try {
+			const r = await this.manager.appendChapterOutline(story, key, content);
+			if (!r.appended) new Notice("该内容已存在于本章大纲中，未重复追加");
+			else new Notice(`已追加到 ${label} 的 章节大纲.md${r.foreshadows ? `，并提取 ${r.foreshadows} 条伏笔` : ""}`, 6000);
+		} catch (e) {
+			this.notifyError("追加失败", e);
+		}
+	}
+
+	async cmdOpenChapterOutline(): Promise<void> {
+		if (!(await this.ensureWorkDir())) return;
+		const story = await this.requireStory();
+		if (!story) return;
+		const key = await this.requireChapterKey(story); // v0.0.15：复合键
+		if (key == null) return;
+		try {
+			const path = await this.manager.chapterDocPath(story, key, "章节大纲.md");
+			if (!path) {
+				new Notice(`${this.keyLabel(key)} 不存在`);
+				return;
+			}
+			const num = parseChKey(key).num;
+			const t = (await this.manager.listChapters(story)).find((c) => c.key === key)?.title ?? "";
+			await this.manager.ensureDoc(path, chapterOutlineTemplate(num, t));
+			await this.manager.openMarkdown(path);
+		} catch (e) {
+			this.notifyError("打开失败", e);
+		}
+	}
+
+	// ---------- 章节删除 / 改名 / 重编号（对齐 chapters.py）----------
+
+	private async pickChapterAction(title: string): Promise<{ key: string; num: number; title: string } | null> {
+		const story = await this.requireStory();
+		if (!story) return null;
+		const chapters = await this.manager.listChapters(story);
+		if (!chapters.length) {
+			new Notice("还没有章节");
+			return null;
+		}
+		const state = await this.manager.loadState(story);
+		const volNames = await this.volNameMap(story); // v0.0.15：展示带卷前缀、按复合键比对当前章
+		const idx = await this.pickAction(
+			title,
+			chapters.map((c) => ({ label: this.keyLabel(c.key, volNames, c.title), marker: state?.current_chapter === c.key ? "▶ 当前" : undefined }))
+		);
+		if (idx == null) return null;
+		return { key: chapters[idx].key, num: chapters[idx].num, title: chapters[idx].title };
+	}
+
+	async cmdChapterDelete(): Promise<void> {
+		if (!(await this.ensureWorkDir())) return;
+		const picked = await this.pickChapterAction("选择要删除的章节");
+		if (!picked) return;
+		const story = (this.settings.lastStory || (await this.requireStory()));
+		if (!story || !(await this.ensureVolumeLayout(story))) return;
+		try {
+			const ok = await this.confirmBox(`删除${this.chapterLabel(picked.num, picked.title)}？`, "章节目录将移入 Obsidian 回收站，元数据与卷归属一并清理；若为当前章节则回退到最后一章。本容器内其后的各章会自动重新排号、保持连续编号。", "删除");
+			if (!ok) return;
+			const r = await this.manager.deleteChapter(story, picked.key); // v0.0.15：复合键
+			new Notice(`${this.chapterLabel(picked.num, picked.title)} 已删除（可在回收站找回）${r.resequenced ? "；后续章节已自动重新排号为连续" : ""}`);
+		} catch (e) {
+			this.notifyError("删除失败", e);
+		}
+	}
+
+	async cmdChapterRename(): Promise<void> {
+		if (!(await this.ensureWorkDir())) return;
+		const story = await this.requireStory();
+		if (!story || !(await this.ensureVolumeLayout(story))) return;
+		const picked = await this.pickChapterAction("选择要重命名的章节");
+		if (!picked) return;
+		const t = await this.prompt(`重命名 ${this.chapterLabel(picked.num)}`, `新标题（当前：${picked.title}）`);
+		if (!t?.trim()) return;
+		try {
+			const newTitle = await this.manager.renameChapter(story, picked.key, t.trim()); // v0.0.15：复合键
+			new Notice(`已改名为 ${this.chapterLabel(picked.num, newTitle)}，目录与文档引用已同步`, 6000);
+		} catch (e) {
+			this.notifyError("改名失败", e);
+		}
+	}
+
+	async cmdChapterRenumber(): Promise<void> {
+		if (!(await this.ensureWorkDir())) return;
+		const story = await this.requireStory();
+		if (!story || !(await this.ensureVolumeLayout(story))) return;
+		const ok = await this.confirmBox(
+			"重排全部章节编号？",
+			"所有章节目录将按现有顺序从第1章起连续重新编号，各文档中的「第N章 / 章节：N」交叉引用与伏笔编号会一并改写。建议先保存所有打开的编辑。",
+			"开始重排"
+		);
+		if (!ok) return;
+		try {
+			const r = await this.manager.renumberChapters(story);
+			new Notice(r.msg || (r.ok ? "已完成重排" : "未完成"), 8000);
+		} catch (e) {
+			this.notifyError("重排失败", e);
+		}
+	}
+
+async cmdRenameChapterFile(): Promise<void> {
+    if (!(await this.ensureWorkDir())) return;
+    const story = await this.requireStory();
+    if (!story) return;
+    const chapters = await this.manager.listChapters(story);
+    if (!chapters.length) {
+        new Notice("该小说没有章节");
+        return;
+    }
+    const idx = await this.pickAction(
+        "选择要重命名的章节",
+        chapters.map((ch) => ({
+            label: (ch.vol ? "卷「" + ch.vol + "」" : "书根") + " 第" + String(ch.num).padStart(2, "0") + "章 " + ch.title,
+        })),
+    );
+    if (idx == null) return;
+    const chapter = chapters[idx];
+    if (!chapter) return;
+    const newTitle = await this.prompt("新章节标题", "输入新的章节标题（留空保持不变）", chapter.title);
+    if (newTitle == null) return;
+    const newSafe = safeFilename(newTitle.trim());
+    try {
+        const complexKey = chapter.vol ? chapter.vol + ":" + String(chapter.num) : String(chapter.num);
+        await this.manager.renameChapter(story, complexKey, newSafe);
+        new Notice("章节文件已重命名为：" + newSafe);
+    } catch (e) {
+        this.notifyError("重命名失败", e);
+    }
+}
+
+	// ---------- 打包合集（/pack）----------
+
+	async cmdPackChapters(): Promise<void> {
+		if (!(await this.ensureWorkDir())) return;
+		const story = await this.requireStory();
+		if (!story) return;
+		const specText = await this.prompt("打包章节合集", "输入范围表达式（留空=仅当前章）", [
+			"将所选范围内章节的《章节.md》正文合一 MD、按阅读序排列：",
+			"· 留空 —— 只打当前章",
+			"· all / 全部 —— 整本书（书根未归卷章节 + 各卷）",
+			"· 区间 —— 如 3-7 或 三至七（容器内本地章号，自动升序）",
+			"· 列表 —— 如 1、4、5（逗号/顿号/空格分隔均可）",
+			"· 多卷可加卷名前缀限定范围，如 「风起 3-7」（裸号跨多个容器会报歧义，请加前缀区分）",
+		].join("\n"));
+		if (specText == null) return;
+		const outText = await this.prompt("输出路径", "输出位置（留空用默认文件名）", [
+			"· 留空 —— 存到该小说目录下 <书名>-第X-Y章-合集.md（单章为 <书名>-第X章-合集.md；重打包覆盖同名文件）",
+			"· 以 .md 结尾 —— 视为完整文件名，原样使用",
+			"· 其他 —— 视为目标目录，自动拼上默认文件名",
+		].join("\n"));
+		if (outText == null) return;
+		try {
+			const r = await this.manager.packChapters(story, specText.trim(), outText.trim());
+			const words = r.packed.reduce((s, p) => s + p.words, 0);
+			new Notice(`已生成 ${r.path}（${r.packed.length} 章，纯文字共 ${words} 字${r.skipped.length ? `；跳过无正文：${r.skipped.map((n) => this.chapterLabel(n)).join("、")}` : ""}）`, 8000);
+			await this.manager.openMarkdown(r.path);
+		} catch (e) {
+			this.notifyError("打包失败", e);
+		}
+	}
+
+	async cmdPackVolume(): Promise<void> {
+		if (!(await this.ensureWorkDir())) return;
+		const story = await this.requireStory();
+		if (!story) return;
+		await this.ensureVolumeModeEnabled(story); // v0.0.16+：无卷模式先自动转为有卷再导出
+		if (!(await this.ensureVolumeLayout(story))) return; // 平面残留先归位，位置才等于归属
+		try {
+			const vols = await this.manager.volumeList(story);
+			if (!vols.length) {
+				new Notice("还没有卷，先用「新建卷」创建");
+				return;
+			}
+			const state = await this.manager.validatedState(story);
+			const chs = await this.manager.listChapters(story);
+			const idx = await this.pickAction(
+				"选择要导出的卷",
+				vols.map((v) => ({ label: v.name, sub: `${chs.filter((c) => c.vol === v.id).length} 章${v.description ? ` · ${v.description}` : ""}`, marker: state.current_volume === v.id ? "▶ 当前" : undefined }))
+			);
+			if (idx == null) return;
+			const vol = vols[idx];
+			const outText = await this.prompt(`导出卷「${vol.name}」`, "输出位置（留空用默认文件名）", [
+				"将该卷全部章节的《章节.md》正文合一 MD（按章序排列），输出路径规则：",
+				"· 留空 —— 存到该小说目录下 <书名>-<卷名>-合集.md（再次导出会覆盖同名文件）",
+				"· 以 .md 结尾 —— 视为完整文件名，原样使用",
+				"· 其他 —— 视为目标目录，自动拼上默认文件名 <书名>-<卷名>-合集.md",
+			].join("\n"));
+			if (outText == null) return;
+			const r = await this.manager.packVolume(story, vol.id, outText.trim());
+			const words = r.packed.reduce((s, p) => s + p.words, 0);
+			new Notice(`已生成 ${r.path}（卷「${vol.name}」共 ${r.packed.length} 章，纯文字 ${words} 字${r.skipped.length ? `；跳过无正文：${r.skipped.map((n) => this.chapterLabel(n)).join("、")}` : ""}）`, 8000);
+			await this.manager.openMarkdown(r.path);
+		} catch (e) {
+			this.notifyError("导出失败", e);
+		}
+	}
+
+	// ---------- 扫描重建 / 编写类型 ----------
+
+	async cmdRescanStory(): Promise<void> {
+		if (!(await this.ensureWorkDir())) return;
+		const story = await this.requireStory();
+		if (!story) return;
+		try {
+			const r = await this.manager.rescanStory(story);
+			new Notice(`扫描完成：章节 ${r.chapters} 个，总字数（纯文字）${r.totalWords}${r.createdDocs ? `，补齐缺失模板文档 ${r.createdDocs} 份` : ""}${r.volumeFixed ? `，修正与目录位置不一致的卷归属字段 ${r.volumeFixed} 处` : ""}`, 6000);
+		} catch (e) {
+			this.notifyError("扫描失败", e);
+		}
+	}
+
+	/** v0.2.x+「补全故事状态可用参数」：升级旧的故事状态文档——把缺失的书级提示词组装选项（prev_chapters / include_volume_summary）逐项询问后显式补写进 frontmatter（正文原样保留、其余键不动）；两项均已显式设置时仅提示无需补全。旧版 story_state.json 载体经 loadState/saveState 顺带迁移为 MD 文档 */
+	async cmdCompleteState(): Promise<void> {
+		if (!(await this.ensureWorkDir())) return;
+		const story = await this.requireStory();
+		if (!story) return;
+		const state = await this.manager.loadState(story);
+		if (!state) { new Notice("读取故事状态文档失败", 6000); return; }
+		const missingPrev = state.prev_chapters == null;
+		const missingVolSum = state.include_volume_summary == null;
+		if (!missingPrev && !missingVolSum) {
+			new Notice(`《${story}》故事状态文档的可用参数已齐全（prev_chapters=${state.prev_chapters}、include_volume_summary=${state.include_volume_summary}），无需补全`, 8000);
+			return;
+		}
+		const parts: string[] = [];
+		if (missingPrev) {
+			const n = await this.promptPrevChaptersInput(story);
+			if (n == null) return; // 取消：不写盘
+			state.prev_chapters = n;
+			parts.push(`prev_chapters=${n}`);
+		}
+		if (missingVolSum) {
+			const on = await this.confirmBox(
+				"是否使用前卷摘要组织提示词（include_volume_summary）",
+				`《${story}》的故事状态文档缺少书级参数 include_volume_summary（是否使用前卷摘要组织提示词）。\n开启后写作上下文额外注入本卷完整《卷摘要》，跨卷缺口以各前卷《卷摘要》由近及远填充；关闭则严格只按窗口章数注入单章摘要。\n当前按全局设置生效（${this.settings.includeVolumeSummary ? "开" : "关"}）。\n确认＝写入 true（开）、取消＝写入 false（关）：`,
+				"开启"
+			);
+			state.include_volume_summary = on;
+			parts.push(`include_volume_summary=${on}`);
+		}
+		try {
+			await this.manager.saveState(story, state);
+			new Notice(`已补全故事状态参数：${parts.join("、")}`, 8000);
+		} catch (e) {
+			this.notifyError("补全故事状态参数失败", e);
+		}
+	}
+
+	async cmdSetStyle(): Promise<void> {
+		if (!(await this.ensureWorkDir())) return;
+		const story = await this.requireStory();
+		if (!story) return;
+		const t = await this.prompt("设置编写类型", "如：网文小说 / 剧本 / 普通小说 / 散文随笔");
+		if (!t?.trim()) return;
+		try {
+			const style = await this.manager.setWritingStyle(story, t.trim());
+			new Notice(`编写类型已设为「${style}」`);
+		} catch (e) {
+			this.notifyError("设置失败", e);
+		}
+	}
+
+	// ---------- 创作规范 WRITING_GUIDE.md（三层：小说级 <书名>/ > 用户级 <work_dir>/ > 系统级插件设置 data.json，对齐 CLI /agents view/edit） ----------
+
+	/** 系统级指南文件路径：插件数据目录 .obsidian/plugins/<id>/WRITING_GUIDE.md（不被元数据索引收录，走 DataAdapter 读写） */
+	private systemGuidePath(): string {
+		return `${this.app.vault.configDir}/plugins/${this.manifest.id}/WRITING_GUIDE.md`;
+	}
+
+	/** 首次运行确保系统级文件存在：缺失则用 data.json 内嵌内容（旧版迁移）或内置默认播种；失败不阻断启动 */
+	private async ensureSystemGuideFile(): Promise<void> {
+		try {
+			const p = this.systemGuidePath();
+			if (!(await this.manager.pluginFileExists(p))) {
+				const sg = this.settings.llm?.system_guide; // 旧版内嵌内容作一次性迁移种子
+				const seed = sg && sg.trim() ? sg : DEFAULT_SYSTEM_GUIDE;
+				await this.manager.writePluginFile(p, seed);
+			}
+		} catch (e) {
+			console.warn("[ArticleWriter] 初始化系统级写作指南失败", e);
+		}
+	}
+
+	/** 读取系统级生效文本；读不到/为空回落内置默认（提示词永不缺底层规范） */
+	private async readSystemGuideText(): Promise<string> {
+		const t = await this.manager.readPluginFile(this.systemGuidePath());
+		return t && t.trim() ? t : DEFAULT_SYSTEM_GUIDE;
+	}
+
+	// ---------- 情节张力/节奏规则 TENSION_RULES.md（插件数据目录播种文件，仅注入大纲/策划路径，不进正文写作提示词） ----------
+
+	/** 张力规则文件路径：插件数据目录 .obsidian/plugins/<id>/TENSION_RULES.md（不被元数据索引收录，走 DataAdapter 读写） */
+	private tensionRulesPath(): string {
+		return `${this.app.vault.configDir}/plugins/${this.manifest.id}/TENSION_RULES.md`;
+	}
+
+	/** 首次运行确保文件存在：缺失则用内置默认播种（已存在不覆盖——用户可编辑定制）；失败不阻断启动 */
+	private async ensureTensionRulesFile(): Promise<void> {
+		try {
+			const p = this.tensionRulesPath();
+			if (!(await this.manager.pluginFileExists(p))) {
+				await this.manager.writePluginFile(p, DEFAULT_TENSION_RULES);
+			}
+		} catch (e) {
+			console.warn("[ArticleWriter] 初始化情节张力规则失败", e);
+		}
+	}
+
+	/** 读取张力规则生效文本（运行时读盘上内容，用户改过就用改过的）；读不到/为空回落内置默认 */
+	private async loadTensionRules(): Promise<string> {
+		const t = await this.manager.readPluginFile(this.tensionRulesPath());
+		return t && t.trim() ? t : DEFAULT_TENSION_RULES;
+	}
+
+	/** 读取用户级写作指南文本（按小说类型分组） */
+	private async readUserGuideText(storyName: string): Promise<string> {
+		const storyState = await this.manager.loadState(storyName);
+		if (!storyState) return "";
+		
+		const genre = storyState.genre || "";
+		if (!genre) return "";
+		
+		// Read the user guide for this genre
+		const userGuidePath = `${this.app.vault.configDir}/plugins/${this.manifest.id}/guide-types/${genre}.md`;
+		const userGuideText = await this.manager.readPluginFile(userGuidePath);
+		return userGuideText || "";
+	}
+
+	private async cmdGenerateWritingGuideSummary() {
+		const story = this.settings.lastStory;
+		if (!story) {
+			new Notice("请先选择一个小说项目");
+			return;
+		}
+
+		const bookText = await this.manager.readPluginFile(`${this.manager.storyPath(story)}/WRITING_GUIDE.md`) || "";
+		const userText = await this.readUserGuideText(story);
+		const systemText = await this.readSystemGuideText();
+		let genre = "";
+		let writingStyle = "";
+		try {
+			const st = await this.manager.loadState(story);
+			genre = st?.genre ?? "";
+			writingStyle = st?.writing_style ?? "";
+		} catch { /* 状态读取失败按无题材处理 */ }
+
+		// Delegate to persistAggregatedGuide: genre-based type tips + hash-embedded incremental update
+		await this.persistAggregatedGuide(story, bookText, userText, systemText, genre, writingStyle);
+		new Notice(`《写作指南汇总.md》已生成并保存到 ${story} 目录`);
+	}
+
+	// ---------- 「写作要点」类型文件（插件数据目录 guide-types/*.md，按书籍题材组装进汇总） ----------
+
+	/** 单个类型要点文件路径：插件数据目录 .obsidian/plugins/<id>/guide-types/<key>.md（与系统指南同目录体系，走 DataAdapter 读写） */
+	private guideTypePath(key: string): string {
+		return `${this.app.vault.configDir}/plugins/${this.manifest.id}/guide-types/${key}.md`;
+	}
+
+	/** 首次运行确保四个类型要点文件存在：缺失则用内置默认播种（已存在不覆盖——用户可编辑定制）；失败不阻断启动 */
+	private async ensureGuideTypeFiles(): Promise<void> {
+		try {
+			for (const t of GUIDE_TYPES) {
+				const p = this.guideTypePath(t.key);
+				if (!(await this.manager.pluginFileExists(p))) {
+					await this.manager.writePluginFile(p, t.defaultText);
+				}
+			}
+		} catch (e) {
+			console.warn("[ArticleWriter] 初始化类型要点文件失败", e);
+		}
+	}
+
+	/** 读取某类型要点生效文本；读不到/为空回落内置默认（提示词永不缺类型规范） */
+	private async readGuideTypeText(key: string): Promise<string> {
+		const def = GUIDE_TYPES.find((t) => t.key === key);
+		if (!def) return "";
+		const t = await this.manager.readPluginFile(this.guideTypePath(key));
+		return t && t.trim() ? t : def.defaultText;
+	}
+
+	private guideLayers(story: string): Array<{ label: string; path?: string }> {
+		return [
+			{ label: `小说级 ${this.manager.bookGuidePath(story)}`, path: this.manager.bookGuidePath(story) },
+			{ label: `用户级 ${this.manager.userGuidePath()}`, path: this.manager.userGuidePath() },
+			{ label: `系统级 ${this.systemGuidePath()}` }, // 无 path→走插件数据目录文件（只读面板查看、全量保存覆盖）
+		];
+	}
+
+	private async readGuideLayer(l: { label: string; path?: string }): Promise<string> {
+		if (l.path) return (await this.manager.readGuideAt(l.path)) ?? "";
+		return await this.readSystemGuideText();
+	}
+
+	private async writeGuideLayer(l: { label: string; path?: string }, text: string): Promise<void> {
+		if (l.path) await this.manager.writeGuideAt(l.path, text);
+		else await this.manager.writePluginFile(this.systemGuidePath(), text);
+	}
+
+	// ---------- 三层创作规范 → 书籍目录下《写作指南汇总.md》（变更检测：头部记录三层原文 md5，任一层变化即重算落盘；提示词仅注入该汇总正文）----------
+
+	private aggregatePath(story: string): string {
+		return `${this.manager.storyPath(story)}/写作指南汇总.md`;
+	}
+
+	/** 合并三层→按题材追加命中类型的「类型要点」节→序列化为可再解析的 MD；按需把带 hash 头的汇总文件写入书目录；返回注入用正文（去 HTML 注释）与合并结果。
+	 * guideText=全文（对话/大纲路径用，禁用词类目经【创作规范】单次注入）；writerGuideText=剥离禁用词类目（正文生成路径用——该内容已由禁用词块 buildMergedBannedBlock 完整承载，防双份注入）。
+	 * genre：书籍题材自由文本（故事状态.md），未命中任何类型→不注入类型要点（typeText 空串） */
+	private async persistAggregatedGuide(story: string, bookText: string, userText: string, systemText: string, genre: string, writingStyle?: string): Promise<{ guideText: string; writerGuideText: string; merged: Record<string, string> }> {
+		const layers = [bookText, userText, systemText].filter((t) => t.trim()); // 顺序=优先级：小说级 > 用户级 > 系统级
+		const merged = mergeGuideCategories(layers);
+		let typeText = ""; // 命中类型的要点（去注释正文），多个命中依次追加
+		for (const t of matchGuideTypes(genre, writingStyle)) {
+			const body = stripComments(await this.readGuideTypeText(t.key)).trim();
+			if (!body) continue;
+			typeText += (typeText ? "\n\n" : "") + `## 写作要点（${t.name}）\n` + body;
+		}
+		if (typeText) merged["通用"] = (merged["通用"] ? merged["通用"].trimEnd() + "\n\n" : "") + typeText;
+		const body = serializeAggregateGuide(merged);
+		const h = { b: md5(bookText), u: md5(userText), s: md5(systemText), t: md5(typeText), v: "3" }; // v=合并算法版本：块级分组上线 v2、作者身份块置顶 v3，各自强制重建旧汇总一次
+		try {
+			const p = this.aggregatePath(story);
+			const existing = await this.manager.readGuideAt(p); // null=尚未生成
+			const prev = existing ? parseAggHash(existing) : null;
+			if (existing == null || !prev || prev.b !== h.b || prev.u !== h.u || prev.s !== h.s || prev.t !== h.t || prev.v !== h.v) {
+				await this.manager.writeGuideAt(p, embedAggHash(body, h));
+			}
+		} catch { /* 汇总落盘失败不影响提示词构建 */ }
+		const writerBody = merged["禁用词"] ? serializeAggregateGuide({ ...merged, "禁用词": "" }) : body; // 正文生成路径剥离禁用词类目（已由禁用词块完整承载）；落盘文件仍用全文 body
+		return { guideText: stripComments(body).trim(), writerGuideText: stripComments(writerBody).trim(), merged };
+	}
+
+	/** 读三层→合并→落盘汇总文件，返回注入正文与禁用词类目文本（写作命令/对话面板共用）；题材取自故事状态（读取失败按无题材→不注入类型要点） */
+	private async rebuildAggregatedGuide(story: string): Promise<{ guideText: string; bannedGuideText: string }> {
+		const bookText = (await this.manager.readGuideAt(this.manager.bookGuidePath(story))) ?? "";
+		const userText = (await this.manager.readGuideAt(this.manager.userGuidePath())) ?? "";
+		const systemText = await this.readSystemGuideText();
+		let genre = "";
+		let writingStyle = "";
+		try {
+			const st = await this.manager.loadState(story);
+			genre = st?.genre ?? "";
+			writingStyle = st?.writing_style ?? "";
+		} catch { /* 状态读取失败按无题材处理 */ }
+		const r = await this.persistAggregatedGuide(story, bookText, userText, systemText, genre, writingStyle);
+		return { guideText: r.guideText, bannedGuideText: r.merged["禁用词"] || "" };
+	}
+
+	async cmdAgentsView(): Promise<void> {
+		if (!(await this.ensureWorkDir())) return;
+		const story = await this.requireStory();
+		if (!story) return;
+		try {
+			const layers = this.guideLayers(story);
+			const existing: Array<{ label: string; path?: string }> = [];
+			for (const l of layers) if ((await this.readGuideLayer(l)).trim()) existing.push(l);
+			if (!existing.length) {
+				new Notice("未找到写作指南\n可用「编辑创作规范」（/agents edit）创建", 8000);
+				return;
+			}
+			let target = existing[0];
+			if (existing.length > 1) {
+				const idx = await this.pickAction("打开哪一层创作规范？", existing.map((l) => ({ label: l.label, sub: "已存在" })));
+				if (idx == null) return;
+				target = existing[idx];
+			}
+			if (target.path) await this.manager.openMarkdown(target.path);
+			else new MarkdownViewerModal(this.app, `创作规范 · ${target.label}`, await this.readGuideLayer(target)).open(); // 系统级无 vault 文件，弹只读面板
+		} catch (e) {
+			this.notifyError("打开失败", e);
+		}
+	}
+
+	async cmdAgentsEdit(): Promise<void> {
+		if (!(await this.ensureWorkDir())) return;
+		const story = await this.requireStory();
+		if (!story) return;
+		try {
+			const layers = this.guideLayers(story);
+			const items: ActionItem[] = [];
+			for (const l of layers) {
+				const content = await this.readGuideLayer(l);
+				items.push({ label: l.label, sub: content.trim() ? "已存在（将覆盖保存）" : "未创建（将新建）" });
+			}
+			const idx = await this.pickAction("编辑哪一层创作规范？", items);
+			if (idx == null) return;
+			const target = layers[idx];
+			const initial = await this.readGuideLayer(target);
+			const value = await new Promise<string | null>((resolve) => {
+				new TextAreaPrompt(this.app, `创作规范 · ${target.label}`, "小说背景 / 专业内容 / 禁用词与去AI腔规则…（全量保存，覆盖原内容）", initial, "保存", (v) => resolve(v), () => resolve(null)).open();
+			});
+			if (value == null) return;
+			if (!value.trim()) {
+				new Notice("内容为空，未保存");
+				return;
+			}
+			await this.writeGuideLayer(target, value.trim());
+			const dest = target.path ?? this.systemGuidePath();
+			try { await this.rebuildAggregatedGuide(story); } catch { /* 汇总刷新失败不阻断保存提示 */ } // 任一层变更→重算《写作指南汇总》（提示词仅注入该文件）
+			new Notice(`创作规范已保存到 ${dest}\n已同步刷新本书《写作指南汇总》`, 8000);
+		} catch (e) {
+			this.notifyError("保存失败", e);
+		}
+	}
+
+	async cmdGenerateWritingGuide(): Promise<void> {
+		if (!(await this.ensureWorkDir())) return;
+		const story = await this.requireStory();
+		if (!story) return;
+		try {
+			const tpl = EMPTY_GUIDE_TEMPLATE; // 空模板（仅段名+结构标记）由 docs/WRITING_GUIDE_template.md 打包内联，与系统级同格式
+			const created: string[] = [];
+			const skipped: string[] = [];
+			for (const [label, path] of [["用户级", this.manager.userGuidePath()], ["小说级", this.manager.bookGuidePath(story)]] as Array<[string, string]>) {
+				const ex = await this.manager.readGuideAt(path);
+				if (ex != null && ex.trim()) skipped.push(`${label} ${path}`);
+				else { await this.manager.writeGuideAt(path, tpl); created.push(`${label} ${path}`); }
+			}
+			let msg = "";
+			if (created.length) msg += `已创建空模板（仅段名）：\n${created.join("\n")}\n`;
+			if (skipped.length) msg += `已跳过（目标非空）：\n${skipped.join("\n")}\n`;
+			msg += "系统级请用「重新生成系统写作指南」命令维护。";
+			new Notice(msg.trim(), 10000);
+			try { await this.rebuildAggregatedGuide(story); } catch { /* ignore */ }
+		} catch (e) {
+			this.notifyError("生成写作指南失败", e);
+		}
+	}
+
+	/** 启动自检：工作目录有效但《使用说明.md》缺失/为空 → 用内置默认创建并在布局就绪后打开（覆盖首装升级、文档被删两种场景）；已存在一律不动 */
+	private async ensureUsageDocOnStartup(): Promise<void> {
+		try {
+			const dir = this.settings.workDir.replace(/\/+$/, "");
+			if (!dir) return;
+			if (!(this.app.vault.getAbstractFileByPath(dir) instanceof TFolder)) return;
+			const p = this.usageDocPath();
+			const ex = await this.manager.readGuideAt(p);
+			if (ex != null && ex.trim()) return;
+			await this.manager.writeGuideAt(p, DEFAULT_USAGE_GUIDE);
+			new Notice("已在工作目录创建《使用说明.md》", 8000);
+			this.openWhenLayoutReady(p);
+		} catch (e) {
+			console.warn("[ArticleWriter] 启动生成《使用说明.md》失败", e);
+		}
+	}
+
+	/** 等 workspace 布局就绪再开文件（onload 阶段 getLeaf 可能不可用）；本仓库 dts 版本的 workspace.on 无 layout-ready 事件，改用短轮询、registerInterval 托管卸载清理 */
+	private openWhenLayoutReady(path: string): void {
+		const run = () => { void this.manager.openMarkdown(path).catch((e) => console.warn(`[ArticleWriter] 打开 ${path} 失败`, e)); };
+		if (this.app.workspace.layoutReady) {
+			run();
+			return;
+		}
+		const timer = window.setInterval(() => {
+			if (!this.app.workspace.layoutReady) return;
+			window.clearInterval(timer);
+			run();
+		}, 250);
+		this.registerInterval(timer);
+	}
+
+	/** 《使用说明.md》路径：work_dir 根（vault 根=顶层文件） */
+	private usageDocPath(): string {
+		const dir = this.settings.workDir.replace(/\/+$/, "");
+		return dir ? `${dir}/使用说明.md` : "使用说明.md";
+	}
+
+	/** 设置/切换工作目录后把《使用说明.md》投放到其根：仅缺失或为空时写入内置默认，绝不覆盖用户内容。返回是否新建 */
+	private async seedUsageDoc(): Promise<boolean> {
+		try {
+			const p = this.usageDocPath(); // 调用时 settings.workDir 已更新（pickWorkDir 回调内先赋值）
+			const ex = await this.manager.readGuideAt(p);
+			if (ex != null && ex.trim()) return false;
+			await this.manager.writeGuideAt(p, DEFAULT_USAGE_GUIDE);
+			try { await this.manager.openMarkdown(p); } catch { /* 打开失败不影响投放结果（用户交互期 workspace 已就绪，理论上不会到这里） */ }
+			return true;
+		} catch (e) {
+			console.warn("[ArticleWriter] 生成《使用说明.md》失败", e);
+			return false;
+		}
+	}
+
+	/** 手动重新生成使用说明（与自动投放同源；目标非空则跳过并提示） */
+	async cmdGenerateUsageDoc(): Promise<void> {
+		if (!(await this.ensureWorkDir())) return;
+		try {
+			const p = this.usageDocPath();
+			const ex = await this.manager.readGuideAt(p);
+			if (ex != null && ex.trim()) {
+				new Notice(`已存在非空文件，未改动：${p}\n如需更新请手动编辑该文档`, 8000);
+				return;
+			}
+			await this.manager.writeGuideAt(p, DEFAULT_USAGE_GUIDE);
+			new Notice(`已创建使用说明：${p}`, 8000);
+			await this.manager.openMarkdown(p);
+		} catch (e) {
+			this.notifyError("生成使用说明失败", e);
+		}
+	}
+
+	async cmdRegenerateSystemGuide(): Promise<void> {
+		try {
+			const ok = await this.confirmBox("重新生成系统写作指南？", "将用代码内置默认内容覆盖插件数据目录中的系统级 WRITING_GUIDE.md 与 guide-types/ 下四个「类型要点」文件。\n你此前对这些文件的修改会丢失。", "覆盖");
+			if (!ok) return;
+			await this.manager.writePluginFile(this.systemGuidePath(), DEFAULT_SYSTEM_GUIDE);
+			for (const t of GUIDE_TYPES) {
+				await this.manager.writePluginFile(this.guideTypePath(t.key), t.defaultText);
+			}
+			let note = `系统级写作指南与类型要点文件已重置为内置默认\n${this.systemGuidePath()}\n${this.guideTypePath(GUIDE_TYPES[0].key)} 等 ${GUIDE_TYPES.length} 个类型文件`;
+			const cur = this.settings.lastStory?.trim();
+			if (cur && (await this.manager.listStories()).includes(cur)) {
+				try { await this.rebuildAggregatedGuide(cur); note += "\n已刷新该书的《写作指南汇总》"; } catch { /* ignore */ }
+			}
+			new Notice(note, 8000);
+		} catch (e) {
+			this.notifyError("重新生成系统写作指南失败", e);
+		}
+	}
+
+	/** 通用剧本转换：按“原文件名 + 剧本”命名输出到同目录；可复用于当前打开文件或某章节正文 */
+	private async convertMarkdownToScreenplay(file: TFile, label = file.basename): Promise<void> {
+		const setup = this.getLlmSetup();
+		if (!setup) {
+			new Notice("未找到 LLM 配置\n请先在 Obsidian 设置里配置 ArticleWriter 的模型。", 8000);
+			return;
+		}
+		const sourceText = await this.app.vault.read(file);
+		if (!sourceText.trim()) {
+			new Notice(`《${label}》为空，无法转换成剧本。`, 8000);
+			return;
+		}
+		const dirPath = file.path.includes("/") ? file.path.substring(0, file.path.lastIndexOf("/")) : "";
+		const baseName = file.basename || "未命名";
+		let targetName = `${baseName}剧本.md`;
+		let targetPath = dirPath ? `${dirPath}/${targetName}` : targetName;
+		let counter = 2;
+		while (this.app.vault.getAbstractFileByPath(targetPath)) {
+			targetName = `${baseName}剧本${counter}.md`;
+			targetPath = dirPath ? `${dirPath}/${targetName}` : targetName;
+			counter++;
+		}
+		const systemPrompt = buildStoryTypeSystemPrompt({ storyType: "剧本" });
+		const userPrompt = [
+			"将下面这篇文章改写成严格 screenplay 版本，保留原文核心情节与人物关系，但全部转成剧本体。",
+			"硬性要求：",
+			"1. 只输出剧本正文，不要解释、不要说明、不要前后备注，不得出现小说章节标题或总结语。",
+			"2. 全部环境描写、人物情绪、心理状态、背景信息都要改写成可见动作、音效、光线、表情、现场反应。",
+			"3. 使用标准 screenplay 结构：INT./EXT. / CUT TO: / FADE IN: / CONTINUOUS / INTERCUT 等场景头与转场。",
+			"4. 角色名单独成一行，下一行写台词；允许极短括号动作标注。",
+			"5. 不能写成小说叙述句式，如‘他想、她觉得、忽然、顿时、心里、内心、作者写道’。",
+			"6. 以脚本的方式表达所有内容，保留原有主线和关键冲突。",
+			"原文：",
+			sourceText,
+		].join("\n\n");
+		const notice = new Notice(`正在将《${label}》转换为剧本…`);
+		try {
+			const done = await chatCompletion(
+				setup.cfg,
+				[
+					{ role: "system", content: systemPrompt },
+					{ role: "user", content: userPrompt },
+				],
+				{ max_tokens: Math.max(4000, Math.ceil(sourceText.length * 2)), temperature: 0.7 }
+			);
+			let converted = (done || "").trim();
+			if (!converted) throw new Error("LLM 未返回内容");
+			const reason = validateStoryTypeFormat(converted, "剧本");
+			if (reason) {
+				const retryPrompt = [
+					"上一版并未符合严格 screenplay 格式，请重新严格重写。",
+					`校验反馈：${reason}`,
+					"必须输出真实剧本，而不是小说正文。",
+					"原文：",
+					sourceText,
+				].join("\n\n");
+				const retry = await chatCompletion(
+					setup.cfg,
+					[
+						{ role: "system", content: systemPrompt },
+						{ role: "user", content: retryPrompt },
+					],
+					{ max_tokens: Math.max(4000, Math.ceil(sourceText.length * 2)), temperature: 0.6 }
+				);
+				converted = (retry || converted).trim();
+			}
+			notice.hide();
+			await this.app.vault.create(targetPath, converted);
+			const newFile = this.app.vault.getAbstractFileByPath(targetPath);
+			if (newFile instanceof TFile) {
+				const leaf = this.app.workspace.getLeaf(false);
+				await leaf.openFile(newFile);
+			}
+			new Notice(`已转换为剧本：${targetName}`, 8000);
+		} catch (e) {
+			notice.hide();
+			this.notifyError("文章转剧本失败", e);
+		}
+	}
+
+	/** 把当前打开的文章改写为严格 screenplay，并以“原文件名 + 剧本”命名输出到同目录 */
+	async cmdArticleToScreenplay(): Promise<void> {
+		const file = this.app.workspace.getActiveFile();
+		if (!(file instanceof TFile) || file.extension.toLowerCase() !== "md") {
+			new Notice("请先打开一个 Markdown 文件，再执行“文章转剧本”。", 8000);
+			return;
+		}
+		await this.convertMarkdownToScreenplay(file);
+	}
+
+	/** 以写字台里选中的章节正文为源，输出同目录“章节名+剧本.md” */
+	async cmdChapterToScreenplay(storyName: string, key: string): Promise<void> {
+		const file = await this.manager.chapterBodyFile(storyName, key);
+		if (!(file instanceof TFile)) {
+			new Notice("该章节未找到正文文件，无法转换成剧本。", 8000);
+			return;
+		}
+		const chapter = (await this.manager.listChapters(storyName)).find((c) => c.key === key);
+		const label = chapter ? `第${String(chapter.num).padStart(2, "0")}章 ${chapter.title}` : file.basename;
+		await this.convertMarkdownToScreenplay(file, label);
+	}
+
+	// ---------- LLM 配置（存插件数据目录 data.json，替代 ~/.articlewriter/config.json；首次运行预置标准模板） ----------
+
+	/** 从插件设置读取激活模型配置 + 全局字段（system_prompt / desc_style），无可用配置返回 null */
+	private getLlmSetup(): { cfg: LlmConfigDoc; systemPrompt?: string; descStyle?: string } | null {
+		const conf = this.settings.llm ?? null;
+		const cfgs = conf?.llm_configs ?? [];
+		if (!conf || !cfgs.length) return null;
+		const cfgName = conf.chat_model || conf.active_llm;
+		const cfg = cfgName ? (cfgs.find((c) => c.name === cfgName) ?? cfgs[0]) : cfgs[0];
+		return { cfg, systemPrompt: conf.system_prompt, descStyle: conf.desc_style };
+	}
+
+	/** 按写作阶段获取模型配置：优先使用阶段指定的 llm_config_name，否则回落 chat_model / active_llm；无可用配置返回 null */
+	private getPhaseLlmSetup(phaseIndex: number): { cfg: LlmConfigDoc; systemPrompt?: string; descStyle?: string } | null {
+		const conf = this.settings.llm ?? null;
+		const cfgs = conf?.llm_configs ?? [];
+		if (!conf || !cfgs.length) return null;
+		const phases = conf.writing_phases ?? [];
+		const phase = phases[phaseIndex];
+		let cfgName = phase?.llm_config_name?.trim() || conf.chat_model || conf.active_llm;
+		const cfg = cfgName ? (cfgs.find((c) => c.name === cfgName) ?? cfgs[0]) : cfgs[0];
+		return { cfg, systemPrompt: conf.system_prompt, descStyle: conf.desc_style };
+	}
+
+	/**
+	 * LLM 对话框顶部下拉切换模型 → 写回 data.json 的 `chat_model`（并即时保存）：
+	 * 对话框此后使用新模型；该值随 data.json 持久化，Obsidian 重启后对话框下拉从它加载。
+	 * 写作命令按阶段映射取模型，不再依赖全局激活态。
+	 */
+	async setActiveLlmFromChat(name: string): Promise<void> {
+		const conf = this.settings.llm;
+		if (!conf || !name || conf.chat_model === name) return;
+		conf.chat_model = name;
+		await this.saveSettings();
+		new Notice(`已切换对话框模型：${name}`, 4000);
+	}
+
+	/** 让已打开的 LLM 对话框下拉与激活项同步（设置页改激活模型 / 新建删除配置后调用；对话框自身切换无需调用） */
+	syncChatModelSelect(): void {
+		for (const leaf of this.app.workspace.getLeavesOfType(LlmChatView.VIEW_TYPE)) {
+			if (leaf.view instanceof LlmChatView) leaf.view.refreshModels();
+		}
+	}
+
+	/** 对话「保存到文件」弹窗的默认路径前缀：当前书目录存在则用它，否则 work_dir，空=vault 根 */
+	private async chatDefaultSaveDir(): Promise<string> {
+		try {
+			const info = await this.getActiveStoryInfo();
+			if (info) {
+				const p = this.manager.storyPath(info.story);
+				if (this.app.vault.getAbstractFileByPath(p) instanceof TFolder) return p;
+			}
+		} catch { /* 取当前书失败降级为 work_dir */ }
+		return this.settings.workDir;
+	}
+
+	// ---------- LLM 连接测试（对齐 CLI /llm test，GET /models） ----------
+
+	async cmdLlmTest(): Promise<void> {
+		try {
+			const setup = this.getLlmSetup();
+			if (!setup) {
+				new Notice("未找到 LLM 配置\n请在 Obsidian 设置 → ArticleWriter 的「LLM 模型配置」区填写", 8000);
+				return;
+			}
+			await this.runLlmTest(setup.cfg);
+		} catch (e) {
+			this.notifyError("LLM 连接测试失败", e);
+		}
+	}
+
+	/** 对指定配置执行 GET /models 连通性测试并弹通知（命令与设置页共用） */
+	async runLlmTest(target: LlmConfigDoc): Promise<void> {
+		const n = new Notice(`正在测试 LLM 连接：${target.name || "(未命名)"} @ ${normalizeBaseURL(target.base_url)} …`);
+		try {
+			const r = await testConnection(target);
+			n.hide();
+			new Notice(
+				r.ok
+					? `✓ 已连接 ${target.name}${r.models?.length ? `\n可用模型：${r.models.join("、")}` : ""}`
+					: `✗ 连接失败 ${target.name}\n${r.message}`,
+				r.ok ? 8000 : 20000,
+			);
+		} catch (e) {
+			n.hide();
+			new Notice(`✗ 测试异常：${e instanceof Error ? e.message : String(e)}`, 20000);
+		}
+	}
+
+	/** 打开常驻 LLM 对话面板：已有则直接激活，否则在工作区新建分割区域承载（UI 在 onOpen 建进 contentEl，勿用 getEmptyStateElement——本环境不调用它）；无配置时由面板内状态行提示去设置页 */
+	private async openLlmPanel(): Promise<void> {
+		try {
+			const existing = this.app.workspace.getLeavesOfType(LlmChatView.VIEW_TYPE);
+			if (existing.length) {
+				this.app.workspace.setActiveLeaf(existing[0]); // revealLeaf 已废弃，改用 setActiveLeaf（minAppVersion 1.4+ 可用）
+				return;
+			}
+			const leaf = this.app.workspace.getLeaf("split");
+			await leaf.setViewState({ type: LlmChatView.VIEW_TYPE, active: true });
+		} catch (e) {
+			this.notifyError("打开对话窗口失败", e);
+		}
+	}
+
+	/** v0.2.20 写字台常驻左栏（移动端抽屉／桌面端左栏）：左栏没有写字台叶子时经 ensureSideLeaf 补一个 tab（不抢焦点、不展开抽屉），保证它始终出现在侧栏视图切换列表里可被选中；左栏已有则无操作（幂等） */
+	private async ensureStatusInLeftSidebar(): Promise<void> {
+		const ws = this.app.workspace;
+		if (!ws.layoutReady) return; // 启动早期布局未就绪：静默跳过（onLayoutReady 回调路径已覆盖正常时机）
+		let present = false;
+		ws.iterateAllLeaves((leaf) => {
+			if (leaf.getRoot() === ws.leftSplit && leaf.view instanceof StatusView) present = true;
+		});
+		if (present) return;
+		try {
+			await ws.ensureSideLeaf(StatusView.VIEW_TYPE, "left", { active: false, reveal: false });
+		} catch { /* 尽力而为的辅助动作，失败不影响主流程（命令/ribbon 仍可手动打开） */ }
+	}
+
+	private async openStatusPanel(): Promise<void> {
+		try {
+			const existing = this.app.workspace.getLeavesOfType(StatusView.VIEW_TYPE);
+			if (existing.length) {
+				this.app.workspace.setActiveLeaf(existing[0]); // revealLeaf 已废弃，改用 setActiveLeaf（minAppVersion 1.4+ 可用）
+				return;
+			}
+			// 不分割新面板：直接复用左栏现有叶子（与文件列表同一位置，替换其内容显示状态面板；点侧栏文件图标可切回文件列表）；左栏为空才退回新建
+			const leaf = this.app.workspace.getLeftLeaf(false) ?? this.app.workspace.getLeftLeaf(true) ?? this.app.workspace.getLeaf("split");
+			await leaf.setViewState({ type: StatusView.VIEW_TYPE, active: true });
+		} catch (e) {
+			this.notifyError("打开写字台失败", e);
+		}
+	}
+
+	/** 常驻面板（人物关系／时间线）的承载叶子：桌面端复用右栏叶子（写字台占左栏，两者可同屏对照），依次回退新建右栏→分割主区域；移动端右栏无 UI 入口（视图调不出来），改分割主区域承载（与 LLM 对话窗口相同） */
+	private getPanelHostLeaf(): WorkspaceLeaf {
+		if (Platform.isMobileApp) return this.app.workspace.getLeaf("split");
+		return this.app.workspace.getRightLeaf(false) ?? this.app.workspace.getRightLeaf(true) ?? this.app.workspace.getLeaf("split");
+	}
+
+	/** 打开常驻面板（人物关系／时间线）：移动端先丢弃仍滞留右栏的旧面板（旧版本/桌面端工作区持久化而来——移动端右栏无 UI 入口，激活它没有任何可见效果），主区域已有则直接激活，否则由 getPanelHostLeaf 取承载叶子新建 */
+	private async openResidentPanel(viewType: string, failMsg: string): Promise<void> {
+		try {
+			if (Platform.isMobileApp) {
+				const stale = this.app.workspace.getLeavesOfType(viewType).filter((l) => l.parent instanceof WorkspaceSidedock);
+				for (const l of stale) l.detach();
+				if (stale.length) {
+					// 丢弃后活动叶子可能为空或仍指向右栏，先切到主区域的笔记，保证 getLeaf("split") 分割的是主区域
+					// （workspace.activeLeaf 已废弃：改用推荐替代 getActiveViewOfType(View) 再取 View.leaf）
+					const active = this.app.workspace.getActiveViewOfType(View)?.leaf ?? null;
+					if (!active || active.parent instanceof WorkspaceSidedock) {
+						const anchor = this.app.workspace.getLeavesOfType("markdown").find((l) => !(l.parent instanceof WorkspaceSidedock));
+						if (anchor) this.app.workspace.setActiveLeaf(anchor);
+					}
+				}
+			}
+			const existing = this.app.workspace.getLeavesOfType(viewType);
+			if (existing.length) {
+				this.app.workspace.setActiveLeaf(existing[0]);
+				return;
+			}
+			const leaf = this.getPanelHostLeaf();
+			await leaf.setViewState({ type: viewType, active: true });
+		} catch (e) {
+			this.notifyError(failMsg, e);
+		}
+	}
+
+	/** 打开常驻人物关系面板（v0.1.9+） */
+	private async openRelationshipPanel(): Promise<void> {
+		await this.openResidentPanel(RelationshipView.VIEW_TYPE, "打开人物关系面板失败");
+	}
+
+	/** 打开常驻时间线面板（v0.2.x+） */
+	private async openTimelinePanel(): Promise<void> {
+		await this.openResidentPanel(TimelineView.VIEW_TYPE, "打开时间线面板失败");
+	}
+
+	/**
+	 * 「添加人物」弹窗（v0.2.0+）：人物关系面板头部按钮的唯一实现。
+	 * 姓名 + 归属级别（书籍级／卷级／章级，决定写入哪份《人物.md》）+ 设定字段 + 动态关系行；
+	 * 提交后先 addCharacter 落人物，再按同一级别把关系条目追加进对应《人物关系.md》（书根／卷目录／章节目录）。
+	 */
+	async openAddCharacterDialog(): Promise<void> {
+		const story = await this.activeStory();
+		if (!story) {
+			new Notice("尚未选择当前小说：请先在写字台或命令里切换小说", 6000);
+			return;
+		}
+		const sortZh = (a: string, b: string): number => a.localeCompare(b, "zh");
+		let scopes: CharacterScopeOption[] = [];
+		let allNames: string[] = [];
+		try {
+			const all = Object.values(await this.manager.loadAllCharacters(story));
+			allNames = all.map((c) => c.name).sort(sortZh);
+			// 各层级「范围内」角色名：书级=书根全局条目，卷级=该卷卷目录条目，章级=该章目录条目（与 loadAllCharacters 的读取口径一致）
+			const inScope = (pred: (c: (typeof all)[number]) => boolean): string[] => all.filter(pred).map((c) => c.name).sort(sortZh);
+			scopes.push({ id: "book", kind: "book", label: "书籍级（书根《人物.md》）", localCandidates: inScope((c) => c.chapter <= 0 && !c.vol) });
+			for (const v of await this.manager.volumeList(story)) {
+				scopes.push({
+					id: `vol:${v.id}`,
+					kind: "volume",
+					label: `卷级 · ${v.name}`,
+					volId: v.id,
+					localCandidates: inScope((c) => c.chapter <= 0 && c.vol === v.id),
+				});
+			}
+			const volNames = await this.volNameMap(story);
+			for (const c of await this.manager.listChapters(story)) {
+				scopes.push({
+					id: `ch:${c.key}`,
+					kind: "chapter",
+					label: `章级 · ${this.keyLabel(c.key, volNames, c.title)}`,
+					chapterKey: c.key,
+					localCandidates: inScope((cc) => cc.chapter === c.num && (cc.vol ?? "") === (c.vol ?? "")),
+				});
+			}
+		} catch (e) {
+			this.notifyError("读取人物/章节失败", e);
+			return;
+		}
+		if (!scopes.length) scopes = [{ id: "book", kind: "book", label: "书籍级（书根《人物.md》）", localCandidates: [] }];
+		const state = await this.manager.loadState(story);
+		const curKey = state?.current_chapter ?? null;
+		const curVol = state?.current_volume ?? "";
+		const defScope = (curKey ? scopes.find((s) => s.chapterKey === curKey) : undefined) ?? (curVol ? scopes.find((s) => s.volId === curVol) : undefined) ?? scopes[0];
+		const ordered = [defScope, ...scopes.filter((s) => s !== defScope)]; // 默认项置顶：章级列表很长，默认落在当前写作位置免得翻找
+		const result = await new Promise<AddCharacterResult | null>((resolve) => {
+			new AddCharacterModal(this.app, ordered, allNames, RELATION_TYPE_OPTIONS, (r) => resolve(r), () => resolve(null)).open();
+		});
+		if (!result) return;
+		try {
+			const parsed = result.scope.kind === "chapter" && result.scope.chapterKey ? parseChKey(result.scope.chapterKey) : null;
+			await this.manager.addCharacter(story, {
+				name: result.name,
+				identity: result.fields.identity,
+				age: result.fields.age,
+				gender: result.fields.gender,
+				personality: result.fields.personality,
+				appearance: result.fields.appearance,
+				background: result.fields.background,
+				abilities: result.fields.abilities,
+				notes: result.fields.notes,
+				chapter: parsed ? parsed.num : 0, // 卷级/书籍级人物 chapter=0；卷级靠 vol 落卷实体目录、书籍级无 vol 落书根
+				vol: parsed ? parsed.vol ?? undefined : result.scope.volId,
+			});
+			if (result.relations.length) {
+				const entries: RelationshipEntry[] = result.relations.map((r) => ({ a: result.name, b: r.target, type: r.type, status: "active", desc: "" })); // 新建关系默认进行中
+				await this.manager.appendRelationships(story, result.scope.kind, entries, { volId: result.scope.volId, chapterKey: result.scope.chapterKey });
+			}
+			new Notice(`已添加人物「${result.name}」（${result.scope.label}）${result.relations.length ? `，并写入 ${String(result.relations.length)} 条关系` : ""}`, 8000);
+			this.schedulePanelRefresh(300);
+		} catch (e) {
+			this.notifyError("添加失败", e);
+		}
+	}
+
+	// ---------- LLM 写作命令（/write /continue /rewrite /polish /deai /review，对应 Python WritingMixin + writer.py） ----------
+
+	private promptArea(title: string, placeholder: string, initial = ""): Promise<string | null> {
+		return new Promise((resolve) => {
+			new TextAreaPrompt(this.app, title, placeholder, initial, "确定", (v) => resolve(v), () => resolve(null)).open();
+		});
+	}
+
+	/** 章节号输入：空=当前章默认；Esc=取消整个命令（v0.0.15：返回复合键） */
+	private async targetChapterKey(story: string, verb: string): Promise<string | null> {
+		const state = await this.manager.loadState(story);
+		const cur = state?.current_chapter ?? null; // 复合键 "volId:N" / "N"
+		const volNames = await this.volNameMap(story);
+		const raw = await this.prompt(`要${verb}哪一章`, cur ? `当前 ${this.keyLabel(cur, volNames)}，留空即用当前章` : "请输入章节号");
+		if (raw == null) return null;
+		const t = raw.trim();
+		let key: string | null = null;
+		if (t === "") key = cur;
+		else if (/^\d+$/.test(t)) {
+			const ref = await this.resolveLocalNum(story, parseInt(t, 10), volNames); // 裸章号 → 具体容器（跨卷同号逐个确认）
+			key = ref ? chKey(ref.vol ?? null, ref.num) : null;
+		}
+		if (!key || !t && !cur) { new Notice(`第${t || "?"}章不存在`); return null; }
+		return key;
+	}
+
+	/** 从插件设置（data.json）返回激活模型配置 + 全局字段（system_prompt / desc_style），无可用配置弹通知并返回 null */
+	private async loadWriterSetup(): Promise<{ cfg: LlmConfigDoc; systemPrompt?: string; descStyle?: string } | null> {
+		const setup = this.getLlmSetup();
+		if (!setup) {
+			new Notice("未找到 LLM 配置\n请在 Obsidian 设置 → ArticleWriter 的「LLM 模型配置」区填写 api_key/模型名", 8000);
+			return null;
+		}
+		return setup;
+	}
+
+	/** 三层创作规范（小说级 > 用户级 > 系统级插件文件，顺序即优先级）：合并并落盘《写作指南汇总》，guideText=该汇总去注释全文（对话/大纲路径注入），writerGuideText=剥离禁用词类目的正文（正文生成路径注入——该内容已由禁用词块承载，防双份），bannedGuideText=合并后禁用词类目 */
+	private async loadWriterGuides(storyName: string): Promise<{ bookText: string; userText: string; systemText: string; guideText: string; writerGuideText: string; bannedGuideText: string }> {
+		const bookText = (await this.manager.readGuideAt(this.manager.bookGuidePath(storyName))) ?? "";
+		const userText = (await this.manager.readGuideAt(this.manager.userGuidePath())) ?? "";
+		const systemText = await this.readSystemGuideText(); // 读不到回落内置默认（写作命令不打扰）
+		let genre = "";
+		let writingStyle = "";
+		try {
+			const st = await this.manager.loadState(storyName);
+			genre = st?.genre ?? "";
+			writingStyle = st?.writing_style ?? "";
+		} catch { /* 状态读取失败按无题材处理 */ }
+		const r = await this.persistAggregatedGuide(storyName, bookText, userText, systemText, genre, writingStyle);
+		return { bookText, userText, systemText, guideText: r.guideText, writerGuideText: r.writerGuideText, bannedGuideText: r.merged["禁用词"] || "" };
+	}
+
+	/** 组装正文生成系统提示词：编写类型格式块+禁用词 → config.system_prompt → 内置默认；末尾附【创作规范】（用剥离禁用词类目的 writerGuideText——该内容已由禁用词块完整承载，防双份注入） */
+	private writerSystemPrompt(
+		baseSp: string | undefined,
+		guides: { guideText: string; writerGuideText: string; bannedGuideText: string },
+		writingStyle?: string,
+		title?: string,
+		charNames?: Array<string | null>
+	): string {
+		const custom = buildStoryTypeSystemPrompt({ storyType: writingStyle, guideText: guides.guideText, title, charNames, bannedGuideText: guides.bannedGuideText });
+		return assembleSystemPrompt(custom || undefined, guides.writerGuideText, baseSp);
+	}
+
+	/** 对话面板系统提示词（与写作命令同一套规则）：编写类型块+禁用词 → settings.system_prompt → 内置默认，末尾附【创作规范】；非交互取 lastStory（不弹选择器），无当前小说时仅用户级/系统级两层 */
+	// ---------- 写字台（StatusView）数据与动作 ----------
+
+	/** 路径是否落在当前工作目录内（含根本身）；未设置工作目录时一律不匹配 */
+	private pathUnderWorkDir(p: string): boolean {
+		const root = this.settings.workDir.replace(/\/+$/, "");
+		if (!root) return false;
+		return p === root || p.startsWith(root + "/");
+	}
+
+	/** 防抖刷新所有已打开的状态面板（编辑器自动落盘会连发变更，合并成一次重渲染；无面板打开时直接忽略） */
+	private scheduleStatusPanelRefresh(delayMs = 800): void {
+		if (!this.app.workspace.getLeavesOfType(StatusView.VIEW_TYPE).length) return;
+		if (this.statusRefreshTimer != null) window.clearTimeout(this.statusRefreshTimer);
+		this.statusRefreshTimer = window.setTimeout(() => {
+			this.statusRefreshTimer = null;
+			for (const leaf of this.app.workspace.getLeavesOfType(StatusView.VIEW_TYPE)) {
+				if (leaf.view instanceof StatusView) void leaf.view.refresh();
+			}
+		}, delayMs);
+	}
+
+	/** 防抖刷新所有已打开面板（写字台 + 人物关系 + 时间线）：同一批文件变更合并成一次重渲染 */
+	private schedulePanelRefresh(delayMs = 800): void {
+		this.scheduleStatusPanelRefresh(delayMs);
+		this.scheduleRelationshipPanelRefresh(delayMs);
+		this.scheduleTimelinePanelRefresh(delayMs);
+	}
+
+	/** 防抖刷新已打开的人物关系面板（v0.1.9+）：关系文档在编辑器里改动/新建同样实时跟进 */
+	private scheduleRelationshipPanelRefresh(delayMs = 800): void {
+		if (!this.app.workspace.getLeavesOfType(RelationshipView.VIEW_TYPE).length) return;
+		if (this.relRefreshTimer != null) window.clearTimeout(this.relRefreshTimer);
+		this.relRefreshTimer = window.setTimeout(() => {
+			this.relRefreshTimer = null;
+			for (const leaf of this.app.workspace.getLeavesOfType(RelationshipView.VIEW_TYPE)) {
+				if (leaf.view instanceof RelationshipView) void leaf.view.refresh();
+			}
+		}, delayMs);
+	}
+
+	/** 防抖刷新已打开的时间线面板（v0.2.x+）：《时间线.md》在编辑器里改动/新建同样实时跟进 */
+	private scheduleTimelinePanelRefresh(delayMs = 800): void {
+		if (!this.app.workspace.getLeavesOfType(TimelineView.VIEW_TYPE).length) return;
+		if (this.tlRefreshTimer != null) window.clearTimeout(this.tlRefreshTimer);
+		this.tlRefreshTimer = window.setTimeout(() => {
+			this.tlRefreshTimer = null;
+			for (const leaf of this.app.workspace.getLeavesOfType(TimelineView.VIEW_TYPE)) {
+				if (leaf.view instanceof TimelineView) void leaf.view.refresh();
+			}
+		}, delayMs);
+	}
+
+	/** 状态页数据快照：工作目录 + 全部小说概览 + 当前小说详情（章节/文件路径），全程非交互、逐段容错 */
+	async getStatusSnapshot(): Promise<StatusSnapshot> {
+		const root = this.settings.workDir.replace(/\/+$/, "");
+		if (!root) return { workDir: "", stories: [], details: {} };
+		const names = await this.manager.listStories();
+		const last = this.settings.lastStory?.trim() ?? "";
+		const stories: StatusStoryEntry[] = [];
+		/** 逐书实时统计的章节字数（key→words）：状态文档里的 words/total_words 可能是过期值（旧数据、CLI 写入或建章后未同步），展示一律以磁盘 MD 为准（同 /count 口径）。**只为当前激活书做全量 countWords**——视图只渲染激活书的章节小节，非激活书仅用 state 值兜底（下拉框只显示书名），省掉多本书逐章读盘的 IO（手机上刷新明显卡顿的主因之一） */
+		let activeLiveWords: Record<string, number> | undefined;
+		let activeLiveChars: Record<string, number> | undefined; // 含标点的总字符数（同批 countWords 顺带产出，无额外 IO）
+		for (const name of names) {
+			let title = name;
+			let chapterCount = 0;
+			let currentChapter: string | null = null;
+			let words = 0;
+			try {
+				const st = await this.manager.loadState(name); // 单文件读取，成本低，全部保留（切书提示也要用）
+				if (st) {
+					title = st.title || name;
+					chapterCount = Object.keys(st.chapters).length;
+					currentChapter = st.current_chapter;
+					words = st.total_words;
+				}
+			} catch {
+				/* 单本状态读取失败不影响列表其余项 */
+			}
+			if (name === last) {
+				try {
+					const rows = await this.manager.countWords(name); // 读各章 章节.md 纯文字计数
+					const map: Record<string, number> = {};
+					const charMap: Record<string, number> = {};
+					for (const r of rows) { map[r.key] = r.words; charMap[r.key] = r.chars; }
+					activeLiveWords = map;
+					activeLiveChars = charMap;
+					words = rows.reduce((s, r) => s + r.words, 0); // 实时值优先，覆盖可能过期的 state 值
+				} catch {
+					/* 字数统计失败时保留 state 里的旧值兜底 */
+				}
+			}
+			stories.push({ name, title, chapterCount, currentChapter, words, active: name === last });
+		}
+		// 只为当前激活书构建详情子树（视图仅渲染其「案头资料/书稿」小节；切书必走完整 refresh 重新拉取）；失败则该节显示加载提示
+		const details: Record<string, StatusDetail> = {};
+		if (last && names.includes(last)) {
+			try {
+				details[last] = await this.buildStoryDetail(last, activeLiveWords, activeLiveChars);
+			} catch {
+				/* 详情缺失时视图显示「未能加载状态」提示 */
+			}
+		}
+		return { workDir: root, stories, details };
+	}
+
+	// ---------- 人物关系面板（RelationshipView，v0.1.9+） ----------
+
+	/**
+	 * 人物关系面板快照：工作目录 + 小说概览 + 当前书三层《人物关系.md》解析结果（书根 / 当前卷 / 当前章）。
+	 * 全程非交互只读：只读状态文档与 ≤3 份关系 md（不逐章统计），解析失败逐层降级为空列表。
+	 */
+	async getRelationshipSnapshot(): Promise<RelSnapshot> {
+		const root = this.settings.workDir.replace(/\/+$/, "");
+		if (!root) return { workDir: "", stories: [], activeStory: null, activeStoryTitle: "", groups: [], relCount: 0, chars: [] };
+		const names = await this.manager.listStories();
+		const last = this.settings.lastStory?.trim() ?? "";
+		const stories: RelStoryEntry[] = [];
+		for (const name of names) {
+			let title = name;
+			try {
+				const st = await this.manager.loadState(name); // 单文件读取，成本低；失败用书名兜底
+				if (st?.title) title = st.title;
+			} catch {
+				/* 单本状态读取失败不影响列表其余项 */
+			}
+			stories.push({ name, title, active: name === last });
+		}
+		const active = last && names.includes(last) ? last : null;
+		if (!active) return { workDir: root, stories, activeStory: null, activeStoryTitle: "", groups: [], relCount: 0, chars: [] };
+		const state = await this.manager.loadState(active);
+		const docs = await this.manager.readRelationshipDocs(active, state?.current_chapter ?? null); // 书/卷/章三层原文（只读）
+		const groups: RelGroup[] = [];
+		let relCount = 0;
+		for (const d of docs) {
+			let rows: RelRow[] = [];
+			try {
+				rows = parseRelationships(d.text).map((e) => ({ ...e, scope: d.scope, scopeLabel: d.label, sourcePath: d.path }));
+			} catch {
+				/* 单层解析失败不影响其余层（保留 hasText 提示用户检查格式） */
+			}
+			relCount += rows.length;
+			groups.push({ scope: d.scope, label: d.label, path: d.path, rows, hasText: d.text.trim().length > 0 });
+		}
+		let chars: RelCharInfo[] = [];
+		try {
+			chars = await this.manager.loadCharacterEntries(active); // 全部三层《人物.md》设定条目（「人物状态」区用；失败不阻断关系展示）
+		} catch { /* ignore */ }
+		return { workDir: root, stories, activeStory: active, activeStoryTitle: stories.find((s) => s.name === active)?.title ?? active, groups, relCount, chars };
+	}
+
+	// ---------- 时间线面板（TimelineView，v0.2.x+） ----------
+
+	/**
+	 * 时间线面板快照：工作目录 + 小说概览 + 当前书**全部**《时间线.md》解析结果（书根 / 每一卷 / 每一章），全程非交互只读。
+	 * 各层条目合并为单一按时间点升序的行列表（年→月→日，同值保持文档枚举顺序）；每行带层级标签与来源路径供展示及双击定位。
+	 * 单层解析失败降级为空列表不影响其余层；原文非空但零条目的文档进 unparsedDocs 供展示侧给格式提示。
+	 */
+	async getTimelineSnapshot(): Promise<TlSnapshot> {
+		const root = this.settings.workDir.replace(/\/+$/, "");
+		if (!root) return { workDir: "", stories: [], activeStory: null, activeStoryTitle: "", useVolumes: false, rows: [], totalCount: 0, unparsedDocs: [] };
+		const names = await this.manager.listStories();
+		const last = this.settings.lastStory?.trim() ?? "";
+		const stories: TlStoryEntry[] = [];
+		for (const name of names) {
+			let title = name;
+			try {
+				const st = await this.manager.loadState(name); // 单文件读取，成本低；失败用书名兜底
+				if (st?.title) title = st.title;
+			} catch { /* 单本状态读取失败不影响列表其余项 */ }
+			stories.push({ name, title, active: name === last });
+		}
+		const active = last && names.includes(last) ? last : null;
+		if (!active) return { workDir: root, stories, activeStory: null, activeStoryTitle: "", useVolumes: false, rows: [], totalCount: 0, unparsedDocs: [] };
+		const state = await this.manager.loadState(active);
+		const docs = await this.manager.readTimelineDocs(active); // 各层原文（只读），顺序按 manager 约定（有卷模式每卷紧随其成员章）
+		const rows: TlRow[] = [];
+		const unparsedDocs: Array<{ label: string; path: string }> = [];
+		for (const d of docs) {
+			let list: TimelineEntry[] = [];
+			try {
+				list = parseTimelines(d.text);
+			} catch { /* 单层解析失败不影响其余层 */ }
+			if (!list.length && d.text.trim()) unparsedDocs.push({ label: d.label, path: d.path }); // 有内容但无有效条目 → 展示侧格式提示
+			list.forEach((e, i) => rows.push({ ...e, id: `${d.path}#${i}`, scope: d.scope, sourcePath: d.path, sourceLabel: d.label })); // id＝来源路径#文档内序号：稳定标识供折叠状态跨刷新保持
+		}
+		rows.sort((a, b) => a.time - b.time || ((a.month ?? 0) - (b.month ?? 0)) || ((a.day ?? 0) - (b.day ?? 0))); // (年,月,日) 全局升序，稳定排序同值保持文档顺序
+		return { workDir: root, stories, activeStory: active, activeStoryTitle: stories.find((s) => s.name === active)?.title ?? active, useVolumes: state?.use_volumes === true, rows, totalCount: rows.length, unparsedDocs };
+	}
+
+	/** 单本书的详情快照：状态字段 + 章节目录（含各章文件）+ 书根案头资料；字数优先用传入的实时磁盘统计 chWords，回退 state 值 */
+	private async buildStoryDetail(storyName: string, chWords?: Record<string, number>, chChars?: Record<string, number>): Promise<StatusDetail> {
+		const state = await this.manager.loadState(storyName);
+		let vols: Array<{ id: string; name: string; description: string; order: number }> = [];
+		try {
+			vols = await this.manager.volumeList(storyName); // 卷列表缺失（未建过卷）→ 按无卷渲染，章节全部平铺
+		} catch { /* ignore */ }
+		const curVolId = state?.current_volume ?? "";
+		const chs = await this.manager.listChapters(storyName);
+		const chapters: StatusChapterEntry[] = chs.map((c) => ({
+			key: c.key,
+			num: c.num,
+			title: c.title,
+			words: chWords ? (chWords[c.key] ?? 0) : (state?.chapters[c.key]?.words ?? 0),
+			active: c.key === state?.current_chapter,
+			volumeId: c.vol ?? "", // 以章节目录物理位置判归属（与 /scan 口径一致），供面板挂到对应卷节点下
+			files: c.dir.children.filter((f): f is TFile => f instanceof TFile).map((f) => ({ path: f.path, name: f.name })).sort((a, b) => a.name.localeCompare(b.name, "zh")),
+		}));
+		const storyDir = this.app.vault.getAbstractFileByPath(this.manager.storyPath(storyName));
+		const deskDir = this.app.vault.getAbstractFileByPath(this.manager.deskDocsPath(storyName)); // 「案头资料/」（新布局）；旧布局尚未迁移时不存在
+		// 「案头资料」小节展示 = 「案头资料/」内容 ∪ 书根剩余项（故事状态.md/卷.md/AI提示词/ 等系统项留书根一并展示；「案头资料/」「书稿/」两个容器自身不列入）
+		const srcDirs = [deskDir, storyDir].filter((d): d is TFolder => d instanceof TFolder);
+		const knownVolNames = new Set(vols.map((v) => this.manager.volumeFolderName(v))); // 已建卷的实体目录名集合，用于过滤书根文件夹（旧布局未迁移时生效）
+		const globalFiles: StatusFileEntry[] = [];
+		const globalFolders: StatusFolderEntry[] = [];
+		const folderFiles = (fd: TFolder): StatusFileEntry[] => fd.children.filter((c): c is TFile => c instanceof TFile).map((c) => ({ path: c.path, name: c.name })).sort((a, b) => a.name.localeCompare(b.name, "zh")); // v0.2.23+：文件夹直属 md（按名排序），供写字台行展开查看
+		for (const d of srcDirs) {
+			for (const f of d.children) {
+				if (f instanceof TFile) {
+					globalFiles.push({ path: f.path, name: f.name });
+				} else if (f instanceof TFolder && d === storyDir) {
+					if (f.name === DESK_DOCS_DIR_NAME || f.name === MANUSCRIPT_DIR_NAME) continue; // 新布局两容器
+					if (CHAPTER_DIR_RE.test(f.name) || knownVolNames.has(f.name) || f.name === PROLOGUE_DIR_NAME) continue;
+					globalFolders.push({ path: f.path, name: f.name, files: folderFiles(f) });
+				} else if (f instanceof TFolder) {
+					globalFolders.push({ path: f.path, name: f.name, files: folderFiles(f) }); // 「案头资料/」直属文件夹原样展示
+				}
+			}
+		}
+		globalFiles.sort((a, b) => a.name.localeCompare(b.name, "zh"));
+		globalFolders.sort((a, b) => a.name.localeCompare(b.name, "zh"));
+		const volDocs = await this.manager.listVolumeDocsByVol(storyName); // v0.1.3+：各卷实体目录直属 md（非章节目录），供写字台「文档」子节点展示
+		const prologueFiles = this.manager.listPrologueDocs(storyName); // v0.2.x+：书根「引言」文件夹直属 md（全书唯一），供写字台「引言」节点展示
+		return {
+			storyName,
+			title: state?.title || storyName,
+			genre: state?.genre || "",
+			writingStyle: state?.writing_style || "",
+			currentChapter: state?.current_chapter ?? null,
+			currentVolume: curVolId,
+			totalWords: chWords ? Object.values(chWords).reduce((s, w) => s + w, 0) : (state?.total_words ?? 0),
+			totalChars: chChars ? Object.values(chChars).reduce((s, w) => s + w, 0) : undefined, // 含标点总字符数：仅实时统计可用时给出（state 无此字段，故缺失则不显示）
+			updatedAt: state?.updated_at || "",
+			volumes: vols.map((v) => ({ id: v.id, name: v.name, order: v.order, active: v.id === curVolId, docs: volDocs[v.id] ?? [] })),
+			chapters,
+			globalFiles,
+			globalFolders,
+			prologueFiles,
+			useVolumes: state?.use_volumes ?? true, // v0.0.16+：无卷模式时写字台隐藏全部「新建卷」入口；状态缺失按有卷兜底不擅藏功能
+		};
+	}
+
+	/** 状态页切换当前小说：写回 lastStory（对齐 switch-story 的持久化语义）；v0.2.1+ 经统一入口归档旧书并恢复所选书的工作区（changeLayout 可能重建承载本视图的分栏，调用方 doSwitchStory 的后续 refresh 落在游离节点上无副作用） */
+	async statusSwitchStory(name: string): Promise<void> {
+		new Notice(`已切换当前小说：${name}`, 4000);
+		await this.applyStorySwitch(name, true); // 显式下拉切书→目标无存档则关闭主编辑区打开的文档
+		await this.enforceVolumeLayoutOnSwitch(name); // 平面结构 → 强制自动按卷整理（不可跳过）
+	}
+
+	/** 状态页激活章节：写回 current_chapter；该章归属卷时同步补激活所属卷（对齐切章约定），返回新的当前章复合键 */
+	async statusActivateChapter(storyName: string, key: string): Promise<string> {
+		const state = await this.manager.loadState(storyName);
+		if (!state) throw new Error("状态文档缺失，请先执行「重建小说状态」");
+		await this.manager.switchChapter(storyName, key); // 含 chapters 条目回填 + 按键内容器同步当前卷（目录与状态脱节时也稳定生效）
+		return key;
+	}
+
+	/** 广播刷新所有已打开的 LLM 对话面板顶部「当前小说 · 章节」行（切书/切章/建章等任何状态或设置变更路径都会经 saveSettings 或 manager.saveState 触发到这里），并防抖刷新所有已打开的写字台（切书/切章后跨分栏同步） */
+	notifyContextChanged(): void {
+		for (const leaf of this.app.workspace.getLeavesOfType(LlmChatView.VIEW_TYPE)) {
+			if (leaf.view instanceof LlmChatView) {
+				void leaf.view.updateCtxLine(); // 顶部小说·章节行
+				void leaf.view.updateSpLabel(); // 「提示词」标签（是否含小说上下文、约字数）
+			}
+		}
+		// lastStory/current_chapter 等元数据变更时同步刷新所有已打开面板（写字台 + 人物关系）：切书/切章后其它面板不再停留在旧书；防抖合并突发
+		this.schedulePanelRefresh(200);
+	}
+
+	/** 状态页右键快捷菜单动作执行器（语义与对应命令一致，但直接针对右键所在的小说/章节/目录，不再弹选择器） */
+	async handleStatusAction(a: StatusAction): Promise<void> {
+		switch (a.kind) {
+			case "new-story": {
+				await this.cmdNewStory(); // 复用建书三问流程
+				return;
+			}
+			case "rename-story": {
+				const cur = (await this.manager.loadState(a.name))?.title ?? a.name;
+				const t = await this.prompt(`改名「${a.name}」`, `新书名（当前：${cur || "无"}）`);
+				if (t == null || !t.trim() || t.trim() === cur) return; // 留空/未变更不执行
+				const r = await this.manager.renameStory(a.name, t.trim()); // title + 顶层目录同步改名 + 全书 MD 文档内旧书名整体替换（原件备份 _backup/改书名_时间戳/）
+				try { // v0.2.1+：该书的工作区存档以书名命名，须随改名迁移否则丢失关联
+					const wsOld = this.bookWorkspacePath(a.name);
+					const wsNew = this.bookWorkspacePath(r.newName);
+					if (wsOld !== wsNew && (await this.manager.pluginFileExists(wsOld))) {
+						const text = await this.manager.readPluginFile(wsOld);
+						if (text != null) {
+							await this.manager.writePluginFile(wsNew, text);
+							await this.app.vault.adapter.remove(wsOld);
+						}
+					}
+				} catch { /* v0.2.1+：旧名工作区存档改名迁移为尽力而为，失败不影响改名主流程 */ }
+				if ((this.settings.lastStory || "") === a.name) {
+					this.settings.lastStory = r.newName; // 当前书记忆随目录改名，同时触发 LLM 面板上下文行刷新
+					await this.saveSettings();
+				}
+				let msg = r.newName !== a.name ? `已改名为「${t.trim()}」，顶层目录已同步移动为 ${r.newName}` : `已改名为「${t.trim()}」（目录名不变）`;
+				if (r.hits > 0) msg += `；书中文档里的旧书名已替换 ${String(r.hits)} 处（${String(r.files)} 个文件，原件备份至 _backup/改书名_…）`;
+				new Notice(msg, 6000);
+				return;
+			}
+			case "delete-story": {
+				const folder = this.app.vault.getAbstractFileByPath(this.manager.storyPath(a.name));
+				if (!(folder instanceof TFolder)) throw new Error("小说目录不存在或已被移动");
+				const ok = await this.confirmBox(`删除小说「${a.name}」？`, "整本书的文件夹（含全部章节与文档）将移入 Obsidian 回收站，可从中找回。", "删除");
+				if (!ok) return;
+				await this.app.fileManager.trashFile(folder);
+				try { const ws = this.bookWorkspacePath(a.name); if (await this.manager.pluginFileExists(ws)) await this.app.vault.adapter.remove(ws); } catch { /* v0.2.1+：清理该书工作区存档，失败不影响删书 */ }
+				if ((this.settings.lastStory || "") === a.name) {
+					this.settings.lastStory = "";
+					await this.saveSettings(); // 同时触发 LLM 面板上下文行刷新
+				}
+				new Notice(`小说「${a.name}」已删除（可在回收站找回）`);
+				return;
+			}
+			case "new-chapter": {
+				if (!(await this.ensureVolumeLayout(a.story))) return; // 平面残留 → 先引导按卷整理
+				const chapters = await this.manager.listChapters(a.story);
+				const st = await this.manager.loadState(a.story);
+				let curVol = (st?.current_volume ?? "").trim(); // 有当前卷 → 落卷实体目录
+				if (st && !st.use_volumes) curVol = ""; // v0.0.16+：无卷模式一律落书根（纯 书→章），忽略残留 current_volume/右键 volId
+				if (a.volId && a.volId !== curVol) { // 卷节点右键建章：目标卷优先，并同步设为当前卷（位置即归属）
+					curVol = a.volId;
+					if (st) {
+						st.current_volume = a.volId;
+						await this.manager.saveState(a.story, st);
+					}
+				}
+				const base = this.manager.storyPath(a.story);
+				const inScope = curVol ? chapters.filter((c) => c.vol === curVol) : chapters.filter((c) => !c.vol && c.parentPath === base);
+				const nextNum = inScope.length ? Math.max(...inScope.map((c) => c.num)) + 1 : 1;
+				let volName = "";
+				try { if (curVol) volName = this.manager.findVolumeIn(await this.manager.loadVolumes(a.story), curVol)?.name ?? curVol; } catch { volName = curVol; }
+				const scopeLabel = curVol ? `卷「${volName}」` : "书根";
+				const title = await this.prompt(`新建章节（将成为 ${scopeLabel}第${nextNum}章）`, "章节标题");
+				if (title == null || !title.trim()) return;
+				const bodyPath = await this.manager.createChapter(a.story, title.trim(), curVol); // v0.0.15：编号在容器内自动顺延，不再手输章号
+				new Notice(`${scopeLabel}已创建第${String(nextNum).padStart(2, "0")}章-${title.trim()}：章节目录与文档就绪`);
+				if (this.settings.autoOpenOnCreate) await this.manager.openMarkdown(bodyPath);
+				return;
+			}
+			case "create-volume": {
+				if ((await this.manager.loadState(a.story))?.use_volumes === false) { new Notice(NO_VOL_MODE_MSG, 10000); return; } // v0.0.16+：无卷模式禁止建卷兜底（写字台已隐藏该入口）
+				if (!(await this.ensureVolumeLayout(a.story))) return; // 平面残留 → 先引导按卷整理
+				const names = await this.pickNewVolumeNames(a.story); // 列表式批量新建卷页面（手动加名单、确定后按序创建）
+				if (!names || !names.length) return;
+				await this.createVolumesInOrder(a.story, names); // 单个卷失败不中断其余，汇总通知给出原因；最后成功的设为当前卷
+				return;
+			}
+			case "rename-volume": {
+				const vols = await this.manager.volumeList(a.story);
+				const curName = vols.find((v) => v.id === a.id)?.name ?? a.id;
+				const n = await this.prompt("重命名卷", `新名称（当前：${curName}）`);
+				if (!n?.trim() || n.trim() === curName) return;
+				const u = await this.manager.updateVolume(a.story, a.id, { name: n.trim() }); // 同步重命名卷实体目录；同名冲突/移动失败抛错回滚
+				new Notice(u ? `已改名为「${u.name}」，卷实体目录已同步移动` : "改名失败：卷不存在", 6000);
+				return;
+			}
+			case "delete-volume": {
+				const vols = await this.manager.volumeList(a.story);
+				const vol = vols.find((v) => v.id === a.id);
+				if (!vol) throw new Error(`卷 ${a.id} 不存在或已被删除`);
+				const state = await this.manager.loadState(a.story);
+				const nums = Object.entries(state?.chapters ?? {})
+					.filter(([, m]) => (m.volume || "") === vol.id || (m.volume || "") === vol.name)
+					.map(([k]) => parseChKey(k).num)
+					.sort((x, y) => x - y);
+				const ok = await this.confirmBox(
+					`删除卷「${vol.name}」？`,
+					nums.length
+						? `其归属的 ${nums.length} 章（${nums.slice(0, 12).map((n) => this.chapterLabel(n)).join("、")}${nums.length > 12 ? " 等" : ""}）将一并移入 Obsidian 回收站，可从中找回；其余章节编号自动保持连续。`
+						: "该卷暂无归属章节，仅删除卷本身及其实体目录。",
+					"删除"
+				);
+				if (!ok) return;
+				const r = await this.manager.deleteVolumeCascade(a.story, vol.id); // 级联删章入回收站 + 单次补洞重排
+				new Notice(`已删除卷「${r.name}」${r.chaptersDeleted.length ? `，级联删除 ${String(r.chaptersDeleted.length)} 章（可在回收站找回）` : ""}`, 8000);
+				return;
+			}
+			case "activate-volume": {
+				const vols = await this.manager.volumeList(a.story);
+				const name = vols.find((v) => v.id === a.id)?.name ?? a.id;
+				const r = await this.manager.activateVolume(a.story, a.id); // 设 current_volume 并切到该卷最后一章
+				new Notice(r.num != null ? `已启用「${name}」，切换到${this.chapterLabel(r.num)}` : `已将「${name}」设为当前卷（暂无归属章节）`, 4000);
+				if (r.path) await this.manager.openMarkdown(r.path);
+				return;
+			}
+			case "export-volume": {
+				if (!(await this.ensureVolumeLayout(a.story))) return; // 平面残留先归位：导出按物理位置判归属
+				const vols = await this.manager.volumeList(a.story);
+				const vol = vols.find((v) => v.id === a.id);
+				if (!vol) throw new Error(`卷 ${a.id} 不存在或已被删除`);
+				const specText = await this.prompt(`导出（卷「${vol.name}」）`, "输入范围表达式（留空/all=该卷全部章节）", [
+					"将该卷内所选范围的《章节.md》正文合一 MD，按章序排列、文件首行带本卷标题；默认存 <书名>-<卷名>-范围.md（不支持自定义文件名/路径，重导覆盖同名文件）。范围写法：",
+					"· 留空 / all / 全部 —— 该卷全部章节",
+					"· 区间 —— 如 3-7 或 三至七（该卷内本地章号，自动升序去重）",
+					"· 列表 —— 如 1、4、5（顿号/逗号/空格分隔均可）",
+				].join("\n"));
+				if (specText == null) return;
+				const r = await this.manager.packStory(a.story, specText.trim(), vol.id, ""); // 锁定本卷：留空=all 即该卷全章；默认名 <书名>-<卷名>-范围.md
+				const words = r.packed.reduce((s, p) => s + p.words, 0);
+				new Notice(`已生成 ${r.path}（共 ${r.packed.length} 章，纯文字 ${words} 字${r.skipped.length ? `；跳过无正文：${r.skipped.map((n) => this.chapterLabel(n)).join("、")}` : ""}`, 8000);
+				await this.manager.openMarkdown(r.path);
+				return;
+			}
+			case "export-story": {
+				const specText = await this.prompt("导出书稿", "输入范围表达式（留空/all=整本）", [
+					"将所选范围内全部章节的《章节.md》正文合一 MD，阅读序排列。有卷模式每个卷组前带「# 第N卷 · 卷名」标题行（无章的空卷也照样输出其卷名），无卷模式平铺不带；章标题行为「## 第N章 章节名」。范围写法：",
+					"· 留空 / all / 全部 —— 整本（含书根未归卷 + 各卷）",
+					"· 区间 —— 如 3-7 或 三至七（自动升序去重；多卷书可加卷名前缀限定，如 风起:3-7、第一卷,2-5）",
+					"· 列表 —— 如 1、4、5（顿号/逗号/空格分隔均可）",
+					"· 裸号跨多个卷重名时会弹选择器让你选所在卷",
+				].join("\n"));
+				if (specText == null) return;
+				const outText = await this.prompt("输出路径", "输出位置（留空用默认文件名）", [
+					"· 留空 —— 限定某卷时存到该小说目录下 <书名>-<卷名>-范围.md（如 <书名>-风起-第3-7章.md；单章为 -第N章、离散号为 -第1、4、5章），整本/书根域为 <书名>-书稿.md（重导覆盖同名文件）",
+					"· 以 .md 结尾 —— 视为完整文件名，原样使用",
+					"· 其他 —— 视为目标目录，自动拼上对应默认文件名",
+				].join("\n"));
+				if (outText == null) return;
+				try {
+					let r: Awaited<ReturnType<typeof this.manager.packStory>>;
+					try {
+						r = await this.manager.packStory(a.story, specText.trim(), undefined, outText.trim());
+					} catch (e2) {
+						if (!String((e2 as Error)?.message).includes("PACK_AMBIGUOUS_CONTAINER")) throw e2; // 裸号跨容器有歧义 → 选容器后以 forcedVolId 重入
+						const vols = await this.manager.volumeList(a.story);
+						const idx = await this.pickAction("章节号在多个容器里都存在，请选择所在卷", vols.map((v) => ({ label: v.name })));
+						if (idx == null) return;
+						r = await this.manager.packStory(a.story, specText.trim(), vols[idx].id, outText.trim());
+					}
+					const words = r.packed.reduce((s, p) => s + p.words, 0);
+					new Notice(`已生成 ${r.path}（${r.packed.length} 章，纯文字共 ${words} 字${r.skipped.length ? `；跳过无正文：${r.skipped.map((n) => this.chapterLabel(n)).join("、")}` : ""}）`, 8000);
+					await this.manager.openMarkdown(r.path);
+				} catch (e) {
+					this.notifyError("导出书稿失败", e);
+				}
+				return;
+			}
+			case "vol-outline-generate": {
+				// v0.2.x+「书稿」小节标题行右键：书级语义——无卷→按书级《大纲.md》声明自动建卷并逐卷生成；有卷→当前卷/选择器（与命令面板同语义）
+				if ((this.settings.lastStory || "").trim() !== a.story) await this.applyStorySwitch(a.story);
+				if (!(await this.ensureVolumeLayout(a.story))) return; // 平面残留先归位：该命令按卷操作
+				const st = await this.manager.loadState(a.story);
+				if (st?.use_volumes === false) { new Notice(NO_VOL_MODE_MSG, 10000); return; } // 无卷模式没有卷大纲
+				await this.cmdGenerateVolOutline();
+				return;
+			}
+			case "book-outline-generate": {
+				// v0.2.x+「书稿」标题行右键：生成书级《大纲.md》——平铺/有卷两模式通用（平铺=逐章规划、有卷=卷声明），无需卷检查
+				if ((this.settings.lastStory || "").trim() !== a.story) await this.applyStorySwitch(a.story);
+				if (!(await this.ensureVolumeLayout(a.story))) return; // 平面残留先归位
+				await this.cmdGenerateBookOutline();
+				return;
+			}
+			case "vol-outline-to-chapters":
+			case "vol-outline-sync": {
+				// 卷节点右键的卷大纲工作流入口：锁定被点卷、不弹选择器（写字台只渲染激活书小节，切书为防御性兜底）
+				// v0.2.x+ 平铺（无卷）模式：不带 id 的 to-chapters=「从书级大纲生成章节…」→ 拆书级《大纲.md》、章节落书根
+				if ((this.settings.lastStory || "").trim() !== a.story) await this.applyStorySwitch(a.story);
+				if (!(await this.ensureVolumeLayout(a.story))) return; // 平面残留先归位：两条命令均按卷操作
+				const st = await this.manager.loadState(a.story);
+				if (a.kind === "vol-outline-to-chapters" && !a.id && st?.use_volumes === false) {
+					await this.cmdVolumeOutlineToChapters(); // 平铺：无参 → 读书级《大纲.md》
+					return;
+				}
+				if (st?.use_volumes === false) { new Notice(NO_VOL_MODE_MSG, 10000); return; } // 无卷模式没有卷大纲
+				const vols = await this.manager.volumeList(a.story);
+				if (!vols.find((v) => v.id === a.id)) throw new Error(`卷 ${a.id} 不存在或已被删除`);
+				if (a.kind === "vol-outline-to-chapters") await this.cmdVolumeOutlineToChapters(a.id);
+				else await this.cmdSyncVolOutlineChapters(a.id);
+				return;
+			}
+			case "write-consecutive": {
+				// v0.2.x+ 右键「连续编写」：带 id=卷节点——限该卷内连续编写；不带 id=「书稿」标题行——全书语义（与命令面板同义）
+				if ((this.settings.lastStory || "").trim() !== a.story) await this.applyStorySwitch(a.story);
+				if (!(await this.ensureVolumeLayout(a.story))) return; // 平面残留先归位
+				if (a.id) {
+					const st = await this.manager.loadState(a.story);
+					if (st?.use_volumes === false) { new Notice(NO_VOL_MODE_MSG, 10000); return; } // 防御：无卷模式没有卷节点
+					const vols = await this.manager.volumeList(a.story);
+					if (!vols.find((v) => v.id === a.id)) throw new Error(`卷 ${a.id} 不存在或已被删除`);
+					await this.cmdWriteConsecutive(a.id);
+				} else {
+					await this.cmdWriteConsecutive();
+				}
+				return;
+			}
+			case "book-outline-to-volumes": {
+				// 「书籍列表」标题行右键：按书级《大纲.md》生成其声明的全部卷（写字台只渲染激活书小节，切书为防御性兜底）
+				if ((this.settings.lastStory || "").trim() !== a.story) await this.applyStorySwitch(a.story);
+				if (!(await this.ensureVolumeLayout(a.story))) return; // 平面残留先归位：本命令按卷操作
+				const st = await this.manager.loadState(a.story);
+				if (st?.use_volumes === false) { new Notice(NO_VOL_MODE_MSG, 10000); return; } // 无卷模式没有卷大纲
+				await this.cmdBookOutlineToVolumes();
+				return;
+			}
+			case "rename-chapter": {
+				if (!(await this.ensureVolumeLayout(a.story))) return; // 平面残留 → 先引导按卷整理
+				const curNum = parseChKey(a.key).num;
+				const cur = (await this.manager.loadState(a.story))?.chapters[a.key]?.title ?? "";
+				const t = await this.prompt(`重命名 ${this.chapterLabel(curNum, cur)}`, `新标题（当前：${cur || "无"}）`);
+				if (!t?.trim()) return;
+				const newTitle = await this.manager.renameChapter(a.story, a.key, t.trim()); // 重命名目录并同步各文档中的旧标题引用
+				new Notice(`已改名为 ${this.chapterLabel(curNum, newTitle)}，目录与文档引用已同步`, 6000);
+				return;
+			}
+			case "insert-chapter": {
+				// 右键所在章节即参照章、方向已定：只问标题（留空以编号作标题），复用 manager.insertChapter 的顺延+引用重写
+				if (!(await this.ensureVolumeLayout(a.story))) return; // 平面残留 → 先引导按卷整理
+				const refNum = parseChKey(a.key).num;
+				const newNum = a.pos === "before" ? refNum : refNum + 1;
+				const t = await this.prompt(`新建第${newNum}章`, `插入到 ${this.chapterLabel(refNum)} ${a.pos === "before" ? "之前" : "之后"}的章节标题`);
+				if (t == null) return;
+				const title = t.trim() || String(newNum);
+				const r = await this.manager.insertChapter(a.story, a.key, a.pos, title);
+				new Notice(`${this.chapterLabel(r.newNum, title)} 已插入；后续章节号与文档引用已顺延更新`, 6000);
+				if (this.settings.autoOpenOnCreate) await this.manager.openMarkdown(r.path);
+				return;
+			}
+			case "delete-chapter": {
+				if (!(await this.ensureVolumeLayout(a.story))) return; // 平面残留 → 先引导按卷整理
+				const st = await this.manager.loadState(a.story);
+				const meta = st?.chapters[a.key];
+				const delNum = parseChKey(a.key).num;
+				const ok = await this.confirmBox(`删除第${String(delNum).padStart(2, "0")}章${meta?.title ? " " + meta.title : ""}？`, "章节目录将移入 Obsidian 回收站，元数据与卷归属一并清理；若为当前章节则回退到最后一章。其后的各章会自动重新排号、保持连续编号。", "删除");
+				if (!ok) return;
+				const r = await this.manager.deleteChapter(a.story, a.key);
+				new Notice(`章节已删除（可在回收站找回）${r.resequenced ? "；后续章节已自动重新排号为连续" : ""}`);
+				return;
+			}
+			case "chapter-to-screenplay": {
+				await this.cmdChapterToScreenplay(a.story, a.key);
+				return;
+			}
+			case "new-file": {
+				if (a.folder) {
+					// 案头资料文件夹行右键「新建文章…」：在该文件夹内新建 .md（仅自定义文件名，无标准文档清单）
+					const folder = a.folder;
+					if (!(this.app.vault.getAbstractFileByPath(folder) instanceof TFolder)) throw new Error("该文件夹不存在或已被移动");
+					const res = await this.pickNewDoc(`在「${folder.split("/").pop() ?? folder}」新建文章`, []);
+					if (res == null) return;
+					let base = safeFilename(res.name);
+					if (!base.toLowerCase().endsWith(".md")) base += ".md";
+					const path = `${folder}/${base}`;
+					if (this.app.vault.getAbstractFileByPath(path)) throw new Error(`同名文件已存在：${path}`);
+					await this.app.vault.create(path, "");
+					new Notice(`已创建 ${path}`);
+					return;
+				}
+				const target = a.key == null ? {} : { chKey: a.key }; // 书级（案头资料）或章节目录
+				const stds = await this.manager.standardDocs(a.story, target); // 标准模板文档列出（参与提示词者），已存在禁用
+				const res = await this.pickNewDoc(`新建${a.key == null ? "资料" : "文章"}（${a.key == null ? "书根目录（案头资料）" : "该章节目录"}）`, stds); // v0.1.8+：全宽输入框+底部「确定」单视图，不再多窗
+				if (res == null) return;
+				if (res.kind === "std") {
+					const s = stds.find((o) => o.name === res.name)!;
+					if (s.exists) { // 选中的标准文档已存在→弹存在性提示，用户确认后才以模板空内容替换
+						const ok = await this.confirmBox(`${res.name} 已存在`, "将用模板空内容替换其现有文字。", "替换");
+						if (!ok) return;
+						await this.manager.overwriteStandardDoc(a.story, target, res.name);
+						new Notice(`已将 ${res.name} 替换为模板空内容`);
+						return;
+					}
+					const created = await this.manager.ensureStandardDoc(a.story, target, res.name); // 不存在直接按模板创建
+					new Notice(created ? `已创建 ${res.name}（模板）` : `${res.name} 已存在，未改动`);
+					return;
+				}
+				let folder: string;
+				if (a.key == null) {
+					folder = this.manager.deskDocsPath(a.story); // 书级自定义资料落「案头资料/」
+				} else {
+					const ch = (await this.manager.listChapters(a.story)).find((c) => c.key === a.key); // 以磁盘为准取真实章节目录（含章名）
+					if (!ch) throw new Error(`第${parseChKey(a.key).num}章不存在`);
+					folder = ch.dir.path;
+				}
+				let base = safeFilename(res.name);
+				if (!base.toLowerCase().endsWith(".md")) base += ".md";
+				const path = `${folder}/${base}`;
+				if (this.app.vault.getAbstractFileByPath(path)) throw new Error(`同名文件已存在：${path}`);
+				await this.app.vault.create(path, "");
+				new Notice(`已创建 ${path}`);
+				return;
+			}
+			case "delete-file": {
+				const f = this.app.vault.getAbstractFileByPath(a.path);
+				if (!(f instanceof TFile)) throw new Error("文件不存在或已被移动");
+				if (f.name === "故事状态.md") throw new Error("不能删除小说状态文档（需要重置请用「重建小说状态」命令）");
+				const ok = await this.confirmBox(`删除文件 ${f.path}？`, "将移入 Obsidian 回收站，可从中找回。", "删除");
+				if (!ok) return;
+				await this.app.fileManager.trashFile(f);
+				new Notice(`${f.name} 已删除（可在回收站找回）`);
+				return;
+			}
+			case "delete-folder": {
+				const f = this.app.vault.getAbstractFileByPath(a.path);
+				if (!(f instanceof TFolder)) throw new Error("文件夹不存在或已被移动");
+				if (f.name === DESK_DOCS_DIR_NAME || f.name === MANUSCRIPT_DIR_NAME) throw new Error(`「${f.name}」是系统容器目录，不能删除`); // 双保险：这两类容器不会出现在案头资料列表里
+				const ok = await this.confirmBox(`删除文件夹 ${f.path} 及其全部内容？`, "将整体移入 Obsidian 回收站，可从中找回。", "删除");
+				if (!ok) return;
+				await this.app.fileManager.trashFile(f);
+				new Notice(`${f.name} 已删除（可在回收站找回）`);
+				return;
+			}
+			case "new-volume-doc": {
+				const vols = await this.manager.loadVolumes(a.story);
+				const vol = this.manager.findVolumeIn(vols, a.volId); // 按 id/名解析目标卷
+				if (!vol) throw new Error(`卷 ${a.volId} 不存在或已被删除`);
+				const target = { volId: vol.id };
+				const stds = await this.manager.standardDocs(a.story, target); // 设定五件套列出，已存在禁用
+				const res = await this.pickNewDoc(`在卷「${vol.name}」新建文档`, stds); // v0.1.8+：全宽输入框+底部「确定」单视图，不再多窗
+				if (res == null) return;
+				if (res.kind === "std") {
+					const s = stds.find((o) => o.name === res.name)!;
+					if (s.exists) { // 选中的标准文档已存在→弹存在性提示，用户确认后才以模板空内容替换
+						const ok = await this.confirmBox(`${res.name} 已存在`, `将在卷「${vol.name}」用模板空内容替换其现有文字。`, "替换");
+						if (!ok) return;
+						await this.manager.overwriteStandardDoc(a.story, target, res.name);
+						new Notice(`已将 ${res.name} 替换为模板空内容`);
+						return;
+					}
+					const created = await this.manager.ensureStandardDoc(a.story, target, res.name); // 不存在直接按模板创建
+					new Notice(created ? `已在卷「${vol.name}」创建 ${res.name}（模板）` : `${res.name} 已存在，未改动`);
+					return;
+				}
+				const folder = `${this.manager.storyPath(a.story)}/${this.manager.volumeFolderName(vol)}`;
+				if (!(this.app.vault.getAbstractFileByPath(folder) instanceof TFolder)) throw new Error("该卷实体目录缺失，请先执行「按卷整理目录」");
+				let base = safeFilename(res.name);
+				if (!base.toLowerCase().endsWith(".md")) base += ".md";
+				const path = `${folder}/${base}`;
+				if (this.app.vault.getAbstractFileByPath(path)) throw new Error(`同名文件已存在：${path}`);
+				await this.app.vault.create(path, "");
+				new Notice(`已在卷「${vol.name}」创建 ${base}`);
+				return;
+			}
+			case "complete-volume-docs": {
+				const vols = await this.manager.loadVolumes(a.story);
+				const vol = this.manager.findVolumeIn(vols, a.volId); // 按 id/名解析目标卷
+				if (!vol) throw new Error(`卷 ${a.volId} 不存在或已被删除`);
+				const created = await this.manager.ensureVolumeDocs(a.story, vol.id); // 缺失的设定模板补建，已存在保留不覆盖
+				new Notice(created.length ? `已为卷「${vol.name}」补全缺失文档：${created.join("、")}` : `卷「${vol.name}」的模板文档已齐全（卷大纲/人物/人物关系/场景），无需补全`, 8000);
+				return;
+			}
+			case "complete-root-docs": {
+				const created = await this.manager.ensureRootDocs(a.story); // 书根默认资料九件套补缺，已存在保留不覆盖
+				new Notice(created.length ? `已为「${a.story}」补全缺失资料：${created.join("、")}` : `「${a.story}」的默认资料文件已齐全（大纲/策划指南/世界观/伏笔/笔记/人物/人物关系/场景/时间线），无需补全`, 8000);
+				return;
+			}
+			case "complete-outline-docs": {
+				const created = await this.manager.ensureOutlineDocs(a.story); // 参与大纲生成的四件资料补缺，已存在保留不覆盖
+				new Notice(created.length ? `已为「${a.story}」补全大纲资料：${created.join("、")}` : `「${a.story}」的大纲资料已齐全（大纲/策划指南/世界观/人物关系），无需补全`, 8000);
+				return;
+			}
+			case "new-prologue": {
+				const created = await this.manager.ensurePrologue(a.story); // 幂等：已有「引言」文件夹则不覆盖
+				new Notice(created ? `已在「${a.story}」书根创建「引言」文件夹并播种正文《引言.md》` : `「${a.story}」已有「引言」文件夹，未改动`);
+				return;
+			}
+			case "delete-prologue": {
+				const ok = await this.confirmBox(`删除「${a.story}」的引言？`, `整个书根「引言」文件夹将移入 Obsidian 回收站，可从中找回。`, "删除");
+				if (!ok) return;
+				await this.manager.deletePrologue(a.story);
+				new Notice(`引言已删除（可在回收站找回）`);
+				return;
+			}
+			case "new-prologue-doc": {
+				const folder = this.manager.prologuePath(a.story);
+				if (!(this.app.vault.getAbstractFileByPath(folder) instanceof TFolder)) throw new Error("「引言」文件夹不存在，请先在「书稿」标题右键「新建引言…」创建");
+				const res = await this.pickNewDoc("在引言新建文档", []); // 仅自定义文件名（无标准文档清单）
+				if (res == null) return;
+				let base = safeFilename(res.name);
+				if (!base.toLowerCase().endsWith(".md")) base += ".md";
+				const path = `${folder}/${base}`;
+				if (this.app.vault.getAbstractFileByPath(path)) throw new Error(`同名文件已存在：${path}`);
+				await this.app.vault.create(path, "");
+				new Notice(`已在「引言」创建 ${base}`);
+				return;
+			}
+			case "complete-chapter-docs": {
+				const created = await this.manager.ensureChapterDocs(a.story, a.key); // 该章节目录缺失的标准模板文档补缺，已存在保留不覆盖
+				const ch = (await this.manager.listChapters(a.story)).find((c) => c.key === a.key); // chapterDirOf 为私有，经公开列表解析展示标签
+				const label = ch ? `第${String(ch.num).padStart(2, "0")}章 ${ch.title}` : a.key;
+				new Notice(created.length ? `已为${label}补全缺失文档：${created.join("、")}` : `${label}的模板文档已齐全（章节/章节大纲/人物/人物关系/场景/章节信息），无需补全`, 8000);
+				return;
+			}
+			case "llm-write":
+			case "llm-continue":
+			case "llm-polish": {
+				await this.statusRunWriting(a.kind, a.story, a.key); // 章节行右键的 LLM 写作入口
+				return;
+			}
+		}
+	}
+
+	/** 状态面板章节行右键调用 LLM 写作命令：先把目标书/章设为当前（与点章节名激活同语义），再复用对应命令的既有交互流程（创作要点输入、流式预览确认等全部保留） */
+	private async statusRunWriting(kind: "llm-write" | "llm-continue" | "llm-polish", story: string, key: string): Promise<void> {
+		if (!(await this.ensureWorkDir())) return;
+		if ((this.settings.lastStory || "").trim() !== story) {
+			await this.applyStorySwitch(story); // v0.2.1+：统一入口——归档旧书 + 持久化 + 恢复目标书的工作区，并广播刷新 LLM 面板上下文行
+		}
+		await this.statusActivateChapter(story, key); // 写回 current_chapter + 同步所属卷
+		switch (kind) {
+			case "llm-write": await this.cmdWrite(); break;
+			case "llm-continue": await this.cmdContinueWriting(); break;
+			case "llm-polish": await this.cmdPolishText(); break;
+		}
+	}
+
+	/** 当前活动小说快照（供对话面板头部展示）：非交互读取 lastStory+状态；无有效当前小说返回 null */
+	async getActiveStoryInfo(): Promise<{ story: string; chapterNum: number; chapterTitle: string } | null> {
+		const s = this.settings.lastStory?.trim();
+		if (!s || !(await this.manager.listStories()).includes(s)) return null;
+		let chapterNum = 1;
+		let chapterTitle = "";
+		try {
+			const st = await this.manager.loadState(s);
+			const curKey = st?.current_chapter ?? null;
+			if (curKey != null) {
+				chapterNum = parseChKey(curKey).num; // v0.0.15：current_chapter 为复合键，展示用本地章号
+				const ch = (await this.manager.listChapters(s)).find((c) => c.key === curKey);
+				chapterTitle = ch?.title || "";
+			}
+		} catch {
+			/* 状态/章节读取失败仍显示小说名与默认章号 */
+		}
+		return { story: s, chapterNum, chapterTitle };
+	}
+
+	/** 对话专用系统提示词（对齐 chat.py `_chat_reply` + `_build_chat_context` + `_apply_agents`）：
+	 * 友好写作助手身份 +【创作规范】(与写作命令同源三层指南) + 当前小说上下文快照(写作上下文+当前章节正文截断6000字)。
+	 * 无当前小说=仅身份+指南；任一部分构建失败不阻断整体（回退纯问答，对齐 CLI「某部分失败不影响整体」）。恒返回非 null。 */
+	private async getChatSystemPrompt(): Promise<{ text: string; hasStory: boolean }> {
+		const CHAT_ASSISTANT_PROMPT =
+			"你是一个友好的写作助手。请用简体中文自然、简洁地回答用户的问题；" +
+			"若问题与当前小说相关，请结合提供的【小说上下文】回答；" +
+			"若提供了【对话历史】，请结合历史理解语境与指代（如'他/它/刚才/后来'），回答与之前的内容保持连贯，不要重复已说过的内容；" +
+			"若问题与写作、小说或创作相关，请遵循下方【创作规范】的要求与文风作答" +
+			"（如直白平实、避免AI腔；下方无【创作规范】时按此要求正常回答），" +
+			"不要编造上下文中没有的设定；" +
+			"思考完成后请直接在正文输出完整回答，不要把回答只放在思考过程里；" +
+			"如果用户的问题与小说创作无关，就正常回答，不要编造小说内容。";
+		let guideText = "";
+		let hasStory = false;
+		const lastStory = this.settings.lastStory?.trim();
+		try {
+			if (lastStory && (await this.manager.listStories()).includes(lastStory)) {
+				hasStory = true;
+				guideText = (await this.loadWriterGuides(lastStory)).guideText;
+			} else {
+				// 无当前小说：仅用户级+系统级两层，按同一汇总格式合并（不落盘——书目录不存在）
+				const userText = (await this.manager.readGuideAt(this.manager.userGuidePath())) ?? "";
+				const systemText = await this.readSystemGuideText();
+				const merged = mergeGuideCategories([userText, systemText].filter((t) => t.trim()));
+				guideText = stripComments(serializeAggregateGuide(merged)).trim();
+			}
+		} catch {
+			/* 指南读取失败则不带【创作规范】，不阻断对话 */
+		}
+		let text = assembleSystemPrompt(CHAT_ASSISTANT_PROMPT, guideText); // 与 CLI _apply_agents 同一拼接规则/措辞
+		if (hasStory) {
+			try {
+				const state = await this.manager.loadState(lastStory);
+				if (state?.title) {
+					const curKey = state.current_chapter; // v0.0.15：复合键（"volId:N"/"N"）
+					let volNames: Record<string, string> = {};
+					try { volNames = await this.volNameMap(lastStory); } catch { /* 卷名缺失降级为 id */ }
+					const parts: string[] = [];
+					if (curKey != null && curKey !== "") {
+						try {
+							// ensureSummaries:false —— 这个调用只服务「对话框提示词/字数标签」这类**只读展示**：
+							// 触发摘要 LLM 生成会让切书/切章时凭空弹出「生成过程」面板并开始输出（用户视角就是"自动开始写"），必须禁掉
+							const data = await this.manager.loadWritingData(lastStory, curKey, { includeCurrentSummary: false, ensureSummaries: false });
+							const ctx = buildWritingContext(data);
+							if (ctx) parts.push(ctx);
+						} catch {
+							/* 写作上下文构建失败不影响当前章节部分 */
+						}
+						try {
+							const content0 = await this.manager.readChapterContent(lastStory, curKey);
+							if (content0 && content0.trim()) {
+								let content = content0;
+								if (content.length > 6000) content = content.slice(0, 6000) + "\n[...内容省略...]";
+								parts.push(`\n【当前章节】${this.keyLabel(curKey, volNames)}\n${content}`);
+							}
+						} catch {
+							/* 章节读取失败则只带写作上下文 */
+						}
+					}
+					if (parts.length) {
+						text +=
+							"\n\n以下是当前小说的上下文，供你回答时参考。请基于它回答，不要复述上下文本身：\n\n" +
+							parts.join("\n");
+					}
+				}
+			} catch {
+				/* 状态读取失败则不带小说上下文，回退纯问答（对齐 CLI） */
+			}
+		}
+		return { text, hasStory };
+	}
+
+	/**
+	 * 单次流式调用：空流按「结果为空」处理（返回""），用户中断向上抛 AbortError。
+	 * 思考型模型的 reasoning_content 增量经 sink.appendReasoning 实时透出到面板（仅展示不落盘）；
+	 * 「正文为空但思考非空」由 chatStream 抛针对性错误（不走空结果重试——那会再白等数轮思考）。
+	 * 网络层瞬时故障（fetch 的 `Failed to fetch` / Connection error / ETIMEDOUT / ECONNRESET / 5xx）自动退避重试 2 次
+	 * ——长 prompt 的首字节等待常达数十秒，连接被中间设备或服务端网关掐断是常见故障，重试一次多半即通；
+	 * 参数类 4xx（超长上下文、密钥错等）由 isRetryableLlmError 挡掉直接失败，避免白等。
+	 */
+	private async streamOnce(cfg: LlmConfigDoc, messages: Message[], sink: WritingStreamSink, extra?: Record<string, unknown>): Promise<string> {
+		const maxAttempts = 3;
+		for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+			try {
+				return await chatStream(cfg, messages, (d) => sink.append(d), extra, sink.signal, (d) => sink.appendReasoning(d));
+			} catch (e) {
+				if (sink.signal.aborted || (e instanceof Error && e.name === "AbortError")) throw e;
+				const msg = e instanceof Error ? e.message : String(e);
+				if (msg.includes("输出为空") || msg.includes("未返回内容")) return "";
+				// 本地端点（localhost/127.0.0.1）的连接失败＝服务没起来，重试必然同样失败，直接报错让用户看到端点更省事
+				const localEndpoint = /^https?:\/\/(localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])/i.test(cfg.base_url || "");
+				if (attempt < maxAttempts && !localEndpoint && isRetryableLlmError(e)) {
+					const waitS = attempt * 2; // 2s、4s 退避
+					sink.reset(); // 丢弃半截输出，重试从零开始
+					sink.setStatus(`连接中断，${String(waitS)} 秒后自动重试（第 ${String(attempt)}/${String(maxAttempts - 1)} 次）…`); // v0.2.x+ 先 reset 再 setStatus：临时态在退避等待期间不被计时器/状态刷新覆盖（原顺序下 reset 会立即清掉该文案）
+					await new Promise((r) => window.setTimeout(r, waitS * 1000));
+					if (sink.signal.aborted) throw e;
+					continue;
+				}
+				throw this.decorateLlmError(e, cfg);
+			}
+		}
+		throw new Error("生成重试后仍失败");
+	}
+
+	/** 生成失败统一提示：用户中断仅通知；其它错误额外在预览框内显示失败态 */
+	private genFailure(e: unknown, label: string, sink?: WritingStreamSink): void {
+		if (e instanceof Error && e.name === "AbortError") {
+			new Notice(`已停止生成，${label}未保存`);
+			return;
+		}
+		this.notifyError(`${label}失败`, e);
+		sink?.fail(describeLlmError(e));
+	}
+
+	/** 流式生成 + 结果为空自动重试 ×3（对应 cmd 层 max_attempts=3）；失败/中断/全空均返回"" */
+	private async streamWithEmptyRetry(
+		cfg: LlmConfigDoc,
+		buildMessages: () => Message[],
+		sink: WritingStreamSink,
+		label: string,
+		extra?: Record<string, unknown>
+	): Promise<string> {
+		for (let attempt = 1; attempt <= 3; attempt++) {
+			let content: string;
+			try {
+				content = await this.streamOnce(cfg, buildMessages(), sink, extra);
+			} catch (e) {
+				this.genFailure(e, label, sink);
+				return "";
+			}
+			if (content.trim()) return content;
+			if (attempt < 3) {
+				new Notice(`生成结果为空（第${String(attempt)}次），正在重试…`, 6000);
+				sink.reset();
+			}
+		}
+		new Notice(`✗ ${label}失败：连续 3 次生成结果为空`, 12000);
+		sink.fail("连续 3 次生成结果为空");
+		return "";
+	}
+
+	/** 对齐 writer.generate_chapter：最多 3 轮「生成→格式校验→带修正注记重新生成」；中断/异常/全空返回"" */
+	private async generateChapterStreamed(
+		cfg: LlmConfigDoc,
+		systemPrompt: string,
+		prompt: string,
+		writingStyle: string | undefined,
+		sink: WritingStreamSink
+	): Promise<string> {
+		const sysMsg: Message = { role: "system", content: systemPrompt };
+		let content = "";
+		for (let attempt = 1; attempt <= 3; attempt++) {
+			try {
+				content = await this.streamOnce(cfg, [sysMsg, { role: "user" as const, content: prompt }], sink);
+			} catch (e) {
+				this.genFailure(e, "创作", sink);
+				return "";
+			}
+			if (!content.trim()) break; // 空结果 → 外层统一报错（与 Python break 一致）
+			const reason = validateStoryTypeFormat(content, writingStyle);
+			if (!reason) return content;
+			new Notice(`生成内容不符合【编写类型】（第${String(attempt)}次）：${reason}\n正在附加格式修正要求重新生成…`, 8000);
+			sink.reset();
+			let retried: string;
+			try {
+				retried = await this.streamOnce(cfg, [sysMsg, { role: "user" as const, content: prompt + formatRetryNote(writingStyle, reason) }], sink);
+			} catch (e) {
+				this.genFailure(e, "创作", sink);
+				return "";
+			}
+			const r2 = validateStoryTypeFormat(retried, writingStyle);
+			if (retried.trim() && !r2) return retried;
+			content = retried;
+		}
+		if (!content.trim()) {
+			new Notice("✗ 创作失败：连续 3 次生成结果为空", 12000);
+			sink.fail("连续 3 次生成结果为空");
+		}
+		return content;
+	}
+
+	// v0.1.4+ 起卷摘要不再在写盘命令后 eager 刷新：上下文组装需要时由 manager.ensureFreshVolumeSummary 延迟全量重建（输入=本卷全部成员章的新鲜章节摘要）。
+
+	/** v0.1.4+ 摘要延迟生成的进度反馈——专用面板展示工作过程（GenProgressView）：每个 LLM 任务实时追加一行带时间戳的日志并自动滚底；onProgress(null)=本轮结束，追加分隔完成行后面板保持展示，直到下一轮生成清空或用户手动关闭。面板打开/写入失败仅告警，绝不影响生成本身 */
+	private genRunOpen = false;
+	private async notifyGenProgress(msg: string | null): Promise<void> {
+		try {
+			if (!msg) {
+				if (this.genRunOpen) {
+					const view = await this.getGenPanel(false); // 只找已开实例；用户中途关过面板则静默跳过收尾行
+					view?.finishRun();
+					this.genRunOpen = false;
+				}
+				return;
+			}
+			const view = await this.getGenPanel(true); // 无已开实例则新开 tab
+			if (!view) return;
+			if (!this.genRunOpen) {
+				view.startRun(this.settings.lastStory?.trim() || undefined);
+				this.genRunOpen = true;
+			}
+			view.appendLine(`⏳ ${msg}`);
+		} catch (e) {
+			console.warn("[articlewriter] 更新摘要进度面板失败：", e);
+		}
+	}
+
+	/** 取「生成过程」面板视图：withOpen=false 只找已开启的实例（收尾用）；true=没有时新开一个 tab。失败返回 null */
+	private async getGenPanel(withOpen: boolean): Promise<GenProgressView | null> {
+		for (const l of this.app.workspace.getLeavesOfType(GenProgressView.VIEW_TYPE)) if (l.view instanceof GenProgressView) return l.view;
+		if (!withOpen) return null;
+		const leaf = this.app.workspace.getLeaf("tab");
+		await leaf.setViewState({ type: GenProgressView.VIEW_TYPE, active: true });
+		return leaf.view instanceof GenProgressView ? leaf.view : null;
+	}
+
+	/** v0.1.4+ 打开统一生成面板并进入流式小节（与摘要日志同一 ItemView，替换原独立 StreamingPreviewModal）：无实例则新开 tab；失败返回 null */
+	private async beginWritingPanel(title: string): Promise<GenProgressView | null> {
+		const view = await this.getGenPanel(true);
+		if (!view) return null;
+		// 标题带上**写作命令实际使用的**激活模型：写作命令一律走设置页「激活模型」（getLlmSetup），
+		// 而 LLM 对话框顶部下拉可以另选配置——不显示出来时，用户极易误以为两处用的是同一个模型（本地/云端对不上就会连接失败）
+		const setup = this.getLlmSetup();
+		const modelLabel = setup ? `${setup.cfg.name || setup.cfg.model_name || "默认"}` : "";
+		view.beginStream(modelLabel ? `${title} · 模型 ${modelLabel}` : title);
+		return view;
+	}
+
+	/** v0.2.x+ 增量大纲生成 · 已生成各段的上下文裁剪：≤3 段全列；>3 段只列最近 3 章并在头部注明省略章数——避免每步把本轮全部已生成章节 O(N²) 重复上传（紧邻的前一章恒在尾部，因果链不断） */
+	private outlineSoFarContext(segs: string[]): string {
+		const TAIL = 3;
+		if (segs.length <= TAIL) return segs.join("\n\n");
+		return `（前 ${String(segs.length - TAIL)} 章已生成，此处仅列最近 ${TAIL} 章供衔接参考）\n\n${segs.slice(-TAIL).join("\n\n")}`;
+	}
+
+	/** v0.2.x+ 增量生成卷大纲（/vol-outline-generate · 无卷兜底 · 书级大纲→生成卷 三入口共用）：输出拆成小段防长单次输出断开——
+	 * 第 0 步【卷设计】段（hasDesign=false 的补全模式跳过）、其后每个章号一个 `## 第N章` 小节；
+	 * 全程同一面板实例，每段 beginStream 实时流式展示、生成完立即经 commit 落盘（无保存/不保存 CTA，finishAuto 自动收尾）再继续下一段；
+	 * 每章提示词带共享书籍上下文 + 本轮【卷设计】+ 已生成各段（>3 段时仅列最近 3 章、前段省略注明，见 outlineSoFarContext），保证跨段因果链。
+	 * Esc / 关面板 → 整轮中止（已落盘段落保留在磁盘）；某段 LLM 失败/连续空 → 该轮 failed（已落盘段落保留）。
+	 * @param cfg 激活模型配置（loadWriterSetup 结果，调用方已保证非空）
+	 * @param failLabel 面板标题与失败提示前缀（如「生成卷大纲 X」）
+	 * @param chapterNums 要生成的章号（升序；完整模式 1..N，补全模式为缺失章号）
+	 * @param buildDesignPrompt 第 0 步提示词构建器（hasDesign=false 时忽略）
+	 * @param buildChapterPrompt 单章提示词构建器（chapterNum/volumeDesign/generatedSoFar 由本助手传入）
+	 * @param commit 段落生成完成后的落盘策略（kind=design/chapter；segmentText 已去尾部空白），写盘失败抛错由本助手统一处理 */
+	private async genVolOutlineIncremental(opts: {
+		cfg: LlmConfigDoc;
+		failLabel: string;
+		chapterNums: number[];
+		hasDesign: boolean;
+		buildDesignPrompt: () => string;
+		buildChapterPrompt: (chapterNum: number, volumeDesign: string, generatedSoFar: string) => string;
+		commit: (segmentText: string, kind: "design" | "chapter") => Promise<void>;
+	}): Promise<{ aborted: boolean; failed: boolean; written: number; panelFailed: boolean }> {
+		const view = await this.beginWritingPanel(opts.failLabel);
+		if (!view) return { aborted: false, failed: false, written: 0, panelFailed: true };
+		const totalSteps = opts.chapterNums.length + (opts.hasDesign ? 1 : 0);
+		let stepIdx = 0;
+		let written = 0;
+		let volumeDesign = "";
+		const soFarSegs: string[] = []; // 本轮已生成各段（提示词注入时经 outlineSoFarContext 裁剪为最近 3 章）
+		const runStep = async (kind: "design" | "chapter", num: number): Promise<"ok" | "aborted" | "failed"> => {
+			stepIdx++;
+			const label = `${opts.failLabel} · ${kind === "design" ? "卷设计" : `第${num}章`} (${String(stepIdx)}/${String(totalSteps)})`;
+			view.beginStream(label);
+			const prompt = kind === "design" ? opts.buildDesignPrompt() : opts.buildChapterPrompt(num, volumeDesign, this.outlineSoFarContext(soFarSegs));
+			const content = await this.streamWithEmptyRetry(opts.cfg, () => [
+				{ role: "system", content: VOL_OUTLINE_GEN_SYSTEM_PROMPT },
+				{ role: "user", content: prompt },
+			], view, label);
+			if (view.signal.aborted) return "aborted"; // 用户 Esc / 关面板 → 整轮中止（streamWithEmptyRetry 已按中断提示）
+			if (!content.trim()) return "failed"; // 失败/连续空：streamWithEmptyRetry 已 notifyError + sink.fail，不重复提示
+			const seg = content.replace(/\s+$/, "");
+			try {
+				await opts.commit(seg, kind);
+			} catch (e) {
+				this.notifyError(`${opts.failLabel}落盘失败`, e);
+				view.fail("落盘失败");
+				return "failed";
+			}
+			written++;
+			if (kind === "design") volumeDesign = seg;
+			else soFarSegs.push(seg);
+			view.finishAuto(`✓ ${kind === "design" ? "卷设计" : `第${num}章`}已落盘 (${String(stepIdx)}/${String(totalSteps)})`, "段落用时");
+			return "ok";
+		};
+		if (opts.hasDesign) {
+			const r = await runStep("design", 0);
+			if (r !== "ok") return { aborted: r === "aborted", failed: r === "failed", written, panelFailed: false };
+		}
+		for (const num of opts.chapterNums) {
+			const r = await runStep("chapter", num);
+			if (r !== "ok") return { aborted: r === "aborted", failed: r === "failed", written, panelFailed: false };
+		}
+		return { aborted: false, failed: false, written, panelFailed: false };
+	}
+
+	/** 连接类失败时补上端点与模型，并给出最常见成因（本地服务未启动 / 激活模型与预期不符）——原样抛出时只有一句 "Connection error." */
+	private decorateLlmError(e: unknown, cfg: LlmConfigDoc): Error {
+		const msg = describeLlmError(e);
+		const err = e instanceof Error ? e : new Error(msg);
+		if (!/failed to fetch|connection error|econnrefused|etimedout|econnreset|econnaborted|socket hang up/i.test(msg)) return err;
+		const base = normalizeBaseURL(cfg.base_url) || "(未配置 base_url)";
+		return new Error(`${msg}｜端点 ${base}（模型 ${cfg.model_name || "默认"}）。若端点是本地地址，请确认本地模型服务已启动；写作命令用的是设置页「激活模型」，与 LLM 对话框顶部下拉所选可能不是同一个。`);
+	}
+
+	/** 生成后自动去AI味（对应 _auto_clean_ai）：命中 AI 常用词的句子打回 LLM 重写并原位替换；失败保留原文 */
+	private async autoCleanAi(
+		cfg: LlmConfigDoc,
+		baseSp: string | undefined,
+		guides: { guideText: string },
+		content: string,
+		onProgress?: () => void
+	): Promise<string> {
+		if (!content || !content.trim()) return content;
+		const hits = findAiWordHits(content);
+		if (!hits.length) return content;
+		new Notice(`检测到 ${String(hits.length)} 处 AI 常用词，正在打回重写…`, 6000);
+		onProgress?.();
+		// 去AI味使用基础系统提示词（不带编写类型块），对齐 Python system_prompt=None 回落行为
+		const sp = assembleSystemPrompt(undefined, guides.guideText, baseSp);
+		try {
+			const { text, report } = await cleanAiText(content, async (p, maxTokens) =>
+				chatCompletion(cfg, [
+					{ role: "system" as const, content: sp },
+					{ role: "user" as const, content: p },
+				], { max_tokens: Math.min(maxTokens, cfg.max_tokens ?? maxTokens) })
+			);
+			this.notifyAiReport(report);
+			return text;
+		} catch (e) {
+			console.warn("AI 用语清洗失败，保留原文：", e);
+			return content;
+		}
+	}
+
+	/** 输出清洗结果摘要（对应 _print_ai_clean_report） */
+	private notifyAiReport(report: import("./prompts").CleanReport): void {
+		const parts: string[] = [];
+		if (report.simplified.length) parts.push(`句式简化 ${String(report.simplified.length)} 处`);
+		if (report.replaced.length) parts.push(`LLM 重写 ${String(report.replaced.length)} 句`);
+		if (report.remaining.length) parts.push(`⚠ 仍残留 ${String(report.remaining.length)} 处（建议人工检查）`);
+		if (report.errors.length) parts.push(`✗ ${String(report.errors.length)} 句改写失败已保留原句`);
+		new Notice(parts.length ? `去AI味完成：${parts.join("，")}` : "去AI味完成", 8000);
+	}
+
+	/** 字数超限提醒（对应 _warn_word_limit） */
+	private warnWordLimit(content: string, wordRange: [number, number]): void {
+		const wc = countPureWords(content || "");
+		if (wc > wordRange[1]) new Notice(`⚠ 生成内容 ${String(wc)} 字，超过上限 ${wordRange[1]} 字；如需要请精简`, 10000);
+	}
+
+	/** v0.2.21+：正文「第N章」章节编号引用检测提醒——提示词禁令之外的确定性兜底，命中即非阻断 Notice（标题行除外，至多列前 5 处） */
+	private warnChapterRefs(content: string): void {
+		const leaks = findChapterRefLeaks(content || "");
+		if (!leaks.length) return;
+		const shown = leaks.slice(0, 5).map((l) => `第${String(l.line)}行「${l.snippet}」`).join("、");
+		new Notice(`⚠ 正文检测到 ${String(leaks.length)} 处「第N章」类章节编号引用（章节编号只允许出现在标题行）：${shown}${leaks.length > 5 ? "…" : ""}，建议人工检查`, 10000);
+	}
+
+	// ---------- /write 创作章节 ----------
+
+	async cmdWrite(): Promise<void> {
+		if (!(await this.ensureWorkDir())) return;
+		const story = await this.requireStory();
+		if (!story || !(await this.ensureVolumeLayout(story))) return;
+		try {
+			const state = await this.manager.validatedState(story);
+			const scenes = await this.manager.loadAllScenes(story);
+			const curSceneId = state.current_scene ?? undefined;
+			const curScene = curSceneId ? scenes[curSceneId] : undefined;
+
+			// 目标章节复合键：当前章 → 当前场景归属章 → 当前卷/书根内下一未建章（v0.0.15：编号在容器内自动顺延）
+			const chapters = await this.manager.listChapters(story); // 阅读序：书根在前 + 各卷按 order、组内本地号升序
+			let targetKey: string | null = state.current_chapter && state.current_chapter !== "" ? state.current_chapter : null;
+			if (!targetKey && curScene?.chapter_num) targetKey = chKey(curScene.vol ?? "", curScene.chapter_num);
+			if (!targetKey) {
+				const basePath = this.manager.storyPath(story);
+				const scopeVol = (state.current_volume ?? "").trim();
+				const inScope = scopeVol ? chapters.filter((c) => c.vol === scopeVol) : chapters.filter((c) => !c.vol && c.parentPath === basePath);
+				targetKey = chKey(scopeVol, inScope.length ? Math.max(...inScope.map((c) => c.num)) + 1 : 1);
+			}
+
+			const volNames = await this.volNameMap(story).catch(() => ({}));
+			const tLabel = this.keyLabel(targetKey, volNames); // 展示名（含卷前缀），交互提示统一用它
+			const targetVol = parseChKey(targetKey).vol ?? ""; // 新建章节的容器（""=书根）
+			const chEntry = chapters.find((c) => c.key === targetKey) ?? null;
+			const meta = state.chapters[targetKey] ?? null;
+			const wasNew = !meta; // 对应 Python is_new（以状态元数据为准）
+			const isNewLike = wasNew && !chEntry; // 全新章节（无目录且无元数据）
+			const bodyOnDisk = chEntry ? await this.manager.readChapterContent(story, targetKey) : "";
+			const outlineOnDisk = chEntry ? await this.manager.readChapterOutlineForPrompt(story, targetKey) : "";
+			const hasContent = bodyOnDisk.trim() !== "";
+
+			// 章节标题：已有取磁盘/状态；全新章节询问（Esc=取消）
+			let title = ((meta?.title || "").trim()) || (chEntry ? chEntry.title : "") || `第${parseChKey(targetKey).num}章`;
+			if (isNewLike) {
+				const t = await this.prompt(`${tLabel}标题`, `${tLabel}`);
+				if (t == null) return;
+				title = t.trim() || `第${parseChKey(targetKey).num}章`;
+			}
+
+			// 写作指令交互（对齐 CLI args 语义）
+			let instruction = "";
+			if (hasContent) {
+				const pick = await this.pickAction(`${this.keyLabel(targetKey, volNames, title)} 已有内容（${String(countPureWords(bodyOnDisk))} 字）`, [
+					{ label: "给出新的创作要点", sub: "生成后选择追加或覆盖" },
+					{ label: "暂不创作", sub: "仅提示当前状态" },
+				]);
+				if (pick == null) return;
+				if (pick === 1) {
+					new Notice("章节已有创作内容，请输入新的写作指令开始创作\n或使用「续写当前章 (/continue)」继续");
+					return;
+				}
+				instruction = ((await this.prompt("创作要点", "如：写主角来到小镇的见闻")) ?? "").trim();
+				if (!instruction) {
+					new Notice("未输入创作要点，已取消");
+					return;
+				}
+			} else if (!outlineOnDisk.trim()) {
+				// 无正文且无大纲：才交互询问；有大纲时不再打扰（对齐 CLI /write「未提供写作指令→按大纲自动创作」语义）
+				const pick = await this.pickAction(`${tLabel}还没有正文，也没有大纲`, [
+					{ label: "先输入创作要点再开始" },
+					{ label: "直接开始（无参考内容）" },
+				]);
+				if (pick == null) return;
+				if (pick === 0) {
+					instruction = ((await this.prompt("创作要点（可选）", "如：写主角与反派的初次交锋")) ?? "").trim();
+				}
+			} else {
+				new Notice(`未提供写作指令，按${tLabel}大纲自动创作`, 4000); // 有大纲、无正文：直接开写，不弹任何输入框
+			}
+
+			let structureReady = !!chEntry;
+			let outlineForGen = outlineOnDisk;
+
+			// 全新章节且无指令：从磁盘/询问补充大纲（对应 is_new && !instruction 分支）
+			if (!instruction && isNewLike && !outlineOnDisk.trim()) {
+				const o = await this.promptArea(`${tLabel}大纲（可选）`, "- 情节要点一\n- 情节要点二");
+				if (o == null) return;
+				outlineForGen = o.trim();
+			}
+
+			// 未提供写作指令：有大纲且尚无正文 → 按大纲自动创作；否则只创建/就绪后返回
+			if (!instruction) {
+				if (!(outlineForGen.trim() !== "" && !hasContent)) {
+					if (wasNew && !structureReady) {
+						await this.manager.createChapter(story, title, targetVol); // 目标容器（卷/书根）内自动顺延编号
+						structureReady = true;
+						new Notice(`✓ 已创建 ${this.keyLabel(targetKey, volNames, title)}`, 6000);
+					} else {
+						new Notice(`✓ 已就绪：${this.keyLabel(targetKey, volNames, title)}`, 6000);
+					}
+					new Notice("章节已有创作内容时，请给出新的写作指令开始创作\n或使用「续写当前章 (/continue)」继续", 10000);
+					return;
+				}
+			}
+
+			// 追加还是覆盖（对应 a/r 询问，默认追加）
+			let mode: "a" | "r" = "a";
+			if (hasContent) {
+				const m = await this.pickAction(`${this.keyLabel(targetKey, volNames, title)} 已有内容（${String(countPureWords(bodyOnDisk))} 字），如何处理？`, [
+					{ label: "追加到现有内容之后", sub: "默认；自动剥离新内容的重复标题" },
+					{ label: "覆盖整章正文" },
+				]);
+				if (m == null) return;
+				mode = m === 1 ? "r" : "a";
+			}
+
+			// 生成前把用户指令并入大纲并落盘（仅对已有章节/已有大纲做预合并）
+			if (instruction && !!(meta || chEntry || outlineOnDisk.trim())) {
+				outlineForGen = appendOutlineInstruction(outlineOnDisk, "创作要点", instruction);
+				if (!structureReady) {
+					await this.manager.createChapter(story, title, targetVol); // 目标容器内自动顺延编号
+					structureReady = true;
+				}
+				await this.manager.setChapterOutline(story, targetKey, outlineForGen);
+				new Notice(`已更新${tLabel}大纲并保存`, 4000);
+			}
+
+			// 组装提示词与系统提示词（loadWritingData/readOutlineWindow 按磁盘阅读序定位，全新章须先建目录）
+			const setup = this.getPhaseLlmSetup(2); // v0.2.22+：文章大纲生成和编写文章阶段
+			if (!setup) return;
+			const guides = await this.loadWriterGuides(story);
+			if (!structureReady) {
+				await this.manager.createChapter(story, title, targetVol); // 目标容器内自动顺延编号
+				structureReady = true;
+				new Notice(`✓ 已创建 ${this.keyLabel(targetKey, volNames, title)}`, 6000);
+			}
+			const data = await this.manager.loadWritingData(story, targetKey, { includeCurrentSummary: false, dropOutlineDoc: true }); // 本章大纲由 buildChapterPrompt 的「章节大纲：」块注入，不再经 folderDocs 二次注入
+			const context = buildWritingContext(data);
+			let prevRefs: Array<{ label: string; text?: string }> = [];
+			try {
+				prevRefs = (await this.manager.readOutlineWindow(story, targetKey, { back: 3 })).map((w) => ({ label: w.label, text: w.text || undefined }));
+			} catch { /* 前文大纲窗口读取失败不阻断生成 */ }
+			const wordRange = wordRangeFromGuides(guides.bookText, guides.userText);
+			const sp = this.writerSystemPrompt(setup.systemPrompt, guides, state.writing_style, state.title, data.characters.map((c) => c.name));
+			const withSummary = state.use_summaries !== false; // v0.2.21+：摘要随写（关闭摘要时不要求也不保存）
+			const built = buildChapterPrompt({
+				chapterNum: data.chapterNum, // v0.0.15：阅读序位置（ordinal，跨卷连续）
+				chapterLabel: tLabel,
+				chapterKey: targetKey,
+				chapterOutlineRaw: outlineForGen,
+				userInstruction: instruction || undefined,
+				context,
+				wordRange,
+				descStyle: setup.descStyle,
+				storyType: state.writing_style,
+				prevOutlines: prevRefs,
+				withSummary,
+			});
+			console.debug("[articlewriter] 编写本章请求规模", { model: setup.cfg.model_name || "(默认)", systemLen: sp.length, promptLen: built.prompt.length }); // 排查连接失败是否与请求体量相关
+
+			// 流式生成（带编写类型格式校验重试）
+			const modal = await this.beginWritingPanel(`创作 ${this.keyLabel(targetKey, volNames, title)}`);
+			if (!modal) { new Notice("无法打开生成面板，本次操作已取消", 8000); return; }
+			let content = await this.generateChapterStreamed(setup.cfg, sp, built.prompt, state.writing_style, modal);
+			if (modal.signal.aborted) return;
+			if (!content.trim()) return;
+
+			// v0.2.21+：解析「正文＋<SUMMARY> 块」（解析失败整段当正文，静默回落到延迟生成）；面板预览随后经既有 reset 逻辑刷新为纯正文
+			let chapterSummary: string | null = null;
+			if (withSummary) {
+				const parsed = parseChapterWithSummary(content);
+				chapterSummary = parsed.summary;
+				content = parsed.body;
+				if (!content.trim()) return; // 正文为空（如模型只输出了摘要块）→ 按生成失败处理
+			}
+
+			// 后处理：去AI味 + 字数提醒（只作用于正文，不含摘要块）
+			content = await this.autoCleanAi(setup.cfg, setup.systemPrompt, guides, content, () => {
+				modal.setStatus("正在去除 AI 常用词…");
+			});
+			this.warnWordLimit(content, wordRange);
+			this.warnChapterRefs(content); // v0.2.21+：只检测新生成内容（追加模式合并旧正文前），避免误报既有正文
+			if (mode === "a" && hasContent) content = bodyOnDisk.replace(/\s+$/, "") + "\n\n" + stripHeading(content);
+			if (content !== modal.fullText) {
+				modal.reset();
+				modal.append(content);
+			}
+			modal.finish();
+			const keep = await modal.done;
+			if (!keep) {
+				new Notice(`未保存${wasNew ? "（新章节结构已保留，正文未写入）" : ""}`, 6000);
+				return;
+			}
+
+			// 落盘：新章创建目录；追加/覆盖写正文；新章指令并入大纲
+			if (!structureReady) {
+				await this.manager.createChapter(story, title, targetVol); // 目标容器内自动顺延编号
+				structureReady = true;
+			}
+			const words = await this.manager.setChapterBody(story, targetKey, content); // v0.1.4+：摘要不再写盘后即时生成——下次组装写作上下文时按需延迟生成（带进度反馈）
+			// v0.2.21+：同响应产出的摘要分别落盘（按已存正文重算哈希→下次上下文组装判「新鲜」直接复用，省掉单独摘要 LLM 调用）
+			if (chapterSummary) {
+				try {
+					await this.manager.saveChapterSummary(story, targetKey, chapterSummary);
+				} catch { /* 摘要保存失败不阻断主流程（回落到延迟生成） */ }
+			}
+			if (wasNew) {
+				let finalOutline = outlineForGen;
+				if (instruction) finalOutline = appendOutlineInstruction(finalOutline, "创作要点", instruction);
+				if (finalOutline.trim()) await this.manager.setChapterOutline(story, targetKey, finalOutline);
+			}
+
+			// 当前场景归属该章时同步场景正文（v0.0.15：按复合键比较）
+			if (curScene?.chapter_num && chKey(curScene.vol ?? "", curScene.chapter_num) === targetKey) {
+				const old = (curScene.content || "").replace(/\s+$/, "");
+				const sceneNew = old ? `${old}\n\n${content}` : content;
+				await this.manager.updateScene(story, curScene.scene_id, { content: sceneNew });
+				new Notice(`✓ 已同步到场景 '${curScene.scene_id}'`, 6000);
+			}
+
+			try {
+				const f = await this.manager.chapterBodyFile(story, targetKey);
+				if (f instanceof TFile) await this.manager.openMarkdown(f.path);
+			} catch { /* 打开失败不影响结果 */ }
+			new Notice(`✓ ${this.keyLabel(targetKey, volNames, title)} 创作完成！\n字数：${String(words)}${chapterSummary ? "\n摘要：已随正文一并保存" : ""}`, 8000);
+		} catch (e) {
+			this.notifyError("创作章节失败", e);
+		}
+	}
+
+	// ---------- v0.2.10+ 从卷大纲生成章节 (/vol-outline-to-chapters) ----------
+
+	/** 按章号解析拆分源（H2 标题 `## 第N章 <标题>` 或「第N章」开头的普通段落），缺失章节自动创建，各段内容写入对应章节的《章节大纲.md》（空大纲直接写入；非空去重合并追加）；一个「第N章」标记都识别不到时调 LLM 自动拆分（目标章数优先取大纲内声明如「共N章」，未声明弹窗收集、取消即中止；v0.2.x+ 走统一「生成过程」面板流式预览、Esc/关面板中止；输出同格式再走同一解析器，失败提示并中止）。收尾：有原当前章则恢复，否则指向该容器首章（供「连续编写」从第 1 章起步）。可选参 volId＝写字台卷节点右键入口：锁定被点卷、不弹选择器（找不到该卷则提示中止）。v0.2.x+ 平铺（无卷）模式：拆书级《大纲.md》、章节落书根（空 volId）——「生成书籍大纲」平铺形态的配套拆章步骤 */
+	async cmdVolumeOutlineToChapters(volId?: string): Promise<void> {
+		if (!(await this.ensureWorkDir())) return;
+		const story = await this.requireStory();
+		if (!story || !(await this.ensureVolumeLayout(story))) return;
+		try {
+			const state = await this.manager.validatedState(story);
+			const flatMode = state.use_volumes === false;
+			let vol: { id: string; name: string };
+			let raw: string;
+			let sourceLabel: string;
+			if (flatMode) {
+				// v0.2.x+ 平铺（无卷）模式：以书级《大纲.md》为拆分源，章节直接落书根（空 volId）
+				vol = { id: "", name: "书级大纲" };
+				sourceLabel = "书级《大纲.md》";
+				raw = await this.manager.readGlobalOutline(story);
+				if (!raw.trim()) { new Notice("书级《大纲.md》为空，请先生成或撰写大纲再生成章节", 8000); return; }
+			} else {
+				const volsRec = await this.manager.loadVolumes(story);
+				const vols = Object.values(volsRec).sort((a, b) => a.order - b.order || a.id.localeCompare(b.id));
+				if (!vols.length) { new Notice("还没有卷，请先新建卷（新建卷）", 8000); return; }
+				const curVol = (state.current_volume ?? "").trim();
+				let v = volId ? this.manager.findVolumeIn(volsRec, volId) : (curVol ? this.manager.findVolumeIn(volsRec, curVol) : null); // 右键入口锁定被点卷；否则回落当前卷
+				if (!v) {
+					if (volId) { new Notice(`找不到卷 ${volId}（可能已改名或删除）`, 8000); return; }
+					const items: ActionItem[] = vols.map((vv) => ({ label: vv.name, sub: vv.description || undefined, marker: vv.id === curVol ? "▶ 当前" : undefined }));
+					const idx = await this.pickAction("选择目标卷（从它的卷大纲生成章节）", items);
+					if (idx == null) return;
+					v = vols[idx];
+				}
+				vol = v;
+				sourceLabel = `「${vol.name}」的卷大纲`;
+				raw = await this.manager.readVolumeOutline(story, vol.id);
+				if (!raw.trim()) { new Notice(`卷「${vol.name}」的《卷大纲.md》为空，请先写大纲再生成章节`, 8000); return; }
+			}
+			let { segments, preamble } = splitVolOutlineByChapter(raw);
+			let aiSplit = false;
+			let aiCount = 0;
+			if (!segments.length) {
+				// 一个章节标记都没有 → 交给 AI 拆分，但改成逐章生成：每章调用一次 LLM，生成完后立即继续下一章，不在一轮里把整份大纲推成超长思考。
+				const setup = this.getPhaseLlmSetup(1); // v0.2.22+：书籍大纲和卷级大纲生成阶段
+				if (!setup) return;
+				const cleaned = stripComments(raw);
+				const count = extractPlannedChapterCount(cleaned) ?? (flatMode
+					? await this.promptChapterCountInput("AI 拆分书级大纲", `书级《大纲.md》未检测到「第N章」标记，将调用 AI 自动拆分。\n请输入要拆分的章数（正整数，不设上限），输入后按回车确认、Esc 取消：`, "已取消 AI 拆分书级大纲")
+					: await this.promptChapterCount(vol.name));
+				if (count == null) return;
+				const volList = flatMode ? [] : Object.values(await this.manager.loadVolumes(story)).sort((a, b) => a.order - b.order || a.id.localeCompare(b.id)).map((v) => ({ name: v.name, description: v.description }));
+				const guides = await this.loadWriterGuides(story); // v0.2.x+ 三层创作规范合并 + 《写作指南汇总.md》检测更新（与编写章节同一流程），注入【创作规范】块
+				const tensionRules = await this.loadTensionRules(); // 情节张力/节奏规则（插件数据目录播种文件），注入【张力规则】块
+				const soFarSegs: string[] = []; // 本轮已生成各章（提示词注入时经 outlineSoFarContext 裁剪为最近 3 章）
+				for (let num = 1; num <= count; num++) {
+					const view = await this.beginWritingPanel(`AI 拆分${sourceLabel}第${num}章`);
+					if (!view) return;
+					const prompt = buildVolOutlineChapterPrompt({
+						bookTitle: state.title,
+						genre: state.genre,
+						writingStyle: state.writing_style,
+						world: await this.manager.readWorldDoc(story),
+						globalOutline: "",
+						sourceOutline: cleaned,
+						strictCurrentOutlineOnly: true,
+						planningGuide: await this.ensurePlanningGuide(story, state),
+						guideText: guides.guideText,
+						tensionRules,
+						volumes: volList,
+						targetVolumeName: vol.name,
+						existingOutline: "",
+						chapterCount: count,
+						chapterNum: num,
+						generatedSoFar: this.outlineSoFarContext(soFarSegs),
+					});
+					const chunk = await this.streamWithEmptyRetry(setup.cfg, () => [
+						{ role: "system", content: VOL_OUTLINE_GEN_SYSTEM_PROMPT },
+						{ role: "user", content: prompt },
+					], view, `AI 拆分${sourceLabel}为 ${count} 章 · 第${num}章`, { max_tokens: Math.max(setup.cfg.max_tokens ?? 4096, 8192) });
+					if (view.signal.aborted) return;
+					if (!chunk.trim()) return;
+					soFarSegs.push(chunk.replace(/\s+$/, ""));
+					view.finishAuto(`✓ 第${num}章已生成`, "本章用时");
+				}
+				const allText = soFarSegs.join("\n\n"); // 全量拼接仅用于落盘解析与报错预览（提示词注入已裁剪）
+				const reparsed = splitVolOutlineByChapter(allText);
+				if (!reparsed.segments.length) {
+					new Notice(`AI 逐章拆分结果中未识别到「第N章」标记，请重试或在${sourceLabel}中手动添加章节标记\nAI 输出开头：${allText.slice(0, 80)}…`, 15000);
+					return;
+				}
+				segments = reparsed.segments;
+				preamble = "";
+				aiSplit = true;
+				aiCount = count;
+			}
+			const prevCurrent = state.current_chapter ?? "";
+			let created = 0, setCount = 0, appended = 0, dupSkipped = 0;
+			const badNums: number[] = [];
+			for (const seg of segments) {
+				if (seg.num < 1) { badNums.push(seg.num); continue; }
+				const { key, created: isNew } = await this.manager.ensureChapterAt(story, seg.num, seg.title, vol.id);
+				if (isNew) created++;
+				const existing = await this.manager.readChapterOutlineForPrompt(story, key);
+				if (!existing.trim()) {
+					if (seg.content.trim()) { await this.manager.setChapterOutline(story, key, seg.content); setCount++; }
+				} else {
+					const r = await this.manager.appendChapterOutline(story, key, seg.content);
+					if (r.appended) appended++; else dupSkipped++;
+				}
+			}
+			// 恢复/设置当前章：有原当前章则恢复；否则指向该卷首章（供「连续编写」从第 1 章起步）
+			const validSegs = segments.filter((s) => s.num >= 1);
+			if (prevCurrent) await this.manager.switchChapter(story, prevCurrent);
+			else if (validSegs.length) await this.manager.switchChapter(story, chKey(vol.id, Math.min(...validSegs.map((s) => s.num))));
+
+			const lines = [`✓ 已从${sourceLabel}生成章节：共 ${String(segments.length)} 章${aiSplit ? `（未检测到章节标记，已由 AI 自动拆分为 ${aiCount} 章）` : ""}`];
+			if (created) lines.push(`新建章节：${String(created)}`);
+			if (setCount) lines.push(`直接写入大纲：${String(setCount)}`);
+			if (appended) lines.push(`合并追加大纲：${String(appended)}`);
+			if (dupSkipped) lines.push(`已包含未重复：${String(dupSkipped)}`);
+			if (badNums.length) lines.push(`忽略无效章号：${badNums.join("、")}`);
+			if (preamble.trim()) lines.push("提示：首个章标记前有卷级前言内容，未分配到任何章节");
+			new Notice(lines.join("\n"), 12000);
+		} catch (e) {
+			this.notifyError("从卷大纲生成章节失败", e);
+		}
+	}
+
+	// ---------- v0.2.11+ 自动生成卷大纲 (/vol-outline-generate) ----------
+
+	/** 依据全局设定（世界观/社会组成/力量体系/基调等）为目标卷 LLM 流式生成恰好 N 章的卷大纲（`## 第N章 <标题>` 标记格式，与「从卷大纲生成章节」同一解析器兼容）。v0.2.x+ 增量分段落盘：【卷设计】段 + 每章一个小节逐段生成、每段流式展示完立即写盘（防长单次输出断开）；完整生成非空弹覆盖/追加二选一（追加保留原文含注释）在生成前定好、空则直写；Esc/关面板中止整轮（已落盘段落保留）。不改任何 state。目标卷默认当前卷，无当前卷则弹选择器。无卷时若书级《大纲.md》有卷声明 → 自动创建全部声明卷并逐卷生成卷大纲（autoCreateVolumesAndGenOutlines），否则提示先建卷/补书级大纲。
+	 * v0.2.x+ 继续生成：现有卷大纲非空时先选「完整生成 / 按已有进度继续」——继续模式问「要增加的章数 N」、目标总章数 = 已有最大章号 M + N（M = `## 第N章` 最大章号），无【卷设计】步、从 M+1..count 逐章续写（supplementMode 承接已有章、原文 preamble 作卷设计参考），直接拼到原文末尾落盘（剥掉首部 H1、无覆盖/追加二选一），提示词带「故事在目标章自然收束结尾」 */
+	async cmdGenerateVolOutline(): Promise<void> {
+		if (!(await this.ensureWorkDir())) return;
+		const story = await this.requireStory();
+		if (!story || !(await this.ensureVolumeLayout(story))) return;
+		try {
+			const state = await this.manager.validatedState(story);
+			if (state.use_volumes === false) { new Notice(NO_VOL_MODE_MSG, 10000); return; } // 无卷模式没有卷大纲
+			const volsRec = await this.manager.loadVolumes(story);
+			const vols = Object.values(volsRec).sort((a, b) => a.order - b.order || a.id.localeCompare(b.id));
+			if (!vols.length) {
+				// v0.2.x+：无卷兜底——书级《大纲.md》有卷声明则自动创建全部声明卷并逐卷生成卷大纲；无声明则维持原提示
+				const globalOutline = await this.manager.readGlobalOutline(story);
+				const decls = parseVolumeDeclarations(globalOutline);
+				if (!decls.length) { new Notice("还没有卷，且书级《大纲.md》未识别到卷声明（格式：`- 第X卷·卷名（第A-B章）：描述`），请先新建卷或补全书级大纲", 12000); return; }
+				const planningGuide = await this.ensurePlanningGuide(story, state); // v0.2.13+：缺失则先自动生成（软依赖，失败返回 ""）
+				await this.autoCreateVolumesAndGenOutlines(story, state, decls, globalOutline, planningGuide);
+				return;
+			}
+			const curVol = (state.current_volume ?? "").trim();
+			let vol = curVol ? this.manager.findVolumeIn(volsRec, curVol) : null; // 目标卷默认当前卷
+			if (!vol) {
+				const items: ActionItem[] = vols.map((v) => ({ label: v.name, sub: v.description || undefined, marker: v.id === curVol ? "▶ 当前" : undefined }));
+				const idx = await this.pickAction("选择目标卷（自动生成它的卷大纲）", items);
+				if (idx == null) return;
+				vol = vols[idx];
+			}
+			const setup = this.getPhaseLlmSetup(1); // v0.2.22+：书籍大纲和卷级大纲生成阶段
+			if (!setup) return;
+			// 上下文组装：世界观 / 全书大纲 / 卷列表 / 基调 / 前一卷卷大纲（只读参考）/ 本卷现有大纲（避免重复）
+			const world = await this.manager.readWorldDoc(story);
+			const globalOutline = await this.manager.readGlobalOutline(story);
+			const planningGuide = await this.ensurePlanningGuide(story, state); // v0.2.13+：缺失则先自动生成（软依赖，失败返回 ""）
+			const volIdx = vols.findIndex((v) => v.id === vol.id);
+			const prevVol = volIdx > 0 ? vols[volIdx - 1] : null;
+			const prevOutline = prevVol ? await this.manager.readVolumeOutline(story, prevVol.id) : "";
+			const existing = await this.manager.readVolumeOutline(story, vol.id); // 清洗文本：模板注释视为空
+			const relationshipCtx = await this.readOutlineRelationships(story, vol);
+			const guides = await this.loadWriterGuides(story); // v0.2.x+ 三层创作规范合并 + 《写作指南汇总.md》检测更新（与编写章节同一流程），注入【创作规范】块
+			const tensionRules = await this.loadTensionRules(); // 情节张力/节奏规则（插件数据目录播种文件），注入【张力规则】块
+
+			// v0.2.x+ 继续生成：现有大纲非空时先选「完整生成 / 按已有进度继续」；继续模式目标总章数 = 已有最大章号 M + 用户指定增量 N
+			let continueMode = false;
+			let m = 0;
+			if (existing.trim()) {
+				const mode = await this.promptOutlineGenMode(`生成卷大纲「${vol.name}」`);
+				if (mode == null) return;
+				if (mode === 1) {
+					continueMode = true;
+					const segs = splitVolOutlineByChapter(existing).segments;
+					m = segs.length ? Math.max(...segs.map((s) => s.num)) : 0;
+					if (m <= 0) {
+						new Notice(`「${vol.name}」现有卷大纲未识别到「## 第N章」章标记，无法判断已有进度——请补上章标记后重试，或改选完整生成`, 12000);
+						return;
+					}
+				}
+			}
+			let count: number;
+			if (continueMode) {
+				const addN = await this.promptChapterCountInput(`继续生成卷大纲「${vol.name}」`, `「${vol.name}」的卷大纲已覆盖到第 ${String(m)} 章。\n请指定要向后追加的章数（正整数，不设上限），输入后按回车确认、Esc 取消：`, "已取消继续生成卷大纲", "要增加的章数（正整数，如 5）");
+				if (addN == null) return;
+				count = m + addN;
+			} else {
+				const c = await this.promptChapterCountInput("自动生成卷大纲", `将依据全局设定为「${vol.name}」AI 自动生成卷大纲。\n请指定要生成的章数（正整数，不设上限），输入后按回车确认、Esc 取消：`, "已取消自动生成卷大纲");
+				if (c == null) return;
+				count = c;
+			}
+			const ctx: VolOutlineGenInput = {
+				bookTitle: state.title,
+				genre: state.genre,
+				writingStyle: state.writing_style,
+				world,
+				globalOutline,
+				planningGuide,
+				bookRelationships: relationshipCtx.bookRelationships,
+				volRelationships: relationshipCtx.volRelationships,
+				volumes: vols.map((v) => ({ name: v.name, description: v.description })),
+				targetVolumeName: vol.name,
+				prevVolumeOutline: prevOutline,
+				existingOutline: existing,
+				guideText: guides.guideText,
+				tensionRules,
+				chapterCount: count,
+			};
+
+			// v0.2.x+ 继续生成：无【卷设计】步，从 M+1..count 逐章续写（supplementMode 承接已有章、preamble 作卷设计参考），
+			// base = 原文剥掉首部 H1 后直接追加落盘（无覆盖/追加二选一）；提示词带「故事在目标章自然收束结尾」
+			if (continueMode) {
+				const split = splitVolOutlineByChapter(existing);
+				const raw = (await this.manager.readVolumeOutlineRaw(story, vol.id)).replace(/^#\s.*\n/, "");
+				let base = raw ? `${raw}\n\n` : "";
+				const nums: number[] = [];
+				for (let c = m + 1; c <= count; c++) nums.push(c);
+				console.debug("[articlewriter] 卷大纲增量续写", { model: setup.cfg.model_name || "(默认)", vol: vol.name, from: m + 1, to: count });
+				const res = await this.genVolOutlineIncremental({
+					cfg: setup.cfg,
+					failLabel: `继续生成卷大纲 ${vol.name}`,
+					chapterNums: nums,
+					hasDesign: false,
+					buildDesignPrompt: () => "",
+					buildChapterPrompt: (num, _design, soFar) => buildVolOutlineChapterPrompt({ ...ctx, chapterNum: num, volumeDesign: split.preamble, generatedSoFar: soFar, supplementMode: true }),
+					commit: async (seg) => {
+						base = base ? `${base}\n\n${seg}` : seg; // 段间空行分隔（各段尾部空白已被助手剥除）
+						await this.manager.setVolumeOutline(story, vol.id, base);
+					},
+				});
+				if (res.panelFailed) { new Notice("无法打开生成面板，本次操作已取消", 8000); return; }
+				if (res.aborted) { new Notice(`已停止生成「${vol.name}」卷大纲${res.written ? `：前 ${String(res.written)} 段已落盘` : ""}`, 10000); return; }
+				if (res.failed) { new Notice(`「${vol.name}」卷大纲生成中断${res.written ? `：前 ${String(res.written)} 段已落盘` : ""}`, 10000); return; }
+				const check = splitVolOutlineByChapter(base);
+				new Notice(check.segments.length
+					? `✓ 已续写「${vol.name}」卷大纲（共识别到 ${String(check.segments.length)} 个章标记），可运行「从卷大纲生成章节」拆入各章`
+					: `✓ 已续写「${vol.name}」卷大纲，但未识别到「第N章」标记——请手动补上章标记后再拆章`, 12000);
+				return;
+			}
+
+			// 完整生成：落盘策略在生成前定好（增量分段直接落盘、无保存/不保存 CTA）：非空弹覆盖/追加（追加保留原文含注释、剥掉首部 H1 后拼接，setVolumeOutline 统一补回自己的 H1）；空则直写。
+			// 注意：分段逐段落盘，中途失败/中止时旧内容已被部分覆盖或追加——这是「直接落盘」的代价
+			let base = "";
+			if (existing) {
+				const items2: ActionItem[] = [
+					{ label: "覆盖现有大纲", sub: "用新生成内容替换《卷大纲.md》" },
+					{ label: "追加到现有大纲末尾", sub: "保留原文（含注释），新内容接在末尾" },
+				];
+				const choice = await this.pickAction(`「${vol.name}」的卷大纲非空，如何保存？`, items2);
+				if (choice == null) { new Notice("已取消保存卷大纲", 6000); return; }
+				if (choice === 1) {
+					const raw = (await this.manager.readVolumeOutlineRaw(story, vol.id)).replace(/^#\s.*\n/, "");
+					base = raw ? `${raw}\n\n` : "";
+				}
+			}
+
+			// 增量生成：【卷设计】段 + 每章一个小节，每段流式展示完立即落盘再继续下一段（防长单次输出断开）
+			const nums: number[] = [];
+			for (let c = 1; c <= count; c++) nums.push(c);
+			console.debug("[articlewriter] 卷大纲增量生成", { model: setup.cfg.model_name || "(默认)", vol: vol.name, steps: nums.length + 1 });
+			const res = await this.genVolOutlineIncremental({
+				cfg: setup.cfg,
+				failLabel: `生成卷大纲 ${vol.name}`,
+				chapterNums: nums,
+				hasDesign: true,
+				buildDesignPrompt: () => buildVolOutlineDesignPrompt(ctx),
+				buildChapterPrompt: (num, design, soFar) => buildVolOutlineChapterPrompt({ ...ctx, chapterNum: num, volumeDesign: design, generatedSoFar: soFar }),
+				commit: async (seg) => {
+					base = base ? `${base}\n\n${seg}` : seg; // 段间空行分隔（各段尾部空白已被助手剥除）
+					await this.manager.setVolumeOutline(story, vol.id, base);
+				},
+			});
+			if (res.panelFailed) { new Notice("无法打开生成面板，本次操作已取消", 8000); return; }
+			if (res.aborted) { new Notice(`已停止生成「${vol.name}」卷大纲${res.written ? `：前 ${String(res.written)} 段已落盘` : ""}`, 10000); return; }
+			if (res.failed) { new Notice(`「${vol.name}」卷大纲生成中断${res.written ? `：前 ${String(res.written)} 段已落盘` : ""}`, 10000); return; }
+
+			// 软警告：生成结果若未识别到章标记，提示需手动补标记才能拆章
+			const check = splitVolOutlineByChapter(base);
+			new Notice(check.segments.length
+				? `✓ 已生成「${vol.name}」卷大纲（识别到 ${String(check.segments.length)} 个章标记），可运行「从卷大纲生成章节」拆入各章`
+				: `✓ 已生成「${vol.name}」卷大纲，但未识别到「第N章」标记——请手动补上章标记后再拆章`, 12000);
+		} catch (e) {
+			this.notifyError("自动生成卷大纲失败", e);
+		}
+	}
+
+	/** v0.2.x+「自动生成卷大纲」无卷兜底：自动创建书级《大纲.md》声明的全部卷（声明描述作卷描述、按文档序），再逐卷增量分段落盘生成其卷大纲（【卷设计】段 + 每章一个小节，每段流式展示完立即写盘，防长单次输出断开）；各卷目标章数由单个弹窗一次性问全（建卷前问，Esc 可零副作用取消）；批内链式上下文 prevVolumeOutline 取阅读序前一卷清洗大纲、本轮已生成的卷用 freshOutlines 缓存（与 readVolumeOutline 同口径）；v0.2.13+ planningGuide 参数注入各卷上下文【策划规范】块（""=不注入）；Esc 中断 → 整批中止（该卷已落盘段落保留）；收尾 ✓/✗ 汇总。新建卷的《卷大纲.md》必为空（模板注释视为空）→ 直写不弹覆盖/追加；声明按名去重且入口保证零存量卷，故循环内不会命中已有卷 */
+	private async autoCreateVolumesAndGenOutlines(story: string, state: StoryState, decls: VolumeDeclaration[], globalOutline: string, planningGuide: string): Promise<void> {
+		const counts = await this.promptAllVolumeChapterCounts(decls, "自动生成卷大纲");
+		if (!counts) return;
+		const setup = this.getPhaseLlmSetup(1); // v0.2.22+：书籍大纲和卷级大纲生成阶段
+		if (!setup) return;
+		const world = await this.manager.readWorldDoc(story);
+		const guides = await this.loadWriterGuides(story); // v0.2.x+ 三层创作规范合并 + 《写作指南汇总.md》检测更新（与编写章节同一流程），整批只查一次、注入各卷【创作规范】块
+		const tensionRules = await this.loadTensionRules(); // 情节张力/节奏规则（插件数据目录播种文件），整批只查一次、注入各卷【张力规则】块
+
+		let vols = await this.manager.volumeList(story);
+		const freshOutlines = new Map<string, string>(); // 本轮已生成的卷 → 清洗后大纲（供后续卷链式上下文）
+		const results: Array<{ name: string; mark: "✓" | "↷" | "✗"; note: string }> = [];
+		let createdCount = 0;
+		let aborted = false;
+
+		for (let i = 0; i < decls.length; i++) {
+			const decl = decls[i];
+			const n = counts[i];
+			let vol = vols.find((v) => v.name === decl.name); // 精确名匹配（包含匹配会把「雾港」误配到「雾港外海」之类）
+			if (!vol) {
+				try {
+					vol = await this.manager.addVolume(story, decl.name, decl.description);
+					vols = await this.manager.volumeList(story); // 建卷后重载（order/ID 以磁盘为准）
+					createdCount++;
+				} catch (e) {
+					results.push({ name: decl.name, mark: "✗", note: `建卷失败：${String(e)}` });
+					continue;
+				}
+			}
+
+			// 链式上下文：阅读序前一卷（本轮已生成则用缓存）
+			const volIdx = vols.findIndex((v) => v.id === vol.id);
+			const prevVol = volIdx > 0 ? vols[volIdx - 1] : null;
+			let prevOutline = "";
+			if (prevVol) {
+				const cachedPrev = freshOutlines.get(prevVol.id);
+				prevOutline = cachedPrev != null ? cachedPrev : await this.manager.readVolumeOutline(story, prevVol.id);
+			}
+			const existing = await this.manager.readVolumeOutline(story, vol.id); // 清洗文本：模板注释视为空（新建卷必为空，读盘仅为提示词口径稳妥）
+			const relationshipCtx = await this.readOutlineRelationships(story, vol);
+
+			const ctx: VolOutlineGenInput = {
+				bookTitle: state.title,
+				genre: state.genre,
+				writingStyle: state.writing_style,
+				world,
+				globalOutline,
+				planningGuide,
+				bookRelationships: relationshipCtx.bookRelationships,
+				volRelationships: relationshipCtx.volRelationships,
+				volumes: vols.map((v) => ({ name: v.name, description: v.description })),
+				targetVolumeName: vol.name,
+				prevVolumeOutline: prevOutline,
+				existingOutline: existing,
+				guideText: guides.guideText,
+				tensionRules,
+				chapterCount: n,
+			};
+			console.debug("[articlewriter] 自动生成卷大纲（无卷自动建卷）增量生成", { model: setup.cfg.model_name || "(默认)", vol: vol.name, steps: n + 1 });
+
+			// 增量分段落盘：【卷设计】段 + 每章一个小节，每段流式展示完立即写盘（防长单次输出断开）；新建卷大纲必为空 → 直写
+			const label = `生成卷大纲 ${vol.name} (${i + 1}/${decls.length})`;
+			let base = "";
+			const res = await this.genVolOutlineIncremental({
+				cfg: setup.cfg,
+				failLabel: label,
+				chapterNums: Array.from({ length: n }, (_, c) => c + 1),
+				hasDesign: true,
+				buildDesignPrompt: () => buildVolOutlineDesignPrompt(ctx),
+				buildChapterPrompt: (num, design, soFar) => buildVolOutlineChapterPrompt({ ...ctx, chapterNum: num, volumeDesign: design, generatedSoFar: soFar }),
+				commit: async (seg) => {
+					base = base ? `${base}\n\n${seg}` : seg; // 段间空行分隔（各段尾部空白已被助手剥除）
+					await this.manager.setVolumeOutline(story, vol.id, base);
+				},
+			});
+			if (res.panelFailed) { results.push({ name: decl.name, mark: "✗", note: "无法打开生成面板" }); continue; }
+			if (res.aborted) { aborted = true; break; } // Esc → 整批中止（已落盘段落保留）
+			if (res.failed) { results.push({ name: decl.name, mark: "✗", note: `生成中断${res.written ? `（前 ${String(res.written)} 段已落盘）` : ""}` }); continue; }
+
+			freshOutlines.set(vol.id, stripComments(base).trim());
+			const check = splitVolOutlineByChapter(base);
+			results.push({ name: decl.name, mark: "✓", note: check.segments.length ? `识别到 ${String(check.segments.length)} 个章标记` : "未识别到「第N章」标记，需手动补标记才能拆章" });
+		}
+
+		const lines = results.map((r) => `${r.mark} ${r.name}：${r.note}`);
+		new Notice([`自动生成卷大纲完成（自动建卷 ${String(createdCount)}/${String(decls.length)}）${aborted ? "（用户中止，后续卷未处理）" : ""}`, ...lines].join("\n"), 15000);
+	}
+
+	// ---------- v0.2.13+ 策划指南 (/planning-guide；书级《策划指南.md》——书级/卷级大纲生成的既定规划约束) ----------
+
+	/** v0.2.13+ 组装策划指南生成输入（自动生成与手动 /planning-guide·/planning-guide-worldview 共用）：书籍信息 / 世界观 / 全书大纲 / 卷列表（阅读序，平铺模式无卷）/ 已有章节 + 已存摘要。
+	 * opts.chapterCount=目标总章数（各节位置以其为基准表述）；opts.worldOnly=仅世界观生成（跳过大纲/卷/章节输入，早期规划场景） */
+	private async buildPlanningGuideInput(story: string, state: StoryState, existingGuide?: string, opts?: { chapterCount?: number; worldOnly?: boolean }): Promise<PlanningGuideInput> {
+		const tensionRules = await this.loadTensionRules(); // 情节张力/节奏规则（插件数据目录播种文件，运行时读盘上内容）
+		const world = await this.manager.readWorldDoc(story);
+		const globalOutline = opts?.worldOnly ? undefined : await this.manager.readGlobalOutline(story);
+		const volsRec = opts?.worldOnly || state.use_volumes === false ? {} : await this.manager.loadVolumes(story);
+		const vols = Object.values(volsRec).sort((a, b) => a.order - b.order || a.id.localeCompare(b.id));
+		const volNames = await this.volNameMap(story);
+		const chapters = opts?.worldOnly ? [] : await this.manager.listChapters(story);
+		const chSummaries: Array<{ label: string; summary?: string }> = [];
+		for (const ch of chapters) {
+			const s = await this.manager.readSavedChapterSummary(story, ch.key);
+			chSummaries.push({ label: this.keyLabel(ch.key, volNames, ch.title), ...(s ? { summary: s } : {}) });
+		}
+		return {
+			bookTitle: state.title,
+			genre: state.genre,
+			writingStyle: state.writing_style,
+			world,
+			globalOutline,
+			volumes: vols.map((v) => ({ name: v.name, description: v.description })),
+			chapters: chSummaries,
+			...(existingGuide ? { existingGuide } : {}),
+			...(opts?.chapterCount != null ? { chapterCount: opts.chapterCount } : {}),
+			flatMode: state.use_volumes === false, // v0.2.x+：平铺模式——位置一律用章号表述、禁用卷划分
+			tensionRules, // 情节张力/节奏规则 →【张力规则】块（「六·节奏与张力曲线」等节逐条对照）
+		};
+	}
+
+	/** v0.2.13+ 大纲生成前确保书级《策划指南.md》存在：已有非空直接返回清洗文本；缺失/为空则 LLM 流式自动生成（无确认弹窗）并落盘后返回；
+	 * 生成失败（用户中止 / 连续 3 次空结果）仅告警并返回 ""——软依赖，大纲生成照常进行、只是不带【策划规范】块。
+	 * opts.chapterCount=目标总章数（自动生成时传入，使策划指南各节位置与本次大纲规划同基准） */
+	private async ensurePlanningGuide(story: string, state: StoryState, opts?: { chapterCount?: number }): Promise<string> {
+		const existing = await this.manager.readPlanningGuide(story);
+		if (existing.trim()) return existing;
+		const setup = this.getPhaseLlmSetup(0); // v0.2.22+：策划方案生成阶段
+		if (!setup) { new Notice("未取到活动 LLM 配置，跳过策划指南自动生成", 8000); return ""; }
+		const input = await this.buildPlanningGuideInput(story, state, undefined, opts);
+		const promptText = buildPlanningGuidePrompt(input);
+		console.debug("[articlewriter] 策划指南自动生成请求规模", { model: setup.cfg.model_name || "(默认)", promptLen: promptText.length });
+		const modal = await this.beginWritingPanel("自动生成策划指南");
+		if (!modal) { new Notice("无法打开生成面板，跳过策划指南自动生成", 8000); return ""; }
+		const content = await this.streamWithEmptyRetry(setup.cfg, () => [
+			{ role: "system", content: BOOK_OUTLINE_GEN_SYSTEM_PROMPT },
+			{ role: "user", content: promptText },
+		], modal, "生成策划指南");
+		if (modal.signal.aborted || !content.trim()) {
+			new Notice("策划指南未生成完成，继续大纲生成（本次不带【策划规范】约束）", 10000);
+			return "";
+		}
+		await this.manager.setPlanningGuide(story, content);
+		modal.finishAuto("✓ 策划指南已自动生成并保存", "本轮用时");
+		return content.replace(/\s+$/, "");
+	}
+
+	/** v0.2.13+「策划指南」(/planning-guide)：AI 流式生成书级《策划指南.md》——固定十节既定规划约束（全书主线/升级路径/主角转变弧/反转与伏笔总规划/新意点与反套路条款/节奏与张力曲线/人物行动逻辑/信息与知识状态规则/世界观红线/连续性基线），供书级/卷级大纲生成遵循。
+	 * 已有非空时弹确认（整体重写 / 取消）；重写以现有内容为既定事实约束（可调整表述、不得改变已确立事实）。流式展示完自动落盘（无保存/不保存 CTA）。不改任何 state */
+	async cmdPlanningGuide(): Promise<void> {
+		if (!(await this.ensureWorkDir())) return;
+		const story = await this.requireStory();
+		if (!story || !(await this.ensureVolumeLayout(story))) return;
+		try {
+			const state = await this.manager.validatedState(story);
+			const existing = await this.manager.readPlanningGuide(story);
+			if (existing.trim()) {
+				const items: ActionItem[] = [
+					{ label: "整体重写", sub: "以现有《策划指南.md》为既定事实约束重新生成并覆盖" },
+					{ label: "取消", sub: "保留现有内容不变" },
+				];
+				const choice = await this.pickAction("书级《策划指南.md》已存在，如何处理？", items);
+				if (choice == null || choice === 1) { new Notice("已取消生成策划指南", 6000); return; }
+			}
+			// v0.2.x+：询问目标总章数——各节位置（抬升节点/伏笔埋设与回收/高潮落位等）以该总章数为基准表述
+			const count = await this.promptChapterCountInput("生成策划指南", `将 AI 生成书级《策划指南.md》（固定十节的既定规划约束）。\n请指定目标总章数（正整数，不设上限），各节位置将以该总章数为基准表述；输入后按回车确认、Esc 取消：`, "已取消生成策划指南");
+			if (count == null) return;
+			const setup = this.getPhaseLlmSetup(0); // v0.2.22+：策划方案生成阶段
+			if (!setup) return;
+			const input = await this.buildPlanningGuideInput(story, state, existing.trim() || undefined, { chapterCount: count });
+			const promptText = buildPlanningGuidePrompt(input);
+			console.debug("[articlewriter] 策划指南生成请求规模", { model: setup.cfg.model_name || "(默认)", regenerate: !!existing.trim(), promptLen: promptText.length });
+			const modal = await this.beginWritingPanel(existing.trim() ? "重新生成策划指南" : "生成策划指南");
+			if (!modal) { new Notice("无法打开生成面板，本次操作已取消", 8000); return; }
+			const content = await this.streamWithEmptyRetry(setup.cfg, () => [
+				{ role: "system", content: BOOK_OUTLINE_GEN_SYSTEM_PROMPT },
+				{ role: "user", content: promptText },
+			], modal, "生成策划指南");
+			if (modal.signal.aborted) return;
+			if (!content.trim()) return;
+			await this.manager.setPlanningGuide(story, content);
+			modal.finishAuto("✓ 策划指南已保存", "本轮用时");
+			new Notice(`✓ ${existing.trim() ? "已重写" : "已生成"}书级《策划指南.md》，后续书级/卷级大纲生成将遵循其既定规划`, 12000);
+		} catch (e) {
+			this.notifyError("生成策划指南失败", e);
+		}
+	}
+
+	/** v0.2.x+「生成策划指南（仅世界观）」(/planning-guide-worldview)：早期规划场景——输入仅书籍信息＋世界观设定（不含大纲/卷/章节），AI 流式生成书级《策划指南.md》。
+	 * 已有非空时同样弹确认（整体重写 / 取消）；重写以现有内容为既定事实约束（不丢已确立事实）。需指定目标总章数（各节位置以其为基准表述）。流式展示完自动落盘 */
+	async cmdPlanningGuideWorldview(): Promise<void> {
+		if (!(await this.ensureWorkDir())) return;
+		const story = await this.requireStory();
+		if (!story || !(await this.ensureVolumeLayout(story))) return;
+		try {
+			const state = await this.manager.validatedState(story);
+			const existing = await this.manager.readPlanningGuide(story);
+			if (existing.trim()) {
+				const items: ActionItem[] = [
+					{ label: "整体重写", sub: "以现有《策划指南.md》为既定事实约束，仅依据世界观重新生成并覆盖" },
+					{ label: "取消", sub: "保留现有内容不变" },
+				];
+				const choice = await this.pickAction("书级《策划指南.md》已存在，如何处理？", items);
+				if (choice == null || choice === 1) { new Notice("已取消生成策划指南（仅世界观）", 6000); return; }
+			}
+			const count = await this.promptChapterCountInput("生成策划指南（仅世界观）", `将仅依据世界观设定 AI 生成书级《策划指南.md》（不含大纲/卷/章节）。\n请指定目标总章数（正整数，不设上限），各节位置将以该总章数为基准表述；输入后按回车确认、Esc 取消：`, "已取消生成策划指南（仅世界观）");
+			if (count == null) return;
+			const setup = await this.loadWriterSetup();
+			if (!setup) return;
+			const input = await this.buildPlanningGuideInput(story, state, existing.trim() || undefined, { chapterCount: count, worldOnly: true });
+			const promptText = buildPlanningGuidePrompt(input);
+			console.debug("[articlewriter] 策划指南（仅世界观）生成请求规模", { model: setup.cfg.model_name || "(默认)", regenerate: !!existing.trim(), promptLen: promptText.length });
+			const modal = await this.beginWritingPanel(existing.trim() ? "重新生成策划指南（仅世界观）" : "生成策划指南（仅世界观）");
+			if (!modal) { new Notice("无法打开生成面板，本次操作已取消", 8000); return; }
+			const content = await this.streamWithEmptyRetry(setup.cfg, () => [
+				{ role: "system", content: BOOK_OUTLINE_GEN_SYSTEM_PROMPT },
+				{ role: "user", content: promptText },
+			], modal, "生成策划指南（仅世界观）");
+			if (modal.signal.aborted) return;
+			if (!content.trim()) return;
+			await this.manager.setPlanningGuide(story, content);
+			modal.finishAuto("✓ 策划指南已保存", "本轮用时");
+			new Notice(`✓ ${existing.trim() ? "已重写" : "已生成"}书级《策划指南.md》（仅依据世界观），后续大纲生成将遵循其既定规划`, 12000);
+		} catch (e) {
+			this.notifyError("生成策划指南（仅世界观）失败", e);
+		}
+	}
+
+	// ---------- v0.2.x+ 生成书籍大纲 (/book-outline-generate) ----------
+
+	/** 补全书根参与大纲生成的资料（大纲/策划指南/世界观/人物关系）：缺失者按模板创建、已存在不覆盖。供命令面板与写字台「书稿」右键 */
+	async cmdCompleteOutlineDocs(): Promise<void> {
+		if (!(await this.ensureWorkDir())) return;
+		const story = await this.requireStory();
+		if (!story) return;
+		try {
+			const created = await this.manager.ensureOutlineDocs(story);
+			new Notice(created.length ? `已为「${story}」补全大纲资料：${created.join("、")}` : `「${story}」的大纲资料已齐全（大纲/策划指南/世界观/人物关系），无需补全`, 8000);
+		} catch (e) {
+			this.notifyError("补全大纲资料失败", e);
+		}
+	}
+
+	/** 平铺书级大纲的章标记（只认标题式 `## 第N章`——避免【全书设计】里以「第N章」开头的正文被误判）；返回按文档顺序的出现位置与章号 */
+	private outlineChapterHeadings(text: string): Array<{ index: number; num: number }> {
+		const out: Array<{ index: number; num: number }> = [];
+		const re = /^#{1,6}[^\S\n]*第[^\S\n]*(\d+|[零〇一二两三四五六七八九十百千万]+)[^\S\n]*章/gm;
+		let m: RegExpExecArray | null;
+		while ((m = re.exec(text))) {
+			const n = /^\d+$/.test(m[1]) ? parseInt(m[1], 10) : cnToNum(m[1].replace(/〇/g, "零"));
+			if (n != null && n > 0) out.push({ index: m.index, num: n });
+		}
+		return out;
+	}
+
+	/** 续写辅助：丢掉最后一个章标题起的整块（可能被 max_tokens 截断的末章），返回保留文本与该章章号；无章标题时原样返回、lastNum=0 */
+	private trimLastOutlineChapter(text: string): { text: string; lastNum: number } {
+		const heads = this.outlineChapterHeadings(text);
+		if (!heads.length) return { text, lastNum: 0 };
+		const last = heads[heads.length - 1];
+		return { text: text.slice(0, last.index).replace(/\s+$/, ""), lastNum: last.num };
+	}
+
+	/** v0.2.x+ 平铺书级大纲「继续生成」：现有大纲章标记（`## 第N章`）中的最大章号；无则返回 0 */
+	private maxOutlineChapterNum(text: string): number {
+		const heads = this.outlineChapterHeadings(text);
+		return heads.length ? Math.max(...heads.map((h) => h.num)) : 0;
+	}
+
+	/** v0.2.x+ 有卷模式书级大纲「继续生成」：丢掉模型可能在首个新卷声明行之前加的前言（自首个声明行起保留）；未识别到声明行时原样返回 */
+	private trimExtendPreamble(text: string): string {
+		const lines = text.split("\n");
+		for (let i = 0; i < lines.length; i++) {
+			if (/^\s*[-*]\s*第\s*(?:\d+|[零一二两三四五六七八九十百]+)\s*卷/.test(lines[i])) return lines.slice(i).join("\n");
+		}
+		return text;
+	}
+
+	/** v0.2.x+ 平铺书级大纲自动续写（完整生成的截断兜底与「继续生成」共用）：单次输出被 max_tokens 截断（或从已有进度起步）时按 10 章一段续写，直到覆盖 chapterCount 或无法继续；
+	 * 续写前丢掉可能被截断的末章、从其章号重生成；空结果重试 3 次 / 连续无净推进 ≥3 轮中止；返回最终 content、用户是否中断（aborted=true 时调用方不得保存）、startNum（本次新生成的首个章号，供「继续生成」调用方切出新内容段） */
+	private async runFlatOutlineContinuation(opts: {
+		cfg: LlmConfigDoc;
+		modal: GenProgressView;
+		outlineInput: BookOutlineGenInput;
+		content: string;
+	}): Promise<{ content: string; aborted: boolean; startNum: number }> {
+		const count = opts.outlineInput.chapterCount;
+		let content = opts.content;
+		const heads0 = this.outlineChapterHeadings(content);
+		let lastNum = heads0.length ? Math.max(...heads0.map((h) => h.num)) : 0;
+		if (lastNum >= count) return { content, aborted: false, startNum: 0 };
+		const lastBlock0 = heads0.length ? content.slice(heads0[heads0.length - 1].index) : "";
+		const initialLooksComplete = !!lastBlock0 && /章末钩子/.test(lastBlock0);
+		// 首轮末章若停在半句（缺章末钩子）→ 丢掉整章重生成；否则从下一章继续
+		if (!initialLooksComplete) content = this.trimLastOutlineChapter(content).text;
+		const curHeads = this.outlineChapterHeadings(content);
+		lastNum = curHeads.length ? Math.max(...curHeads.map((h) => h.num)) : 0; // 按实际保留内容重算，避免后续进度判断用旧末章号
+		const startNum = lastNum + 1;
+		let next = startNum;
+		let guard = 0;
+		let stall = 0; // 连续「本轮只生成到半章、裁掉后无净推进」次数，≥3 视为模型输出能力不足
+		const maxRounds = count + 5; // 每轮至少应推进 1 章；上限只防病态死循环
+		while (next <= count && guard < maxRounds) {
+			guard++;
+			const beforeNum = lastNum; // 本轮开始前已保留的最新章号（判断净推进用）
+			const to = Math.min(count, next + 9);
+			new Notice(`📝 大纲已生成到第${String(next - 1)}章，继续续写第${String(next)}-${String(to)}章…`, 6000);
+			opts.modal.reset();
+			opts.modal.append(`${content}\n\n`);
+			const heads = this.outlineChapterHeadings(content);
+			const design = heads.length ? content.slice(0, heads[0].index).trim() : content.trim();
+			const tailStart = heads.length ? heads[Math.max(0, heads.length - 3)].index : 0;
+			const tail = content.slice(tailStart).trim();
+			const contPrompt = buildBookOutlineContinuePrompt({ ...opts.outlineInput, fromChapter: next, toChapter: to, bookDesign: design, previousChapters: tail });
+			let seg = "";
+			for (let attempt = 1; attempt <= 3; attempt++) {
+				try {
+					seg = await this.streamOnce(opts.cfg, [
+						{ role: "system", content: BOOK_OUTLINE_GEN_SYSTEM_PROMPT },
+						{ role: "user", content: contPrompt },
+					], opts.modal);
+				} catch (e) {
+					if (opts.modal.signal.aborted) { new Notice("已停止生成书籍大纲", 6000); return { content, aborted: true, startNum }; }
+					this.notifyError(`续写大纲（第${String(next)}-${String(to)}章）失败`, e);
+					seg = "";
+					break;
+				}
+				if (seg.trim()) break;
+				if (attempt < 3) {
+					new Notice(`续写结果为空（第${String(attempt)}次），正在重试…`, 6000);
+					opts.modal.reset();
+					opts.modal.append(`${content}\n\n`);
+				}
+			}
+			if (!seg.trim()) {
+				opts.modal.reset();
+				opts.modal.append(content); // 面板回到「实际将保存」的内容
+				new Notice("续写中断：已保留已生成部分，可在面板选择保存", 10000);
+				break;
+			}
+			const segHeads = this.outlineChapterHeadings(seg);
+			const segClean = (segHeads.length ? seg.slice(segHeads[0].index) : seg).replace(/\s+$/, ""); // 丢掉模型可能加的前言/重复【全书设计】
+			const merged = `${content}\n\n${segClean}`;
+			const mergedHeads = this.outlineChapterHeadings(merged);
+			const mergedMax = mergedHeads.length ? Math.max(...mergedHeads.map((h) => h.num)) : 0;
+			if (mergedMax <= lastNum) {
+				opts.modal.reset();
+				opts.modal.append(content);
+				new Notice("续写未产生新的章节，已停止继续生成", 8000);
+				break;
+			}
+			content = merged;
+			lastNum = mergedMax;
+			const lastBlock = mergedHeads.length ? merged.slice(mergedHeads[mergedHeads.length - 1].index) : "";
+			const looksComplete = !!lastBlock && /章末钩子/.test(lastBlock);
+			if (mergedMax < to && !looksComplete) {
+				content = this.trimLastOutlineChapter(content).text; // 本段末尾也可能被截断 → 丢掉末章重生成
+				const keptHeads = this.outlineChapterHeadings(content);
+				lastNum = keptHeads.length ? Math.max(...keptHeads.map((h) => h.num)) : 0;
+				if (lastNum <= beforeNum) {
+					stall++;
+					if (stall >= 3) { new Notice("续写无法继续推进（模型单次输出过短或反复截断），已停止；可调大 max_tokens 后重试", 12000); break; }
+				} else {
+					stall = 0;
+				}
+				next = lastNum + 1;
+			} else {
+				stall = 0;
+				next = mergedMax + 1;
+			}
+			opts.modal.reset();
+			opts.modal.append(content);
+		}
+		const finalHeads = this.outlineChapterHeadings(content);
+		const finalLast = finalHeads.length ? Math.max(...finalHeads.map((h) => h.num)) : 0;
+		if (finalHeads.length < count || finalLast < count) new Notice(`⚠ 大纲未覆盖全部 ${String(count)} 章（识别到 ${String(finalHeads.length)} 个章标记、最新到第 ${String(finalLast)} 章），可保存后再次生成或手动补齐`, 12000);
+		return { content, aborted: false, startNum };
+	}
+
+	/** 依据全局设定（世界观/基调等）与已有章节（及其已存摘要）LLM 流式生成书级《大纲.md》；平铺（无卷）与有卷两模式通用：
+	 * - 平铺模式：逐章规划——恰好 N 个 `## 第N章 <标题>` 标记（与「从卷大纲生成章节」同一解析器兼容）＋每章固定结构，配套拆章步骤=「从卷大纲生成章节」（平铺下读书级《大纲.md》、章节落书根）；
+	 * - 有卷模式：全书主线 + 分卷分章（每卷一行 `- 第X卷·卷名（第A-B章）：描述`，可被「从书级大纲生成卷」解析）+ 结局。
+	 * 完整生成落盘：书级《大纲.md》非空时弹覆盖/追加二选一（追加保留原文含注释、剥掉首部 H1 后拼接，setGlobalOutline 统一补回自己的 H1），空则直写；不改任何 state。
+	 * v0.2.x+ 继续生成：现有大纲非空时先选「完整生成 / 按已有进度继续」——继续模式问「要增加的章数 N」、目标总章数 = 已有最大章号 M + N（M：平铺取 `## 第N章` 最大章号、有卷取卷声明行区间注记的最大 B），
+	 * 平铺走 runFlatOutlineContinuation 从 M 之后逐章续写、有卷走 buildBookOutlineExtendPrompt 只追加新卷声明行 + 更新结局；两者都直接拼到原文末尾（无覆盖/追加二选一），提示词均带「故事在目标章自然收束结尾」。
+	 * 目标章数两模式都问：平铺=恰好规划 N 章；有卷=全书规划总章数参考 */
+	async cmdGenerateBookOutline(): Promise<void> {
+		if (!(await this.ensureWorkDir())) return;
+		const story = await this.requireStory();
+		if (!story || !(await this.ensureVolumeLayout(story))) return;
+		try {
+			const state = await this.manager.validatedState(story);
+			const flatMode = state.use_volumes === false;
+			const setup = this.getPhaseLlmSetup(1); // v0.2.22+：书籍大纲和卷级大纲生成阶段
+			if (!setup) return;
+			const existing = await this.manager.readGlobalOutline(story); // 清洗文本：模板注释视为空
+			// v0.2.x+ 继续生成：现有大纲非空时先选「完整生成 / 按已有进度继续」；继续模式目标总章数 = 已有最大章号 M + 用户指定增量 N
+			let continueMode = false;
+			let m = 0;
+			if (existing.trim()) {
+				const mode = await this.promptOutlineGenMode("生成书籍大纲");
+				if (mode == null) return;
+				if (mode === 1) {
+					continueMode = true;
+					m = flatMode ? this.maxOutlineChapterNum(existing) : maxDeclaredEndChapter(existing);
+					if (m <= 0) {
+						new Notice(flatMode
+							? "现有书级《大纲.md》未识别到「## 第N章」章标记，无法判断已有进度——请补上章标记后重试，或改选完整生成"
+							: "现有书级《大纲.md》的卷声明行缺少区间注记（如「（第1-20章）」），无法判断已有进度——请补上区间注记后重试，或改选完整生成", 12000);
+						return;
+					}
+				}
+			}
+			let count: number;
+			if (continueMode) {
+				const addN = await this.promptChapterCountInput("继续生成书籍大纲", `书级《大纲.md》已覆盖到第 ${String(m)} 章。\n请指定要向后追加的章数（正整数，不设上限），输入后按回车确认、Esc 取消：`, "已取消继续生成书籍大纲", "要增加的章数（正整数，如 5）");
+				if (addN == null) return;
+				count = m + addN;
+			} else {
+				const c = await this.promptChapterCountInput("生成书籍大纲", `将依据全局设定与已有章节 AI 生成书级《大纲.md》。\n请指定目标章数（正整数，不设上限），输入后按回车确认、Esc 取消：\n${flatMode ? "（平铺模式：大纲将恰好规划这么多章）" : "（有卷模式：全书规划的总章数参考）"}`, "已取消生成书籍大纲");
+				if (c == null) return;
+				count = c;
+			}
+
+			// 上下文组装：世界观 / 现有书级大纲（避免重复）/ 全部卷（仅非平铺）/ 已有章节 + 已存摘要（阅读序）
+			const world = await this.manager.readWorldDoc(story);
+			const planningGuide = await this.ensurePlanningGuide(story, state, { chapterCount: count }); // v0.2.13+：缺失则先自动生成（软依赖，失败返回 ""）；v0.2.x+ 传入目标章数使策划指南各节位置与本次规划同基准
+			const guides = await this.loadWriterGuides(story); // v0.2.x+ 三层创作规范合并 + 《写作指南汇总.md》检测更新（与编写章节同一流程），注入【创作规范】块
+			const tensionRules = await this.loadTensionRules(); // 情节张力/节奏规则（插件数据目录播种文件），注入【张力规则】块
+			const volsRec = flatMode ? {} : await this.manager.loadVolumes(story);
+			const vols = Object.values(volsRec).sort((a, b) => a.order - b.order || a.id.localeCompare(b.id));
+			const currentVolumeKey = typeof state.current_volume === "string" && state.current_volume.trim() ? state.current_volume.trim() : "";
+			const relationshipVol = !flatMode ? (currentVolumeKey ? this.manager.findVolumeIn(volsRec, currentVolumeKey) : vols[0] ?? null) : null;
+			const relationshipCtx = await this.readOutlineRelationships(story, relationshipVol);
+			const volNames = await this.volNameMap(story);
+			const chapters = await this.manager.listChapters(story);
+			const chSummaries: Array<{ label: string; summary?: string }> = [];
+			for (const ch of chapters) {
+				const s = await this.manager.readSavedChapterSummary(story, ch.key);
+				chSummaries.push({ label: this.keyLabel(ch.key, volNames, ch.title), ...(s ? { summary: s } : {}) });
+			}
+			const outlineInput: BookOutlineGenInput = {
+				bookTitle: state.title,
+				genre: state.genre,
+				writingStyle: state.writing_style,
+				world,
+				flatMode,
+				bookRelationships: relationshipCtx.bookRelationships,
+				volRelationships: relationshipCtx.volRelationships,
+				volumes: vols.map((v) => ({ name: v.name, description: v.description })),
+				chapters: chSummaries,
+				existingOutline: existing,
+				existingOutlineCompact: flatMode && !!existing.trim(), // v0.2.x+：平铺模式把现有大纲压成「章标题 + 主线」紧凑索引再注入（百章大纲全量注入易撑爆本地模型上下文窗口）；有卷模式大纲小、保持全量
+				planningGuide,
+				guideText: guides.guideText,
+				tensionRules,
+				chapterCount: count,
+			};
+			// v0.2.x+ 继续生成 · 有卷模式：只追加覆盖 M+1..count 的新卷声明行 + 更新后的结局（不重出主线/旧卷），直接拼到原文末尾（无覆盖/追加二选一）
+			if (continueMode && !flatMode) {
+				const extPrompt = buildBookOutlineExtendPrompt({ ...outlineInput, fromChapter: m + 1, toChapter: count });
+				console.debug("[articlewriter] 书籍大纲续写请求规模", { model: setup.cfg.model_name || "(默认)", from: m + 1, to: count, promptLen: extPrompt.length });
+				const modal = await this.beginWritingPanel("继续生成书籍大纲");
+				if (!modal) { new Notice("无法打开生成面板，本次操作已取消", 8000); return; }
+				modal.append(`${existing}\n\n`); // 先展示已有进度，新内容流式接在其后
+				let seg = await this.streamWithEmptyRetry(setup.cfg, () => [
+					{ role: "system", content: BOOK_OUTLINE_GEN_SYSTEM_PROMPT },
+					{ role: "user", content: extPrompt },
+				], modal, "继续生成书籍大纲");
+				if (modal.signal.aborted) return;
+				if (!seg.trim()) return;
+				seg = this.trimExtendPreamble(seg).replace(/\s+$/, "");
+				modal.reset();
+				modal.append(seg); // 面板回到「实际将追加」的内容
+				modal.finish();
+				const keep = await modal.done;
+				if (!keep) { new Notice("未保存书籍大纲", 6000); return; }
+				const raw = (await this.manager.readGlobalOutlineFile(story)).replace(/^#\s.*\n/, "");
+				const body = raw ? `${raw}\n\n${seg}` : seg;
+				await this.manager.setGlobalOutline(story, body);
+				const decls = parseVolumeDeclarations(body);
+				new Notice(decls.length
+					? `✓ 已续写书级《大纲.md》（识别到 ${String(decls.length)} 条卷声明），可运行「从书级大纲生成卷」建卷并逐卷生成卷大纲`
+					: `✓ 已续写书级《大纲.md》，但未识别到卷声明（格式：\`- 第X卷·卷名（第A-B章）：描述\`）——请手动补上后再建卷`, 12000);
+				return;
+			}
+
+			// v0.2.x+ 继续生成 · 平铺模式：从已有进度向后逐章续写（与完整生成的截断兜底共用 runFlatOutlineContinuation），只追加新生成部分
+			if (continueMode) {
+				const modal = await this.beginWritingPanel("继续生成书籍大纲");
+				if (!modal) { new Notice("无法打开生成面板，本次操作已取消", 8000); return; }
+				modal.append(existing);
+				const res = await this.runFlatOutlineContinuation({ cfg: setup.cfg, modal, outlineInput, content: existing });
+				if (res.aborted) return;
+				const heads = this.outlineChapterHeadings(res.content);
+				const cut = heads.find((h) => h.num >= res.startNum); // startNum 可能等于 M（末章残缺被裁掉重生成时）→ 用 >= 把重生成的 M 章一并算进新内容
+				if (!cut) {
+					new Notice("未产生新章节，原大纲保持不变", 8000);
+					return;
+				}
+				const newPart = res.content.slice(cut.index).replace(/\s+$/, "");
+				modal.reset();
+				modal.append(newPart); // 面板回到「实际将追加」的内容
+				modal.finish();
+				const keep = await modal.done;
+				if (!keep) { new Notice("未保存书籍大纲", 6000); return; }
+				const rawFull = (await this.manager.readGlobalOutlineFile(story)).replace(/^#\s.*\n/, "");
+				// 末章曾被裁掉重生成（startNum<=m）→ 原文末尾的残缺末章一并裁掉再拼，避免同一章出现两个版本
+				const raw = res.startNum <= m ? this.trimLastOutlineChapter(rawFull).text : rawFull;
+				const body = raw ? `${raw}\n\n${newPart}` : newPart;
+				await this.manager.setGlobalOutline(story, body);
+				const check = splitVolOutlineByChapter(body);
+				new Notice(check.segments.length
+					? `✓ 已续写书级《大纲.md》（识别到 ${String(check.segments.length)} 个章标记），可运行「从卷大纲生成章节」拆入各章`
+					: `✓ 已续写书级《大纲.md》，但未识别到「第N章」标记——请手动补上章标记后再拆章`, 12000);
+				return;
+			}
+
+			const promptText = buildBookOutlineGenPrompt(outlineInput);
+			console.debug("[articlewriter] 书籍大纲生成请求规模", { model: setup.cfg.model_name || "(默认)", flatMode, promptLen: promptText.length });
+
+			// 流式预览 + 保存确认
+			const modal = await this.beginWritingPanel("生成书籍大纲");
+			if (!modal) { new Notice("无法打开生成面板，本次操作已取消", 8000); return; }
+			let content = await this.streamWithEmptyRetry(setup.cfg, () => [
+				{ role: "system", content: BOOK_OUTLINE_GEN_SYSTEM_PROMPT },
+				{ role: "user", content: promptText },
+			], modal, "生成书籍大纲");
+			if (modal.signal.aborted) return;
+			if (!content.trim()) return;
+
+			// v0.2.x+ 平铺模式：单次输出受 max_tokens 限制会被截断（如目标 100 章只生成到第 80 章）——
+			// 未覆盖 1..count 时按 10 章一段自动续写（与「继续生成」共用 runFlatOutlineContinuation），直到覆盖或无法继续
+			if (flatMode) {
+				const res = await this.runFlatOutlineContinuation({ cfg: setup.cfg, modal, outlineInput, content });
+				if (res.aborted) return;
+				content = res.content;
+			}
+
+			modal.finish();
+			const keep = await modal.done;
+			if (!keep) { new Notice("未保存书籍大纲", 6000); return; }
+
+			// 落盘：非空弹覆盖/追加（追加保留原文含注释、剥掉首部 H1 后拼接，setGlobalOutline 统一补回自己的 H1）；空则直写
+			let body = content.replace(/\s+$/, "");
+			if (existing) {
+				const items2: ActionItem[] = [
+					{ label: "覆盖现有大纲", sub: "用新生成内容替换《大纲.md》" },
+					{ label: "追加到现有大纲末尾", sub: "保留原文（含注释），新内容接在末尾" },
+				];
+				const choice = await this.pickAction("书级《大纲.md》非空，如何保存？", items2);
+				if (choice == null) { new Notice("已取消保存书籍大纲", 6000); return; }
+				if (choice === 1) {
+					const raw = (await this.manager.readGlobalOutlineFile(story)).replace(/^#\s.*\n/, "");
+					body = raw ? `${raw}\n\n${body}` : body;
+				}
+			}
+			await this.manager.setGlobalOutline(story, body);
+
+			// 软警告：平铺查章标记（拆章前提）；有卷查卷声明（「从书级大纲生成卷」前提）
+			if (flatMode) {
+				const check = splitVolOutlineByChapter(body);
+				new Notice(check.segments.length
+					? `✓ 已生成书级《大纲.md》（识别到 ${String(check.segments.length)} 个章标记），可运行「从卷大纲生成章节」拆入各章`
+					: `✓ 已生成书级《大纲.md》，但未识别到「第N章」标记——请手动补上章标记后再拆章`, 12000);
+			} else {
+				const decls = parseVolumeDeclarations(body);
+				new Notice(decls.length
+					? `✓ 已生成书级《大纲.md》（识别到 ${String(decls.length)} 条卷声明），可运行「从书级大纲生成卷」建卷并逐卷生成卷大纲`
+					: `✓ 已生成书级《大纲.md》，但未识别到卷声明（格式：\`- 第X卷·卷名（第A-B章）：描述\`）——请手动补上卷声明后再建卷`, 12000);
+			}
+		} catch (e) {
+			this.notifyError("生成书籍大纲失败", e);
+		}
+	}
+
+	// ---------- v0.2.x+ 从书级大纲生成卷 (/book-outline-to-volumes) ----------
+
+	/** 解析书级《大纲.md》的卷声明（`- 第X卷·名（第A-B章）：描述`），逐卷生成其声明的全部卷及各自卷大纲（详细程度书级→卷级→章级；v0.2.x+ 增量分段落盘——全量模式【卷设计】段 + 每缺失章一个小节、补全模式逐缺失章小节，每段流式展示完立即写盘，防长单次输出断开）：
+	 * - 缺失卷按声明自动创建（描述作卷描述）；建卷失败记该卷 failed 继续下一卷；已有卷按**精确名**匹配（不用包含匹配防误配）；
+	 * - 各卷目标章数由单个弹窗一次性问全（每卷一个正整数，不设上限）；
+	 * - 逐卷模式判定：missing = 1..N 与已有章号差集——空 → 整卷跳过「全部 N 章已齐整」；已有章条目且 missing 非空 → 补全模式（只补缺失章、生成后按章序合并，已有章原样保留绝不重写）；无章条目（文件空或只有自由文本前言）→ 全量生成（现有内容作上下文）+ 同一合并路径（前言保留）；
+	 * - 批内链式上下文：prevVolumeOutline 取阅读序前一卷清洗大纲，本轮已更新的卷用 freshOutlines 缓存（存 stripComments(currentRaw).trim()，与 readVolumeOutline 同口径）；
+	 * - 某卷生成中断（前 N 段已落盘、保留）/面板打不开 → 记该卷 failed 继续下一卷；Esc 中断 → 整批中止（收尾汇总注明、已落盘段落保留）。
+	 * 入口：命令面板 + 写字台「书籍列表」标题行右键（仅 volMode）。 */
+	async cmdBookOutlineToVolumes(): Promise<void> {
+		if (!(await this.ensureWorkDir())) return;
+		const story = await this.requireStory();
+		if (!story || !(await this.ensureVolumeLayout(story))) return;
+		try {
+			const state = await this.manager.validatedState(story);
+			if (state.use_volumes === false) { new Notice(NO_VOL_MODE_MSG, 10000); return; } // 无卷模式没有卷大纲
+
+			const globalOutline = await this.manager.readGlobalOutline(story); // 清洗文本（bullet 声明行原样保留）
+			if (!globalOutline.trim()) { new Notice("书级《大纲.md》为空，请先写书级大纲再生成卷", 8000); return; }
+			const decls = parseVolumeDeclarations(globalOutline);
+			if (!decls.length) { new Notice("书级《大纲.md》未识别到卷声明（格式：`- 第X卷·卷名（第A-B章）：描述`）", 10000); return; }
+			const counts = await this.promptAllVolumeChapterCounts(decls);
+			if (!counts) return;
+
+			const setup = this.getPhaseLlmSetup(1); // v0.2.22+：书籍大纲和卷级大纲生成阶段
+			if (!setup) return;
+			const world = await this.manager.readWorldDoc(story);
+			const planningGuide = await this.ensurePlanningGuide(story, state, { chapterCount: counts.reduce((a, b) => a + b, 0) }); // v0.2.13+：缺失则先自动生成（软依赖，失败返回 ""）；v0.2.x+ 各卷目标章数之和即全书总章数
+			const guides = await this.loadWriterGuides(story); // v0.2.x+ 三层创作规范合并 + 《写作指南汇总.md》检测更新（与编写章节同一流程），整批只查一次、注入各卷【创作规范】块
+			const tensionRules = await this.loadTensionRules(); // 情节张力/节奏规则（插件数据目录播种文件），整批只查一次、注入各卷【张力规则】块
+
+			let vols = await this.manager.volumeList(story);
+			const freshOutlines = new Map<string, string>(); // 本轮已更新的卷 → 清洗后大纲（供后续卷链式上下文，与 readVolumeOutline 同口径）
+			const results: Array<{ name: string; mark: "✓" | "↷" | "✗"; note: string }> = [];
+			let aborted = false;
+
+			for (let i = 0; i < decls.length; i++) {
+				const decl = decls[i];
+				const n = counts[i];
+				let vol = vols.find((v) => v.name === decl.name); // 精确名匹配（包含匹配会把「雾港」误配到「雾港外海」之类）
+				if (!vol) {
+					try {
+						vol = await this.manager.addVolume(story, decl.name, decl.description);
+						vols = await this.manager.volumeList(story); // 建卷后重载（order/ID 以磁盘为准）
+					} catch (e) {
+						results.push({ name: decl.name, mark: "✗", note: `建卷失败：${String(e)}` });
+						continue;
+					}
+				}
+
+				const existingRaw = await this.manager.readVolumeOutlineRaw(story, vol.id);
+				const cachedExisting = freshOutlines.get(vol.id);
+				const existingClean = cachedExisting != null ? cachedExisting : await this.manager.readVolumeOutline(story, vol.id); // 清洗文本：模板注释视为空
+				const haveNums = new Set(splitVolOutlineByChapter(existingClean).segments.map((s) => s.num));
+				const missing: number[] = [];
+				for (let c = 1; c <= n; c++) if (!haveNums.has(c)) missing.push(c);
+				if (!missing.length) { results.push({ name: decl.name, mark: "↷", note: `全部 ${n} 章已齐整，跳过` }); continue; }
+				const supplementMode = haveNums.size > 0; // 已有章条目 → 只补缺失章；无章条目（空/纯自由文本）→ 全量生成（前言经合并路径保留）
+
+				// 链式上下文：阅读序前一卷（本轮已更新则用缓存）
+				const volIdx = vols.findIndex((v) => v.id === vol.id);
+				const prevVol = volIdx > 0 ? vols[volIdx - 1] : null;
+				let prevOutline = "";
+				if (prevVol) {
+					const cachedPrev = freshOutlines.get(prevVol.id);
+					prevOutline = cachedPrev != null ? cachedPrev : await this.manager.readVolumeOutline(story, prevVol.id);
+				}
+
+				const relationshipCtx = await this.readOutlineRelationships(story, vol);
+				const ctx: VolOutlineGenInput = {
+					bookTitle: state.title,
+					genre: state.genre,
+					writingStyle: state.writing_style,
+					world,
+					globalOutline,
+					planningGuide,
+					bookRelationships: relationshipCtx.bookRelationships,
+					volRelationships: relationshipCtx.volRelationships,
+					volumes: vols.map((v) => ({ name: v.name, description: v.description })),
+					targetVolumeName: vol.name,
+					prevVolumeOutline: prevOutline,
+					existingOutline: existingClean,
+					guideText: guides.guideText,
+					tensionRules,
+					chapterCount: n,
+				};
+				console.debug("[articlewriter] 书级大纲→生成卷增量生成", { model: setup.cfg.model_name || "(默认)", vol: vol.name, mode: supplementMode ? "补全" : "全量", missing, steps: missing.length + (supplementMode ? 0 : 1) });
+
+				// 增量分段落盘：全量模式先【卷设计】段（直接追加——合并会丢前言）、再每缺失章一个小节；补全模式无设计步、逐章小节；
+				// 每章小节经 mergeVolOutlineChapters 按章序插入（已有章原样保留、绝不重写），每段流式展示完立即写盘（防长单次输出断开）
+				const label = `生成卷大纲 ${vol.name} (${i + 1}/${decls.length})`;
+				let currentRaw = existingRaw.replace(/^#\s.*\n/, "");
+				const addedNums: number[] = [];
+				const droppedNums: number[] = [];
+				const res = await this.genVolOutlineIncremental({
+					cfg: setup.cfg,
+					failLabel: label,
+					chapterNums: missing,
+					hasDesign: !supplementMode,
+					buildDesignPrompt: () => buildVolOutlineDesignPrompt(ctx),
+					buildChapterPrompt: (num, design, soFar) => buildVolOutlineChapterPrompt({ ...ctx, chapterNum: num, volumeDesign: design, generatedSoFar: soFar, supplementMode }),
+					commit: async (seg, kind) => {
+						const cur = currentRaw.replace(/\s+$/, ""); // 拼接前统一去尾部空白（各段尾部空白已被助手剥除），保证段间恰好一个空行
+						if (kind === "design") {
+							currentRaw = cur ? `${cur}\n\n${seg}` : seg; // 设计段是卷级前言：直接追加（合并路径会丢弃新内容的前言）
+						} else {
+							const merged = mergeVolOutlineChapters(cur ? `${cur}\n\n` : "", seg);
+							addedNums.push(...merged.added);
+							droppedNums.push(...merged.dropped);
+							currentRaw = merged.body;
+						}
+						await this.manager.setVolumeOutline(story, vol.id, currentRaw);
+					},
+				});
+				if (res.panelFailed) { results.push({ name: decl.name, mark: "✗", note: "无法打开生成面板" }); continue; }
+				if (res.aborted) { aborted = true; break; } // Esc → 整批中止（已落盘段落保留）
+				if (res.failed) { results.push({ name: decl.name, mark: "✗", note: `生成中断${res.written ? `（前 ${String(res.written)} 段已落盘）` : ""}` }); continue; }
+
+				freshOutlines.set(vol.id, stripComments(currentRaw).trim());
+				results.push({ name: decl.name, mark: "✓", note: `新增 ${String(addedNums.length)} 章（第${addedNums.join("、")}章）${droppedNums.length ? `，丢弃重复 ${String(droppedNums.length)} 章` : ""}` });
+			}
+
+			const lines = results.map((r) => `${r.mark} ${r.name}：${r.note}`);
+			new Notice([`从书级大纲生成卷完成${aborted ? "（用户中止，后续卷未处理）" : ""}`, ...lines].join("\n"), 15000);
+		} catch (e) {
+			this.notifyError("从书级大纲生成卷失败", e);
+		}
+	}
+
+	// ---------- v0.2.11+ 同步卷大纲章节 (/vol-outline-sync) ----------
+
+	/** 卷大纲被用户续写后，从被续写部分创建新章节：按「第N章」标记解析《卷大纲.md》，章号尚不存在的章节自动创建并把该段内容写入其《章节大纲.md》；已存在的章跳过不动（不碰其大纲）；一个标记都没有时引导用「从卷大纲生成章节」（含 AI 兜底拆分）。收尾：有原当前章则恢复，否则指向首个新建章（文档序，面向增量续写）。可选参 volId＝写字台卷节点右键入口：锁定被点卷、不弹选择器（找不到该卷则提示中止） */
+	async cmdSyncVolOutlineChapters(volId?: string): Promise<void> {
+		if (!(await this.ensureWorkDir())) return;
+		const story = await this.requireStory();
+		if (!story || !(await this.ensureVolumeLayout(story))) return;
+		try {
+			const state = await this.manager.validatedState(story);
+			if (state.use_volumes === false) { new Notice(NO_VOL_MODE_MSG, 10000); return; } // 无卷模式没有卷大纲
+			const volsRec = await this.manager.loadVolumes(story);
+			const vols = Object.values(volsRec).sort((a, b) => a.order - b.order || a.id.localeCompare(b.id));
+			if (!vols.length) { new Notice("还没有卷，请先新建卷（新建卷）", 8000); return; }
+			const curVol = (state.current_volume ?? "").trim();
+			let vol = volId ? this.manager.findVolumeIn(volsRec, volId) : (curVol ? this.manager.findVolumeIn(volsRec, curVol) : null); // 右键入口锁定被点卷；否则回落当前卷
+			if (!vol) {
+				if (volId) { new Notice(`找不到卷 ${volId}（可能已改名或删除）`, 8000); return; }
+				const items: ActionItem[] = vols.map((v) => ({ label: v.name, sub: v.description || undefined, marker: v.id === curVol ? "▶ 当前" : undefined }));
+				const idx = await this.pickAction("选择目标卷（把它的卷大纲同步成章节）", items);
+				if (idx == null) return;
+				vol = vols[idx];
+			}
+			const raw = await this.manager.readVolumeOutline(story, vol.id);
+			if (!raw.trim()) { new Notice(`卷「${vol.name}」的《卷大纲.md》为空，请先写大纲`, 8000); return; }
+			const { segments, preamble } = splitVolOutlineByChapter(raw);
+			if (!segments.length) {
+				new Notice(`未在「${vol.name}」的卷大纲中识别到「第N章」标记。\n请为续写部分补上章标记（如「## 第6章 <标题>」），或运行「从卷大纲生成章节」（无标记时可用 AI 兜底拆分）`, 15000);
+				return;
+			}
+
+			const prevCurrent = state.current_chapter ?? "";
+			let created = 0, setCount = 0, skipped = 0;
+			const badNums: number[] = [];
+			const createdKeys: string[] = [];
+			for (const seg of segments) {
+				if (seg.num < 1) { badNums.push(seg.num); continue; }
+				const { key, created: isNew } = await this.manager.ensureChapterAt(story, seg.num, seg.title, vol.id);
+				if (!isNew) { skipped++; continue; } // 已存在的章：不动其大纲（用户可能已写过）
+				created++;
+				createdKeys.push(key);
+				if (seg.content.trim()) { await this.manager.setChapterOutline(story, key, seg.content); setCount++; } // 新章必空纲，直写
+			}
+			// 收尾：有原当前章则恢复；否则指向首个新建章（文档序，供增量续写后接着写）
+			if (prevCurrent) await this.manager.switchChapter(story, prevCurrent);
+			else if (createdKeys.length) await this.manager.switchChapter(story, createdKeys[0]);
+
+			if (!created) {
+				new Notice(`「${vol.name}」没有可新建的章节：${String(segments.length)} 个「第N章」标记均已存在（跳过 ${String(skipped)}${badNums.length ? `，忽略无效章号 ${badNums.join("、")}` : ""}），未做任何改动`, 12000);
+				return;
+			}
+			const lines = [`✓ 已把「${vol.name}」卷大纲同步成章节：新建 ${String(created)} 章`];
+			if (setCount) lines.push(`直接写入大纲：${String(setCount)}`);
+			lines.push(`跳过已有章节：${String(skipped)}`);
+			if (badNums.length) lines.push(`忽略无效章号：${badNums.join("、")}`);
+			if (preamble.trim()) lines.push("提示：首个章标记前有卷级前言内容，未分配到任何章节");
+			new Notice(lines.join("\n"), 12000);
+		} catch (e) {
+			this.notifyError("同步卷大纲章节失败", e);
+		}
+	}
+
+	// ---------- v0.2.10+ 连续编写 (/write-consecutive) ----------
+
+	/** 从阅读序中**第一个没有正文的章节**起（不依赖 current_chapter——章数很多时当前章可能停在第 40 章），逐章生成、每章写完自动推进，遇到无大纲章或用户中断才停止。
+	 * 已有正文的章一律跳过（不覆盖），因此反复执行即可从断点续写。
+	 * 可选参 volId＝写字台卷节点右键入口：限该卷内连续编写（同样从该卷第一个没有正文的章节起，生成到卷末或中断） */
+	async cmdWriteConsecutive(volId?: string): Promise<void> {
+		if (!(await this.ensureWorkDir())) return;
+		const story = await this.requireStory();
+		if (!story || !(await this.ensureVolumeLayout(story))) return;
+		try {
+			const state = await this.manager.validatedState(story);
+			const setup = this.getPhaseLlmSetup(2); // v0.2.22+：文章大纲生成和编写文章阶段
+			if (!setup) return;
+			const guides = await this.loadWriterGuides(story);
+			const allChapters = await this.manager.listChapters(story); // 阅读序：书根在前 + 各卷按 order、组内本地号升序
+			const chapters = volId ? allChapters.filter((c) => c.vol === volId) : allChapters; // v0.2.x+ 卷节点右键：限该卷（当前章不属本卷时 findIndex=-1→从本卷首章起）
+			if (!chapters.length) { new Notice(volId ? "该卷还没有章节，请先创建章节" : "还没有章节，请先创建章节", 8000); return; }
+			const volNames = await this.volNameMap(story);
+			const scenes = await this.manager.loadAllScenes(story);
+			const curSceneId = state.current_scene ?? undefined;
+			const curScene = curSceneId ? scenes[curSceneId] : undefined;
+
+			// 起点＝阅读序中第一个没有正文的章节（章数很多/当前章停在中间时也从最前面的空缺开始；全部已有正文则直接提示）
+			let startIdx = -1;
+			for (let i = 0; i < chapters.length; i++) {
+				const body = await this.manager.readChapterContent(story, chapters[i].key);
+				if (!body.trim()) { startIdx = i; break; }
+			}
+			if (startIdx < 0) {
+				new Notice(volId ? "该卷全部章节都已有正文，无需连续编写" : "全部章节都已有正文，无需连续编写（如需重写某章请用「编写本章」）", 8000);
+				return;
+			}
+			let written = 0, skipped = 0, totalWords = 0, summariesSaved = 0;
+			let stopReason = "";
+			const withSummary = state.use_summaries !== false; // v0.2.21+：摘要随写（关闭摘要时不要求也不保存）
+			const runStartedAt = Date.now(); // 逐章自动续写：每章写完后直接进入下一章，不需要等待用户再次点击
+			for (let i = startIdx; i < chapters.length; i++) {
+				const ch = chapters[i];
+				const label = this.keyLabel(ch.key, volNames, ch.title);
+				const body = await this.manager.readChapterContent(story, ch.key);
+				if (body.trim()) { // 先判正文：已有正文的章直接跳过，即使缺大纲也不阻断后续（原顺序先判大纲会被已写章卡住）
+					skipped++;
+					new Notice(`⏭ ${label} 已有正文（${String(countPureWords(body))} 字），跳过`, 5000);
+					continue;
+				}
+				const outline = await this.manager.readChapterOutlineForPrompt(story, ch.key);
+				if (!outline.trim()) { stopReason = `${label} 没有大纲`; break; }
+				const data = await this.manager.loadWritingData(story, ch.key, { includeCurrentSummary: false });
+				const context = buildWritingContext(data);
+				let prevRefs: Array<{ label: string; text?: string }> = [];
+				try {
+					prevRefs = (await this.manager.readOutlineWindow(story, ch.key, { back: 3 })).map((w) => ({ label: w.label, text: w.text || undefined }));
+				} catch { /* 前文大纲窗口读取失败不阻断生成 */ }
+				const wordRange = wordRangeFromGuides(guides.bookText, guides.userText);
+				const sp = this.writerSystemPrompt(setup.systemPrompt, guides, state.writing_style, state.title, data.characters.map((c) => c.name));
+				const built = buildChapterPrompt({
+					chapterNum: data.chapterNum,
+					chapterLabel: label,
+					chapterKey: ch.key,
+					chapterOutlineRaw: outline,
+					context,
+					wordRange,
+					descStyle: setup.descStyle,
+					storyType: state.writing_style,
+					prevOutlines: prevRefs,
+					withSummary,
+				});
+				const modal = await this.beginWritingPanel(`连续编写 ${label}`);
+				if (!modal) { stopReason = "无法打开生成面板"; break; }
+				let content = await this.generateChapterStreamed(setup.cfg, sp, built.prompt, state.writing_style, modal);
+				if (modal.signal.aborted) { stopReason = `${label} 生成被中断`; break; }
+				if (!content.trim()) { stopReason = `${label} 生成结果为空`; break; }
+				// v0.2.21+：解析「正文＋<SUMMARY> 块」（解析失败整段当正文，静默回落到延迟生成）
+				let chapterSummary: string | null = null;
+				if (withSummary) {
+					const parsed = parseChapterWithSummary(content);
+					chapterSummary = parsed.summary;
+					content = parsed.body;
+					if (!content.trim()) { stopReason = `${label} 正文为空（仅输出摘要块）`; break; }
+				}
+				content = await this.autoCleanAi(setup.cfg, setup.systemPrompt, guides, content, () => {
+					modal.setStatus("正在去除 AI 常用词…");
+				});
+				this.warnWordLimit(content, wordRange);
+				this.warnChapterRefs(content); // v0.2.21+：只检测新生成内容（已有正文的章节在循环开头已跳过）
+				if (content !== modal.fullText) {
+					modal.reset();
+					modal.append(content);
+				}
+				const words = await this.manager.setChapterBody(story, ch.key, content); // 免确认自动保存
+				// v0.2.21+：同响应产出的摘要分别落盘（失败不阻断连续编写，回落到延迟生成）
+				if (chapterSummary) {
+					try {
+						await this.manager.saveChapterSummary(story, ch.key, chapterSummary);
+						summariesSaved++;
+					} catch { /* 摘要保存失败不阻断连续编写 */ }
+				}
+				if (curScene?.chapter_num && chKey(curScene.vol ?? "", curScene.chapter_num) === ch.key) {
+					const old = (curScene.content || "").replace(/\s+$/, "");
+					await this.manager.updateScene(story, curScene.scene_id, { content: old ? `${old}\n\n${content}` : content });
+				}
+				await this.manager.switchChapter(story, ch.key); // 自动推进到下一章，无需用户再次点击
+				modal.finishAuto(`✓ 已自动保存 ${String(words)} 字${chapterSummary ? "，摘要已一并保存" : ""}`);
+				written++;
+				totalWords += words;
+			}
+			const lines = [`连续编写结束：共写入 ${String(written)} 章`];
+			if (skipped) lines.push(`跳过 ${String(skipped)} 章（已有正文）`);
+			if (totalWords) lines.push(`总字数：${String(totalWords)}`);
+			if (summariesSaved) lines.push(`摘要：已随正文保存 ${String(summariesSaved)} 份`); // v0.2.21+
+			lines.push(`总用时：${formatElapsedMs(Date.now() - runStartedAt)}`);
+			if (stopReason) lines.push(`停止原因：${stopReason}`);
+			new Notice(lines.join("\n"), 12000);
+		} catch (e) {
+			this.notifyError("连续编写失败", e);
+		}
+	}
+
+	// ---------- /continue 续写当前章 ----------
+
+	async cmdContinueWriting(): Promise<void> {
+		if (!(await this.ensureWorkDir())) return;
+		const story = await this.requireStory();
+		if (!story) return;
+		try {
+			const state = await this.manager.validatedState(story);
+			const currentKey = state.current_chapter ?? ""; // v0.0.15：复合键（"volId:N"/"N"）
+			if (!currentKey) {
+				new Notice("还没有章节，请先使用「创作章节 (/write)」创建");
+				return;
+			}
+			const chapters = await this.manager.listChapters(story);
+			const volNames = await this.volNameMap(story).catch(() => ({}));
+			const curLabel = this.keyLabel(currentKey, volNames);
+			const chEntry = chapters.find((c) => c.key === currentKey) ?? null;
+			const meta = state.chapters[currentKey] ?? null;
+			if (!chEntry) {
+				if (meta) {
+					// 状态中存在但磁盘目录未定位：交给 /write 兜底（有大纲则按大纲自动创作）
+					await this.cmdWrite();
+					return;
+				}
+				new Notice(`${curLabel}不存在`);
+				return;
+			}
+			const bodyOnDisk = await this.manager.readChapterContent(story, currentKey);
+			if (!bodyOnDisk.trim()) {
+				new Notice(`${curLabel}还没有正文内容，将从章节大纲开始创作…`, 6000);
+				await this.cmdWrite();
+				return;
+			}
+			const outlineOnDisk = await this.manager.readChapterOutlineForPrompt(story, currentKey);
+
+			// 续写要点（Esc=取消；留空=按两级大纲自然续写）
+			const rawInstr = await this.prompt("续写要点（可选）", "如：写主角与反派的正面对峙");
+			if (rawInstr == null) return;
+			const instruction = rawInstr.trim();
+
+			// 大纲覆盖率检查：已有内容且全部要点已覆盖、无新指令 → 跳过
+			if (outlineOnDisk && !instruction) {
+				const cov = checkOutlineCoverage(bodyOnDisk, outlineOnDisk);
+				if (cov.allCovered) {
+					new Notice(`⚠ ${curLabel}大纲要点已全部完成，无需续写\n请给出新的写作纲要后再试`, 10000);
+					return;
+				}
+			}
+
+			// 先把指令并入大纲落盘（对齐 cmd_continue 预合并语义）
+			let mergedForGen = outlineOnDisk;
+			if (instruction) {
+				mergedForGen = appendOutlineInstruction(outlineOnDisk, "续写要点", instruction);
+				await this.manager.setChapterOutline(story, currentKey, mergedForGen);
+				new Notice(`已更新${curLabel}大纲并保存`, 4000);
+			}
+
+			const setup = this.getPhaseLlmSetup(2); // v0.2.22+：文章大纲生成和编写文章阶段
+			if (!setup) return;
+			const guides = await this.loadWriterGuides(story);
+			const data = await this.manager.loadWritingData(story, currentKey, { includeCurrentSummary: true });
+			const context = buildWritingContext(data);
+			let prevRefs: Array<{ label: string; text?: string }> = [];
+			try {
+				prevRefs = (await this.manager.readOutlineWindow(story, currentKey, { back: 3 })).map((w) => ({ label: w.label, text: w.text || undefined }));
+			} catch { /* 前文大纲窗口读取失败不阻断生成 */ }
+			const wordRange = wordRangeFromGuides(guides.bookText, guides.userText);
+			const sp = this.writerSystemPrompt(setup.systemPrompt, guides, state.writing_style, state.title, data.characters.map((c) => c.name));
+			const built = buildContinuePrompt({
+				chapterNum: data.chapterNum, // v0.0.15：阅读序位置（ordinal，跨卷连续）
+				chapterLabel: curLabel,
+				chapterKey: currentKey,
+				userInstruction: instruction || undefined,
+				context,
+				globalOutlineRaw: data.globalOutlineRaw,
+				chapterOutlineRaw: mergedForGen,
+				prevOutlines: prevRefs,
+				descStyle: setup.descStyle,
+				storyType: state.writing_style,
+				currentSummary: data.summaries[data.chapterNum] ?? "",
+				existingContent: bodyOnDisk,
+				wordRange,
+				withSummary: state.use_summaries !== false, // v0.2.21+：摘要随写（只覆盖新续写部分）
+			});
+
+			const modal = await this.beginWritingPanel(`续写 ${this.keyLabel(currentKey, volNames, meta?.title || chEntry.title)}`);
+			if (!modal) { new Notice("无法打开生成面板，本次操作已取消", 8000); return; }
+			let content = await this.streamWithEmptyRetry(
+				setup.cfg,
+				() => [
+					{ role: "system" as const, content: sp },
+					{ role: "user" as const, content: built.prompt },
+				],
+				modal,
+				"续写"
+			);
+			if (modal.signal.aborted) return;
+			if (!content.trim()) return;
+
+			// v0.2.21+：解析「正文＋<SUMMARY> 块」（只覆盖新续写部分；解析失败整段当正文，静默回落到延迟生成）
+			let chapterSummary: string | null = null;
+			if (state.use_summaries !== false) {
+				const parsed = parseChapterWithSummary(content);
+				chapterSummary = parsed.summary;
+				content = parsed.body;
+				if (!content.trim()) return; // 正文为空（如模型只输出了摘要块）→ 按生成失败处理
+			}
+
+			content = stripHeading(content); // 剥离 LLM 自带的章节标题，避免重复标题
+			content = await this.autoCleanAi(setup.cfg, setup.systemPrompt, guides, content, () => {
+				modal.setStatus("正在去除 AI 常用词…");
+			});
+			this.warnWordLimit(content, wordRange);
+			this.warnChapterRefs(content); // v0.2.21+：只检测新续写部分（合并旧正文前）
+			const newContent = bodyOnDisk.replace(/\s+$/, "") + "\n\n" + content;
+			if (newContent !== modal.fullText) {
+				modal.reset();
+				modal.append(newContent);
+			}
+			modal.finish();
+			const keep = await modal.done;
+			if (!keep) {
+				new Notice("未保存（续写内容仅预览）", 6000);
+				return;
+			}
+			const words = await this.manager.setChapterBody(story, currentKey, newContent); // v0.1.4+：摘要延迟到下次上下文组装时按需生成
+			// v0.2.21+：同响应产出的摘要分别落盘（只覆盖新续写部分；失败不阻断，回落到延迟生成）
+			if (chapterSummary) {
+				try {
+					await this.manager.saveChapterSummary(story, currentKey, chapterSummary);
+				} catch { /* 摘要保存失败不阻断主流程 */ }
+			}
+			try {
+				const f = await this.manager.chapterBodyFile(story, currentKey);
+				if (f instanceof TFile) await this.manager.openMarkdown(f.path);
+			} catch { /* ignore */ }
+			new Notice(`✓ 续写完成！\n新增字数：${String(countPureWords(content))}\n总字数：${String(words)}${chapterSummary ? "\n摘要：已随正文一并保存" : ""}`, 8000);
+		} catch (e) {
+			this.notifyError("续写失败", e);
+		}
+	}
+
+	// ---------- /rewrite 重写本章 ----------
+
+	async cmdRewriteChapter(): Promise<void> {
+		if (!(await this.ensureWorkDir())) return;
+		const story = await this.requireStory();
+		if (!story) return;
+		try {
+			const num = await this.targetChapterKey(story, "重写"); // v0.0.15：复合键
+			if (num == null) return;
+			const volNames = await this.volNameMap(story).catch(() => ({}));
+			const chLabel = this.keyLabel(num, volNames);
+			const bodyOnDisk = await this.manager.readChapterContent(story, num);
+			if (!bodyOnDisk.trim()) {
+				new Notice(`${chLabel}还没有内容，请先使用「创作章节 (/write)」`);
+				return;
+			}
+			const rawInstr = await this.prompt("重写要求（可选）", '如："改为反派视角"、"增加反转"、"压缩节奏"');
+			if (rawInstr == null) return;
+			const instruction = rawInstr.trim();
+
+			const state = await this.manager.validatedState(story);
+			const setup = this.getPhaseLlmSetup(2); // v0.2.22+：文章大纲生成和编写文章阶段
+			if (!setup) return;
+			const guides = await this.loadWriterGuides(story);
+			const data = await this.manager.loadWritingData(story, num, { includeCurrentSummary: true, dropOutlineDoc: true }); // 本章大纲由桥接块【当前情节】注入，不再经 folderDocs 二次注入
+			const context = buildWritingContext(data);
+			let bridge: { prev?: { label: string; text?: string }; cur?: { label: string; text?: string }; nxt?: { label: string; text?: string } } = {};
+			try {
+				for (const w of await this.manager.readOutlineWindow(story, num, { back: 1, fwd: 1 })) {
+					const ref = { label: w.label, text: w.text || undefined };
+					if (w.key === num) bridge.cur = ref;
+					else if (w.ordinal < data.chapterNum) bridge.prev = ref;
+					else bridge.nxt = ref;
+				}
+			} catch { /* 大纲桥读取失败不阻断重写 */ }
+			const wordRange = wordRangeFromGuides(guides.bookText, guides.userText);
+			const sp = this.writerSystemPrompt(setup.systemPrompt, guides, state.writing_style, state.title, data.characters.map((c) => c.name));
+			const prompt = buildRewritePrompt({
+				chapterNum: data.chapterNum, // v0.0.15：阅读序位置（ordinal，跨卷连续）
+				chapterLabel: chLabel,
+				userInstruction: instruction || undefined,
+				context,
+				bridge,
+				oldContent: bodyOnDisk,
+				currentSummary: data.summaries[data.chapterNum] ?? "",
+				wordRange,
+				storyType: state.writing_style,
+				withSummary: state.use_summaries !== false, // v0.2.21+：摘要随写（覆盖重写后的整章）
+			});
+
+			const modal = await this.beginWritingPanel(`重写 ${chLabel}`);
+			if (!modal) { new Notice("无法打开生成面板，本次操作已取消", 8000); return; }
+			let content = await this.streamWithEmptyRetry(
+				setup.cfg,
+				() => [
+					{ role: "system" as const, content: sp },
+					{ role: "user" as const, content: prompt },
+				],
+				modal,
+				"重写"
+			);
+			if (modal.signal.aborted) return;
+			if (!content.trim()) {
+				new Notice("✗ 重写结果为空", 8000);
+				return;
+			}
+			// v0.2.21+：解析「正文＋<SUMMARY> 块」（覆盖重写后的整章；解析失败整段当正文，静默回落到延迟生成）
+			let chapterSummary: string | null = null;
+			if (state.use_summaries !== false) {
+				const parsed = parseChapterWithSummary(content);
+				chapterSummary = parsed.summary;
+				content = parsed.body;
+				if (!content.trim()) { new Notice("✗ 重写正文为空（仅输出摘要块）", 8000); return; } // 正文为空 → 按生成失败处理
+			}
+			content = await this.autoCleanAi(setup.cfg, setup.systemPrompt, guides, content, () => {
+				modal.setStatus("正在去除 AI 常用词…");
+			});
+			this.warnChapterRefs(content); // v0.2.21+：重写整章均为新生成内容，直接检测（标题行在检测内豁免）
+			if (content !== modal.fullText) {
+				modal.reset();
+				modal.append(content);
+			}
+			modal.finish();
+			const keep = await modal.done;
+			if (!keep) {
+				new Notice("未保存（重写结果仅预览）", 6000);
+				return;
+			}
+			const words = await this.manager.setChapterBody(story, num, content); // 全量覆盖；v0.1.4+：摘要延迟到下次上下文组装时按需生成
+			// v0.2.21+：同响应产出的摘要分别落盘（失败不阻断，回落到延迟生成）
+			if (chapterSummary) {
+				try {
+					await this.manager.saveChapterSummary(story, num, chapterSummary);
+				} catch { /* 摘要保存失败不阻断主流程 */ }
+			}
+			try {
+				const f = await this.manager.chapterBodyFile(story, num);
+				if (f instanceof TFile) await this.manager.openMarkdown(f.path);
+			} catch { /* ignore */ }
+			new Notice(`✓ ${chLabel}已重写（${String(words)} 字）${chapterSummary ? "\n摘要：已随正文一并保存" : ""}`, 8000);
+		} catch (e) {
+			this.notifyError("重写章节失败", e);
+		}
+	}
+
+	// ---------- /polish 润色当前章 ----------
+
+	async cmdPolishText(): Promise<void> {
+		if (!(await this.ensureWorkDir())) return;
+		const story = await this.requireStory();
+		if (!story) return;
+		try {
+			const state = await this.manager.validatedState(story);
+			const currentKey = state.current_chapter ?? ""; // v0.0.15：复合键（"volId:N"/"N"）
+			if (!currentKey) {
+				new Notice("还没有章节，请先使用「创作章节 (/write)」创建");
+				return;
+			}
+			const volNames = await this.volNameMap(story).catch(() => ({}));
+			const curLabel = this.keyLabel(currentKey, volNames);
+			const bodyOnDisk = await this.manager.readChapterContent(story, currentKey);
+			if (!bodyOnDisk.trim()) {
+				new Notice(`${curLabel}还没有内容`);
+				return;
+			}
+			const rawStyle = await this.prompt("润色风格（可选）", "如：更简洁有力、更有画面感");
+			if (rawStyle == null) return; // Esc=取消
+			const style = rawStyle.trim();
+
+			const setup = this.getPhaseLlmSetup(2); // v0.2.22+：文章大纲生成和编写文章阶段
+			if (!setup) return;
+			const guides = await this.loadWriterGuides(story);
+			const data = await this.manager.loadWritingData(story, currentKey, { includeCurrentSummary: true });
+			const sp = this.writerSystemPrompt(setup.systemPrompt, guides, state.writing_style, state.title, data.characters.map((c) => c.name));
+			const prompt = buildPolishPrompt({
+				text: bodyOnDisk,
+				style: style || undefined,
+				summary: data.summaries[data.chapterNum] ?? "",
+				storyType: state.writing_style,
+			});
+
+			const modal = await this.beginWritingPanel(`润色 ${curLabel}`);
+			if (!modal) { new Notice("无法打开生成面板，本次操作已取消", 8000); return; }
+			let content = await this.streamWithEmptyRetry(
+				setup.cfg,
+				() => [
+					{ role: "system" as const, content: sp },
+					{ role: "user" as const, content: prompt },
+				],
+				modal,
+				"润色"
+			);
+			if (modal.signal.aborted) return;
+			if (!content.trim()) {
+				new Notice("✗ 润色结果为空", 8000);
+				return;
+			}
+			modal.finish();
+			const keep = await modal.done;
+			if (!keep) {
+				new Notice("未保存（润色结果仅预览）", 6000);
+				return;
+			}
+			const words = await this.manager.setChapterBody(story, currentKey, content); // 全量覆盖原章节；v0.1.4+：摘要延迟到下次上下文组装时按需生成
+			try {
+				const f = await this.manager.chapterBodyFile(story, currentKey);
+				if (f instanceof TFile) await this.manager.openMarkdown(f.path);
+			} catch { /* ignore */ }
+			new Notice(`✓ 已保存润色结果到${curLabel}（${String(words)} 字）`, 8000);
+		} catch (e) {
+			this.notifyError("润色失败", e);
+		}
+	}
+
+	// ---------- /deai 去AI味 ----------
+
+	async cmdDeaiClean(): Promise<void> {
+		if (!(await this.ensureWorkDir())) return;
+		const story = await this.requireStory();
+		if (!story) return;
+		try {
+			const num = await this.targetChapterKey(story, "去除 AI 常用词"); // v0.0.15：复合键
+			if (num == null) return;
+			const volNames = await this.volNameMap(story).catch(() => ({}));
+			const chLabel = this.keyLabel(num, volNames);
+			const bodyOnDisk = await this.manager.readChapterContent(story, num);
+			if (!bodyOnDisk.trim()) {
+				new Notice(`${chLabel}还没有内容`);
+				return;
+			}
+			const hits = findAiWordHits(bodyOnDisk);
+			if (!hits.length) {
+				new Notice(`✓ ${chLabel}未检测到 AI 常用词`, 6000);
+				return;
+			}
+			const setup = this.getPhaseLlmSetup(2); // v0.2.22+：文章大纲生成和编写文章阶段
+			if (!setup) return;
+			const guides = await this.loadWriterGuides(story);
+			const baseSp = assembleSystemPrompt(undefined, guides.guideText, setup.systemPrompt); // 去AI味用基础系统提示词
+
+			const n = new Notice(`正在清洗${chLabel}的 AI 常用词（${String(hits.length)} 处）…\n逐句打回 LLM 重写，可能需要一点时间`);
+			let cleaned: string;
+			try {
+				const r = await cleanAiText(
+					bodyOnDisk,
+					async (p, maxTokens) =>
+						chatCompletion(setup.cfg, [
+							{ role: "system" as const, content: baseSp },
+							{ role: "user" as const, content: p },
+						], { max_tokens: Math.min(maxTokens, setup.cfg.max_tokens ?? maxTokens) })
+				);
+				cleaned = r.text;
+				this.notifyAiReport(r.report);
+			} catch (e) {
+				n.hide();
+				this.notifyError("去AI味失败", e);
+				return;
+			}
+			n.hide();
+
+			if (!cleaned.trim()) {
+				new Notice("✗ 清洗结果为空", 8000);
+				return;
+			}
+			const modal = await this.beginWritingPanel(`去AI味结果 · ${chLabel}`);
+			if (!modal) { new Notice("无法打开生成面板，本次操作已取消", 8000); return; }
+			modal.append(cleaned);
+			modal.finish();
+			const keep = await modal.done;
+			if (!keep) {
+				new Notice("未保存（清洗结果仅预览）", 6000);
+				return;
+			}
+			const words = await this.manager.setChapterBody(story, num, cleaned); // 全量覆盖；v0.1.4+：摘要延迟到下次上下文组装时按需生成
+			try {
+				const f = await this.manager.chapterBodyFile(story, num);
+				if (f instanceof TFile) await this.manager.openMarkdown(f.path);
+			} catch { /* ignore */ }
+			new Notice(`✓ ${chLabel}已更新（${String(words)} 字）`, 8000);
+		} catch (e) {
+			this.notifyError("去AI味失败", e);
+		}
+	}
+
+	// ---------- /fix-refs 修复章节编号引用（v0.2.21+：手动检测「第N章」元引用并原位替换） ----------
+
+	async cmdFixChapterRefs(): Promise<void> {
+		if (!(await this.ensureWorkDir())) return;
+		const story = await this.requireStory();
+		if (!story) return;
+		try {
+			// v0.2.x+：输入语义——留空=全书所有章节都检测修复（按阅读序逐章），填数字=只修指定章节（跨卷同号逐个确认）
+			const raw = await this.prompt("修复章节编号引用", "输入章节号（留空=全部章节）", [
+				"检测正文「第N章」类元引用，LLM 逐句改写后原位替换、自动保存（无预览确认）：",
+				"· 留空 —— 全书所有章节都检测修复（按阅读序逐章处理）",
+				"· 填数字 —— 只修指定章节（如 3；跨卷同号会逐个确认）",
+			].join("\n"));
+			if (raw == null) return;
+			const t = raw.trim();
+			const volNames = await this.volNameMap(story).catch(() => ({}));
+			const all = await this.manager.listChapters(story); // 阅读序：书根在前 + 各卷按 order、组内本地号升序
+			if (!all.length) { new Notice("还没有章节，请先创建章节", 8000); return; }
+			let targets: Array<{ key: string; num: number; title: string }>;
+			if (t === "") {
+				targets = all; // 留空＝全书所有章节
+			} else if (/^\d+$/.test(t)) {
+				const ref = await this.resolveLocalNum(story, parseInt(t, 10), volNames); // 裸章号 → 具体容器（跨卷同号逐个确认）
+				const hit = ref ? all.find((c) => c.key === chKey(ref.vol ?? null, ref.num)) : undefined;
+				if (!hit) { new Notice(`第${t}章不存在`); return; }
+				targets = [hit];
+			} else {
+				new Notice(`章节号无效：请输入数字或留空（收到「${raw}」）`, 6000);
+				return;
+			}
+
+			const setup = this.getPhaseLlmSetup(2); // v0.2.22+：文章大纲生成和编写文章阶段
+			if (!setup) return;
+			const guides = await this.loadWriterGuides(story);
+			const baseSp = assembleSystemPrompt(undefined, guides.guideText, setup.systemPrompt); // 修复用基础系统提示词（全书共用一份）
+
+			let fixedChapters = 0, cleanChapters = 0, emptyChapters = 0, notFixedChapters = 0, totalReplaced = 0, totalSkippedSent = 0;
+			for (const ch of targets) {
+				const chLabel = this.keyLabel(ch.key, volNames, ch.title);
+				const bodyOnDisk = await this.manager.readChapterContent(story, ch.key);
+				if (!bodyOnDisk.trim()) { emptyChapters++; continue; }
+				const leaks = findChapterRefLeaks(bodyOnDisk);
+				if (!leaks.length) { cleanChapters++; continue; }
+
+				const n = new Notice(`正在修复${chLabel}的章节编号引用（${String(leaks.length)} 处）…\n逐句打回 LLM 重写，可能需要一点时间`);
+				let fixed: string;
+				let report: ChapterRefFixReport;
+				try {
+					const r = await fixChapterRefs(
+						bodyOnDisk,
+						async (p, maxTokens) =>
+							chatCompletion(setup.cfg, [
+								{ role: "system" as const, content: baseSp },
+								{ role: "user" as const, content: p },
+							], { max_tokens: Math.min(maxTokens, setup.cfg.max_tokens ?? maxTokens) })
+					);
+					fixed = r.text;
+					report = r.report;
+				} catch (e) {
+					n.hide();
+					this.notifyError("修复章节编号引用失败", e);
+					return;
+				}
+				n.hide();
+
+				if (!fixed.trim()) {
+					notFixedChapters++;
+					new Notice(`✗ ${chLabel}修复结果为空，跳过`, 8000);
+					continue;
+				}
+				if (!report.replaced.length) {
+					notFixedChapters++;
+					totalSkippedSent += report.skipped.length;
+					new Notice(`⏭ ${chLabel}的 ${String(leaks.length)} 处引用均未成功改写（${String(report.skipped.length)} 句跳过，原文保留）`, 10000);
+					continue;
+				}
+				await this.manager.setChapterBody(story, ch.key, fixed); // v0.2.x+：自动保存（无预览确认）；全量覆盖；v0.1.4+：摘要延迟到下次上下文组装时按需生成
+				try {
+					const f = await this.manager.chapterBodyFile(story, ch.key);
+					if (f instanceof TFile) await this.manager.openMarkdown(f.path);
+				} catch { /* ignore */ }
+				fixedChapters++;
+				totalReplaced += report.replaced.length;
+				totalSkippedSent += report.skipped.length;
+			}
+
+			const lines = [`章节编号引用修复结束：改写保存 ${String(fixedChapters)} 章`];
+			if (cleanChapters) lines.push(`无引用跳过 ${String(cleanChapters)} 章`);
+			if (emptyChapters) lines.push(`无正文跳过 ${String(emptyChapters)} 章`);
+			if (notFixedChapters) lines.push(`未成功 ${String(notFixedChapters)} 章`);
+			if (totalReplaced) lines.push(`共改写 ${String(totalReplaced)} 句`);
+			if (totalSkippedSent) lines.push(`${String(totalSkippedSent)} 句跳过保留原文`);
+			new Notice(lines.join("\n"), 12000);
+		} catch (e) {
+			this.notifyError("修复章节编号引用失败", e);
+		}
+	}
+
+	// ---------- /export-ai-prompts 导出AI提示词 ----------
+
+	/** 按代码内反引号最长串自动升级围栏，保证提示词原文（本身含 ``` ）能被完整包进代码块 */
+	private fenceBlock(text: string): string {
+		let fence = "```";
+		while (text.includes(fence)) fence += "`";
+		return `${fence}\n${text}\n${fence}`;
+	}
+
+	private exportPhaseName(phaseIndex: number): string {
+		return this.settings.llm?.writing_phases?.[phaseIndex]?.name ?? `阶段${String(phaseIndex + 1)}`;
+	}
+
+	/** 导出文档的一节：模型配置来源（阶段映射 / 全局激活 + cfg.name/model_name）、备注、system/user 提示词代码块 */
+	private exportSection(
+		title: string,
+		cfg: LlmConfigDoc | null,
+		phaseLabel: string | null, // null=全局激活模型（active_llm）
+		notes: string[],
+		blocks: Array<{ heading: string; content: string }>
+	): string {
+		const lines: string[] = [`## ${title}`, ""];
+		if (cfg) lines.push(`- 模型配置：${cfg.name}${cfg.model_name ? `（${cfg.model_name}）` : ""} —— 来自${phaseLabel ? `阶段「${phaseLabel}」映射` : "全局激活模型"}`);
+		for (const n of notes) lines.push(`- 备注：${n}`);
+		if (blocks.length) lines.push("");
+		for (const b of blocks) lines.push(`### ${b.heading}`, "", this.fenceBlock(b.content), "");
+		return lines.join("\n");
+	}
+
+	private exportSkipSection(title: string, reason: string): string {
+		return `## ${title}\n\n- 已跳过：${reason}\n`;
+	}
+
+	/** /export-ai-prompts：按当前小说磁盘数据实拼各 AI 命令的 system/user 提示词（与各 cmdXxx 同一构建函数与参数、弹窗输入取默认值），
+	 * 存书根《AI提示词.md》（案头资料）供本地模型调试。全程不调用 LLM；现在不会触发 LLM 的阶段只写跳过原因。
+	 * 增量链（卷大纲/AI拆分/analyze-cast/书级大纲续写）只导出首步提示词，依赖前一步输出的占位处用【】注明。 */
+	async cmdExportPrompts(): Promise<void> {
+		if (!(await this.ensureWorkDir())) return;
+		const story = await this.requireStory();
+		if (!story) return;
+		try {
+			// 注意：以下标题是「选中→导出」的唯一匹配键，必须与 buildPromptExportDoc 里各 trySec("…") 的标题逐字节一致（含 · 等符号两侧空格）；任一处改动都要同步另一处，否则该功能点会被静默跳过。
+			const features = [
+				"创作章节 (/write)",
+				"续写当前章 (/continue)",
+				"重写当前章 (/rewrite)",
+				"润色当前章 (/polish)",
+				"去AI化当前章 (/deai)",
+				"修正章节引用 (/fix-refs)",
+				"错别字检测 (/typo)",
+				"审阅当前章 (/review)",
+				"生成策划指南 (/planning-guide)",
+				"生成策划指南（仅世界观） (/planning-guide-worldview)",
+				"生成书籍大纲 (/book-outline-generate)",
+				"自动生成卷大纲 (/vol-outline-generate)",
+				"从书级大纲生成卷 (/book-outline-to-volumes)",
+				"从卷大纲生成章节·AI 拆分兜底 (/vol-outline-to-chapters)",
+				"分析人物与场景 (/analyze-cast)",
+				"章节摘要（上下文组装时延迟生成）",
+				"卷摘要（上下文组装时延迟整体重建）",
+			];
+			const selected = await new Promise<string[] | null>((resolve) => {
+				new ExportPromptsSelectModal(
+					this.app,
+					features.map((t) => ({ title: t })),
+					(sel) => resolve(sel),
+					() => resolve(null)
+				).open();
+			});
+			if (!selected) return;
+			const entries = await this.buildPromptExportDoc(story, selected);
+			await this.manager.savePromptExportDocs(story, entries);
+			const paths = entries.map((e) => e.path).join("、");
+			new Notice(`✓ AI 提示词已导出（${String(entries.length)} 个文件）\n${paths}\n可逐个复制 system/user 内容喂给本地模型比对输出`, 10000);
+		} catch (e) {
+			this.notifyError("导出AI提示词失败", e);
+		}
+	}
+
+	private async buildPromptExportDoc(story: string, selectedFeatures?: string[]): Promise<Array<{ title: string; content: string; path: string }>> {
+		const state = await this.manager.validatedState(story);
+		const volNames = await this.volNameMap(story);
+		const chapters = await this.manager.listChapters(story);
+		const flatMode = state.use_volumes === false;
+		const defaultCount = Math.max(chapters.length, 1); // 章数弹窗的导出默认值（实际运行时弹窗输入）
+		const activeKey = (state.current_chapter ?? "").trim();
+		const chLabel = activeKey ? this.keyLabel(activeKey, volNames) : "";
+		const guides = await this.loadWriterGuides(story);
+		const bodyOf = activeKey ? await this.manager.readChapterContent(story, activeKey) : "";
+		const outlineOf = activeKey ? await this.manager.readChapterOutlineForPrompt(story, activeKey) : "";
+
+		const entries: Array<{ title: string; content: string }> = [];
+		const selectedSet = selectedFeatures ? new Set(selectedFeatures) : null;
+		const trySec = async (title: string, fn: () => Promise<string>): Promise<void> => {
+			if (selectedSet && !selectedSet.has(title)) return; // 未选中则跳过（不写入任何条目）
+			try {
+				entries.push({ title, content: await fn() });
+			} catch (e) {
+				entries.push({ title, content: this.exportSkipSection(title, `组装失败：${e instanceof Error ? e.message : String(e)}`) });
+			}
+		};
+		const noChapter = activeKey ? null : "写字台没有当前激活章节（/write 等命令基于它定位目标章）";
+		const phaseName = (i: number): string => this.exportPhaseName(i);
+
+		const volsRec = flatMode ? {} : await this.manager.loadVolumes(story);
+		const vols = Object.values(volsRec).sort((a, b) => a.order - b.order || a.id.localeCompare(b.id));
+		const globalSetup = this.getLlmSetup();
+		const globalLabel = "全局激活模型（不走阶段映射，直接取激活配置）";
+		const noLlm = (title: string): string => this.exportSkipSection(title, "未找到可用 LLM 配置（无配置时所有 AI 步骤都不会调用模型）。");
+		// v0.2.23+：导出全程不触发摘要的 LLM 生成——组装写作上下文时已存新鲜摘要照放，缺失处填此占位符明示「此处有摘要、尚未生成」（卷摘要槽位与运行时一致：无成员章摘要的卷运行时也跳过、不占槽，故不填）
+		const summaryPlaceholder = "（此处有摘要，尚未生成）";
+		const bridgeOf = async (key: string, ordinal: number): Promise<{ prev?: { label: string; text?: string }; cur?: { label: string; text?: string }; nxt?: { label: string; text?: string } }> => {
+			const bridge: { prev?: { label: string; text?: string }; cur?: { label: string; text?: string }; nxt?: { label: string; text?: string } } = {};
+			try {
+				for (const w of await this.manager.readOutlineWindow(story, key, { back: 1, fwd: 1 })) {
+					const entry = { label: w.label, text: w.text || undefined };
+					if (w.key === key) bridge.cur = entry;
+					else if (w.ordinal < ordinal) bridge.prev = entry;
+					else bridge.nxt = entry;
+				}
+			} catch { /* 桥接大纲读取失败：按空处理（与运行时一致） */ }
+			return bridge;
+		};
+
+		// ===== 章域 =====
+		// 注意：下面每个 trySec("…") 的标题是「选中→导出」的匹配键，必须与 cmdExportPrompts 里 features 清单逐字节一致；改动任一处都要同步另一处，否则该功能点被静默跳过。
+		await trySec("创作章节 (/write)", async () => {
+			const title = "创作章节 (/write)";
+			if (noChapter) return this.exportSkipSection(title, noChapter);
+			const hasBody = bodyOf.trim().length > 0; // v0.2.23+：激活章已有正文也照常组装导出（节内备注运行时不会触发）——调试 /write 提示词不必先切到空章
+			if (!outlineOf.trim()) return this.exportSkipSection(title, "当前章没有《章节大纲.md》内容，且导出按弹窗默认值（不代填「章节大纲」「写作要点」）——两者皆空时 /write 只创建/就绪章节，不调用 LLM。");
+			const setup = this.getPhaseLlmSetup(2);
+			if (!setup) return noLlm(title);
+			const data = await this.manager.loadWritingData(story, activeKey, { includeCurrentSummary: false, dropOutlineDoc: true, ensureSummaries: false, missingSummaryPlaceholder: summaryPlaceholder }); // v0.2.23+：只读导出——不触发摘要 LLM 生成，缺失处填占位符
+			const context = buildWritingContext(data);
+			let prevRefs: Array<{ label: string; text?: string }> = [];
+			try {
+				prevRefs = (await this.manager.readOutlineWindow(story, activeKey, { back: 3 })).map((w) => ({ label: w.label, text: w.text || undefined }));
+			} catch { /* 前文大纲窗口读取失败：按空处理（与运行时一致） */ }
+			const built = buildChapterPrompt({
+				chapterNum: data.chapterNum,
+				chapterLabel: chLabel,
+				chapterKey: activeKey,
+				chapterOutlineRaw: outlineOf.trim(),
+				userInstruction: undefined,
+				context,
+				wordRange: wordRangeFromGuides(guides.bookText, guides.userText),
+				descStyle: setup.descStyle,
+				storyType: state.writing_style,
+				prevOutlines: prevRefs,
+				withSummary: state.use_summaries !== false,
+			});
+			const sp = this.writerSystemPrompt(setup.systemPrompt, guides, state.writing_style, state.title, data.characters.map((c) => c.name));
+			return this.exportSection(title, setup.cfg, phaseName(2), [
+				...(hasBody ? ["当前激活章已有正文：运行时 /write 此时不会触发（要接着写用 /continue，整章重写用 /rewrite）；此处导出的是假设触发时实发的提示词。"] : []),
+				"弹窗取默认值：新建标题（沿用现有章）、章节大纲（留空=用盘上《章节大纲.md》）、写作要点（留空）。",
+			], [
+				{ heading: "系统提示词（system）", content: sp },
+				{ heading: "用户提示词（user）", content: built.prompt },
+			]);
+		});
+		await trySec("续写当前章 (/continue)", async () => {
+			const title = "续写当前章 (/continue)";
+			if (noChapter) return this.exportSkipSection(title, noChapter);
+			if (!bodyOf.trim()) return this.exportSkipSection(title, "当前激活章还没有正文，/continue 不适用（先用 /write 创作）。");
+			if (outlineOf.trim() && checkOutlineCoverage(bodyOf, outlineOf).allCovered) return this.exportSkipSection(title, "盘上《章节大纲.md》的要点已被现有正文全部覆盖，且导出按弹窗默认（续写要点留空）——运行时此时提示「大纲要点已全部完成」，不调用 LLM。");
+			const setup = this.getPhaseLlmSetup(2);
+			if (!setup) return noLlm(title);
+			const data = await this.manager.loadWritingData(story, activeKey, { includeCurrentSummary: true, ensureSummaries: false, missingSummaryPlaceholder: summaryPlaceholder }); // v0.2.23+：只读导出——不触发摘要 LLM 生成，缺失处填占位符
+			const context = buildWritingContext(data);
+			let prevRefs: Array<{ label: string; text?: string }> = [];
+			try {
+				prevRefs = (await this.manager.readOutlineWindow(story, activeKey, { back: 3 })).map((w) => ({ label: w.label, text: w.text || undefined }));
+			} catch { /* 前文大纲窗口读取失败：按空处理（与运行时一致） */ }
+			const built = buildContinuePrompt({
+				chapterNum: data.chapterNum, // 阅读序位置（ordinal，跨卷连续）
+				chapterLabel: chLabel,
+				chapterKey: activeKey,
+				userInstruction: undefined,
+				context,
+				globalOutlineRaw: data.globalOutlineRaw,
+				chapterOutlineRaw: outlineOf, // 续写要点为空 → 不做预合并，直接用盘上大纲
+				prevOutlines: prevRefs,
+				descStyle: setup.descStyle,
+				storyType: state.writing_style,
+				currentSummary: data.summaries[data.chapterNum] ?? "",
+				existingContent: bodyOf,
+				wordRange: wordRangeFromGuides(guides.bookText, guides.userText),
+				withSummary: state.use_summaries !== false,
+			});
+			const sp = this.writerSystemPrompt(setup.systemPrompt, guides, state.writing_style, state.title, data.characters.map((c) => c.name));
+			return this.exportSection(title, setup.cfg, phaseName(2), ["「续写要点」弹窗取默认值（留空）。留空且有大纲时先做要点覆盖率检查（见上）；有指令时会先把指令并入大纲落盘再拼提示词。", "响应约定：正文＋<SUMMARY> 块（摘要随写只覆盖新续写部分），解析失败整段当正文。"], [
+				{ heading: "系统提示词（system）", content: sp },
+				{ heading: "用户提示词（user）", content: built.prompt },
+			]);
+		});
+		await trySec("重写当前章 (/rewrite)", async () => {
+			const title = "重写当前章 (/rewrite)";
+			if (noChapter) return this.exportSkipSection(title, noChapter);
+			if (!bodyOf.trim()) return this.exportSkipSection(title, "当前激活章还没有正文，/rewrite 提示「还没有内容」，不调用 LLM。");
+			const setup = this.getPhaseLlmSetup(2);
+			if (!setup) return noLlm(title);
+			const data = await this.manager.loadWritingData(story, activeKey, { includeCurrentSummary: true, dropOutlineDoc: true, ensureSummaries: false, missingSummaryPlaceholder: summaryPlaceholder }); // v0.2.23+：只读导出——不触发摘要 LLM 生成，缺失处填占位符；本章大纲由桥接块【当前情节】注入，不经 folderDocs 二次注入
+			const context = buildWritingContext(data);
+			const bridge = await bridgeOf(activeKey, data.chapterNum);
+			const prompt = buildRewritePrompt({
+				chapterNum: data.chapterNum,
+				chapterLabel: chLabel,
+				userInstruction: undefined,
+				context,
+				bridge,
+				oldContent: bodyOf,
+				currentSummary: data.summaries[data.chapterNum] ?? "",
+				wordRange: wordRangeFromGuides(guides.bookText, guides.userText),
+				storyType: state.writing_style,
+				withSummary: state.use_summaries !== false,
+			});
+			const sp = this.writerSystemPrompt(setup.systemPrompt, guides, state.writing_style, state.title, data.characters.map((c) => c.name));
+			return this.exportSection(title, setup.cfg, phaseName(2), ["「重写要求」弹窗取默认值（留空）。运行时会弹「覆盖整章/仅参考」保存选择，不影响提示词。", "响应约定：正文＋<SUMMARY> 块（摘要覆盖重写后的整章）。"], [
+				{ heading: "系统提示词（system）", content: sp },
+				{ heading: "用户提示词（user）", content: prompt },
+			]);
+		});
+		await trySec("润色当前章 (/polish)", async () => {
+			const title = "润色当前章 (/polish)";
+			if (noChapter) return this.exportSkipSection(title, noChapter);
+			if (!bodyOf.trim()) return this.exportSkipSection(title, "当前激活章还没有内容，/polish 不调用 LLM。");
+			const setup = this.getPhaseLlmSetup(2);
+			if (!setup) return noLlm(title);
+			const data = await this.manager.loadWritingData(story, activeKey, { includeCurrentSummary: true, ensureSummaries: false, missingSummaryPlaceholder: summaryPlaceholder }); // v0.2.23+：只读导出——不触发摘要 LLM 生成，缺失处填占位符
+			const sp = this.writerSystemPrompt(setup.systemPrompt, guides, state.writing_style, state.title, data.characters.map((c) => c.name));
+			const prompt = buildPolishPrompt({ text: bodyOf, style: undefined, summary: data.summaries[data.chapterNum] ?? "", storyType: state.writing_style });
+			return this.exportSection(title, setup.cfg, phaseName(2), ["「润色风格」弹窗取默认值（留空=由模型自行判断风格）。结果面板确认后才覆盖保存；摘要延迟到下次上下文组装时生成。"], [
+				{ heading: "系统提示词（system）", content: sp },
+				{ heading: "用户提示词（user）", content: prompt },
+			]);
+		});
+		await trySec("去AI化当前章 (/deai)", async () => {
+			const title = "去AI化当前章 (/deai)";
+			if (noChapter) return this.exportSkipSection(title, noChapter);
+			if (!bodyOf.trim()) return this.exportSkipSection(title, "当前激活章还没有正文，/deai 不调用 LLM。");
+			const setup = this.getPhaseLlmSetup(2);
+			if (!setup) return noLlm(title);
+			// 与 cleanAiText 相同的预处理链：先本地化简（否定对比、强调重复），再找 AI 句
+			let current = bodyOf;
+			const [simp1, simPairs] = simplifyNegationContrast(current);
+			if (simPairs.length) current = simp1;
+			const [merged, repPairs] = simplifyEmphaticRepetition(current);
+			if (repPairs.length) current = merged;
+			const sentences = findAiSentences(current);
+			if (!sentences.length) return this.exportSkipSection(title, "词表与正则均未命中（本地化简后仍无 AI 句式），/deai 不调用 LLM。导出的提示词以当前章正文为基准。");
+			const prompt = buildDeaiPrompt(current, sentences);
+			const maxTokens = Math.min(8192, sentences.length * 300 + 1024);
+			const runtimeMax = Math.min(maxTokens, setup.cfg.max_tokens ?? maxTokens); // 运行时受配置 max_tokens 封顶
+			return this.exportSection(title, setup.cfg, phaseName(2), [
+				`命中 ${String(sentences.length)} 句；每轮 max_tokens = min(8192, 句数×300+1024) 再受配置 max_tokens 封顶 → 本次=${String(runtimeMax)}。最多 2 轮：第 2 轮的输入取决于第 1 轮的改写结果，无法预先拼出。`,
+				"响应约定：每行「序号|改写后句子」，解析后按句号回写；改不动的行保留原句。",
+				simPairs.length || repPairs.length ? "正文已先经本地化简（否定对比/强调重复规则），非原始盘上文本。" : "",
+			].filter(Boolean), [
+				{ heading: "系统提示词（system）", content: assembleSystemPrompt(undefined, guides.guideText, setup.systemPrompt) },
+				{ heading: "用户提示词（user）", content: prompt },
+			]);
+		});
+		await trySec("修正章节引用 (/fix-refs)", async () => {
+			const title = "修正章节引用 (/fix-refs)";
+			const hits: string[] = [];
+			for (const ch of chapters) {
+				const b = await this.manager.readChapterContent(story, ch.key);
+				if (b.trim() && findChapterRefLeaks(b).length) hits.push(ch.key);
+			}
+			if (!hits.length) return this.exportSkipSection(title, "全部章节正文均未命中「第N章」式引用（/fix-refs 先本地扫描，无命中不调 LLM）。");
+			const setup = this.getPhaseLlmSetup(2);
+			if (!setup) return noLlm(title);
+			const first = hits[0];
+			const content = await this.manager.readChapterContent(story, first);
+			const sentences = findChapterRefSentences(content);
+			const prompt = buildChapterRefFixPrompt(content, sentences);
+			const maxTokens = Math.min(8192, sentences.length * 300 + 1024);
+			const runtimeMax = Math.min(maxTokens, setup.cfg.max_tokens ?? maxTokens);
+			return this.exportSection(title, setup.cfg, phaseName(2), [
+				`运行时会逐章处理全部 ${String(hits.length)} 个命中章节；导出只给阅读序第一个命中的 ${this.keyLabel(first, volNames)}。`,
+				`max_tokens = min(8192, 句数×300+1024) 受配置封顶 → 本次=${String(runtimeMax)}。最多 2 轮，第 2 轮依赖第 1 轮改写结果。`,
+				"响应约定：每行「序号|改写后句子」；改写后仍含「第N章」的行会被跳过保留。",
+			], [
+				{ heading: "系统提示词（system）", content: assembleSystemPrompt(undefined, guides.guideText, setup.systemPrompt) },
+				{ heading: "用户提示词（user）", content: prompt },
+			]);
+		});
+		await trySec("错别字检测 (/typo)", async () => {
+			const title = "错别字检测 (/typo)";
+			if (noChapter) return this.exportSkipSection(title, noChapter);
+			if (!bodyOf.trim()) return this.exportSkipSection(title, "当前激活章还没有正文，/typo 不调用 LLM。");
+			const setup = this.getPhaseLlmSetup(2);
+			if (!setup) return noLlm(title);
+			const prompt = buildTypoScanPrompt(bodyOf);
+			const budget = Math.max(setup.cfg.max_tokens ?? 65535, Math.ceil(bodyOf.length * 2) + 1024); // 需要全文回显 → 预算按正文长度放大
+			return this.exportSection(title, setup.cfg, phaseName(2), [
+				`模型需原样回显全文并内联 〇…〇 标记；max_tokens=${String(budget)}（max(配置值, 正文长度×2+1024)）。校验失败整次重试，最多 3 次、输入相同。`,
+				"响应约定：JSON 数组 [{wrong,right?,context?}] 在首个 '{' 处截断；正文取最后一个 JSON 块之后的文本。",
+			], [
+				{ heading: "系统提示词（system）", content: TYPO_SCAN_SYSTEM_PROMPT },
+				{ heading: "用户提示词（user）", content: prompt },
+			]);
+		});
+		await trySec("审阅当前章 (/review)", async () => {
+			const title = "审阅当前章 (/review)";
+			if (noChapter) return this.exportSkipSection(title, noChapter);
+			if (!bodyOf.trim()) return this.exportSkipSection(title, "当前激活章还没有正文，/review 不调用 LLM。");
+			const setup = globalSetup;
+			if (!setup) return noLlm(title);
+			const data = await this.manager.loadWritingData(story, activeKey, { includeCurrentSummary: false, dropOutlineDoc: true, ensureSummaries: false, missingSummaryPlaceholder: summaryPlaceholder }); // v0.2.23+：只读导出——不触发摘要 LLM 生成，缺失处填占位符
+			const context = buildWritingContext(data);
+			const bridge = await bridgeOf(activeKey, data.chapterNum);
+			const prompt = buildReviewPrompt({
+				chapterNum: data.chapterNum,
+				chapterLabel: chLabel,
+				userInstruction: undefined,
+				context,
+				bridge,
+				chapterContent: bodyOf,
+			});
+			const sp = this.writerSystemPrompt(setup.systemPrompt, guides, state.writing_style, state.title, data.characters.map((c) => c.name));
+			return this.exportSection(title, setup.cfg, globalLabel, [
+				"「审阅重点」弹窗取默认值（留空）。报告为空时重试，最多 3 次、输入相同。",
+				"v0.2.20+：审阅走全局激活模型，不走阶段映射。",
+			], [
+				{ heading: "系统提示词（system）", content: sp },
+				{ heading: "用户提示词（user）", content: prompt },
+			]);
+		});
+		// ===== 大纲域 =====
+		await trySec("生成策划指南 (/planning-guide)", async () => {
+			const title = "生成策划指南 (/planning-guide)";
+			const setup = this.getPhaseLlmSetup(0);
+			if (!setup) return noLlm(title);
+			const existing = await this.manager.readPlanningGuide(story);
+			const input = await this.buildPlanningGuideInput(story, state, existing.trim() || undefined, { chapterCount: defaultCount });
+			const prompt = buildPlanningGuidePrompt(input);
+			return this.exportSection(title, setup.cfg, phaseName(0), [
+				`目标总章数弹窗取默认值 ${String(defaultCount)}（= 现有章数；运行时弹窗无默认值，此为导出基准）。`,
+				existing.trim() ? "《策划指南.md》已存在：运行时弹「重新生成」确认，现有内容会作为既定事实约束注入输入。" : "《策划指南.md》当前为空/不存在：直接生成。",
+			], [
+				{ heading: "系统提示词（system）", content: BOOK_OUTLINE_GEN_SYSTEM_PROMPT },
+				{ heading: "用户提示词（user）", content: prompt },
+			]);
+		});
+		await trySec("生成策划指南（仅世界观） (/planning-guide-worldview)", async () => {
+			const title = "生成策划指南（仅世界观） (/planning-guide-worldview)";
+			const setup = globalSetup;
+			if (!setup) return noLlm(title);
+			const existing = await this.manager.readPlanningGuide(story);
+			const input = await this.buildPlanningGuideInput(story, state, existing.trim() || undefined, { chapterCount: defaultCount, worldOnly: true });
+			const prompt = buildPlanningGuidePrompt(input);
+			return this.exportSection(title, setup.cfg, globalLabel, [
+				"该命令走全局激活模型（loadWriterSetup），不走阶段映射。",
+				`目标总章数弹窗取默认值 ${String(defaultCount)}。输入仅书籍信息＋世界观（不含大纲/卷/章节）。`,
+			], [
+				{ heading: "系统提示词（system）", content: BOOK_OUTLINE_GEN_SYSTEM_PROMPT },
+				{ heading: "用户提示词（user）", content: prompt },
+			]);
+		});
+		await trySec("生成书籍大纲 (/book-outline-generate)", async () => {
+			const title = "生成书籍大纲 (/book-outline-generate)";
+			const setup = this.getPhaseLlmSetup(1);
+			if (!setup) return noLlm(title);
+			const existing = await this.manager.readGlobalOutline(story); // 清洗文本：模板注释视为空
+			const world = await this.manager.readWorldDoc(story);
+			const planningGuide = await this.manager.readPlanningGuide(story); // 导出只读盘；运行时会 ensurePlanningGuide（缺失先自动生成，软依赖）
+			const relationshipVol = !flatMode ? (state.current_volume ? this.manager.findVolumeIn(volsRec, state.current_volume) : vols[0] ?? null) : null;
+			const relationshipCtx = await this.readOutlineRelationships(story, relationshipVol);
+			const chSummaries: Array<{ label: string; summary?: string }> = [];
+			for (const ch of chapters) {
+				const s = await this.manager.readSavedChapterSummary(story, ch.key);
+				chSummaries.push({ label: this.keyLabel(ch.key, volNames, ch.title), ...(s ? { summary: s } : {}) });
+			}
+			const prompt = buildBookOutlineGenPrompt({
+				bookTitle: state.title,
+				genre: state.genre,
+				writingStyle: state.writing_style,
+				world,
+				flatMode,
+				bookRelationships: relationshipCtx.bookRelationships,
+				volRelationships: relationshipCtx.volRelationships,
+				volumes: vols.map((v) => ({ name: v.name, description: v.description })),
+				chapters: chSummaries,
+				existingOutline: existing,
+				existingOutlineCompact: flatMode && !!existing.trim(),
+				planningGuide,
+				guideText: guides.guideText,
+				tensionRules: await this.loadTensionRules(), // 张力规则：与运行时同口径（读插件数据目录 TENSION_RULES.md，缺失回落内置默认）
+				chapterCount: defaultCount,
+			});
+			return this.exportSection(title, setup.cfg, phaseName(1), [
+				`目标章数弹窗取默认值 ${String(defaultCount)}（运行时弹窗无默认值，此为导出基准）。`,
+				existing.trim() ? "书级《大纲.md》已存在：运行时先弹「完整生成 / 按已有进度继续」——本导出是「完整生成」形态；继续模式（卷声明续写 / 平铺逐章续写）提示词形态不同，未导出。" : "书级《大纲.md》为空：直接完整生成。",
+				"《策划指南.md》按盘上现状注入；运行时缺失会先自动生成再拼提示词（软依赖）。",
+			], [
+				{ heading: "系统提示词（system）", content: BOOK_OUTLINE_GEN_SYSTEM_PROMPT },
+				{ heading: "用户提示词（user）", content: prompt },
+			]);
+		});
+		await trySec("自动生成卷大纲 (/vol-outline-generate)", async () => {
+			const title = "自动生成卷大纲 (/vol-outline-generate)";
+			if (flatMode) return this.exportSkipSection(title, "无卷模式没有卷大纲。");
+			if (!vols.length) return this.exportSkipSection(title, "还没有卷：运行时若书级《大纲.md》含卷声明会走「自动建卷+逐卷生成」批量流程（autoCreateVolumesAndGenOutlines），否则提示先建卷——两种形态都不按单卷弹窗导出。");
+			const setup = this.getPhaseLlmSetup(1);
+			if (!setup) return noLlm(title);
+			const curVol = (state.current_volume ?? "").trim();
+			const vol = (curVol ? this.manager.findVolumeIn(volsRec, curVol) : null) ?? vols[0];
+			const volIdx = vols.findIndex((v) => v.id === vol.id);
+			const prevOutline = volIdx > 0 ? await this.manager.readVolumeOutline(story, vols[volIdx - 1].id) : "";
+			const existing = await this.manager.readVolumeOutline(story, vol.id);
+			const relationshipCtx = await this.readOutlineRelationships(story, vol);
+			const ctx: VolOutlineGenInput = {
+				bookTitle: state.title,
+				genre: state.genre,
+				writingStyle: state.writing_style,
+				world: await this.manager.readWorldDoc(story),
+				globalOutline: await this.manager.readGlobalOutline(story),
+				planningGuide: await this.manager.readPlanningGuide(story), // 导出只读盘；运行时会 ensurePlanningGuide
+				bookRelationships: relationshipCtx.bookRelationships,
+				volRelationships: relationshipCtx.volRelationships,
+				volumes: vols.map((v) => ({ name: v.name, description: v.description })),
+				targetVolumeName: vol.name,
+				prevVolumeOutline: prevOutline,
+				existingOutline: existing,
+				guideText: guides.guideText,
+				tensionRules: await this.loadTensionRules(), // 张力规则：与运行时同口径（读插件数据目录 TENSION_RULES.md，缺失回落内置默认）
+				chapterCount: defaultCount,
+			};
+			return this.exportSection(title, setup.cfg, phaseName(1), [
+				curVol ? `目标卷=当前卷「${vol.name}」。` : `当前卷未设定：运行时会弹卷选择器；导出取第一卷「${vol.name}」。`,
+				`目标章数弹窗取默认值 ${String(defaultCount)}（运行时弹窗无默认值，此为导出基准）。`,
+				"完整生成分段增量：【卷设计】1 段 + 每章 1 小段，逐段生成立即落盘。本导出只给首步（卷设计）与第二步（第1章，卷设计处为占位符）；后续章输入含「本轮已生成章段」，依赖前一步输出，无法预先拼出。",
+				existing.trim() ? "本卷《卷大纲.md》已存在：运行时先弹「完整生成 / 按已有进度继续」、再弹「覆盖 / 追加」保存选择——本导出是「完整生成」形态；继续模式无卷设计步、supplementMode 提示词形态不同，未导出。" : "",
+			].filter(Boolean), [
+				{ heading: "系统提示词（system）", content: VOL_OUTLINE_GEN_SYSTEM_PROMPT },
+				{ heading: "第1步 · 卷设计（user）", content: buildVolOutlineDesignPrompt(ctx) },
+				{ heading: "第2步 · 第1章（user，卷设计为占位符）", content: buildVolOutlineChapterPrompt({ ...ctx, chapterNum: 1, volumeDesign: "（占位：上一步【卷设计】完整输出）", generatedSoFar: "" }) },
+			]);
+		});
+		await trySec("从书级大纲生成卷 (/book-outline-to-volumes)", async () => {
+			return this.exportSkipSection("从书级大纲生成卷 (/book-outline-to-volumes)", "该命令是对书级《大纲.md》每条卷声明自动建卷并逐卷生成卷大纲的批量流程（autoCreateVolumesAndGenOutlines）；每卷的提示词与上面「自动生成卷大纲」同形态（上下文按各卷替换），不另出不带弹窗上下文的重复段。");
+		});
+		await trySec("从卷大纲生成章节·AI 拆分兜底 (/vol-outline-to-chapters)", async () => {
+			const title = "从卷大纲生成章节·AI 拆分兜底 (/vol-outline-to-chapters)";
+			let vol: { id: string; name: string };
+			let raw: string;
+			let sourceLabel: string;
+			if (flatMode) {
+				vol = { id: "", name: "书级大纲" };
+				sourceLabel = "书级《大纲.md》";
+				raw = await this.manager.readGlobalOutline(story);
+			} else {
+				if (!vols.length) return this.exportSkipSection(title, "还没有卷，命令直接提示先新建卷。");
+				const curVol = (state.current_volume ?? "").trim();
+				const v = (curVol ? this.manager.findVolumeIn(volsRec, curVol) : null) ?? vols[0];
+				vol = v;
+				sourceLabel = `「${v.name}」的卷大纲`;
+				raw = await this.manager.readVolumeOutline(story, v.id);
+			}
+			if (!raw.trim()) return this.exportSkipSection(title, `${sourceLabel}为空，命令提示先写大纲，不调 LLM。`);
+			if (splitVolOutlineByChapter(raw).segments.length) return this.exportSkipSection(title, `${sourceLabel}已含「## 第N章」章标记：运行时直接本地解析拆分并落盘各章，不调用 LLM（AI 拆分兜底不触发）。`);
+			const setup = this.getPhaseLlmSetup(1);
+			if (!setup) return noLlm(title);
+			const cleaned = stripComments(raw);
+			const count = extractPlannedChapterCount(cleaned) ?? defaultCount;
+			const volList = flatMode ? [] : vols.map((v) => ({ name: v.name, description: v.description }));
+			const prompt = buildVolOutlineChapterPrompt({
+				bookTitle: state.title,
+				genre: state.genre,
+				writingStyle: state.writing_style,
+				world: await this.manager.readWorldDoc(story),
+				globalOutline: "",
+				sourceOutline: cleaned,
+				strictCurrentOutlineOnly: true,
+				planningGuide: await this.manager.readPlanningGuide(story), // 导出只读盘；运行时会 ensurePlanningGuide
+				guideText: guides.guideText,
+				tensionRules: await this.loadTensionRules(), // 张力规则：与运行时同口径（读插件数据目录 TENSION_RULES.md，缺失回落内置默认）
+				volumes: volList,
+				targetVolumeName: vol.name,
+				existingOutline: "",
+				chapterCount: count,
+				chapterNum: 1,
+				generatedSoFar: "",
+			});
+			const runtimeMax = Math.max(setup.cfg.max_tokens ?? 4096, 8192);
+			return this.exportSection(title, setup.cfg, phaseName(1), [
+				`AI 拆分仅在源大纲 0 个「第N章」标记时触发（本次已触发，源=${sourceLabel}）。逐章生成共 ${String(count)} 次调用：第 2 章起注入「本轮已生成最近 3 章」，依赖前序输出——本导出只给第 1 章。`,
+				`章数=${String(count)}：${extractPlannedChapterCount(cleaned) ? "从大纲文本抽取的计划章数" : "大纲未抽取到计划章数，运行时弹窗询问；导出取默认 " + String(defaultCount)}。`,
+				`该调用显式 max_tokens=${String(runtimeMax)}（max(配置值, 8192)）。拆分成功后接本地解析逐章落盘（不再另调 LLM）。`,
+			], [
+				{ heading: "系统提示词（system）", content: VOL_OUTLINE_GEN_SYSTEM_PROMPT },
+				{ heading: "用户提示词（user）", content: prompt },
+			]);
+		});
+		// ===== 摘要域 =====
+		await trySec("分析人物与场景 (/analyze-cast)", async () => {
+			const title = "分析人物与场景 (/analyze-cast)";
+			const targets: Array<{ key: string; label: string; content: string }> = [];
+			for (const ch of chapters) {
+				const label = this.keyLabel(ch.key, volNames, ch.title);
+				const content = await this.manager.readChapterContent(story, ch.key);
+				if (content.trim()) targets.push({ key: ch.key, label, content }); // 空正文章跳过（与运行时一致）
+			}
+			if (!targets.length) return this.exportSkipSection(title, "没有任何章节有正文，命令提示无法分析，不调用 LLM。");
+			const setup = this.getPhaseLlmSetup(2);
+			if (!setup) return noLlm(title);
+			// 已知人名/场景名 seed：与运行时相同，从现有三层人物/场景文档播种
+			const knownNames = new Set<string>();
+			for (const layer of await this.manager.loadCharacterLayerDocs(story)) for (const c of Object.values(layer.entries)) knownNames.add(c.name);
+			const knownSceneIds = new Set<string>();
+			for (const layer of await this.manager.loadSceneLayerDocs(story)) for (const s of Object.values(layer.entries)) knownSceneIds.add(s.scene_id);
+			const first = targets[0];
+			return this.exportSection(title, setup.cfg, phaseName(2), [
+				`运行时按阅读序逐章各调一次 LLM（本次共 ${String(targets.length)} 章为处理对象，无正文章会跳过）；导出只给第一个目标章 ${first.label}。第 2 章起 knownNames/knownSceneIds 会累加上一章分析结果，依赖前一步输出，无法预先拼出。`,
+				"knownNames/knownSceneIds 已按盘上现有人物/场景三层文档条目播种（跨章名称归一基线）。",
+				"响应约定：单个 JSON 对象（无代码围栏）；非法 JSON 时重试最多 3 次，重试的用户提示词会追加 retryNote（「你上一次的输出不是合法 JSON…」）。",
+			], [
+				{ heading: "系统提示词（system）", content: CAST_ANALYZE_SYSTEM_PROMPT },
+				{ heading: "用户提示词（user）", content: buildCastChapterPrompt({ chapterLabel: first.label, content: first.content, knownNames: [...knownNames], knownSceneIds: [...knownSceneIds] }) },
+			]);
+		});
+		await trySec("章节摘要（上下文组装时延迟生成）", async () => {
+			const title = "章节摘要（上下文组装时延迟生成）";
+			if (state.use_summaries === false) return this.exportSkipSection(title, "该书「摘要随写」已关闭（《故事状态.md》use_summaries=false），摘要链路全程不触发。");
+			if (noChapter) return this.exportSkipSection(title, `${noChapter}；摘要按章延迟生成，没有目标章。`);
+			const setup = globalSetup;
+			if (!setup) return noLlm(title);
+			const src = await this.manager.chapterSummarySource(story, activeKey); // 正文优先，无正文回落《章节大纲》
+			if (!src) return this.exportSkipSection(title, "当前激活章既没有正文也没有《章节大纲》内容，无摘要来源，不调 LLM。");
+			if ((await this.manager.readSavedChapterSummary(story, activeKey)).trim()) return this.exportSkipSection(title, `当前激活章 ${chLabel} 的《章节摘要》已存在且新鲜（内容哈希与来源一致）——延迟生成机制下不会再次调用 LLM；正文/大纲变化导致哈希失配后，下次组装写作上下文时才重新生成。`);
+			return this.exportSection(title, setup.cfg, globalLabel, [
+				"不是独立命令：写作上下文组装（/write、/continue 等注入前文摘要）时，窗口章摘要缺失/过期才按需触发并落盘（延迟生成）。本导出以当前激活章为例重建这条提示词。",
+				`摘要来源 = ${src.viaOutline ? "《章节大纲.md》回落（该章暂无正文）" : "章正文"}。`,
+				'调用显式参数：max_tokens=600、temperature=0.4、reasoning_effort="none"（小预算机械压缩任务，防思考型模型吃空预算）。label 形如「卷名·第N章」或「第N章」。',
+			], [
+				{ heading: "系统提示词（system）", content: CHAPTER_SUMMARY_SYSTEM_PROMPT },
+				{ heading: "用户提示词（user）", content: buildChapterSummaryPrompt(chLabel, src.text, src.viaOutline) },
+			]);
+		});
+		await trySec("卷摘要（上下文组装时延迟整体重建）", async () => {
+			const title = "卷摘要（上下文组装时延迟整体重建）";
+			if (state.use_summaries === false) return this.exportSkipSection(title, "该书「摘要随写」已关闭，摘要链路全程不触发。");
+			if (flatMode) return this.exportSkipSection(title, "无卷模式（书→章扁平结构）没有卷摘要。");
+			const volOn = state.include_volume_summary ?? !!this.settings.includeVolumeSummary; // 本书级 frontmatter 覆盖优先于全局设置
+			if (!volOn) return this.exportSkipSection(title, "「使用前卷摘要组织提示词」当前为关（全局设置与书级覆盖均未开启）——卷摘要不进写作上下文，也不会触发重建。");
+			const curVol = (state.current_volume ?? "").trim();
+			const vol = (curVol ? this.manager.findVolumeIn(volsRec, curVol) : null) ?? vols[0];
+			if (!vol) return this.exportSkipSection(title, "还没有卷，无卷摘要可言。");
+			const setup = globalSetup;
+			if (!setup) return noLlm(title);
+			if ((await this.manager.readFreshVolumeSummary(story, vol.id)).trim()) return this.exportSkipSection(title, `「${vol.name}」的《卷摘要》当前新鲜（指纹与各成员章新鲜摘要一致）——延迟生成机制下不会再次调用 LLM；任一成员章摘要变化/新增后，下次组装上下文时才整体重建。`);
+			const volName = vol.name || vol.id;
+			const lines: Array<{ label: string; title: string; summary: string }> = [];
+			for (const c of chapters) {
+				if (parseChKey(c.key).vol !== vol.id) continue;
+				const s = (await this.manager.readSavedChapterSummary(story, c.key)).trim(); // 只取已生成且新鲜的成员章摘要（与运行时只读收集口径一致）
+				if (!s) continue;
+				lines.push({ label: `${volName}·第${c.num}章`, title: state.chapters[c.key]?.title || "", summary: s });
+			}
+			if (!lines.length) return this.exportSkipSection(title, `「${volName}」没有任何新鲜的成员章《章节摘要》可作输入，运行时直接降级跳过，不调 LLM。`);
+			return this.exportSection(title, setup.cfg, globalLabel, [
+				"不是独立命令：写作上下文组装需要前卷摘要、且已存《卷摘要》指纹过期（成员章摘要变化/新增）时触发整体重建并落盘。本导出按盘上现状重建这条提示词。",
+				`目标卷=「${volName}」（当前卷${curVol ? "" : "未设定，取第一卷"}）；输入为本卷 ${String(lines.length)} 个成员的已存新鲜章节摘要（缺失/过期的成员章跳过）。`,
+				'调用显式参数：max_tokens=900、temperature=0.4、reasoning_effort="none"。',
+			], [
+				{ heading: "系统提示词（system）", content: VOL_SUMMARY_SYSTEM_PROMPT },
+				{ heading: "用户提示词（user）", content: buildVolRebuildPrompt(volName, lines) },
+			]);
+		});
+
+		const storyPath = this.manager.storyPath(story);
+		const slugOf = (title: string): string => title.replace(/\s+/g, "-").replace(/[^\u4e00-\u9fa5a-zA-Z0-9\-]/g, "").slice(0, 60);
+		entries.unshift({
+			title: "AI提示词（导出说明）",
+			content: [
+				"# AI提示词（导出）",
+				"",
+				`本文件由「导出AI提示词」(/export-ai-prompts) 生成于 ${new Date().toISOString()}，小说：《${state.title}》。`,
+				"",
+				"- 每个阶段给出**运行时实拼**的 system/user 提示词（与各命令同一构建函数与参数），可直接逐个复制喂本地模型比对输出。",
+				"- 导出全程不调用 LLM；按当前盘上数据判定「现在会不会触发」，不会触发的阶段只写跳过原因——唯一例外是 /write：激活章已有正文时运行时不触发，但仍照常组装导出提示词（节内备注），便于随时调试。",
+				"- 弹窗输入取默认基准：文本弹窗留空；章数弹窗取 " + String(defaultCount) + "（= 现有章数）。运行时改了弹窗输入/盘上数据后需重新导出。",
+				"- 增量链（卷设计→逐章、AI 拆分逐章、analyze-cast 逐章、书级大纲续写）只导出首步；依赖前一步输出的位置用占位符注明。",
+				"- 章域基准 = 写字台当前激活章" + (activeKey ? `「${chLabel}」` : "（未设定，相关阶段已跳过）") + "；大纲/卷摘要域基准 = 当前卷。",
+				"- 章节摘要/卷摘要不是命令：它们在写作上下文组装时按需延迟生成，导出展示其最新形态的提示词。",
+				"- 写作上下文中的摘要：导出全程不触发摘要的 LLM 生成——已存新鲜摘要照放；缺失处填占位符 " + summaryPlaceholder + "（无成员章摘要的卷运行时也跳过、不占槽，故不填占位符）。",
+				"- 本文档不是书稿（案头资料）：重新导出会整体覆盖。",
+			].join("\n"),
+		});
+		return entries.map((e) => ({
+			...e,
+			path: `${storyPath}/AI提示词/${slugOf(e.title)}.md`,
+		}));
+	}
+
+	// ---------- /typo-check 错别字检测 ----------
+	async cmdTypoCheck(): Promise<void> {
+		if (!(await this.ensureWorkDir())) return;
+		const story = await this.requireStory();
+		if (!story) return;
+		try {
+			const num = await this.targetChapterKey(story, "检测错别字"); // v0.0.15：复合键
+			if (num == null) return;
+			const volNames = await this.volNameMap(story).catch(() => ({}));
+			const chLabel = this.keyLabel(num, volNames);
+			const bodyOnDisk = await this.manager.readChapterContent(story, num); // readChapterContent 已剥离既有标红/下划线标记，重跑不会双重包裹
+			if (!bodyOnDisk.trim()) {
+				new Notice(`${chLabel}还没有内容，无法检测错别字`);
+				return;
+			}
+			const setup = this.getPhaseLlmSetup(2); // v0.2.22+：文章大纲生成和编写文章阶段
+			if (!setup) return;
+
+			const n = new Notice(`正在检测${chLabel}的错别字…\nLLM 全文扫描，可能需要一点时间`);
+			let markedText = "";
+			let list: Array<{ wrong: string; right: string | null }> = [];
+			try {
+				// 全文回显式输出：token 预算须覆盖原文 + <u> 标记 + 建议 JSON，取配置值与估算值的较大者
+				const maxTokens = Math.max(setup.cfg.max_tokens ?? 65535, Math.ceil(bodyOnDisk.length * 2) + 1024);
+				for (let attempt = 1; attempt <= 3; attempt++) {
+					const raw = await chatCompletion(
+						setup.cfg,
+						[
+							{ role: "system" as const, content: TYPO_SCAN_SYSTEM_PROMPT },
+							{ role: "user" as const, content: buildTypoScanPrompt(bodyOnDisk) },
+						],
+						{ max_tokens: maxTokens }
+					);
+					const parsed = parseTypoScan(raw || "", bodyOnDisk);
+					if (!parsed) continue; // 剥掉 <u> 标记后与原文不一致 → 重试
+					const applied = applyTypoMarks(parsed.marked, parsed.marks, parsed.suggestions);
+					markedText = applied.text;
+					list = applied.list;
+					break;
+				}
+			} catch (e) {
+				n.hide();
+				this.notifyError("错别字检测失败", e);
+				return;
+			}
+			n.hide();
+			if (!markedText) {
+				new Notice(`✗ 错别字检测失败：模型输出 3 次均未通过校验（全文回显漂移），章节文件未改动`, 10000);
+				return;
+			}
+			if (!list.length) {
+				new Notice(`✓ ${chLabel}未检测到错别字`, 6000);
+				return;
+			}
+			const modal = await this.beginWritingPanel(`错别字检测结果 · ${chLabel}`);
+			if (!modal) { new Notice("无法打开生成面板，本次操作已取消", 8000); return; }
+			const listLines = list.map((it, i) => `${i + 1}. ${it.wrong} → ${it.right ?? "（无建议）"}`);
+			modal.append(`共发现 ${String(list.length)} 处错别字：\n${listLines.join("\n")}\n\n---\n\n` + markedText);
+			modal.finish();
+			const keep = await modal.done;
+			if (!keep) {
+				new Notice("未保存（错别字标记仅预览）", 6000);
+				return;
+			}
+			const words = await this.manager.setChapterBody(story, num, markedText); // 全量覆盖；下划线 span 有意落盘、读回时自动剥离
+			try {
+				const f = await this.manager.chapterBodyFile(story, num);
+				if (f instanceof TFile) await this.manager.openMarkdown(f.path);
+			} catch { /* ignore */ }
+			new Notice(`✓ ${chLabel}已标记 ${String(list.length)} 处错别字（${String(words)} 字）`, 8000);
+		} catch (e) {
+			this.notifyError("错别字检测失败", e);
+		}
+	}
+
+	// ---------- /review 审阅本章 ----------
+
+	async cmdReviewChapter(): Promise<void> {
+		if (!(await this.ensureWorkDir())) return;
+		const story = await this.requireStory();
+		if (!story) return;
+		try {
+			const state = await this.manager.validatedState(story);
+			void state;
+			const num = await this.targetChapterKey(story, "审阅"); // v0.0.15：复合键
+			if (num == null) return;
+			const volNames = await this.volNameMap(story).catch(() => ({}));
+			const chLabel = this.keyLabel(num, volNames);
+			const bodyOnDisk = await this.manager.readChapterContent(story, num);
+			if (!bodyOnDisk.trim()) {
+				new Notice(`${chLabel}还没有内容，无法审阅`);
+				return;
+			}
+			const rawInstr = await this.prompt("重点审阅要求（可选）", "如：重点检查时间线与人物动机");
+			if (rawInstr == null) return;
+			const instruction = rawInstr.trim();
+
+			const setup = await this.loadWriterSetup();
+			if (!setup) return;
+			const guides = await this.loadWriterGuides(story);
+			const data = await this.manager.loadWritingData(story, num, { includeCurrentSummary: false, dropOutlineDoc: true }); // 本章大纲由桥接块【当前情节】注入，不再经 folderDocs 二次注入
+			const context = buildWritingContext(data);
+			let bridge: { prev?: { label: string; text?: string }; cur?: { label: string; text?: string }; nxt?: { label: string; text?: string } } = {};
+			try {
+				for (const w of await this.manager.readOutlineWindow(story, num, { back: 1, fwd: 1 })) {
+					const ref = { label: w.label, text: w.text || undefined };
+					if (w.key === num) bridge.cur = ref;
+					else if (w.ordinal < data.chapterNum) bridge.prev = ref;
+					else bridge.nxt = ref;
+				}
+			} catch { /* 大纲桥读取失败不阻断审阅 */ }
+			const sp = this.writerSystemPrompt(setup.systemPrompt, guides, state.writing_style, state.title, data.characters.map((c) => c.name));
+			const prompt = buildReviewPrompt({
+				chapterNum: data.chapterNum, // v0.0.15：阅读序位置（ordinal，跨卷连续）
+				chapterLabel: chLabel,
+				userInstruction: instruction || undefined,
+				context,
+				bridge,
+				chapterContent: bodyOnDisk,
+			});
+
+			const n = new Notice(`正在从全局视角审阅${chLabel}…\n将结合小说大纲、前文与角色设定分析本章逻辑，请耐心等待`);
+			let report = "";
+			for (let attempt = 1; attempt <= 3 && !report.trim(); attempt++) {
+				try {
+					report = await chatCompletion(setup.cfg, [
+						{ role: "system" as const, content: sp },
+						{ role: "user" as const, content: prompt },
+					]);
+				} catch (e) {
+					n.hide();
+					const msg = e instanceof Error ? e.message : String(e);
+					if ((msg.includes("未返回内容") || msg.includes("输出为空")) && attempt < 3) {
+						new Notice(`审阅结果为空（第${String(attempt)}次），正在重试…`, 6000);
+						continue;
+					}
+					this.notifyError("审阅失败", e);
+					return;
+				}
+			}
+			n.hide();
+			if (!report.trim()) {
+				new Notice("✗ 审阅结果为空：服务繁忙或生成被中断，请稍后重试", 12000);
+				return;
+			}
+
+			const modal = await this.beginWritingPanel(`审阅报告 · ${chLabel}`);
+			if (!modal) { new Notice("无法打开生成面板，本次操作已取消", 8000); return; }
+			modal.append(report);
+			modal.finish();
+			const keep = await modal.done;
+			if (!keep) {
+				new Notice("未保存（仅预览）", 6000);
+				return;
+			}
+			const path = await this.manager.saveReviewNote(story, num, report);
+			await this.manager.openMarkdown(path).catch(() => undefined);
+			new Notice(`✓ 审阅笔记已保存到\n${path}`, 8000);
+		} catch (e) {
+			this.notifyError("审阅失败", e);
+		}
+	}
+}
+
+/** 多行文本展示框 */
+class StatusModal extends Modal {
+	constructor(app: App, private lines: string[]) {
+		super(app);
+	}
+
+	onOpen(): void {
+		this.contentEl.createEl("h3", { text: "小说状态 / 统计" });
+		this.contentEl.createEl("pre", { cls: "aw-status-pre" }).setText(this.lines.join("\n")); // white-space:pre-wrap 走类名
+	}
+
+	override onClose(): void {
+		this.contentEl.empty();
+	}
+}
+
+class ArticleWriterSettingTab extends PluginSettingTab {
+	plugin: ArticleWriterPlugin;
+
+	constructor(plugin: ArticleWriterPlugin) {
+		super(plugin.app, plugin);
+		this.plugin = plugin;
+	}
+
+	// ===== 声明式设置（唯一实现：minAppVersion=1.13.0 保证框架恒调 getSettingDefinitions；pre-1.13 的已废弃 display()/renderLlm 旧渲染路径已删除——目录校验器禁 deprecated API）=====
+
+	private conf(): PluginConfig {
+		return this.plugin.settings.llm ?? (this.plugin.settings.llm = buildDefaultLlmConf());
+	}
+
+	getSettingDefinitions(): SettingDefinitionItem[] {
+		const cfgs = this.conf().llm_configs ?? [];
+		const defs: SettingDefinitionItem[] = [];
+
+		defs.push({ name: "工作目录（work_dir）", desc: "写小说的文件夹（vault 内已有文件夹）。首次使用任何命令时会自动弹出选择器让你选定；以后建书/建章/打开文档等全部在该目录下操作。每个小说是其下一个子文件夹：故事状态.md、大纲.md、第NN章-标题/章节.md 等", control: { key: "workDir", type: "text", placeholder: "首次使用时自动选择" } });
+		defs.push({ name: "重新选择工作目录…", desc: "弹出文件夹选择器切换 work_dir（同「选择工作目录」命令）", action: () => void this.plugin.pickWorkDir(false) });
+		defs.push({ name: "创建后自动打开文档", desc: "新建小说/章节后立即在标签页中打开对应正文或大纲", control: { key: "autoOpenOnCreate", type: "toggle" } });
+		defs.push({ name: "前文参考章数 prevN", desc: "写作命令生成提示词时注入【前文内容】的最近 N 章（每章取 AI 摘要、缺失自动生成；0=不注入前文）。留空=默认 3。卷模式下窗口限本卷，不再拉取他卷章节细节", control: { key: "prevChapters", type: "text", placeholder: "默认 3" } });
+		defs.push({ name: "注入整卷《卷摘要》", desc: "开启后写作上下文额外包含当前卷完整《卷摘要》，跨卷缺口另以各前卷《卷摘要》填充（含触发 LLM 重建）；关闭=严格只注入最近 N 章（对齐 Python 原版语义，默认关）", control: { key: "includeVolumeSummary", type: "toggle" } });
+
+		const llmNameMap = cfgs.reduce<Record<string, string>>((m, c) => { m[c.name] = c.name; return m; }, {}); // ES2019 同名 API 的低版本等价写法：构造 name→name 恒等映射
+		defs.push({ type: "group", heading: "LLM 全局设置", items: [
+			{ name: "对话框使用的模型配置", desc: "LLM 对话窗口下拉默认选中的模型；写作命令按阶段映射独立选择，不受此影响", control: { key: "llm.chat_model", type: "dropdown", options: llmNameMap, defaultValue: "" } },
+			{ name: "写作系统提示词 system_prompt", desc: "全局基础系统提示词：无编写类型格式块时使用；留空=内置默认。对齐 CLI config.json 的 system_prompt", control: { key: "llm.system_prompt", type: "textarea", rows: 5, placeholder: "留空使用内置默认" } },
+			{ name: "描述方式 desc_style", desc: "normal / complete（对齐 CLI）", control: { key: "llm.desc_style", type: "dropdown", options: { normal: "normal", complete: "complete" }, defaultValue: "normal" } },
+		] });
+
+		// v0.2.22+：写作阶段模型配置（四阶段独立模型）
+		const phases = this.conf().writing_phases ?? [];
+		defs.push({ type: "group", heading: "写作阶段模型配置（v0.2.22+）", items: [
+			{ name: "策划方案生成阶段", desc: "planning-guide / planning-guide-worldview：AI 生成《策划指南.md》", control: { key: "writing_phases.0.llm_config_name", type: "dropdown", options: llmNameMap, defaultValue: "" } },
+			{ name: "书籍大纲和卷级大纲生成阶段", desc: "book-outline-generate / book-outline-to-volumes：书级/卷级大纲生成", control: { key: "writing_phases.1.llm_config_name", type: "dropdown", options: llmNameMap, defaultValue: "" } },
+			{ name: "文章大纲生成阶段", desc: "generate-chapter-outline：章节大纲生成", control: { key: "writing_phases.2.llm_config_name", type: "dropdown", options: llmNameMap, defaultValue: "" } },
+			{ name: "编写文章阶段", desc: "generate-chapter-streamed：正文生成", control: { key: "writing_phases.3.llm_config_name", type: "dropdown", options: llmNameMap, defaultValue: "" } },
+		] });
+
+		defs.push({ type: "list", heading: "模型配置（llm_configs，存于插件数据目录 data.json）", emptyState: "没有模型配置。", addItem: { name: "新建配置", action: () => void this.addLlmConfig() }, onDelete: (i) => void this.removeLlmConfig(i), onReorder: (o, n) => void this.reorderLlmConfigs(o, n), items: cfgs.map((cfg, i) => this.configPage(cfg, i)) });
+
+		defs.push({ name: "关于", desc: "ArticleWriter Obsidian 版：建书/建章、打开文档、保存、字数统计；数据全部为 vault 内 MD 文档，运行态存于各书的「故事状态.md」YAML 文件属性（version 2）。LLM 走 OpenAI 兼容接口（openai SDK），可接 DeepSeek / DashScope / Ollama / LM Studio / llama.cpp 等。api_key 明文存放——同步/分享 vault 时注意不要泄露配置文件。" });
+		return defs;
+	}
+
+	private configPage(cfg: LlmConfigDoc, i: number): SettingDefinitionPage<string> {
+		const strFields: Array<[keyof LlmConfigDoc, string, string]> = [
+			["base_url", "服务地址 base_url", "如 http://localhost:8509 或 https://api.deepseek.com（已含 /vN 不重复拼接）"],
+			["model_name", "模型 model_name", "本地服务可留空（用其已加载模型）"],
+			["api_key", "API Key api_key", "明文存于插件数据目录 data.json"],
+		];
+		const numFields: Array<[keyof LlmConfigDoc, string]> = [["temperature", "温度 temperature"], ["max_tokens", "最大 token max_tokens"]];
+		const items: SettingDefinitionItem[] = [];
+		items.push({ name: "名称 name", desc: "配置显示名，同步更新写作阶段引用", control: { key: `cfg.${i}.name`, type: "text", placeholder: "配置名称" } });
+		items.push({ name: "测试连接", desc: "对该配置执行 GET /models 连通性测试并弹通知（列出可用模型）", action: () => void this.plugin.runLlmTest(cfg) });
+		for (const [k, label] of numFields) items.push({ name: label, control: { key: `cfg.${i}.${String(k)}`, type: "text", placeholder: String(k) } });
+		for (const [k, label, ph] of strFields) items.push({ name: label, desc: ph, control: { key: `cfg.${i}.${String(k)}`, type: "text", placeholder: ph } });
+		// v0.2.21+：多值字段改下拉框；存量值不在标准集时动态并入选项（标「（存量值）」）防丢失
+		const effortOptions: Record<string, string> = { "": "留空（不发送）", none: "none（关思考）", low: "low", medium: "medium", high: "high", max: "max" };
+		const effortCur = (cfg.reasoning_effort ?? "").trim();
+		if (effortCur && !Object.prototype.hasOwnProperty.call(effortOptions, effortCur)) effortOptions[effortCur] = `${effortCur}（存量值）`;
+		items.push({ name: "推理强度 reasoning_effort", desc: "随每次请求发送（兼容端点支持时生效）。思考型本地模型（llama-server + Qwen 模板）默认开思考会耗尽输出预算导致正文为空，选 none 可关思考；OpenAI o 系列原生支持", control: { key: `cfg.${i}.reasoning_effort`, type: "dropdown", options: effortOptions } });
+		const thinkOptions: Record<string, string> = { "": "留空（跟随服务端默认）", on: "on（开思考）", off: "off（关思考）" };
+		const thinkCur = (cfg.thinking ?? "").trim();
+		if (thinkCur && !Object.prototype.hasOwnProperty.call(thinkOptions, thinkCur)) thinkOptions[thinkCur] = `${thinkCur}（存量值）`;
+		items.push({ name: "思考模式 thinking", desc: "仅 DeepSeek 端点生效：off=不思考，更快更省 token；留空=跟随服务端默认（deepseek-flash 默认开思考）", control: { key: `cfg.${i}.thinking`, type: "dropdown", options: thinkOptions } });
+		items.push({ name: "删除配置", desc: "从列表中移除该模型配置；若被写作阶段引用则自动清空对应阶段的 llm_config_name", action: () => void this.removeLlmConfig(i) });
+		return { type: "page", name: cfg.name, desc: cfg.base_url || "（未填服务地址）", displayValue: () => [cfg.model_name && `模型 ${cfg.model_name}`, cfg.base_url].filter(Boolean).join(" · "), status: cfg.base_url ? null : ("warning" as const), items };
+	}
+
+	getControlValue(key: string): unknown {
+		const s = this.plugin.settings;
+		if (key === "workDir") return s.workDir ?? "";
+		if (key === "autoOpenOnCreate") return !!s.autoOpenOnCreate;
+		if (key === "prevChapters") return s.prevChapters == null ? "" : String(s.prevChapters); // v0.1.4+：空=按内置默认 3
+		if (key === "includeVolumeSummary") return !!s.includeVolumeSummary; // v0.1.4+：卷摘要注入开关（缺省=false）
+		const c = this.conf();
+		if (key === "llm.chat_model") {
+			const names = (c.llm_configs ?? []).map((x) => x.name);
+			const cur = c.chat_model || c.active_llm;
+			return cur && names.includes(cur) ? cur : (names[0] ?? "");
+		}
+		if (key === "llm.system_prompt") return c.system_prompt ?? "";
+		if (key === "llm.desc_style") return c.desc_style || "normal";
+		// v0.2.22+：写作阶段模型配置
+		const phaseMatch = key.match(/^writing_phases\.(\d+)\.llm_config_name$/);
+		if (phaseMatch) {
+			const idx = Number(phaseMatch[1]);
+			const phases = c.writing_phases ?? [];
+			return phases[idx]?.llm_config_name ?? "";
+		}
+		if (key.startsWith("cfg.")) {
+			const parts = key.split(".");
+			const field = parts.slice(2).join(".") as keyof LlmConfigDoc;
+			const v = (c.llm_configs ?? [])[Number(parts[1])]?.[field];
+			return v == null ? "" : String(v);
+		}
+		return undefined;
+	}
+
+	async setControlValue(key: string, value: unknown): Promise<void> {
+		const s = this.plugin.settings;
+		const str = typeof value === "string" ? value : "";
+		if (key === "workDir") {
+			const prevStory = (s.lastStory || "").trim(); // v0.2.1+：作废旧小说记忆前先把其窗口状态归档进该书工作区（与 pickWorkDir 同语义）
+			s.workDir = str.trim().replace(/^\/+|\/+$/g, "");
+			void this.plugin.captureBookWorkspace(prevStory);
+			s.lastStory = "";
+			await this.plugin.saveSettings();
+			return;
+		}
+		if (key === "autoOpenOnCreate") {
+			s.autoOpenOnCreate = value === true;
+			await this.plugin.saveSettings();
+			return;
+		}
+		if (key === "prevChapters") { // v0.1.4+：非负整数；留空/非法=清除回落内置默认 3（对齐 cfg 数值字段「空=undefined」约定）
+			const n = Number(str);
+			s.prevChapters = str.trim() !== "" && !Number.isNaN(n) && n >= 0 ? Math.floor(n) : undefined;
+			await this.plugin.saveSettings();
+			return;
+		}
+		if (key === "includeVolumeSummary") { // v0.1.4+：布尔开关，关闭存 false（缺省即关）
+			s.includeVolumeSummary = value === true;
+			await this.plugin.saveSettings();
+			return;
+		}
+		const c = this.conf();
+		if (key === "llm.chat_model") { c.chat_model = str || undefined; this.plugin.syncChatModelSelect(); } // 设置页改对话框模型 → 已打开的 LLM 对话框下拉同步跟随
+		else if (key === "llm.system_prompt") c.system_prompt = str.trim() || undefined;
+		else if (key === "llm.desc_style") c.desc_style = str || "normal";
+		// v0.2.22+：写作阶段模型配置
+		else {
+			const phaseMatch = key.match(/^writing_phases\.(\d+)\.llm_config_name$/);
+			if (phaseMatch) {
+				const idx = Number(phaseMatch[1]);
+				if (!c.writing_phases) c.writing_phases = [];
+				while (c.writing_phases.length <= idx) c.writing_phases.push({ name: `阶段${idx + 1}` });
+				c.writing_phases[idx].llm_config_name = str.trim() || undefined;
+				await this.plugin.saveSettings();
+				return;
+			}
+		}
+		if (key.startsWith("cfg.")) {
+			const parts = key.split(".");
+			const field = parts.slice(2).join(".") as keyof LlmConfigDoc;
+			const cfg = (c.llm_configs ?? [])[Number(parts[1])];
+			if (!cfg) return;
+			const rec = cfg as unknown as Record<string, unknown>;
+			if (field === "temperature" || field === "max_tokens") { const n = Number(str); rec[field] = str.trim() !== "" && !Number.isNaN(n) ? n : undefined; }
+			else if (field === "name") {
+				const trimmed = str.trim();
+				if (!trimmed) return; // 空名不保存
+				const oldName = cfg.name;
+				if (trimmed !== oldName && (c.llm_configs ?? []).some((x) => x.name === trimmed)) return; // 重名不保存
+				cfg.name = trimmed;
+				if (c.active_llm === oldName) c.active_llm = trimmed;
+				const phases = c.writing_phases ?? [];
+				for (const phase of phases) { if (phase.llm_config_name === oldName) phase.llm_config_name = trimmed; }
+				this.plugin.syncChatModelSelect();
+			}
+			else rec[field] = str.trim() || undefined;
+		} else return; // 未知键忽略
+		await this.plugin.saveSettings();
+	}
+
+	private async addLlmConfig(): Promise<void> {
+		const conf = this.conf();
+		const cfgs = (conf.llm_configs ??= []);
+		let i = cfgs.length + 1;
+		let name = `config-${i}`;
+		while (cfgs.some((x) => x.name === name)) { i++; name = `config-${i}`; }
+		cfgs.push({ name, provider: "openai", api_key: "", base_url: "", model_name: "", temperature: 0.8, max_tokens: 65535, top_p: 0.9, repeat_penalty: 1.1, thinking: "", reasoning_effort: "high", openai_extras: [], api_style: "" });
+		if (!conf.active_llm) conf.active_llm = name;
+		await this.plugin.saveSettings();
+		this.plugin.syncChatModelSelect();
+		this.update();
+		new Notice("已新建模型配置，请填写服务地址/模型/API Key");
+	}
+
+	private removeLlmConfig(i: number): void {
+		void (async () => {
+			const conf = this.conf();
+			const cfgs = conf.llm_configs ?? [];
+			const removed = cfgs.splice(i, 1)[0];
+			if (removed && conf.active_llm === removed.name) conf.active_llm = cfgs[0]?.name; // 删激活项则回落到第一个（可能为 undefined=空列表）
+			// 清理 writing_phases 中对被删配置的引用
+			if (removed) {
+				const phases = conf.writing_phases ?? [];
+				for (const phase of phases) {
+					if (phase.llm_config_name === removed.name) phase.llm_config_name = undefined;
+				}
+			}
+			await this.plugin.saveSettings();
+			this.plugin.syncChatModelSelect();
+			this.update();
+		})();
+	}
+
+	private async renameLlmConfig(i: number): Promise<void> {
+		const conf = this.conf();
+		const cfgs = conf.llm_configs ?? [];
+		const oldName = cfgs[i]?.name;
+		if (!oldName) return;
+		const newName = await new Promise<string | null>((resolve) => {
+			new TextInputModal(this.app, "重命名配置", "新名称", (v) => resolve(v), () => resolve(null), `当前：${oldName}`, oldName).open();
+		});
+		if (!newName) return;
+		const trimmed = newName.trim();
+		if (!trimmed) { new Notice("名称不能为空"); return; }
+		if (trimmed !== oldName && cfgs.some((x) => x.name === trimmed)) { new Notice("该名称已被其他配置占用"); return; }
+		cfgs[i].name = trimmed;
+		if (conf.active_llm === oldName) conf.active_llm = trimmed;
+		const phases = conf.writing_phases ?? [];
+		for (const phase of phases) {
+			if (phase.llm_config_name === oldName) phase.llm_config_name = trimmed;
+		}
+		await this.plugin.saveSettings();
+		this.plugin.syncChatModelSelect();
+		this.update();
+	}
+
+	private reorderLlmConfigs(oldIndex: number, newIndex: number): void {
+		void (async () => {
+			const cfgs = this.conf().llm_configs ?? [];
+			const [moved] = cfgs.splice(oldIndex, 1);
+			cfgs.splice(newIndex, 0, moved);
+			await this.plugin.saveSettings();
+			this.plugin.syncChatModelSelect();
+			this.update();
+		})();
+	}
+
+	private setActiveLlm(name: string): void {
+		void (async () => {
+			this.conf().active_llm = name;
+			await this.plugin.saveSettings();
+			this.plugin.syncChatModelSelect(); // 设置页「设为激活」→ 对话框下拉同步
+			this.update();
+		})();
+	}
+}
