@@ -1627,6 +1627,10 @@
 .aw-phase-tabs-content {
 	padding: 4px 0;
 }
+.aw-phase-tabs-content .setting-item {
+	padding: 1px 0 !important;
+	border-top: none !important;
+}
 /* identity_boost 设置项布局 */
 .aw-identity-boost-container {
 	margin-top: 12px;
