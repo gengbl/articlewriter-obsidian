@@ -6780,9 +6780,6 @@ class ArticleWriterSettingTab extends PluginSettingTab {
 		const defaults = buildDefaultLlmConf();
 		const default_value = (defaults.writing_phases ?? [])[phaseIdx]?.identity_boost ?? "";
 		let editing = false;
-		// 说明文字
-		const descEl = container.createEl("div", { cls: "aw-identity-boost-desc" });
-		descEl.setText("注入到该阶段 system prompt 末尾的【身份加强】块；留空=不注入");
 		// 显示区域（上）+ 按钮区域（下）
 		const displayEl = container.createEl("div", { cls: "aw-identity-boost-display" });
 		const btnEl = container.createEl("div", { cls: "aw-identity-boost-btns" });
@@ -6892,16 +6889,15 @@ class ArticleWriterSettingTab extends PluginSettingTab {
 						const nameRow = container.createEl("div", { cls: "aw-phase-tab-row" });
 						const nameInput = nameRow.createEl("input", { type: "text", cls: "mod-setting-input" });
 						nameInput.value = phase.name;
-						nameInput.placeholder = `阶段${idx + 1}`;
 						nameInput.oninput = () => {
 							const phases = this.conf().writing_phases ?? [];
-							if (!phases[idx]) phases[idx] = { name: `阶段${idx + 1}` };
-							phases[idx].name = nameInput.value.trim() || `阶段${idx + 1}`;
+							if (!phases[idx]) phases[idx] = { name: "" };
+							phases[idx].name = nameInput.value.trim();
 							this.plugin.saveData(this.plugin.settings);
 							// 更新 tab 按钮文字
-							tabHeader.querySelectorAll(".aw-phase-tab-btn")[idx].setText(nameInput.value.trim() || `阶段${idx + 1}`);
+							tabHeader.querySelectorAll(".aw-phase-tab-btn")[idx].setText(nameInput.value.trim());
 							// 同步更新标题
-							titleEl.setText(nameInput.value.trim() || `阶段${idx + 1}`);
+							titleEl.setText(nameInput.value.trim());
 						};
 						// 模型配置下拉
 						const modelRow = container.createEl("div", { cls: "aw-phase-tab-row" });
