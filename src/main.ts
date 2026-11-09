@@ -6881,12 +6881,6 @@ class ArticleWriterSettingTab extends PluginSettingTab {
 				const tabHeader = tabContainer.createEl("div", { cls: "aw-phase-tabs-header" });
 				const tabContent = tabContainer.createEl("div", { cls: "aw-phase-tabs-content" });
 				const tabNames = ["策划方案生成", "书籍大纲和卷级大纲生成", "文章大纲生成", "编写文章"];
-				const tabDescs = [
-					"planning-guide / planning-guide-worldview：AI 生成《策划指南.md》",
-					"book-outline-generate / book-outline-to-volumes：书级/卷级大纲生成",
-					"generate-chapter-outline：章节大纲生成",
-					"generate-chapter-streamed：正文生成",
-				];
 				let activeTab = 0;
 				// 创建 tab 按钮
 				tabNames.forEach((name, idx) => {
@@ -6905,6 +6899,9 @@ class ArticleWriterSettingTab extends PluginSettingTab {
 				// 渲染当前 phase tab
 				const renderPhaseTab = (idx: number, container: HTMLElement, options: Record<string, string>) => {
 					const phase = phases[idx] ?? { name: `阶段${idx + 1}` };
+					// 阶段名称标题（单独一行）
+					const titleEl = container.createEl("h4", { cls: "aw-phase-tab-title" });
+					titleEl.setText(phase.name);
 					// 阶段名称输入
 					const nameRow = container.createEl("div", { cls: "aw-phase-tab-row" });
 					nameRow.createEl("span", { text: "阶段名称", cls: "aw-phase-tab-label" });
@@ -6918,10 +6915,9 @@ class ArticleWriterSettingTab extends PluginSettingTab {
 						this.plugin.saveData(this.plugin.settings);
 						// 更新 tab 按钮文字
 						tabHeader.querySelectorAll(".aw-phase-tab-btn")[idx].setText(nameInput.value.trim() || `阶段${idx + 1}`);
+						// 同步更新标题
+						titleEl.setText(nameInput.value.trim() || `阶段${idx + 1}`);
 					};
-					// 描述文字
-					const descEl = container.createEl("div", { cls: "aw-phase-tab-desc" });
-					descEl.setText(tabDescs[idx]);
 					// 模型配置下拉
 					const modelRow = container.createEl("div", { cls: "aw-phase-tab-row" });
 					modelRow.createEl("span", { text: "模型配置", cls: "aw-phase-tab-label" });
