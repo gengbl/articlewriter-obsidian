@@ -6854,6 +6854,7 @@ class ArticleWriterSettingTab extends PluginSettingTab {
 	private configPage(cfg: LlmConfigDoc, i: number): SettingDefinitionPage<string> {
 		const active = this.conf().active_llm === cfg.name;
 		const strFields: Array<[keyof LlmConfigDoc, string, string]> = [
+			["name", "名称 name", "配置显示名，同步更新激活态与写作阶段引用"],
 			["base_url", "服务地址 base_url", "如 http://localhost:8509 或 https://api.deepseek.com（已含 /vN 不重复拼接）"],
 			["model_name", "模型 model_name", "本地服务可留空（用其已加载模型）"],
 			["api_key", "API Key api_key", "明文存于插件数据目录 data.json"],
@@ -6873,7 +6874,6 @@ class ArticleWriterSettingTab extends PluginSettingTab {
 		const thinkCur = (cfg.thinking ?? "").trim();
 		if (thinkCur && !Object.prototype.hasOwnProperty.call(thinkOptions, thinkCur)) thinkOptions[thinkCur] = `${thinkCur}（存量值）`;
 		items.push({ name: "思考模式 thinking", desc: "仅 DeepSeek 端点生效：off=不思考，更快更省 token；留空=跟随服务端默认（deepseek-flash 默认开思考）", control: { key: `cfg.${i}.thinking`, type: "dropdown", options: thinkOptions } });
-		items.push({ name: "重命名配置", desc: "修改该模型配置的名称（同步更新激活态与写作阶段引用）", action: () => void this.renameLlmConfig(i) });
 		items.push({ name: "删除配置", desc: "从列表中移除该模型配置；若被写作阶段引用则自动清空对应阶段的 llm_config_name", action: () => void this.removeLlmConfig(i) });
 		return { type: "page", name: `${cfg.name}${active ? " ◀ 当前" : ""}`, desc: cfg.base_url || "（未填服务地址）", displayValue: () => [cfg.model_name && `模型 ${cfg.model_name}`, cfg.base_url].filter(Boolean).join(" · "), status: cfg.base_url ? null : ("warning" as const), items };
 	}
@@ -6957,6 +6957,17 @@ class ArticleWriterSettingTab extends PluginSettingTab {
 			if (!cfg) return;
 			const rec = cfg as unknown as Record<string, unknown>;
 			if (field === "temperature" || field === "max_tokens") { const n = Number(str); rec[field] = str.trim() !== "" && !Number.isNaN(n) ? n : undefined; }
+			else if (field === "name") {
+				const trimmed = str.trim();
+				if (!trimmed) return; // 空名不保存
+				const oldName = cfg.name;
+				if (trimmed !== oldName && (c.llm_configs ?? []).some((x) => x.name === trimmed)) return; // 重名不保存
+				cfg.name = trimmed;
+				if (c.active_llm === oldName) c.active_llm = trimmed;
+				const phases = c.writing_phases ?? [];
+				for (const phase of phases) { if (phase.llm_config_name === oldName) phase.llm_config_name = trimmed; }
+				this.plugin.syncChatModelSelect();
+			}
 			else rec[field] = str.trim() || undefined;
 		} else return; // 未知键忽略
 		await this.plugin.saveSettings();
