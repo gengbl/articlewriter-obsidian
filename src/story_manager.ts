@@ -3707,7 +3707,6 @@ private emptyState(storyName: string): StoryState {
 			}
 		}
 		this.onProgress?.(null); // v0.1.4+：本轮上下文组装的摘要生成阶段结束 → 隐藏进度提示（插件侧另有空闲超时兜底）
-		const foreshadows = (await this.loadForeshadows(storyName)).filter((f) => !f.done);
 
 		return {
 			chapterNum: ordinal,
@@ -3718,7 +3717,6 @@ private emptyState(storyName: string): StoryState {
 				acc[c.key] = i + 1;
 				return acc;
 			}, {}),
-			volumeNames: volNames,
 			title: (state.title || "").trim() || storyName,
 			genre: state.genre,
 			writingStyle: state.writing_style,
@@ -3739,7 +3737,6 @@ private emptyState(storyName: string): StoryState {
 			prevN,
 			world: await this.readWorldDoc(storyName),
 			scenes: Object.values(await this.loadAllScenes(storyName)),
-			foreshadows,
 			folderDocs,
 			savedForeshadows,
 		};

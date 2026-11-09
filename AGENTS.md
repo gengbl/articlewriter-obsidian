@@ -54,6 +54,7 @@
 
 ## 全局硬规则（任何改动都适用）
 
+- **修改后不立即推送**：每次代码/文档改动完成后，先完成构建验证（`npm run build` + `node --check` + `npm run lint`）并告知用户结果，**等待用户明确发出推送指令后再执行 git commit + push**。不得在用户未确认时自动推送。
 - **禁止并行处理**：执行任何任务一律串行——一次只发起一个工具调用 / 操作，拿到其结果后再进行下一步；即便多个操作彼此独立、本可并发，也不得批量或同时发起。逐步推进以便每步可核验、避免相互覆盖的并发改动。
 - **代码改动后必须跑通 `npm run build`（tsc 零错误）**；可再 `node --check release/main.js` 兜底。**发布门禁**：提交/发布前 `npm run lint`（eslint 类型感知检测四类 no-unsafe-*：assignment/call/member-access/return）必须零违规，命中任一即不得发布——配置在仓库根 `eslint.config.mjs`，规则与背景见 [RELEASE.md](./RELEASE.md)「发布门禁」节。
 - **每次有代码变化，必须检查新增/修改行有无冗余类型断言**：接收方已接受原始窄化类型的断言一律删除、直接赋值（连同关联 eslint-disable 注释）；合法保留场景与判定细则见 [agents/process-rules.md](./agents/process-rules.md)「验证要求」。

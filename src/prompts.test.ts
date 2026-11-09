@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { buildBookOutlineContinuePrompt, buildChapterPrompt, buildContinuePrompt, buildRewritePrompt, buildVolOutlineChapterPrompt, buildChapterRefFixPrompt, CHAPTER_REF_BAN, compactOutlineIndex, findChapterRefLeaks, findChapterRefSentences, fixChapterRefs, parseChapterWithSummary } from "./prompts";
+import { buildBookOutlineExtendPrompt, buildChapterPrompt, buildContinuePrompt, buildRewritePrompt, buildVolOutlineChapterPrompt, buildChapterRefFixPrompt, CHAPTER_REF_BAN, findChapterRefLeaks, findChapterRefSentences, fixChapterRefs, parseChapterWithSummary } from "./prompts";
 
 test("strictCurrentOutlineOnly keeps the prompt anchored to the current volume outline only", () => {
 	const prompt = buildVolOutlineChapterPrompt({
@@ -18,7 +18,6 @@ test("strictCurrentOutlineOnly keeps the prompt anchored to the current volume o
 		],
 		targetVolumeName: "第2卷",
 		prevVolumeOutline: "上一卷：主角刚离开都市。",
-		existingOutline: "现有卷大纲：1. 进入学院 2. 暗中调查 3. 遭遇反转",
 		chapterCount: 3,
 		chapterNum: 1,
 	});
@@ -42,67 +41,38 @@ test("non-strict mode still includes broader context for normal generation", () 
 		volumes: [{ name: "第1卷" }, { name: "第2卷" }],
 		targetVolumeName: "第2卷",
 		prevVolumeOutline: "上一卷：主角刚离开都市。",
-		existingOutline: "现有卷大纲：1. 进入学院 2. 暗中调查 3. 遭遇反转",
 		chapterCount: 2,
 		chapterNum: 1,
 	});
 
 	assert.match(prompt, /【全书大纲】/);
 	assert.match(prompt, /【前一卷卷大纲 · 仅参考】/);
-	assert.match(prompt, /【目标卷现有大纲 · /);
+	assert.doesNotMatch(prompt, /【目标卷现有大纲 · /); // 目标文档不进生成提示词（回归护栏）
 });
 
-test("compactOutlineIndex keeps preamble + per-chapter heading and main-line line only", () => {
-	const outline = [
-		"【全书设计】",
-		"全书主线：主角追查真相。",
-		"",
-		"## 第1章 开端",
-		"主线：主角进入学院，遭遇第一次异常。",
-		"因果衔接：无前章。",
-		"升级/反转：暗线出现。",
-		"人物变化：主角决定独自调查。",
-		"章末钩子：神秘信件到来。",
-		"",
-		"## 第2章 信件",
-		"主线：主角拆开信件，发现一张旧照片。",
-		"章末钩子：照片中的人是导师。",
-	].join("\n");
-	const idx = compactOutlineIndex(outline);
-	assert.match(idx, /【全书设计】/);
-	assert.match(idx, /全书主线：主角追查真相。/);
-	assert.match(idx, /^## 第1章 开端$/m);
-	assert.match(idx, /主线：主角进入学院，遭遇第一次异常。/);
-	assert.match(idx, /^## 第2章 信件$/m);
-	assert.match(idx, /主线：主角拆开信件，发现一张旧照片。/);
-	assert.doesNotMatch(idx, /因果衔接/);
-	assert.doesNotMatch(idx, /章末钩子/);
+test("vol outline chapter prompt never injects existing-chapter anchor blocks", () => {
+	const base = {
+		bookTitle: "测试书名",
+		sourceOutline: "卷2大纲：主角潜入学院，寻找失踪的钥匙。",
+		volumes: [{ name: "第1卷" }, { name: "第2卷" }],
+		targetVolumeName: "第2卷",
+		chapterCount: 5,
+		chapterNum: 3,
+		supplementMode: true,
+	};
+	const prompt = buildVolOutlineChapterPrompt(base);
+	// 回归护栏：已有章节一律不进大纲提示词（补全/继续模式亦然），只依据世界观＋策划指南等既定事实
+	assert.doesNotMatch(prompt, /【前序已有章 · 衔接参考】/);
+	assert.doesNotMatch(prompt, /【后续已有章 · 衔接参考】/);
+	assert.doesNotMatch(prompt, /【本卷最近已有章 · 衔接参考】/);
+	assert.doesNotMatch(prompt, /【目标卷现有大纲 · /);
 });
 
-test("compactOutlineIndex returns original text when no chapter markers are found", () => {
-	const t = "自由文本大纲，没有章标记。";
-	assert.equal(compactOutlineIndex(t), t);
-});
-
-test("buildBookOutlineContinuePrompt injects compact index only when existingOutlineCompact is set", () => {
-	const full = [
-		"## 第1章 开端",
-		"主线：A。",
-		"因果衔接：B。",
-		"升级/反转：C。",
-		"人物变化：D。",
-		"章末钩子：E。",
-		"## 第2章 信件",
-		"主线：F。",
-		"章末钩子：G。",
-	].join("\n");
-	const base = { bookTitle: "测试书名", flatMode: true, chapterCount: 4, fromChapter: 3, toChapter: 4, existingOutline: full };
-	const compacted = buildBookOutlineContinuePrompt({ ...base, existingOutlineCompact: true });
-	assert.match(compacted, /【现有书级大纲 · 避免重复】/);
-	assert.match(compacted, /## 第1章 开端/);
-	assert.doesNotMatch(compacted, /因果衔接：B。/);
-	const fullInjected = buildBookOutlineContinuePrompt(base);
-	assert.match(fullInjected, /因果衔接：B。/);
+test("book outline extend prompt never injects last volume declaration anchor", () => {
+	const base = { bookTitle: "测试书名", flatMode: false, chapterCount: 10, fromChapter: 6, toChapter: 10 };
+	const prompt = buildBookOutlineExtendPrompt(base);
+	// 回归护栏：续写不再注入最后一卷声明锚点，接续依据世界观＋策划指南等既定事实
+	assert.doesNotMatch(prompt, /【最后一卷声明 · 衔接锚点】/);
 });
 
 // ---------- v0.2.21+ 写作命令「正文＋<SUMMARY> 块」解析与提示词协议 ----------

@@ -1595,8 +1595,20 @@
 	padding: 0 !important;
 	border-top: none !important;
 }
+.aw-phase-tabs-setting > .setting-item-info {
+	display: none !important;
+}
+.aw-phase-tabs-setting > .setting-item-control {
+	width: 100% !important;
+	justify-content: flex-start !important;
+}
 .aw-phase-tabs-container {
 	margin-top: 16px;
+	padding: 0 16px 12px; /* 内容区边缘留白：外层 setting-item 的 padding 已被清零，这里补回左右+底部间距（底部=编辑/保存按钮下方） */
+	/* 父级 .setting-item-control 是 flex 容器，本元素作为 flex item 默认按内容宽度自适应——
+	   显示模式下 pre 中文长文本会把它撑满，编辑模式下 textarea 固有宽度窄导致整体收缩、右侧大片空白；
+	   显式 width:100% 让两种模式都占满整行 */
+	width: 100%;
 	display: block;
 }
 .aw-phase-tabs-header {
@@ -1625,17 +1637,37 @@
 	font-weight: var(--font-bold);
 }
 .aw-phase-tabs-content {
-	padding: 4px 0;
+	padding: 0;
 }
-.aw-phase-tabs-content .setting-item {
-	padding: 1px 0 !important;
-	border-top: none !important;
+/* 模型配置行（全自定义类名，避免嵌套 setting-item 的 CSS 冲突；布局对齐 LLM 全局设置：标签左对齐、下拉框占满剩余宽度） */
+.aw-phase-model-row {
+	display: flex;
+	align-items: center;
+	padding: 0.75em 0;
+	gap: 12px;
+}
+.aw-phase-model-label {
+	flex: 0 0 auto;
+	font-size: var(--font-ui-small);
+	color: var(--text-normal);
+	text-align: left;
+}
+.aw-phase-model-select {
+	flex: 1 1 auto;
+	width: 100%;
+	min-width: 0;
+	height: 24px;
+	min-height: 24px;
+	padding: 0 6px;
+	font-size: 0.9em;
 }
 /* identity_boost 设置项布局 */
 .aw-identity-boost-container {
 	margin-top: 12px;
 	padding-top: 12px;
 	border-top: 1px solid var(--background-modifier-border);
+	width: 100% !important;
+	max-width: 100% !important;
 }
 .aw-identity-boost-desc {
 	font-size: var(--font-smaller);
@@ -1644,11 +1676,13 @@
 }
 .aw-identity-boost-display {
 	margin-bottom: 8px;
+	width: 100% !important;
 }
 .aw-identity-boost-display pre {
 	white-space: pre-wrap;
 	word-break: break-word;
 	margin: 0;
+	min-height: 120px; /* 与编辑框 .aw-identity-boost-textarea 的 min-height 同口径：短/空内容时两态高度一致；长内容时由 main.ts 测量后同步给 textarea */
 	font-family: var(--font-monospace);
 	font-size: var(--font-smaller);
 	color: var(--text-muted);
@@ -1660,7 +1694,10 @@
 	flex-wrap: wrap;
 }
 .aw-identity-boost-textarea {
-	width: 100%;
+	width: 100% !important;
+	min-width: 0 !important;
+	max-width: 100% !important;
 	min-height: 120px;
 	margin-bottom: 8px;
+	box-sizing: border-box;
 }

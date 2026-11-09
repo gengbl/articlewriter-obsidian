@@ -186,7 +186,8 @@ export function assembleSystemPrompt(customSp?: string, guideText = "", baseSp?:
 	if (g) {
 		sp += "\n\n【创作规范】\n以下是本项目要求必须遵守的创作规范，请在生成时严格遵循；若与前面的【编写类型】格式要求冲突，以【编写类型】为准：\n" + g;
 	}
-	const ib = (identityBoost || "").trim();
+	// v0.2.x+：设置值本身可能已带「【身份加强】」标记（旧版默认文本即如此）——追加前先剥掉，避免输出里连续出现两个标记
+	const ib = (identityBoost || "").trim().replace(/^【身份加强】\s*/, "");
 	if (ib) {
 		sp += "\n\n【身份加强】\n" + ib;
 	}
@@ -265,14 +266,17 @@ export async function chatCompletion(cfg: LlmConfigDoc, messages: Message[], ext
  * 思考型模型（llama-server --reasoning-format deepseek 等）的思考过程走 delta.reasoning_content、
  * 正文在思考结束后才进 delta.content——只收 content 时「思考挤占 max_tokens」或「思考块未闭合」
  * 都会表现为空结果且无从诊断。故并行经 onReasoning（可选）透出思考增量；流结束正文为空但思考非空时
- * 抛针对性错误（消息刻意不含「输出为空/未返回内容」，避免被调用方按普通空结果重试白等）。 */
+ * 抛针对性错误（消息刻意不含「输出为空/未返回内容」，避免被调用方按普通空结果重试白等）。
+ * onFinish（可选）在流正常结束后回调一次，携带最后一个 finish_reason（"length"＝被 max_tokens 截断、
+ * "stop"＝自然结束、null＝端点未给出）——供调用方判断是否需要自动续写，不改变返回值语义。 */
 export async function chatStream(
 	cfg: LlmConfigDoc,
 	messages: Message[],
 	onChunk: (text: string) => void,
 	extra?: Record<string, unknown>,
 	signal?: AbortSignal,
-	onReasoning?: (text: string) => void
+	onReasoning?: (text: string) => void,
+	onFinish?: (reason: string | null) => void
 ): Promise<string> {
 	const client = createClient(cfg, GENERATE_TIMEOUT_MS); // 流式放宽超时（默认 60s 会掐断长章节生成）
 	const stream = await client.chat.completions.create(buildParams(cfg, messages, true, extra) as OpenAI.ChatCompletionCreateParamsStreaming, { signal });
@@ -293,6 +297,7 @@ export async function chatStream(
 			onReasoning?.(rDelta);
 		}
 	}
+	onFinish?.(finishReason ?? null); // 流正常结束（含空正文）时透出 finish_reason，供截断检测/自动续写
 	if (!full.trim()) {
 		if (reasoning.trim()) throw new Error(`思考型模型正文为空（已产生 ${String(reasoning.length)} 字思考）：${emptyBodyReason(finishReason)}`);
 		throw new Error("LLM 流式输出为空");
