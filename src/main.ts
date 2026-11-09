@@ -4806,28 +4806,19 @@ async cmdRenameChapterFile(): Promise<void> {
 	}
 
 	/** v0.2.x+「生成策划指南（仅世界观）」(/planning-guide-worldview)：早期规划场景——输入仅书籍信息＋世界观设定（不含大纲/卷/章节），AI 流式生成书级《策划指南.md》。
-	 * 已有非空时同样弹确认（整体重写 / 取消）；重写以现有内容为既定事实约束（不丢已确立事实）。需指定目标总章数（各节位置以其为基准表述）。流式展示完自动落盘 */
+	 * 始终直接生成并覆盖，不读取旧策划指南内容作为约束。流式展示完自动落盘 */
 	async cmdPlanningGuideWorldview(): Promise<void> {
 		if (!(await this.ensureWorkDir())) return;
 		const story = await this.requireStory();
 		if (!story || !(await this.ensureVolumeLayout(story))) return;
 		try {
 			const state = await this.manager.validatedState(story);
-			const existing = await this.manager.readPlanningGuide(story);
-			if (existing.trim()) {
-				const items: ActionItem[] = [
-					{ label: "整体重写", sub: "以现有《策划指南.md》为既定事实约束，仅依据世界观重新生成并覆盖" },
-					{ label: "取消", sub: "保留现有内容不变" },
-				];
-				const choice = await this.pickAction("书级《策划指南.md》已存在，如何处理？", items);
-				if (choice == null || choice === 1) { new Notice("已取消生成策划指南（仅世界观）", 6000); return; }
-			}
 			const setup = await this.loadWriterSetup();
 			if (!setup) return;
-			const input = await this.buildPlanningGuideInput(story, state, existing.trim() || undefined, { worldOnly: true });
+			const input = await this.buildPlanningGuideInput(story, state, undefined, { worldOnly: true });
 			const promptText = buildPlanningGuidePrompt(input);
-			console.debug("[articlewriter] 策划指南（仅世界观）生成请求规模", { model: setup.cfg.model_name || "(默认)", regenerate: !!existing.trim(), promptLen: promptText.length });
-			const modal = await this.beginWritingPanel(existing.trim() ? "重新生成策划指南（仅世界观）" : "生成策划指南（仅世界观）");
+			console.debug("[articlewriter] 策划指南（仅世界观）生成请求规模", { model: setup.cfg.model_name || "(默认)", promptLen: promptText.length });
+			const modal = await this.beginWritingPanel("生成策划指南（仅世界观）");
 			if (!modal) { new Notice("无法打开生成面板，本次操作已取消", 8000); return; }
 			const content = await this.streamWithEmptyRetry(setup.cfg, () => [
 				{ role: "system", content: BOOK_OUTLINE_GEN_SYSTEM_PROMPT },
@@ -4837,7 +4828,7 @@ async cmdRenameChapterFile(): Promise<void> {
 			if (!content.trim()) return;
 			await this.manager.setPlanningGuide(story, content);
 			modal.finishAuto("✓ 策划指南已保存", "本轮用时");
-			new Notice(`✓ ${existing.trim() ? "已重写" : "已生成"}书级《策划指南.md》（仅依据世界观），后续大纲生成将遵循其既定规划`, 12000);
+			new Notice("✓ 已生成书级《策划指南.md》（仅依据世界观），后续大纲生成将遵循其既定规划", 12000);
 		} catch (e) {
 			this.notifyError("生成策划指南（仅世界观）失败", e);
 		}
