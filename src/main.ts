@@ -6882,23 +6882,6 @@ class ArticleWriterSettingTab extends PluginSettingTab {
 					// 渲染当前 phase tab
 					const renderPhaseTab = (idx: number, container: HTMLElement, options: Record<string, string>) => {
 						const phase = phases[idx] ?? { name: "" };
-						// 阶段名称标题（单独一行）
-						const titleEl = container.createEl("h4", { cls: "aw-phase-tab-title" });
-						titleEl.setText(phase.name);
-						// 阶段名称输入
-						const nameRow = container.createEl("div", { cls: "aw-phase-tab-row" });
-						const nameInput = nameRow.createEl("input", { type: "text", cls: "mod-setting-input" });
-						nameInput.value = phase.name;
-						nameInput.oninput = () => {
-							const phases = this.conf().writing_phases ?? [];
-							if (!phases[idx]) phases[idx] = { name: "" };
-							phases[idx].name = nameInput.value.trim();
-							this.plugin.saveData(this.plugin.settings);
-							// 更新 tab 按钮文字
-							tabHeader.querySelectorAll(".aw-phase-tab-btn")[idx].setText(nameInput.value.trim());
-							// 同步更新标题
-							titleEl.setText(nameInput.value.trim());
-						};
 						// 模型配置下拉
 						const modelRow = container.createEl("div", { cls: "aw-phase-tab-row" });
 						modelRow.createEl("span", { text: "模型配置", cls: "aw-phase-tab-label" });

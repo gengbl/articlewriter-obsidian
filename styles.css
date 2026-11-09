@@ -1635,12 +1635,6 @@
 	font-size: var(--font-ui-small);
 	color: var(--text-muted);
 }
-.aw-phase-tab-title {
-	margin: 0 0 12px 0;
-	font-size: var(--font-ui-medium);
-	font-weight: var(--font-bold);
-	color: var(--text-normal);
-}
 /* identity_boost 设置项布局 */
 .aw-identity-boost-container {
 	margin-top: 12px;
