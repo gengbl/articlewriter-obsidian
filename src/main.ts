@@ -6774,88 +6774,84 @@ class ArticleWriterSettingTab extends PluginSettingTab {
 		return this.plugin.settings.llm ?? (this.plugin.settings.llm = buildDefaultLlmConf());
 	}
 
-	/** 构建 identity_boost 自定义渲染设置项：默认只读显示，点击「编辑」后显示 textarea，支持保存、使用默认值和重置 */
-	private identityBoostSetting(phaseIdx: number, currentValue: string, phaseName: string): SettingDefinitionRender {
+	/** 渲染 identity_boost 设置项到指定容器：默认只读显示，点击「编辑」后显示 textarea，支持保存、使用默认值和重置 */
+	private renderIdentityBoost(container: HTMLElement, phaseIdx: number, currentValue: string, phaseName: string): void {
 		const key = `writing_phases.${phaseIdx}.identity_boost`;
 		const defaults = buildDefaultLlmConf();
 		const default_value = (defaults.writing_phases ?? [])[phaseIdx]?.identity_boost ?? "";
-		return {
-			name: `${phaseName}·身份加强`,
-			desc: "注入到该阶段 system prompt 末尾的【身份加强】块；留空=不注入",
-			render: (setting) => {
-				let editing = false;
-				// 显示区域（上）+ 按钮区域（下）
-				const displayEl = setting.controlEl.createEl("div", { cls: "aw-identity-boost-display" });
-				const btnEl = setting.controlEl.createEl("div", { cls: "aw-identity-boost-btns" });
-				let btnSaveHandler: (() => Promise<void>) | null = null;
-				let btnClearRef: ButtonComponent | null = null;
-				// 渲染只读模式：显示内容 + 编辑按钮
-				const renderReadOnly = () => {
-					displayEl.empty();
-					displayEl.createEl("pre", { text: currentValue || "（留空=不注入）" });
-					btnEl.empty();
-					setting.addButton((btn) => {
-						btn.setButtonText("编辑").onClick(async () => {
-							editing = true;
-							displayEl.empty();
-							const ta = displayEl.createEl("textarea", { cls: "aw-identity-boost-textarea" });
-							ta.rows = 8;
-							ta.value = currentValue;
-							// 保存按钮
-							setting.addButton((saveBtn) => {
-								saveBtn.setButtonText("保存").setCta().onClick(async () => {
-									const newVal = ta.value.trim() || undefined;
-									await this.setControlValue(key, newVal);
-									currentValue = newVal ?? "";
-									editing = false;
-									renderReadOnly();
-									btnSaveHandler = null;
-									btnClearRef = null;
-								});
-							});
-							// 使用默认值按钮
-							setting.addButton((defaultBtn) => {
-								defaultBtn.setButtonText("使用默认值").onClick(async () => {
-									await this.setControlValue(key, default_value);
-									currentValue = default_value;
-									editing = false;
-									renderReadOnly();
-									btnSaveHandler = null;
-									btnClearRef = null;
-								});
-							});
-							// 重置按钮（清空）
-							setting.addButton((clearBtn) => {
-								btnClearRef = clearBtn;
-								clearBtn.setButtonText("重置").onClick(async () => {
-									await this.setControlValue(key, undefined);
-									currentValue = "";
-									editing = false;
-									renderReadOnly();
-									btnSaveHandler = null;
-									btnClearRef = null;
-								});
-							});
-							// 保存 handler 引用供快捷键调用
-							btnSaveHandler = async () => {
-								const newVal = ta.value.trim() || undefined;
-								await this.setControlValue(key, newVal);
-								currentValue = newVal ?? "";
-								editing = false;
-								renderReadOnly();
-								btnSaveHandler = null;
-								btnClearRef = null;
-							};
-							ta.addEventListener("keydown", (e: KeyboardEvent) => {
-								if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) btnSaveHandler?.();
-							});
-						});
-					});
+		let editing = false;
+		// 说明文字
+		const descEl = container.createEl("div", { cls: "aw-identity-boost-desc" });
+		descEl.setText("注入到该阶段 system prompt 末尾的【身份加强】块；留空=不注入");
+		// 显示区域（上）+ 按钮区域（下）
+		const displayEl = container.createEl("div", { cls: "aw-identity-boost-display" });
+		const btnEl = container.createEl("div", { cls: "aw-identity-boost-btns" });
+		let btnSaveHandler: (() => Promise<void>) | null = null;
+		let btnClearRef: HTMLButtonElement | null = null;
+		// 渲染只读模式：显示内容 + 编辑按钮
+		const renderReadOnly = () => {
+			displayEl.empty();
+			displayEl.createEl("pre", { text: currentValue || "（留空=不注入）" });
+			btnEl.empty();
+			const editBtn = btnEl.createEl("button", { cls: "mod-cta aw-identity-boost-btn" });
+			editBtn.setText("编辑");
+			editBtn.onclick = async () => {
+				editing = true;
+				displayEl.empty();
+				const ta = displayEl.createEl("textarea", { cls: "aw-identity-boost-textarea" });
+				ta.rows = 8;
+				ta.value = currentValue;
+				// 保存按钮
+				const saveBtn = btnEl.createEl("button", { cls: "mod-cta aw-identity-boost-btn" });
+				saveBtn.setText("保存");
+				saveBtn.onclick = async () => {
+					const newVal = ta.value.trim() || undefined;
+					await this.setControlValue(key, newVal);
+					currentValue = newVal ?? "";
+					editing = false;
+					renderReadOnly();
+					btnSaveHandler = null;
+					btnClearRef = null;
 				};
-				renderReadOnly();
-				return () => { /* cleanup */ };
-			},
+				// 使用默认值按钮
+				const defaultBtn = btnEl.createEl("button", { cls: "aw-identity-boost-btn" });
+				defaultBtn.setText("使用默认值");
+				defaultBtn.onclick = async () => {
+					await this.setControlValue(key, default_value);
+					currentValue = default_value;
+					editing = false;
+					renderReadOnly();
+					btnSaveHandler = null;
+					btnClearRef = null;
+				};
+				// 重置按钮（清空）
+				const clearBtn = btnEl.createEl("button", { cls: "aw-identity-boost-btn" });
+				btnClearRef = clearBtn;
+				clearBtn.setText("重置");
+				clearBtn.onclick = async () => {
+					await this.setControlValue(key, undefined);
+					currentValue = "";
+					editing = false;
+					renderReadOnly();
+					btnSaveHandler = null;
+					btnClearRef = null;
+				};
+				// 保存 handler 引用供快捷键调用
+				btnSaveHandler = async () => {
+					const newVal = ta.value.trim() || undefined;
+					await this.setControlValue(key, newVal);
+					currentValue = newVal ?? "";
+					editing = false;
+					renderReadOnly();
+					btnSaveHandler = null;
+					btnClearRef = null;
+				};
+				ta.addEventListener("keydown", (e: KeyboardEvent) => {
+					if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) btnSaveHandler?.();
+				});
+			};
 		};
+		renderReadOnly();
 	}
 
 	getSettingDefinitions(): SettingDefinitionItem[] {
@@ -6875,18 +6871,79 @@ class ArticleWriterSettingTab extends PluginSettingTab {
 			{ name: "描述方式 desc_style", desc: "normal / complete（对齐 CLI）", control: { key: "llm.desc_style", type: "dropdown", options: { normal: "normal", complete: "complete" }, defaultValue: "normal" } },
 		] });
 
-		// v0.2.22+：写作阶段模型配置（四阶段独立模型）
+		// v0.2.22+：写作阶段模型配置（四阶段独立模型，tab 页管理）
 		const phases = this.conf().writing_phases ?? [];
-		defs.push({ type: "group", heading: "写作阶段模型配置（v0.2.22+）", items: [
-			{ name: "策划方案生成阶段", desc: "planning-guide / planning-guide-worldview：AI 生成《策划指南.md》", control: { key: "writing_phases.0.llm_config_name", type: "dropdown", options: llmNameMap, defaultValue: "" } },
-			this.identityBoostSetting(0, phases[0]?.identity_boost ?? "", "策划方案生成"),
-			{ name: "书籍大纲和卷级大纲生成阶段", desc: "book-outline-generate / book-outline-to-volumes：书级/卷级大纲生成", control: { key: "writing_phases.1.llm_config_name", type: "dropdown", options: llmNameMap, defaultValue: "" } },
-			this.identityBoostSetting(1, phases[1]?.identity_boost ?? "", "书籍大纲和卷级大纲生成"),
-			{ name: "文章大纲生成阶段", desc: "generate-chapter-outline：章节大纲生成", control: { key: "writing_phases.2.llm_config_name", type: "dropdown", options: llmNameMap, defaultValue: "" } },
-			this.identityBoostSetting(2, phases[2]?.identity_boost ?? "", "文章大纲生成"),
-			{ name: "编写文章阶段", desc: "generate-chapter-streamed：正文生成", control: { key: "writing_phases.3.llm_config_name", type: "dropdown", options: llmNameMap, defaultValue: "" } },
-			this.identityBoostSetting(3, phases[3]?.identity_boost ?? "", "编写文章"),
-		] });
+		defs.push({
+			name: "写作阶段模型配置（v0.2.22+）",
+			desc: "planning-guide / book-outline-generate / generate-chapter-outline / generate-chapter-streamed 四个阶段独立模型配置",
+			render: (setting) => {
+				const tabContainer = setting.controlEl.createEl("div", { cls: "aw-phase-tabs-container" });
+				const tabHeader = tabContainer.createEl("div", { cls: "aw-phase-tabs-header" });
+				const tabContent = tabContainer.createEl("div", { cls: "aw-phase-tabs-content" });
+				const tabNames = ["策划方案生成", "书籍大纲和卷级大纲生成", "文章大纲生成", "编写文章"];
+				const tabDescs = [
+					"planning-guide / planning-guide-worldview：AI 生成《策划指南.md》",
+					"book-outline-generate / book-outline-to-volumes：书级/卷级大纲生成",
+					"generate-chapter-outline：章节大纲生成",
+					"generate-chapter-streamed：正文生成",
+				];
+				let activeTab = 0;
+				// 创建 tab 按钮
+				tabNames.forEach((name, idx) => {
+					const btn = tabHeader.createEl("button", { cls: "aw-phase-tab-btn" + (idx === 0 ? " is-active" : "") });
+					btn.setText(name);
+					btn.onclick = () => {
+						if (activeTab === idx) return;
+						activeTab = idx;
+						tabHeader.querySelectorAll(".aw-phase-tab-btn").forEach((b, i) => {
+							b.classList.toggle("is-active", i === idx);
+						});
+						tabContent.empty();
+						renderPhaseTab(idx, tabContent, llmNameMap);
+					};
+				});
+				// 渲染当前 phase tab
+				const renderPhaseTab = (idx: number, container: HTMLElement, options: Record<string, string>) => {
+					const phase = phases[idx] ?? { name: `阶段${idx + 1}` };
+					// 阶段名称输入
+					const nameRow = container.createEl("div", { cls: "aw-phase-tab-row" });
+					nameRow.createEl("span", { text: "阶段名称", cls: "aw-phase-tab-label" });
+					const nameInput = nameRow.createEl("input", { type: "text", cls: "mod-setting-input" });
+					nameInput.value = phase.name;
+					nameInput.placeholder = `阶段${idx + 1}`;
+					nameInput.oninput = () => {
+						const phases = this.conf().writing_phases ?? [];
+						if (!phases[idx]) phases[idx] = { name: `阶段${idx + 1}` };
+						phases[idx].name = nameInput.value.trim() || `阶段${idx + 1}`;
+						this.plugin.saveData(this.plugin.settings);
+						// 更新 tab 按钮文字
+						tabHeader.querySelectorAll(".aw-phase-tab-btn")[idx].setText(nameInput.value.trim() || `阶段${idx + 1}`);
+					};
+					// 描述文字
+					const descEl = container.createEl("div", { cls: "aw-phase-tab-desc" });
+					descEl.setText(tabDescs[idx]);
+					// 模型配置下拉
+					const modelRow = container.createEl("div", { cls: "aw-phase-tab-row" });
+					modelRow.createEl("span", { text: "模型配置", cls: "aw-phase-tab-label" });
+					const modelSelect = modelRow.createEl("select", { cls: "mod-setting-input" });
+					Object.entries(options).forEach(([k, v]) => {
+						const opt = modelSelect.createEl("option", { value: k });
+						opt.setText(v);
+					});
+					modelSelect.value = phase.llm_config_name ?? "";
+					modelSelect.onchange = () => {
+						const phases = this.conf().writing_phases ?? [];
+						if (!phases[idx]) phases[idx] = { name: `阶段${idx + 1}` };
+						phases[idx].llm_config_name = modelSelect.value || undefined;
+						this.plugin.saveData(this.plugin.settings);
+					};
+					// identity_boost 设置
+					const ibContainer = container.createEl("div", { cls: "aw-identity-boost-container" });
+					this.renderIdentityBoost(ibContainer, idx, phase.identity_boost ?? "", phase.name);
+				};
+				renderPhaseTab(0, tabContent, llmNameMap);
+			},
+		});
 
 		defs.push({ type: "list", heading: "模型配置（llm_configs，存于插件数据目录 data.json）", emptyState: "没有模型配置。", addItem: { name: "新建配置", action: () => void this.addLlmConfig() }, onDelete: (i) => void this.removeLlmConfig(i), onReorder: (o, n) => void this.reorderLlmConfigs(o, n), items: cfgs.map((cfg, i) => this.configPage(cfg, i)) });
 

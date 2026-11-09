@@ -1590,7 +1590,67 @@
 	background: var(--background-secondary-alt);
 }
 
+/* 写作阶段 tab 页布局 */
+.aw-phase-tabs-container {
+	margin-top: 8px;
+}
+.aw-phase-tabs-header {
+	display: flex;
+	gap: 4px;
+	border-bottom: 1px solid var(--background-modifier-border);
+	margin-bottom: 12px;
+}
+.aw-phase-tab-btn {
+	padding: 6px 12px;
+	background: transparent;
+	border: none;
+	border-bottom: 2px solid transparent;
+	cursor: pointer;
+	font-size: var(--font-ui-small);
+	color: var(--text-muted);
+	transition: all 0.2s;
+}
+.aw-phase-tab-btn:hover {
+	color: var(--text-normal);
+	border-bottom-color: var(--interactive-accent);
+}
+.aw-phase-tab-btn.is-active {
+	color: var(--text-normal);
+	border-bottom-color: var(--interactive-accent);
+	font-weight: var(--font-bold);
+}
+.aw-phase-tabs-content {
+	padding: 4px 0;
+}
+.aw-phase-tab-row {
+	display: flex;
+	align-items: center;
+	gap: 12px;
+	margin-bottom: 12px;
+}
+.aw-phase-tab-label {
+	width: 80px;
+	flex-shrink: 0;
+	font-size: var(--font-ui-small);
+	color: var(--text-muted);
+}
+.aw-phase-tab-desc {
+	font-size: var(--font-smaller);
+	color: var(--text-muted);
+	margin-bottom: 12px;
+	padding-left: 92px;
+}
 /* identity_boost 设置项布局 */
+.aw-identity-boost-container {
+	margin-top: 12px;
+	padding-top: 12px;
+	border-top: 1px solid var(--background-modifier-border);
+}
+.aw-identity-boost-desc {
+	font-size: var(--font-smaller);
+	color: var(--text-muted);
+	margin-bottom: 8px;
+}
 .aw-identity-boost-display {
 	margin-bottom: 8px;
 }
