@@ -6873,6 +6873,7 @@ class ArticleWriterSettingTab extends PluginSettingTab {
 		const thinkCur = (cfg.thinking ?? "").trim();
 		if (thinkCur && !Object.prototype.hasOwnProperty.call(thinkOptions, thinkCur)) thinkOptions[thinkCur] = `${thinkCur}（存量值）`;
 		items.push({ name: "思考模式 thinking", desc: "仅 DeepSeek 端点生效：off=不思考，更快更省 token；留空=跟随服务端默认（deepseek-flash 默认开思考）", control: { key: `cfg.${i}.thinking`, type: "dropdown", options: thinkOptions } });
+		items.push({ name: "重命名配置", desc: "修改该模型配置的名称（同步更新激活态与写作阶段引用）", action: () => void this.renameLlmConfig(i) });
 		items.push({ name: "删除配置", desc: "从列表中移除该模型配置；若被写作阶段引用则自动清空对应阶段的 llm_config_name", action: () => void this.removeLlmConfig(i) });
 		return { type: "page", name: `${cfg.name}${active ? " ◀ 当前" : ""}`, desc: cfg.base_url || "（未填服务地址）", displayValue: () => [cfg.model_name && `模型 ${cfg.model_name}`, cfg.base_url].filter(Boolean).join(" · "), status: cfg.base_url ? null : ("warning" as const), items };
 	}
@@ -6993,6 +6994,29 @@ class ArticleWriterSettingTab extends PluginSettingTab {
 			this.plugin.syncChatModelSelect();
 			this.update();
 		})();
+	}
+
+	private async renameLlmConfig(i: number): Promise<void> {
+		const conf = this.conf();
+		const cfgs = conf.llm_configs ?? [];
+		const oldName = cfgs[i]?.name;
+		if (!oldName) return;
+		const newName = await new Promise<string | null>((resolve) => {
+			new TextInputModal(this.app, "重命名配置", "新名称", (v) => resolve(v), () => resolve(null), `当前：${oldName}`, oldName).open();
+		});
+		if (!newName) return;
+		const trimmed = newName.trim();
+		if (!trimmed) { new Notice("名称不能为空"); return; }
+		if (trimmed !== oldName && cfgs.some((x) => x.name === trimmed)) { new Notice("该名称已被其他配置占用"); return; }
+		cfgs[i].name = trimmed;
+		if (conf.active_llm === oldName) conf.active_llm = trimmed;
+		const phases = conf.writing_phases ?? [];
+		for (const phase of phases) {
+			if (phase.llm_config_name === oldName) phase.llm_config_name = trimmed;
+		}
+		await this.plugin.saveSettings();
+		this.plugin.syncChatModelSelect();
+		this.update();
 	}
 
 	private reorderLlmConfigs(oldIndex: number, newIndex: number): void {
