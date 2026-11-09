@@ -1,4 +1,4 @@
-import { App, Modal, Notice, Platform, Plugin, PluginSettingTab, TAbstractFile, TFile, TFolder, View, WorkspaceLeaf, WorkspaceSidedock, type SettingDefinitionItem, type SettingDefinitionPage, type SettingDefinitionRender, ButtonComponent } from "obsidian";
+import { App, Modal, Notice, Platform, Plugin, PluginSettingTab, TAbstractFile, TFile, TFolder, View, WorkspaceLeaf, WorkspaceSidedock, type SettingDefinitionItem, type SettingDefinitionPage, type SettingDefinitionRender, ButtonComponent, Setting } from "obsidian";
 import { ActionItem, ActionMenuModal, AddCharacterModal, ChapterListModal, ConfirmModal, ExportPromptsSelectModal, FolderPickerModal, MarkdownViewerModal, MultiFieldModal, NewFilePickerModal, NewStoryInput, NewStoryModal, PanelLine, StoryPickerModal, TextAreaPrompt, TextPanelModal, TextInputModal, VolumeBatchCreateModal } from "./modals";
 import type { AddCharacterResult, CharacterScopeOption } from "./modals";
 import { LlmChatView } from "./llm_chat_view";
@@ -6883,21 +6883,19 @@ class ArticleWriterSettingTab extends PluginSettingTab {
 					// 渲染当前 phase tab
 					const renderPhaseTab = (idx: number, container: HTMLElement, options: Record<string, string>) => {
 						const phase = phases[idx] ?? { name: "" };
-						// 模型配置下拉
-						const modelRow = container.createEl("div", { cls: "aw-phase-tab-row" });
-						modelRow.createEl("span", { text: "模型配置", cls: "aw-phase-tab-label" });
-						const modelSelect = modelRow.createEl("select", { cls: "mod-setting-input" });
-						Object.entries(options).forEach(([k, v]) => {
-							const opt = modelSelect.createEl("option", { value: k });
-							opt.setText(v);
-						});
-						modelSelect.value = phase.llm_config_name ?? "";
-						modelSelect.onchange = () => {
-							const phases = this.conf().writing_phases ?? [];
-							if (!phases[idx]) phases[idx] = { name: "" };
-							phases[idx].llm_config_name = modelSelect.value || undefined;
-							this.plugin.saveData(this.plugin.settings);
-						};
+						// 模型配置下拉（用 Setting 原生组件，标签列与 LLM 全局配置对齐）
+						new Setting(container)
+							.setName("模型配置")
+							.addDropdown((drop) => {
+								Object.entries(options).forEach(([k, v]) => drop.addOption(k, v));
+								drop.setValue(phase.llm_config_name ?? "");
+								drop.onChange((v) => {
+									const phases = this.conf().writing_phases ?? [];
+									if (!phases[idx]) phases[idx] = { name: "" };
+									phases[idx].llm_config_name = v || undefined;
+									this.plugin.saveData(this.plugin.settings);
+								});
+							});
 						// identity_boost 设置
 						const ibContainer = container.createEl("div", { cls: "aw-identity-boost-container" });
 						this.renderIdentityBoost(ibContainer, idx, phase.identity_boost ?? "", phase.name);
