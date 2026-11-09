@@ -6884,6 +6884,7 @@ class ArticleWriterSettingTab extends PluginSettingTab {
 						const phase = phases[idx] ?? { name: "" };
 						// 模型配置下拉
 						const modelRow = container.createEl("div", { cls: "aw-phase-tab-row" });
+						modelRow.createEl("span", { text: "模型配置", cls: "aw-phase-tab-label" });
 						const modelSelect = modelRow.createEl("select", { cls: "mod-setting-input" });
 						Object.entries(options).forEach(([k, v]) => {
 							const opt = modelSelect.createEl("option", { value: k });
