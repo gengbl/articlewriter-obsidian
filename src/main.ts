@@ -7010,6 +7010,7 @@ class ArticleWriterSettingTab extends PluginSettingTab {
 				const pre = displayEl.querySelector("pre");
 				const displayHeight = pre ? pre.offsetHeight : 0;
 				displayEl.empty();
+				btnEl.empty(); // 先清空按钮区再建「保存/使用默认值」——否则连点「编辑」会叠加多组按钮、「编辑」也不消失
 				const ta = displayEl.createEl("textarea", { cls: "aw-identity-boost-textarea" });
 				ta.rows = 8;
 				if (displayHeight > 0) {
