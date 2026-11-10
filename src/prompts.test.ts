@@ -1,25 +1,15 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { buildBookOutlineExtendPrompt, buildChapterPrompt, buildContinuePrompt, buildRewritePrompt, buildVolOutlineChapterPrompt, buildChapterRefFixPrompt, CHAPTER_REF_BAN, findChapterRefLeaks, findChapterRefSentences, fixChapterRefs, parseChapterWithSummary } from "./prompts";
+import { buildBookOutlineExtendPrompt, buildBookOutlineGenPrompt, buildChapterPrompt, buildContinuePrompt, buildRewritePrompt, buildVolOutlineChapterPrompt, buildChapterRefFixPrompt, CHAPTER_REF_BAN, findChapterRefLeaks, findChapterRefSentences, fixChapterRefs, parseChapterWithSummary } from "./prompts";
 
 test("strictCurrentOutlineOnly keeps the prompt anchored to the current volume outline only", () => {
 	const prompt = buildVolOutlineChapterPrompt({
-		bookTitle: "测试书名",
-		globalOutline: "全书主线：主角要去完成大反派任务。",
-		sourceOutline: "卷2大纲：主角潜入学院，寻找失踪的钥匙。",
-		strictCurrentOutlineOnly: true,
-		planningGuide: "必须遵守当前卷的情节线索。",
-		bookRelationships: "角色关系：主角与导师有矛盾。",
-		volRelationships: "卷2角色关系：主角与导师仍然是对立。",
-		volumes: [
-			{ name: "第1卷", description: "开篇" },
-			{ name: "第2卷", description: "关键卷" },
-		],
 		targetVolumeName: "第2卷",
-		prevVolumeOutline: "上一卷：主角刚离开都市。",
 		chapterCount: 3,
+		strictCurrentOutlineOnly: true,
 		chapterNum: 1,
+		contextDocs: "\n【当前大纲来源（本次拆分/写作依据）】\n卷2大纲：主角潜入学院，寻找失踪的钥匙。",
 	});
 
 	assert.match(prompt, /【当前大纲来源（本次拆分\/写作依据）】/);
@@ -32,17 +22,10 @@ test("strictCurrentOutlineOnly keeps the prompt anchored to the current volume o
 
 test("non-strict mode still includes broader context for normal generation", () => {
 	const prompt = buildVolOutlineChapterPrompt({
-		bookTitle: "测试书名",
-		globalOutline: "全书主线：主角要去完成大反派任务。",
-		sourceOutline: "卷2大纲：主角潜入学院，寻找失踪的钥匙。",
-		planningGuide: "必须遵守本书总规划。",
-		bookRelationships: "角色关系：主角与导师有矛盾。",
-		volRelationships: "卷2角色关系：主角与导师仍然是对立。",
-		volumes: [{ name: "第1卷" }, { name: "第2卷" }],
 		targetVolumeName: "第2卷",
-		prevVolumeOutline: "上一卷：主角刚离开都市。",
 		chapterCount: 2,
 		chapterNum: 1,
+		contextDocs: "\n【当前大纲来源（本次拆分/写作依据）】\n卷2大纲：主角潜入学院，寻找失踪的钥匙。\n\n【全书大纲】\n全书主线：主角要去完成大反派任务。\n\n【前一卷卷大纲 · 仅参考】\n上一卷：主角刚离开都市。",
 	});
 
 	assert.match(prompt, /【全书大纲】/);
@@ -52,13 +35,11 @@ test("non-strict mode still includes broader context for normal generation", () 
 
 test("vol outline chapter prompt never injects existing-chapter anchor blocks", () => {
 	const base = {
-		bookTitle: "测试书名",
-		sourceOutline: "卷2大纲：主角潜入学院，寻找失踪的钥匙。",
-		volumes: [{ name: "第1卷" }, { name: "第2卷" }],
 		targetVolumeName: "第2卷",
 		chapterCount: 5,
 		chapterNum: 3,
 		supplementMode: true,
+		contextDocs: "\n【当前大纲来源（本次拆分/写作依据）】\n卷2大纲：主角潜入学院，寻找失踪的钥匙。",
 	};
 	const prompt = buildVolOutlineChapterPrompt(base);
 	// 回归护栏：已有章节一律不进大纲提示词（补全/继续模式亦然），只依据世界观＋策划指南等既定事实
@@ -69,10 +50,20 @@ test("vol outline chapter prompt never injects existing-chapter anchor blocks", 
 });
 
 test("book outline extend prompt never injects last volume declaration anchor", () => {
-	const base = { bookTitle: "测试书名", flatMode: false, chapterCount: 10, fromChapter: 6, toChapter: 10 };
+	const base = { flatMode: false, chapterCount: 10, fromVolume: 3, toVolume: 5 };
 	const prompt = buildBookOutlineExtendPrompt(base);
 	// 回归护栏：续写不再注入最后一卷声明锚点，接续依据世界观＋策划指南等既定事实
 	assert.doesNotMatch(prompt, /【最后一卷声明 · 衔接锚点】/);
+});
+
+test("book outline gen prompt (volume mode) plans by volume, no chapter markers or ranges", () => {
+	const prompt = buildBookOutlineGenPrompt({ flatMode: false, chapterCount: 40, volumeCount: 3 });
+	assert.match(prompt, /恰好 3 卷/);
+	assert.match(prompt, /## 第X卷·卷名/);
+	assert.match(prompt, /- 第X卷·卷名：一句话定位/);
+	// 卷级规划不含章号区间注记、不写逐章标记
+	assert.doesNotMatch(prompt, /（第A-B章）/);
+	assert.match(prompt, /不写逐章标记/);
 });
 
 // ---------- v0.2.21+ 写作命令「正文＋<SUMMARY> 块」解析与提示词协议 ----------

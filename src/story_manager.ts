@@ -11,6 +11,7 @@ import {
 } from "./state_doc";
 export type { ChapterMeta, StoryState } from "./state_doc";
 import type { StoryState } from "./state_doc";
+import { DEFAULT_TENSION_RULES } from "./tension_rules_default";
 import {
 	CHAPTER_BODY_TEMPLATE,
 	CHAPTER_CHARACTERS_TEMPLATE,
@@ -37,16 +38,16 @@ import {
 	timelineTemplate,
 	stripAiWordMarks,
 } from "./story_types";
-import { buildChapterFolderDocs, cleanRelationshipsDoc } from "./prompts";
+
 import type { CastLayerDoc, CastLayerRef } from "./cast_analyzer";
-import type { ChapterFolderDocEntry, PrevChapterRef } from "./prompts";
+import type { PrevChapterRef } from "./prompts";
 
 export const CHAPTER_DIR_RE = /^第(\d{1,6})章-(.+)$/;
 
 /** 引言实体目录名（位于 `书稿/` 下；保留名——卷名不得占用，避免与引言文件夹物理冲突） */
 export const PROLOGUE_DIR_NAME = "引言";
 
-/** 案头资料目录名（书级参考资料：九件套 + 用户自建文件；写字台「案头资料」小节展示其内容 ∪ 书根剩余项） */
+/** 案头资料目录名（书级参考资料：十件套 + 用户自建文件；写字台「案头资料」小节展示其内容 ∪ 书根剩余项） */
 export const DESK_DOCS_DIR_NAME = "案头资料";
 
 /** 书稿目录名（容纳引言目录、章节目录与卷目录） */
@@ -193,6 +194,13 @@ export interface StoryManagerOptions {
 /** /pack 表达式解析结果：已定位到具体容器+章节键列表；或整本多容器下裸号有歧义、需调用方让用户选容器后以 forcedVolId 重入 */
 export type PackResolution = { volId: string | null; keys: string[] } | { ambiguous: true; expr: string };
 
+/** v0.2.24+ 提示词文件装配改造：loadWritingData 解析出的三层文档路径（调用方按这些路径声明 PromptSpec、经 assemblePromptFiles 装配注入）；vol 组仅当前章在卷内时存在 */
+export interface WritingDocPaths {
+	book: { world: string; globalOutline: string; bookRelationships: string }; // 案头资料：世界观.md / 大纲.md / 人物关系.md（旧别名已兜底解析）
+	vol?: { outline: string; relationships: string }; // 卷级：卷大纲.md / 人物关系.md（resolveVolumeDocPath 已解析 legacy 前缀）
+	chapter: { outline: string; characters: string; scenes: string; relationships: string }; // 章级：章节大纲.md / 人物.md / 场景.md / 人物关系.md
+}
+
 /** 小说管理器：所有文件/文件夹操作均使用 Obsidian Vault 内置 API */
 export class StoryManager {
 	private app: App;
@@ -247,7 +255,7 @@ export class StoryManager {
 		return `${this.storyPath(storyName)}/${MANUSCRIPT_DIR_NAME}`;
 	}
 
-	/** 案头资料目录（书级参考资料：九件套 + 用户自建文件） */
+	/** 案头资料目录（书级参考资料：十件套 + 用户自建文件） */
 	deskDocsPath(storyName: string): string {
 		return `${this.storyPath(storyName)}/${DESK_DOCS_DIR_NAME}`;
 	}
@@ -260,6 +268,18 @@ export class StoryManager {
 	/** 卷文档子目录（书稿/<卷目录名>/文档） */
 	volumeDocsDirPath(storyName: string, vol: doc.VolumeInfo): string {
 		return `${this.volumeDirPath(storyName, vol)}/${VOLUME_DOCS_DIR_NAME}`;
+	}
+
+	/** v0.2.24+ 提示词文件装配改造：resolveVolumeDocPath 的公开包装——解析卷级文档物理路径（新布局裸基名 / 旧前缀 / 旧新格式命名兼容） */
+	volumeDocPath(storyName: string, vol: doc.VolumeInfo, base: string): string {
+		return this.resolveVolumeDocPath(this.volumeDirPath(storyName, vol), vol.name, base);
+	}
+
+	/** v0.2.24+ 提示词文件装配改造：书级《人物关系.md》路径（主路径读不到/为空时回落旧别名 角色关系.md，与 loadWritingData 同一兜底口径） */
+	async bookRelationshipsDocPath(storyName: string): Promise<string> {
+		const primary = `${this.deskDocsPath(storyName)}/人物关系.md`;
+		if ((await this.readDoc(primary)).trim()) return primary;
+		return `${this.deskDocsPath(storyName)}/角色关系.md`;
 	}
 
 	// ---------- 布局迁移（旧格式 → 案头资料/书稿 物理结构）----------
@@ -591,7 +611,7 @@ export class StoryManager {
 			updated_at: nowIso(),
 		};
 		await this.vault.createFolder(base);
-		for (const [fname, tpl] of this.rootDocTemplates(title)) await this.ensureDoc(`${this.deskDocsPath(name)}/${fname}`, tpl); // 默认资料九件套 → 「案头资料/」（与 ensureRootDocs 同一清单来源）
+		for (const [fname, tpl] of this.rootDocTemplates(title)) await this.ensureDoc(`${this.deskDocsPath(name)}/${fname}`, tpl); // 默认资料十件套 → 「案头资料/」（与 ensureRootDocs 同一清单来源）
 		await this.ensureDoc(`${base}/卷.md`, VOLUME_TEMPLATE); // 系统管理的《卷.md》留书根
 		await this.ensurePrologue(name).catch(() => {}); // 引言播种（best-effort：失败不影响建书主流程）
 		await this.saveState(name, state);
@@ -733,7 +753,7 @@ export class StoryManager {
 		return created;
 	}
 
-	/** 「案头资料/」默认资料九件套模板清单（建书播种 / 写字台「补全资料」同一来源；《故事状态.md》与系统管理的《卷.md》不在其内）。《策划指南》参与大纲生成（空模板，首次大纲生成前自动 AI 生成内容）；《时间线》为可选手写参考资料、不参与提示词注入 */
+	/** 「案头资料/」默认资料十件套模板清单（建书播种 / 写字台「补全资料」同一来源；《故事状态.md》与系统管理的《卷.md》不在其内）。《策划指南》参与大纲生成（空模板，首次大纲生成前自动 AI 生成内容）；《时间线》为可选手写参考资料、不参与提示词注入；《张力规则.md》内置默认播种（DEFAULT_TENSION_RULES），生成书级/卷级大纲与策划指南时注入、每书可独立编辑 */
 	private rootDocTemplates(title: string): Array<[string, string]> {
 		return [
 			["大纲.md", outlineTemplate(title)],
@@ -745,6 +765,7 @@ export class StoryManager {
 			["人物关系.md", CHAPTER_RELATIONSHIPS_TEMPLATE],
 			["场景.md", CHAPTER_SCENES_TEMPLATE],
 			["时间线.md", timelineTemplate(`${title.trim() || "未命名小说"} 时间线`)],
+			["张力规则.md", DEFAULT_TENSION_RULES],
 		];
 	}
 
@@ -967,12 +988,22 @@ export class StoryManager {
 		return this.createChapterAt(storyName, num, title, volId);
 	}
 
-	/** v0.2.10+「从卷大纲生成章节」：确保目标容器（volId="" 为「书稿/」直属）内指定本地号的章节存在——已存在原样返回，缺失则按 createChapterAt 语义创建（含模板播种与状态登记）。返回 { key, created } */
-	async ensureChapterAt(storyName: string, num: number, rawTitle: string, volId: string): Promise<{ key: string; created: boolean }> {
+	/** v0.2.10+「从卷大纲生成章节」：确保目标容器（volId="" 为「书稿/」直属）内指定本地号的章节存在——已存在原样返回，缺失则按 createChapterAt 语义创建（含模板播种与状态登记）。
+	 *  v0.2.25+ syncTitle：章节已存在且 rawTitle 非空时同步章名——复用 renameChapter（重命名章节目录+文档文件名前缀+文档内旧标题引用+元数据 title），
+	 *  「重新生成章节」侧传 true（大纲全量覆盖、章名跟随大纲标记）；「续写创建新章节」侧不传（已存在章完全不动）。返回 { key, created, renamed } */
+	async ensureChapterAt(storyName: string, num: number, rawTitle: string, volId: string, syncTitle = false): Promise<{ key: string; created: boolean; renamed: boolean }> {
 		const key = chKey(volId || null, num);
-		if (await this.chapterDirOf(storyName, key)) return { key, created: false };
+		const existing = await this.chapterDirOf(storyName, key);
+		if (existing) {
+			let renamed = false;
+			if (syncTitle && rawTitle.trim()) {
+				const newTitle = await this.renameChapter(storyName, key, rawTitle); // 与现名相同则内部直接返回、不产生任何改动
+				renamed = newTitle !== existing.title;
+			}
+			return { key, created: false, renamed };
+		}
 		await this.createChapterAt(storyName, num, rawTitle, volId);
-		return { key, created: true };
+		return { key, created: true, renamed: false };
 	}
 
 	/** 章节目录七件套模板清单（建章播种 / scan 补缺 / 写字台「新建文章…」优先列表同一来源）。《时间线》为可选手写参考资料、《章节信息》为位置元数据（v0.2.23+ 起）——两者均不参与提示词注入 */
@@ -1299,7 +1330,7 @@ private emptyState(storyName: string): StoryState {
 
 	// ---------- 通用文档工具 ----------
 
-	private async readDoc(path: string): Promise<string> {
+	async readDoc(path: string): Promise<string> {
 		const sn = this.storyNameOfPath(path);
 		if (sn) await this.ensureLayout(sn); // 布局收口：旧格式书先自动迁移再读
 		const f = this.vault.getAbstractFileByPath(this.resolveChapterDocPath(path));
@@ -3381,6 +3412,28 @@ private emptyState(storyName: string): StoryState {
 		await this.writeDoc(this.planningGuidePath(storyName), `# ${title} 策划指南\n\n${body}\n`);
 	}
 
+	// ---------- v0.2.25+ 大事件列表（书级单文件 案头资料/大事件列表.md；阶段 0 策划方案生成前置文档：缺失时先生成再续生成策划指南，生成后作为【大事件列表】引用块注入阶段 0 提示词） ----------
+
+	eventsListPath(storyName: string): string {
+		return `${this.deskDocsPath(storyName)}/大事件列表.md`; // 书级《大事件列表》在「案头资料/」
+	}
+
+	/** v0.2.25+「大事件列表」：读书级《大事件列表.md》清洗文本（去注释 + 去首部 H1 标题行，与 readPlanningGuide 同口径）；缺失返回空串 */
+	async readEventsList(storyName: string): Promise<string> {
+		const raw = await this.readDoc(this.eventsListPath(storyName));
+		let lines = doc.stripComments(raw.trim()).trim().split("\n");
+		while (lines.length && /^#\s/.test(lines[0])) lines.shift();
+		return lines.join("\n").trim();
+	}
+
+	/** v0.2.25+「大事件列表」：全量写书级《大事件列表.md》（H1 `# <书名> 大事件列表` + 正文，正文尾部空白已去）；缺失则创建、存在则覆盖 */
+	async setEventsList(storyName: string, bodyText: string): Promise<void> {
+		const state = await this.loadState(storyName);
+		const title = ((state?.title ?? "").trim()) || "未命名小说";
+		const body = String(bodyText ?? "").replace(/\s+$/, "");
+		await this.writeDoc(this.eventsListPath(storyName), `# ${title} 大事件列表\n\n${body}\n`);
+	}
+
 	/** 读正文：剥离 AI 用语标红标签 + 去 "# " 标题行（对齐 _read_std_chapter_dir，摘要哈希基于此文本） */
 	async readChapterContent(storyName: string, chapterKey: string): Promise<string> {
 		const ch = await this.chapterDirOf(storyName, chapterKey);
@@ -3565,7 +3618,7 @@ private emptyState(storyName: string): StoryState {
 	 * 组装写作提示词所需的磁盘数据。
 	 * v0.0.15：chapterNum=阅读序位置（ordinal，跨卷连续），本地章号仅用于落盘标题与容器内引用；
 	 * prevChapters/summaries 按阅读序窗口取（可跨卷延续）。副作用：从全局大纲与本章大纲抽取 [伏]…[/] 标记并持久化到 伏笔.md。
-	 * v0.0.15 三层上下文：人物关系分书/卷/章三份返回（去重在 buildWritingContext）、activeVolId/exclude*Names/volSummary 供分层渲染；folderDocs 已剔除《人物关系.md》。
+	 * v0.0.15 三层上下文：activeVolId/exclude*Names/volSummary 供分层渲染；v0.2.24+ 文档原文不再在此读取组装——三层路径经 docPaths 返回，由调用方声明 spec 装配（assemblePromptFiles）。
 	 * v0.1.4+：①前文窗口章数 N=data.json settings.prevChapters（getPrevChapters 注入、缺省 3）且**限本容器**——卷模式不再拉取他卷章节，缺口以最近各前卷《卷摘要》填充（prevVolSummaries，由近及远）；
 	 * ②**摘要全部延迟生成**（不在写盘命令后 eager 刷新）：窗口章/前卷/本卷需要时经 ensureFresh* 按需触发 LLM 并经 onProgress 给用户进度反馈——窗口章无正文时回落《章节大纲》作来源（预览即大纲文本），缺失/过期经 ensureFreshChapterSummary 生成落盘；
 	 * ③**卷摘要=本卷全部成员章新鲜章节摘要的全量重建**（ensureFreshVolumeSummary，指纹=各章「key|md5(摘要)」拼接 md5；旧版基于正文哈希的文件首次使用自愈重建一次）；
@@ -3580,10 +3633,8 @@ private emptyState(storyName: string): StoryState {
 			ensureSummaries?: boolean;
 			/** v0.2.23+ 只读导出场景（/export-ai-prompts）：与 ensureSummaries=false 联用，摘要缺失时把该占位文本填入对应槽位（窗口章摘要/本卷摘要/前卷摘要）而非留空——导出文档据此明示「此处有摘要、尚未生成」；运行时写作命令不传 */
 			missingSummaryPlaceholder?: string;
-			/** 调用方自行注入本章大纲时传 true（/write 的「章节大纲：」块、/rewrite·/review 的前后章桥接块）——跳过《章节大纲.md》进 folderDocs，避免同一份大纲在用户提示词里注入两次；/continue 不传（其提示词不注入大纲，唯一来源就是 folderDocs 的【本章大纲】） */
-			dropOutlineDoc?: boolean;
 		}
-	): Promise<import("./prompts").WritingContextInput & { savedForeshadows: number }> {
+	): Promise<import("./prompts").WritingContextInput & { savedForeshadows: number; docPaths: WritingDocPaths }> {
 		const state = await this.validatedState(storyName);
 		const ordered = await this.listChapters(storyName); // 阅读序：「书稿/」直属在前 + 各卷按《卷.md》order、组内本地号升序
 		const idx = ordered.findIndex((c) => c.key === chapterKey);
@@ -3601,20 +3652,12 @@ private emptyState(storyName: string): StoryState {
 		const globalOutlineRaw = await this.readGlobalOutlineRaw(storyName);
 		let savedForeshadows = await this.saveOutlineForeshadows(storyName, globalOutlineRaw, ch.key);
 
-		// v0.0.15 三层上下文：《人物关系.md》不进 folderDocs（改经 chapterRelationships 单独传入参与跨层去重）；
-		// 《人物.md》/《场景.md》仍由 folderDocs 原文渲染，其归属条目从结构化列表排除避免重复
+		// v0.2.24+ 提示词文件装配改造：文档原文注入改由调用方按 docPaths 声明 spec 装配；此处仍读本章《人物.md》/《场景.md》
+		// 计算归属条目——结构化角色/场景列表排除它们，避免与章级组串【本章人物设定】/【本章场景】原文渲染重复
 		const chCharRaw = await this.readDoc(`${ch.dir.path}/人物.md`);
 		const chSceneRaw = await this.readDoc(`${ch.dir.path}/场景.md`);
 		const excludeCharNames = Object.keys(doc.parseCharacters(chCharRaw, ch.num));
 		const excludeSceneIds = Object.keys(doc.parseScenes(chSceneRaw, ch.num));
-		const entries: ChapterFolderDocEntry[] = [
-			// dropOutlineDoc：本章大纲改由提示词构建方注入（/write·/rewrite·/review），此处跳过防二次注入；伏笔抽取不受影响（下方 readChapterOutlineForPrompt→saveOutlineForeshadows 独立覆盖）
-			{ file: "章节大纲.md", text: opts?.dropOutlineDoc ? "" : await this.readDoc(`${ch.dir.path}/章节大纲.md`) },
-			{ file: "人物.md", text: chCharRaw },
-			{ file: "场景.md", text: chSceneRaw },
-			// v0.2.23+：《章节信息.md》不再进写作上下文（CHAPTER_DOC_LABELS 已移除其标签），此处亦不再读取
-		];
-		const folderDocs = buildChapterFolderDocs(entries, ch.key).docs; // 复合键：本章容器作为 [伏] 标记默认归属
 		const chapterOutlineText = await this.readChapterOutlineForPrompt(storyName, ch.key);
 		savedForeshadows += await this.saveOutlineForeshadows(storyName, chapterOutlineText, ch.key);
 
@@ -3685,22 +3728,19 @@ private emptyState(storyName: string): StoryState {
 			return c.vol === curVolId || (c.chapter <= 0 && prevVolIds.has(c.vol));
 		});
 
-		// v0.0.15 三层上下文：人物关系按 书/卷/章 三份清洗文本返回，跨层逐行去重由 buildWritingContext 完成（优先级 章 > 卷 > 书）
-		let relationshipsRaw = await this.readDoc(`${this.deskDocsPath(storyName)}/人物关系.md`); // 书级《人物关系》在「案头资料/」
-		if (!relationshipsRaw.trim()) relationshipsRaw = await this.readDoc(`${this.deskDocsPath(storyName)}/角色关系.md`); // 旧别名兜底
-		const bookRelationships = cleanRelationshipsDoc(relationshipsRaw);
-		const chapterRelationships = cleanRelationshipsDoc(await this.readDoc(`${ch.dir.path}/人物关系.md`));
+		// v0.2.24+ 提示词文件装配改造：三层文档原文不再在此读取清洗——只解析出路径（含旧别名兜底），
+		// 由调用方按 docPaths 声明 PromptSpec、经 assemblePromptFiles 读取装配注入
+		const desk = this.deskDocsPath(storyName); // 书级文档在「案头资料/」
+		const bookRelationshipsPath = await this.bookRelationshipsDocPath(storyName); // 旧别名兜底见 helper
 		let volumeName = "";
-		let volOutlineText = "";
-		let volRelationships = "";
+		let volPaths: WritingDocPaths["vol"];
 		let volSummary = "";
 		if (ch.vol && vols[ch.vol]) {
 			volumeName = vols[ch.vol].name || ch.vol;
-			const volDir = this.volumeDirPath(storyName, vols[ch.vol]); // 卷实体目录在「书稿/」下
-			volRelationships = cleanRelationshipsDoc(await this.readDoc(this.resolveVolumeDocPath(volDir, vols[ch.vol].name, "人物关系.md")));
-			const lines = doc.stripComments((await this.readDoc(this.resolveVolumeDocPath(volDir, vols[ch.vol].name, "卷大纲.md"))).trim()).split("\n");
-			while (lines.length && /^#\s/.test(lines[0])) lines.shift(); // 去 H1 标题行
-			volOutlineText = lines.join("\n").trim();
+			volPaths = {
+				outline: this.volumeDocPath(storyName, vols[ch.vol], "卷大纲.md"),
+				relationships: this.volumeDocPath(storyName, vols[ch.vol], "人物关系.md"),
+			};
 			if (state.use_summaries !== false && includeVolSummary) {
 				// v0.1.4+：延迟生成——本卷全部章节摘要为输入全量重建，需要时才触发 LLM（带进度反馈）；默认关闭不注入整卷 digest、也不触发其重建
 				volSummary = ensureSummaries ? await this.ensureFreshVolumeSummary(storyName, ch.vol) : await this.readFreshVolumeSummary(storyName, ch.vol);
@@ -3713,7 +3753,6 @@ private emptyState(storyName: string): StoryState {
 			chapterNum: ordinal,
 			localNum: ch.num,
 			volumeName,
-			volOutlineText,
 			chapterRanks: ordered.reduce<Record<string, number>>((acc, c, i) => {
 				acc[c.key] = i + 1;
 				return acc;
@@ -3728,17 +3767,17 @@ private emptyState(storyName: string): StoryState {
 			activeVolId: ch.vol ?? "",
 			excludeCharNames,
 			excludeSceneIds,
-			bookRelationships,
-			volRelationships,
-			chapterRelationships,
 			volSummary,
 			prevVolSummaries,
 			prevChapters,
 			summaries,
 			prevN,
-			world: await this.readWorldDoc(storyName),
 			scenes: Object.values(await this.loadAllScenes(storyName)),
-			folderDocs,
+			docPaths: {
+				book: { world: `${desk}/世界观.md`, globalOutline: `${desk}/大纲.md`, bookRelationships: bookRelationshipsPath },
+				vol: volPaths,
+				chapter: { outline: `${ch.dir.path}/章节大纲.md`, characters: `${ch.dir.path}/人物.md`, scenes: `${ch.dir.path}/场景.md`, relationships: `${ch.dir.path}/人物关系.md` },
+			},
 			savedForeshadows,
 		};
 	}
@@ -3759,6 +3798,43 @@ private emptyState(storyName: string): StoryState {
 		await this.recomputeTotalWords(storyName, state);
 		await this.saveState(storyName, state);
 		return meta.words;
+	}
+
+	/** v0.2.25+ 从大纲生成章节前置清理：统计目标容器（volId=""＝书根平铺容器）内已有正文的章数（确认弹窗用，与 clearChapterBodies 同口径；excludeKeys 内的章即将被删除、不计入） */
+	async countChaptersWithBody(storyName: string, volId: string, excludeKeys?: Set<string>): Promise<number> {
+		const chapters = await this.listChapters(storyName);
+		let n = 0;
+		for (const c of chapters.filter((cc) => (cc.vol ?? "") === volId && !excludeKeys?.has(cc.key))) {
+			const raw = await this.readDoc(`${c.dir.path}/章节.md`);
+			const lines = raw.split("\n");
+			if (lines.length && lines[0].startsWith("# ")) lines.shift();
+			if (lines.join("\n").trim()) n++;
+		}
+		return n;
+	}
+
+	/** v0.2.25+ 从大纲生成章节前置清理：统计/清空目标容器（volId=""＝书根平铺容器）内全部章节的《章节.md》正文（保留标题行、字数状态同步归零）。返回实际清空的章数；excludeKeys 内的章即将被删除、跳过 */
+	async clearChapterBodies(storyName: string, volId: string, excludeKeys?: Set<string>): Promise<number> {
+		const chapters = await this.listChapters(storyName);
+		let cleared = 0;
+		for (const c of chapters.filter((cc) => (cc.vol ?? "") === volId && !excludeKeys?.has(cc.key))) {
+			const raw = await this.readDoc(`${c.dir.path}/章节.md`);
+			const lines = raw.split("\n");
+			if (lines.length && lines[0].startsWith("# ")) lines.shift();
+			if (!lines.join("\n").trim()) continue; // 本就无正文：跳过（不计入清空数）
+			await this.setChapterBody(storyName, c.key, "");
+			cleared++;
+		}
+		return cleared;
+	}
+
+	/** v0.2.25+ 从大纲生成章节前置清理：列出目标容器（volId=""＝书根平铺容器）内章号不在 keepNums 的多余章节（大纲没写到的旧章节，调用方逐个 deleteChapter）。按章号升序返回 */
+	async listExtraChapters(storyName: string, volId: string, keepNums: Set<number>): Promise<Array<{ key: string; num: number; title: string }>> {
+		const chapters = await this.listChapters(storyName);
+		return chapters
+			.filter((cc) => (cc.vol ?? "") === volId && !keepNums.has(cc.num))
+			.map((cc) => ({ key: cc.key, num: cc.num, title: cc.title }))
+			.sort((a, b) => a.num - b.num);
 	}
 
 	/** 全量替换本章大纲正文（对齐 documents.write_chapter_outline：标题行 + rstrip + 标记帮助尾注） */

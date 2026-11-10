@@ -1661,6 +1661,221 @@
 	padding: 0 6px;
 	font-size: 0.9em;
 }
+/* 阶段页内层子标签（身份加强 | 引用文档）：视觉比外层阶段 tab 轻一档 */
+.aw-phase-subtabs-header {
+	display: flex;
+	gap: 4px;
+	margin-top: 8px;
+	border-bottom: 1px solid var(--background-modifier-border);
+}
+.aw-phase-subtab-btn {
+	padding: 4px 10px;
+	background: transparent;
+	border: none;
+	border-bottom: 2px solid transparent;
+	cursor: pointer;
+	font-size: var(--font-ui-smaller);
+	color: var(--text-muted);
+	transition: all 0.2s;
+}
+.aw-phase-subtab-btn:hover {
+	color: var(--text-normal);
+	border-bottom-color: var(--interactive-accent);
+}
+.aw-phase-subtab-btn.is-active {
+	color: var(--text-normal);
+	border-bottom-color: var(--interactive-accent);
+	font-weight: var(--font-bold);
+}
+.aw-phase-subtabs-content {
+	padding: 8px 0 0;
+}
+/* 身份加强容器现在位于子标签内容区内：子标签头已有分隔线，去掉容器自带的上边框/上间距 */
+.aw-phase-subtabs-content .aw-identity-boost-container {
+	margin-top: 0;
+	padding-top: 4px;
+	border-top: none;
+}
+/* LLM 配置 tab 区块（全局设置 + 模型配置两 tab；模型配置页=列表/详情两形态；tab 骨架复用 aw-phase-tabs-*） */
+.aw-llm-row {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	margin-top: 8px;
+}
+.aw-llm-label {
+	flex: 0 0 220px;
+	font-size: var(--font-ui-small);
+	font-weight: var(--font-semibold);
+}
+.aw-llm-input,
+.aw-llm-select {
+	flex: 1 1 auto;
+	min-width: 0;
+}
+.aw-llm-textarea {
+	width: 100%;
+	resize: vertical;
+}
+.aw-llm-desc {
+	font-size: var(--font-ui-smaller);
+	color: var(--text-muted);
+	margin: 4px 0 8px;
+}
+.aw-llm-actions {
+	display: flex;
+	gap: 8px;
+	margin-top: 12px;
+}
+.aw-llm-del {
+	color: var(--text-error);
+}
+.aw-llm-add {
+	margin: 4px 0 12px;
+}
+.aw-llm-empty {
+	font-size: var(--font-ui-small);
+	color: var(--text-muted);
+	padding: 12px 0;
+}
+.aw-llm-list {
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+}
+.aw-llm-item {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	padding: 10px 12px;
+	border: 1px solid var(--background-modifier-border);
+	border-radius: var(--radius-s);
+	cursor: pointer;
+}
+.aw-llm-item:hover {
+	background: var(--background-modifier-hover);
+}
+.aw-llm-item-name {
+	flex: 0 0 auto;
+	font-weight: var(--font-semibold);
+	font-size: var(--font-ui-small);
+}
+.aw-llm-item-meta {
+	flex: 1 1 auto;
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	font-size: var(--font-ui-smaller);
+	color: var(--text-muted);
+}
+.aw-llm-item-open {
+	flex: 0 0 auto;
+	font-size: var(--font-ui-smaller);
+	color: var(--text-muted);
+}
+.aw-llm-back {
+	margin-bottom: 8px;
+}
+/* 引用文档配置框（每阶段 ref_docs 清单） */
+.aw-refdocs-desc {
+	font-size: var(--font-ui-smaller);
+	color: var(--text-muted);
+	margin: 4px 0 8px;
+}
+.aw-refdocs-list {
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+	margin-bottom: 10px;
+}
+.aw-refdocs-empty {
+	font-size: var(--font-ui-smaller);
+	color: var(--text-faint);
+	padding: 4px 0;
+}
+.aw-refdocs-row {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 4px 8px;
+	border: 1px solid var(--background-modifier-border);
+	border-radius: var(--radius-s);
+	background: var(--background-secondary);
+}
+.aw-refdocs-row.is-locked {
+	background: var(--background-secondary-alt);
+	opacity: 0.8;
+}
+.aw-refdocs-lock {
+	flex: 0 0 auto;
+	font-size: 0.9em;
+}
+.aw-refdocs-num {
+	flex: 0 0 auto;
+	min-width: 18px;
+	text-align: right;
+	font-size: var(--font-ui-smaller);
+	color: var(--text-faint);
+}
+.aw-refdocs-move {
+	flex: 0 0 auto;
+	height: 22px;
+	padding: 0 6px;
+	font-size: var(--font-ui-smaller);
+}
+.aw-refdocs-move:disabled {
+	opacity: 0.35;
+	cursor: default;
+}
+.aw-refdocs-label {
+	flex: 1 1 auto;
+	min-width: 0;
+	font-size: var(--font-ui-small);
+	color: var(--text-normal);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+.aw-refdocs-locked-tag {
+	flex: 0 0 auto;
+	font-size: var(--font-ui-smaller);
+	color: var(--text-faint);
+}
+.aw-refdocs-del {
+	flex: 0 0 auto;
+	height: 22px;
+	padding: 0 8px;
+	font-size: var(--font-ui-smaller);
+}
+.aw-refdocs-addrow {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	margin-bottom: 8px;
+}
+.aw-refdocs-select {
+	flex: 1 1 auto;
+	min-width: 0;
+	height: 24px;
+	min-height: 24px;
+	padding: 0 6px;
+	font-size: 0.9em;
+}
+.aw-refdocs-add {
+	flex: 0 0 auto;
+	height: 24px;
+	padding: 0 10px;
+	font-size: var(--font-ui-smaller);
+}
+.aw-refdocs-resetrow {
+	margin-top: 10px;
+}
+.aw-refdocs-reset {
+	height: 24px;
+	padding: 0 10px;
+	font-size: var(--font-ui-smaller);
+}
 /* identity_boost 设置项布局 */
 .aw-identity-boost-container {
 	margin-top: 12px;

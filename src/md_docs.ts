@@ -346,15 +346,15 @@ export function parseVolumeDeclarations(text: string): VolumeDeclaration[] {
 	return out;
 }
 
-/** v0.2.x+ 书级大纲「继续生成」（有卷模式）：扫描卷声明行末尾区间注记「（第A-B章）」中的最大 B，即已有大纲已覆盖到的章号；无声明行或无区间注记返回 0 */
-export function maxDeclaredEndChapter(text: string): number {
+/** v0.2.x+ 书级大纲「继续生成」（有卷模式）：扫描卷声明行的卷号 X（阿拉伯或中文数字），即已有大纲已规划到的最大卷号；无声明行返回 0。
+ *  旧格式卷声明（带「（第A-B章）」区间注记）同样可解析卷号——继续生成不再依赖区间注记。 */
+export function maxDeclaredVolumeNum(text: string): number {
 	let max = 0;
 	for (const line of String(text ?? "").split("\n")) {
-		if (!/^\s*[-*]\s*第\s*(?:\d+|[零一二两三四五六七八九十百]+)\s*卷/.test(line)) continue;
-		const m = /[（(]\s*第\s*\d+\s*[-–—~～至到]\s*(\d+)\s*章\s*[)）]/.exec(line);
+		const m = /^\s*[-*]\s*第\s*(\d+|[零一二两三四五六七八九十百]+)\s*卷/.exec(line);
 		if (!m) continue;
-		const b = parseInt(m[1], 10);
-		if (Number.isSafeInteger(b) && b > max) max = b;
+		const n = cnToNum(m[1]);
+		if (n != null && n > max) max = n;
 	}
 	return max;
 }

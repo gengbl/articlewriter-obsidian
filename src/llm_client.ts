@@ -27,6 +27,21 @@ export function createClient(cfg: LlmConfigDoc, timeoutMs = 60000): OpenAI {
 		baseURL: normalizeBaseURL(cfg.base_url),
 		timeout: timeoutMs,
 		dangerouslyAllowBrowser: true, // Obsidian 为 Electron 渲染进程环境
+		// 显式 null 撤销 SDK 自动附加的 X-Stainless-* 指纹头（openai SDK 文档：defaultHeaders 传 null 即删除该头）。
+		// 这些是自定义头，浏览器 CORS 预检会把它们列入 Access-Control-Request-Headers——凡返回固定白名单的本地服务
+		// （如 Strata 服务端只允许 content-type/authorization/x-api-key/x-strata-client）预检即被 Chromium 拒绝，
+		// 插件内所有请求表现为「Failed to fetch → 连接失败」，而 curl 连通正常（curl 不带这些头）——云端 API 允许任意头、不受影响。
+		defaultHeaders: {
+			"X-Stainless-Lang": null,
+			"X-Stainless-Package-Version": null,
+			"X-Stainless-OS": null,
+			"X-Stainless-Arch": null,
+			"X-Stainless-Runtime": null,
+			"X-Stainless-Runtime-Version": null,
+			"X-Stainless-Retry-Count": null,
+			"X-Stainless-Timeout": null,
+			"X-Stainless-Helper-Method": null,
+		},
 	});
 }
 

@@ -383,6 +383,30 @@ export class StoryPickerModal extends SuggestModal<string> {
 	}
 }
 
+/** vault Markdown 文档选择器（引用文档配置框「添加 vault 文档」）：模糊搜索 vault 内全部 .md，选中即直接添加，无需手输路径 */
+export class VaultFilePickerModal extends SuggestModal<TFile> {
+	constructor(app: App, private onPick: (path: string) => void) {
+		super(app);
+		this.inputEl.placeholder = "选择 vault 内的 Markdown 文档（按路径模糊搜索）…";
+	}
+
+	getSuggestions(query: string): TFile[] {
+		const all = this.app.vault.getMarkdownFiles();
+		const q = query.trim().toLowerCase();
+		const hit = q ? all.filter((f) => f.path.toLowerCase().includes(q)) : all;
+		return hit.sort((a, b) => a.path.localeCompare(b.path)).slice(0, 200);
+	}
+
+	renderSuggestion(file: TFile, el: HTMLElement): void {
+		el.setText(file.path);
+	}
+
+	onChooseSuggestion(file: TFile): void {
+		this.close();
+		this.onPick(file.path);
+	}
+}
+
 // ---------- 通用操作菜单（卷/场景/角色/伏笔等管理入口）----------
 
 export interface ActionItem {

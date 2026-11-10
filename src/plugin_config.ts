@@ -27,7 +27,63 @@ export interface WritingPhase {
 	name: string; // 阶段显示名（如「策划方案生成」）
 	llm_config_name?: string; // 指定使用的模型配置名（留空=回落第一个配置 cfgs[0]；active_llm/chat_model 均不参与阶段回退）
 	identity_boost?: string; // 该阶段的 AI 身份加强提示词，注入到 system prompt 末尾
+	ref_docs?: string[]; // 引用文档配置框（v0.2.25+）：本阶段提示词装配实际注入的引用文档清单。条目 = 内置文档 key（见 PHASE_REF_DOC_CATALOGS）或 "file:<vault 路径>"（用户自选文档）；三层《写作指南》创作规范为锁定项、不在清单内、恒注入。undefined = 该阶段默认清单；[] = 只注入锁定项。
 }
+
+/** 内置引用文档 key → 界面显示名（全阶段共用词表）。 */
+export const REF_DOC_LABELS: Record<string, string> = {
+	book_info: "小说基本信息（来自 故事状态.md：书名/题材/风格）",
+	tension_rules: "张力规则（张力规则.md）",
+	worldview: "世界观（世界观.md）",
+	events_list: "大事件列表（大事件列表.md）",
+	book_outline: "全书大纲（大纲.md）",
+	vol_list: "卷列表（卷列表.md）",
+	planning_guide: "策划指南（策划指南.md）",
+	outline_source: "当前大纲来源（本次待拆分的大纲文本）",
+	book_relations: "书级人物关系（人物关系.md）",
+	vol_relations: "本卷人物关系（本卷人物关系.md）",
+	prev_vol_outline: "前一卷卷大纲（链式上下文）",
+	vol_outline: "大纲（卷模式＝本卷《卷大纲.md》；平铺模式＝书级《大纲.md》）",
+	chapter_outline: "本章大纲（大纲.md 本章小节）",
+	characters: "人物档案（人物/）",
+	scenes: "场景档案（场景/）",
+	chapter_relations: "本章人物关系（本章小节）",
+};
+
+/** 各阶段（0–3）可注入的内置引用文档目录（设置页下拉候选、按阶段裁剪）。 */
+export const PHASE_REF_DOC_CATALOGS: Record<string, string>[] = [
+	// 阶段 0 策划方案生成（/planning-guide-worldview；自动生成策划指南前置链路）
+	{ book_info: REF_DOC_LABELS.book_info, tension_rules: REF_DOC_LABELS.tension_rules, worldview: REF_DOC_LABELS.worldview, events_list: REF_DOC_LABELS.events_list, book_outline: REF_DOC_LABELS.book_outline, vol_list: REF_DOC_LABELS.vol_list },
+	// 阶段 1 书籍大纲和卷级大纲生成（/book-outline-generate /vol-outline-generate /book-outline-to-volumes）
+	{
+		book_info: REF_DOC_LABELS.book_info, tension_rules: REF_DOC_LABELS.tension_rules, worldview: REF_DOC_LABELS.worldview,
+		planning_guide: REF_DOC_LABELS.planning_guide, outline_source: REF_DOC_LABELS.outline_source, book_outline: REF_DOC_LABELS.book_outline,
+		book_relations: REF_DOC_LABELS.book_relations, vol_relations: REF_DOC_LABELS.vol_relations, vol_list: REF_DOC_LABELS.vol_list,
+		prev_vol_outline: REF_DOC_LABELS.prev_vol_outline,
+	},
+	// 阶段 2 文章大纲生成（/vol-outline-to-chapters）
+	{
+		book_info: REF_DOC_LABELS.book_info, tension_rules: REF_DOC_LABELS.tension_rules, worldview: REF_DOC_LABELS.worldview,
+		planning_guide: REF_DOC_LABELS.planning_guide, outline_source: REF_DOC_LABELS.outline_source, book_outline: REF_DOC_LABELS.book_outline,
+		book_relations: REF_DOC_LABELS.book_relations, vol_relations: REF_DOC_LABELS.vol_relations, vol_list: REF_DOC_LABELS.vol_list,
+		prev_vol_outline: REF_DOC_LABELS.prev_vol_outline,
+	},
+	// 阶段 3 编写文章（/write /continue /rewrite /review /chat）
+	{
+		worldview: REF_DOC_LABELS.worldview, book_relations: REF_DOC_LABELS.book_relations,
+		vol_outline: REF_DOC_LABELS.vol_outline, vol_relations: REF_DOC_LABELS.vol_relations,
+		chapter_outline: REF_DOC_LABELS.chapter_outline, characters: REF_DOC_LABELS.characters,
+		scenes: REF_DOC_LABELS.scenes, chapter_relations: REF_DOC_LABELS.chapter_relations,
+	},
+];
+
+/** 各阶段（0–3）引用文档默认清单（初始化配置框；用户改动后以保存值为准）。 */
+export const PHASE_REF_DOC_DEFAULTS: string[][] = [
+	["book_info", "tension_rules", "worldview", "events_list"], // 阶段 0 默认含大事件列表（缺失时自动生成后再继续策划指南；v0.2.25+ 问题③）
+	["book_info", "tension_rules", "worldview", "planning_guide"], // 阶段 1 默认只注入前四项；大纲来源/全书大纲/关系/卷列表/前卷大纲保留在下拉目录、可手动添加
+	["book_info", "tension_rules", "worldview", "planning_guide", "outline_source", "book_outline", "vol_list", "prev_vol_outline"], // 阶段 2 默认八项；书级/本卷人物关系保留在下拉目录、可手动添加
+	["worldview", "book_relations", "vol_outline", "vol_relations", "chapter_outline", "characters", "scenes", "chapter_relations"],
+];
 
 export interface PluginConfig {
 	version: 1;
@@ -36,9 +92,9 @@ export interface PluginConfig {
 	llm_configs?: LlmConfigDoc[];
 	system_prompt?: string; // 写作系统提示词（空=用内置默认）
 	desc_style?: string; // "normal" | "complete"
-	system_guide?: string; // 系统级写作指南（三层创作规范中最低优先级层，预置 CLI 内置内容）
-	system_guide_path?: string; // 系统级指南文件路径（vault 相对路径）；设
-	writing_phases?: WritingPhase[]; // 写作阶段模型配置（四阶段独立模型）置且可读时优先于内嵌 system_guide
+	system_guide?: string; // 遗留字段：旧版内嵌的系统级写作指南文本，仅作首启一次性迁移种子（播种插件数据目录 WRITING_GUIDE.md 后由 purgeLegacySystemGuideFields 从 data.json 删除）
+	system_guide_path?: string; // 遗留字段：旧版系统级指南路径覆盖项（已移除该设置），随 system_guide 一并清除
+	writing_phases?: WritingPhase[]; // 写作阶段模型配置（四阶段独立模型）
 }
 
 /** 首次运行（data.json 无 llm 段）时预置的标准模板：字段结构与 Python 用户配置文件一致，api_key/model_name 留空待填。
