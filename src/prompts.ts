@@ -10,6 +10,7 @@ import {
 import {
 	AiHit,
 	AiSentence,
+	BannedWordsData,
 	buildMergedBannedBlock,
 	findAiSentences,
 	findAiWordHits,
@@ -586,15 +587,17 @@ export interface StoryTypePromptInput {
 	guideText?: string;
 	title?: string;
 	charNames?: Array<string | null>;
+	/** 禁用词清单数据（来自 BANNED_WORDS.md）；不传则不注入禁用词块（非正文写作路径） */
+	bannedData?: BannedWordsData;
 	bannedGuideText?: string;
 	skillsBlock?: string;
 }
 
-/** 组装「编写类型 + 禁用词 + skills」系统提示词块 */
+/** 组装「编写类型 + 禁用词 + skills」系统提示词块（禁用词块仅在传入 bannedData 时注入——只进正文写作路径） */
 export function buildStoryTypeSystemPrompt(input: StoryTypePromptInput): string {
 	const storyType = storyTypeOf(input.storyType);
 	const block = getStoryTypeGuide(storyType, input.guideText || "", input.title || "", input.charNames);
-	const bannedBlock = buildMergedBannedBlock(input.bannedGuideText || "");
+	const bannedBlock = input.bannedData ? buildMergedBannedBlock(input.bannedGuideText || "", input.bannedData) : "";
 	const parts: string[] = [];
 	if (block) parts.push(block);
 	if (bannedBlock) parts.push(bannedBlock);
@@ -1628,8 +1631,8 @@ export interface CleanReport {
 	errors: string[];
 }
 
-/** 去AI味主流程：先做句式简化，再最多 maxRounds 轮 LLM 逐句改写 */
-export async function cleanAiText(text: string, rewrite: AiRewriteFn, maxRounds = 2): Promise<{ text: string; report: CleanReport }> {
+/** 去AI味主流程：先做句式简化，再最多 maxRounds 轮 LLM 逐句改写（词表来自 BANNED_WORDS.md 解析结果） */
+export async function cleanAiText(text: string, rewrite: AiRewriteFn, maxRounds: number, data: BannedWordsData): Promise<{ text: string; report: CleanReport }> {
 	const emptyReport: CleanReport = { rounds: 0, simplified: [], replaced: [], remaining: [], errors: [] };
 	if (!text || !text.replace(/\s/g, "")) return { text, report: emptyReport };
 	let current = text;
@@ -1645,7 +1648,7 @@ export async function cleanAiText(text: string, rewrite: AiRewriteFn, maxRounds 
 		current = merged;
 	}
 	for (let rnd = 1; rnd <= maxRounds; rnd++) {
-		const sentences = findAiSentences(current);
+		const sentences = findAiSentences(current, data);
 		if (!sentences.length) break;
 		report.rounds = rnd;
 		const prompt = buildDeaiPrompt(current, sentences);
@@ -1664,7 +1667,7 @@ export async function cleanAiText(text: string, rewrite: AiRewriteFn, maxRounds 
 			report.replaced.push([s.sentence, newS]);
 		}
 	}
-	report.remaining = findAiWordHits(current);
+	report.remaining = findAiWordHits(current, data);
 	return { text: current, report };
 }
 

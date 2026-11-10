@@ -1,74 +1,61 @@
-// 移植自 Python 版 story_types.py：网文高频禁用词表、AI腔变体规则、
-// 否定对比/重复强调句式简化、AI 常用词检测与标红、写作指南分类解析合并。
+// 移植自 Python 版 story_types.py：禁用词清单解析（运行时唯一来源＝插件数据目录 BANNED_WORDS.md，
+// 由 parseBannedWordsMd 解析为 BannedWordsData）、否定对比/重复强调句式简化、
+// AI 常用词检测与标红、写作指南分类解析合并。
 // 纯函数层，不接触 Vault / LLM。（正则不用 lookbehind 断言——iOS Safari <16.4 不支持、会直接抛 SyntaxError；前置否定改用「(?:^|[^X])」前缀字符替代，替换规则中经 $N 回补该字符）
 
-// ===== 网文高频禁用词表（按类别分组）=====
-// 每项为 [禁用词, 说明/替代建议]
-export const WEB_NOVEL_BANNED_WORDS: Record<string, Array<[string, string]>> = {
-	套话副词: [
-		["只见", "高频AI开场词，直接写动作/画面"],
-		["不由得", "AI万能过渡，直接写反应"],
-		["心中暗道", "心理描写套话，用具体念头替代"],
-		["暗暗吃惊", "情绪套话，用动作/细节表现吃惊"],
-		["心中一凛", "烂大街的警觉套话"],
-		["不禁", "AI高频，能删则删"],
-		["猛地", "动作副词滥用，换具体动词"],
-		["瞬间", "万能时间词，换成具体过程"],
-		["顿时", "AI高频过渡词"],
-		["仿佛", "比喻句高频引导词，能直说就直说"],
-		["似乎", "含糊词，少用"],
-		["好像", "含糊词，少用"],
-	],
-	情绪模板词: [
-		["眼眸中闪过一丝", "AI式情绪描写模板"],
-		["眼中闪过一丝", "同上，重复桥段"],
-		["嘴角勾起一抹", "AI高频表情模板"],
-		["嘴角上扬", "过度使用的表情描写"],
-		["瞳孔猛地一缩", "AI高频震惊模板"],
-		["倒吸一口凉气", "烂大街的震惊动作"],
-		["心头一震", "AI高频情绪词"],
-		["心头一紧", "同上"],
-		["一股暖流", "感动/情绪模板词"],
-		["骨子里", "AI高频性格/气质套话，用具体言行替代"],
-		["指节发白", "AI高频情绪物理化套话（紧张/愤怒/隐忍），用具体动作或后果替代"],
-		["胸膛剧烈起伏", "AI高频情绪物理化套话（激动/愤怒/喘息），用具体动作或后果替代"],
-		["嘴唇抿成一条线", "AI高频表情模板（隐忍/克制），换具体动作或对话"],
-		["指甲掐进掌心", "AI高频情绪物理化套话（隐忍/痛苦），用具体动作或后果替代"],
-		["青筋暴起", "烂大街的愤怒描写（额角/太阳穴语境），用具体动作替代"],
-	],
-	"特效/设定词": [
-		["紫红色电蛇", "色彩+名词+动作固定搭配泛滥"],
-		["金光化作", "特效模板"],
-		["灵光一闪", "仙侠AI高频"],
-		["金光闪闪", "特效堆砌"],
-		["流光溢彩", "华丽堆砌"],
-		["仙气飘飘", "仙侠AI高频"],
-		["灵力涌动", "仙侠设定套话"],
-		["神识一扫", "仙侠AI高频动作"],
-		["元婴期", "网文等级套话（除非剧情需要）"],
-		["斗气", "玄幻等级套话（除非剧情需要）"],
-		["法宝", "仙侠物品套话（除非剧情需要）"],
-	],
-	AI腔句式: [
-		["综上所述", "过度总结"],
-		["总之", "过度总结"],
-		["由此可见", "过度总结"],
-		["众所周知", "AI论证腔"],
-		["值得一提的是", "AI过渡腔"],
-		["不难发现", "AI论证腔"],
-		["不对劲", "AI腔高频吐槽词，改为具体写出哪里不对"],
-	],
-};
+// ===== 禁用词数据（运行时唯一来源＝插件数据目录 BANNED_WORDS.md；内置词仅在文件缺失时作播种内容参考）=====
 
-// 禁用词表对应的写作指南章节标题（与 WRITING_GUIDE.md 保持一致）
-export const BANNED_WORDS_GUIDE_SECTION = "网文高频禁用词";
-
-// ===== 网文高频AI腔变体规则（子串/组合匹配，拦截精确词表之外的绕开写法）=====
-// 每项为 { re, word }。命中即视为禁用，用于检测"眸光一凝""化作""腥甜"等
-// 绕开精确词表的变体。
+/** 变体正则条目：re=匹配正则（禁用 lookbehind 断言——iOS Safari <16.4 不支持），word=展示词（高亮/报告用） */
 export interface BannedPattern {
 	re: RegExp;
 	word: string;
+}
+
+/** 解析后的禁用词数据：词组（组名 → [词, 说明]）＋ 变体正则列表 */
+export interface BannedWordsData {
+	words: Record<string, Array<[string, string]>>;
+	patterns: BannedPattern[];
+}
+
+/** 变体正则节的固定标题名（解析器将其与词组节区别对待） */
+const BANNED_PATTERN_SECTION = "变体正则";
+const BANNED_WORD_LINE_RE = /^-\s*「([^」]+)」\s*[:：]\s*(.+?)\s*$/; // 词组条目：- 「词」：说明
+const BANNED_PATTERN_LINE_RE = /^-\s*`([^`]+)`\s*(?:→|->)\s*(.+?)\s*$/; // 变体正则条目：- `正则源` → 展示词
+
+/**
+ * 解析 BANNED_WORDS.md 内容为 BannedWordsData。
+ * 格式：`## 组名` 标题 + `- 「词」：说明` 条目；固定标题 `## 变体正则` 下为 `` - `正则源` → 展示词 `` 条目。
+ * 空行/注释行/不符合格式的行忽略；无效正则按行跳过（console.warn），不影响其他条目。
+ */
+export function parseBannedWordsMd(md: string): BannedWordsData {
+	const words: Record<string, Array<[string, string]>> = {};
+	const patterns: BannedPattern[] = [];
+	let group: string | null = null;
+	for (const rawLine of (md || "").split("\n")) {
+		const line = rawLine.trim();
+		if (!line) continue;
+		const h = /^##\s+(.+?)\s*$/.exec(line);
+		if (h) {
+			group = h[1];
+			if (group !== BANNED_PATTERN_SECTION && !words[group]) words[group] = [];
+			continue;
+		}
+		if (group === null) continue; // 首个组标题之前的内容忽略
+		if (group === BANNED_PATTERN_SECTION) {
+			const pm = BANNED_PATTERN_LINE_RE.exec(line);
+			if (!pm) continue;
+			try {
+				patterns.push({ re: new RegExp(pm[1]), word: pm[2] });
+			} catch (e) {
+				console.warn("[ArticleWriter] 跳过无效禁用词变体正则:", pm[1], e);
+			}
+			continue;
+		}
+		const wm = BANNED_WORD_LINE_RE.exec(line);
+		if (!wm) continue;
+		words[group].push([wm[1], wm[2]]);
+	}
+	return { words, patterns };
 }
 
 // 「也」及其否定组合（用 \u 转义拼接构造，避免长字面量笔误）：
@@ -79,108 +66,18 @@ export const YE_MEI = Y + "\u6ca1"; // 也没
 export const YE_MEIYOU = Y + "\u6ca1\u6709"; // 也没有
 export const YE_BU_SHI = Y + "\u4e0d\u662f"; // 「也」+「不」+「是」（三段式否定中间段）
 
-const P = (re: RegExp, word: string): BannedPattern => ({ re, word });
-
-// 两段式否定转折公共前缀：(?:^|[^也])没(?:有)? + lookahead 排除三段式开头「也没…」
-// （不用 lookbehind——iOS Safari <16.4 不支持；前置字符被消耗进匹配，检测用途可接受）
-// （用字符串拼接构造，避免长正则字面量）
-const NO_TWO_PREFIX = "(?:^|[^也])没(?:有)?(?:(?!";
-const NO_TWO_MID = ")[^。！？\\n]){0,16}?[，,；;、]?";
-const RE_NO_JIZHI = new RegExp(NO_TWO_PREFIX + "也没" + NO_TWO_MID + "只是");
-const RE_NO_ERSHI = new RegExp(NO_TWO_PREFIX + "也没" + NO_TWO_MID + "而是");
-
-export const WEB_NOVEL_BANNED_PATTERNS: BannedPattern[] = [
-	// 情绪模板变体
-	P(/眸光.{0,4}(?:一凝|一凛|微凝|沉)/, "眸光一凝/微凝"),
-	P(/目光.{0,4}(?:一凝|一凛)/, "目光一凝"),
-	P(/(?:眼中|眼底).{0,4}(?:闪过一丝|掠过一丝|划过)/, "眼中闪过一丝"),
-	P(/嘴角.{0,4}(?:勾起|扬起|扯起).{0,4}(?:一抹|一丝|弧度)/, "嘴角勾起一抹"),
-	P(/瞳孔.{0,4}(?:一缩|骤缩|紧缩|放大)/, "瞳孔一缩"),
-	P(/倒吸.{0,4}(?:一口)?凉气/, "倒吸一口凉气"),
-	P(/心头.{0,4}(?:一震|一颤|一紧|微颤)/, "心头一震"),
-	P(/(?:一股|一丝).{0,4}(?:暖流|寒意|凉意)/, "一股暖流/寒意"),
-	P(/骨子里.{0,4}(?:透着|透出|带着|藏着|渗着)/, "骨子里透着"),
-	P(/指节.{0,4}(?:发白|泛白)/, "指节发白/泛白"),
-	// 情绪物理化套话变体（紧张/愤怒/隐忍经身体部位外化；刻意不拦「胸口再无起伏」（死亡）、「青筋凸起/鼓起」（人物体征细节）等合法用法）
-	P(/(?:胸膛|胸口).{0,4}(?:剧烈|猛烈|大幅)起伏/, "胸膛剧烈起伏"),
-	P(/(?:嘴唇|唇).{0,4}抿成.{0,4}(?:一条)?(?:直)?线/, "嘴唇抿成一条线"),
-	P(/指甲.{0,4}(?:掐|嵌|抠)进.{0,4}(?:掌心|掌纹|肉)/, "指甲掐进掌心/肉里"),
-	P(/青筋.{0,4}(?:暴起|暴跳|直跳)/, "青筋暴起/暴跳"),
-	// 特效/动作变体
-	P(/化作/, "化作"),
-	P(/(?:金光|银光|紫光).{0,4}(?:一闪|乍现|大盛|流转)/, "金光一闪"),
-	P(/灵光.{0,4}一闪/, "灵光一闪"),
-	P(/(?:神识|神念).{0,4}(?:一扫|一动|锁定)/, "神识一扫"),
-	P(/流光.{0,4}(?:溢彩|闪烁)/, "流光溢彩"),
-	P(/仙气.{0,4}(?:飘飘|缭绕|弥漫)/, "仙气飘飘"),
-	P(/灵力.{0,4}(?:涌动|奔涌|激荡)/, "灵力涌动"),
-	P(/腥甜.{0,4}(?:翻涌|上涌|涌上)/, "喉间腥甜"),
-	P(/(?:喉间|喉咙).{0,4}(?:腥甜|一甜)/, "喉间腥甜"),
-	P(/(?:眼前|视线).{0,4}(?:一黑|发黑|模糊)/, "眼前一黑"),
-	P(/磅礴.{0,4}(?:气势|灵力|威压)/, "磅礴气势/威压"),
-	P(/威压.{0,4}(?:扑面|笼罩|碾来)/, "威压扑面"),
-	// 「死死…」动作套话（盯着/咬住/攥住等）
-	P(
-		new RegExp("死死(?!活)[^。！？\\n]{0,4}?(?:盯|咬|抓|拽|攥|抱|搂|捂|按|捏|握|掐|勒|锁|揪|缠|压|拖|扯|扒|抠|摁|箍|钳|卡)"),
-		"死死盯着",
-	),
-	// 套话副词变体
-	P(/(?:只|却)见/, "只见/却见"),
-	P(/不由得|不自觉地/, "不由得"),
-	P(/心中.{0,3}(?:暗道|暗想|默念)/, "心中暗道"),
-	P(/暗暗.{0,3}(?:吃惊|心惊|咬牙|发狠)/, "暗暗吃惊"),
-	P(/不禁.{0,2}(?:心头|想起|倒吸)/, "不禁"),
-	// AI腔句式变体
-	P(/总而言之|综上/, "总而言之/综上"),
-	P(/众所周知|不言而喻/, "众所周知/不言而喻"),
-	P(/值得一提/, "值得一提"),
-	P(/不难发现|显而易见/, "不难发现/显而易见"),
-	// 三段式否定对比句式变体（AI 腔排比式否定强调）
-	P(
-		new RegExp("没有[^。！？\\n]{0,16}?也没有[^。！？\\n]{0,16}?(?:就是|只是|就像)"),
-		"没有…也没有…就是/只是/就像",
-	),
-	P(
-		new RegExp("(?:^|[^要可])不是[^。！？\\n]{0,16}?也不是[^。！？\\n]{0,16}?(?:而)?是"),
-		"不是…也不是…而是/是",
-	),
-	// 两段式否定转折变体：没/没有A，只是B / 而是B（AI 腔否定转折）
-	// (?:^|[^也]) 避免从「也没有」内部的「没有」开始误匹配三段式（前缀字符被消耗进匹配，仅检测用途）；
-	// lookahead (?!也没…) 排除后接「也没」的三段式开头
-	P(RE_NO_JIZHI, "没/没有…，只是…"),
-	P(RE_NO_ERSHI, "没/没有…，而是…"),
-	// 拖延式写法变体：久久没有X（AI 腔拖延感）
-	P(/久久(?:地)?没有[^。！？\n]{0,6}/, "久久没有…"),
-	// 重复强调句式变体（那种X，…的X / 那种X，X的…，AI 腔排比式强调）
-	P(/那种[^，。！？\n]{0,10}?([^，。！？\n]{1,6}?)[，,][^。！？\n]{0,12}?的\1/, "那种…，…的…（重复强调）"),
-	P(/那种[^，。！？\n]{0,10}?([^，。！？\n]{2,4}?)[，,]\1的/, "那种…，…的…（重复强调）"),
-	// 转折对比句式变体（AI 腔论证式对比）
-	P(/不是.{0,16}?而是/, "不是…而是…"),
-	P(/并非.{0,16}?而是/, "并非…而是…"),
-	P(/不是.{0,16}?反而/, "不是…反而…"),
-	// 「不是…是…」：尾段须以「分隔符」或「非是非而字」收尾（替代 (?<!而) lookbehind）
-	P(/(?:^|[^要可])不是(?:[^是]{0,16}?[，,；;、]|[^是]{0,15}[^是而])是/, "不是…是…"),
-	// 「不像…像…」：同理替代 (?<!倒) lookbehind
-	P(/不像(?:[^像]{0,16}?[，,；;、]|[^像]{0,15}[^像倒])像/, "不像…像…"),
-	P(/不像[^像]{0,16}?[，,；;、]?(?:反?倒)像/, "不像…倒像…"),
-	// 越是…越…式平行强调句式（AI 腔排比强调）
-	P(/越是.{0,16}?越(?:是)?/, "越是…越…"),
-	// 模糊整数量词变体（三天/三次/三层——AI 用「三+量词」填充动作/周期描写；
-	// (?:^|[^第两]) 排除序数「第三次/第三天」与约数「两三秒」（不用 lookbehind；前缀字符被消耗进匹配，检测用途可接受）；
-	// 量词表不含 十/百/千，「三十岁」「三百块」等基数不受影响）
-	P(/(?:^|[^第两])三(?:天|夜|日|次|遍|下|口|声|圈|层|步|秒|回|趟|阵)/, "三天/三次/三层（模糊整数量词）"),
-];
-
-/** 生成禁用词提示块（注入网文类型模板） */
-export function buildBannedWordsBlock(): string {
+/** 生成禁用词提示块（注入网文类型模板）；数据为空（无词且无变体）时返回空串 */
+export function buildBannedWordsBlock(data: BannedWordsData): string {
+	const totalWords = Object.values(data.words).reduce((s, g) => s + g.length, 0);
+	if (!totalWords && !data.patterns.length) return "";
 	const lines = ["【网文高频禁用词（必须遵守）】", "以下词汇/句式属于高频AI腔，生成正文时**禁止使用**："];
 	const shown = new Set<string>(); // 组内已列出的精确词——变体表中再出现同一字符串即跳过（纯展示层去重，不影响检测）
-	for (const [group, words] of Object.entries(WEB_NOVEL_BANNED_WORDS)) {
+	for (const [group, words] of Object.entries(data.words)) {
 		lines.push(`\n${group}：`);
 		lines.push(words.map(([w]) => `「${w}」`).join("、"));
 		for (const [w] of words) shown.add(w);
 	}
-	const variants = WEB_NOVEL_BANNED_PATTERNS.map((p) => p.word).filter((w, i, arr) => !shown.has(w) && arr.indexOf(w) === i);
+	const variants = data.patterns.map((p) => p.word).filter((w, i, arr) => !shown.has(w) && arr.indexOf(w) === i);
 	if (variants.length) {
 		lines.push("\n\n同时警惕以下AI腔变体（出现同样不合格）：");
 		lines.push(variants.map((w) => `「${w}」`).join("、"));
@@ -290,10 +187,10 @@ export interface AiHit {
  * 检测文本中的 AI 常用词。返回命中列表，按出现位置排序；同一词多处命中会重复返回。
  * 用于生成结果展示时高亮标注，不参与重试判定。
  */
-export function findAiWordHits(text: string): AiHit[] {
+export function findAiWordHits(text: string, data: BannedWordsData): AiHit[] {
 	if (!text) return [];
 	const hits: AiHit[] = [];
-	for (const group of Object.values(WEB_NOVEL_BANNED_WORDS)) {
+	for (const group of Object.values(data.words)) {
 		for (const w of group.map((p) => p[0])) {
 			let start = 0;
 			while (true) {
@@ -304,7 +201,7 @@ export function findAiWordHits(text: string): AiHit[] {
 			}
 		}
 	}
-	for (const pat of WEB_NOVEL_BANNED_PATTERNS) {
+	for (const pat of data.patterns) {
 		const re = new RegExp(pat.re.source, "g");
 		re.lastIndex = 0;
 		let m: RegExpExecArray | null;
@@ -333,7 +230,7 @@ export interface AiSentence {
  * 检测包含 AI 常用词的句子。返回按位置排序且互不重叠的结果，
  * 跳过以 # 开头的标题行。用于"打回重写"：把命中的句子整句重写后原位替换。
  */
-export function findAiSentences(text: string): AiSentence[] {
+export function findAiSentences(text: string, data: BannedWordsData): AiSentence[] {
 	if (!text) return [];
 	const results: AiSentence[] = [];
 	let lineStart = 0;
@@ -350,7 +247,7 @@ export function findAiSentences(text: string): AiSentence[] {
 			const end = m ? m.index + m[0].length : line.length;
 			const chunk = line.slice(pos, end);
 			if (chunk.trim()) {
-				const hits = findAiWordHits(chunk);
+				const hits = findAiWordHits(chunk, data);
 				if (hits.length) {
 					results.push({ start: lineStart + pos, end: lineStart + end, sentence: chunk, hits });
 				}
@@ -384,9 +281,9 @@ export const AI_WORD_MARK_CLOSE = "</span>";
  * 把文本中命中的 AI 常用词用红色 span 包裹（写入 MD 文件时调用）。
  * 重叠/相邻命中合并为一个 span，避免产生嵌套标签。
  */
-export function markAiWordsHtml(text: string): string {
+export function markAiWordsHtml(text: string, data: BannedWordsData): string {
 	if (!text) return text;
-	const hits = findAiWordHits(text);
+	const hits = findAiWordHits(text, data);
 	if (!hits.length) return text;
 	const merged: Array<[number, number]> = [];
 	for (const h of hits) {
@@ -563,13 +460,13 @@ const CN_CHAR_RE = () => /[\u4e00-\u9fff]/g;
 const countCnChars = (s: string): number => (s.match(CN_CHAR_RE()) || []).length;
 
 /**
- * 生成唯一的禁用词提示块：代码内置表（buildBannedWordsBlock）+ 各层指南
- * "禁用词"分类中的补充内容；指南中与代码表完全重复的纯词列表行、以及与内置清单
+ * 生成唯一的禁用词提示块：BANNED_WORDS.md 清单（buildBannedWordsBlock）+ 各层指南
+ * "禁用词"分类中的补充内容；指南中与清单完全重复的纯词列表行、以及与清单
  * 同题的标题行（如「## 十、网文高频禁用词清单…」，含书籍级空骨架的同名标题）跳过（防重复），
- * 保留说明文字（即使其中提到代码表已有的词）与代码表没有的补充词。
+ * 保留说明文字（即使其中提到清单已有的词）与清单没有的补充词。
  */
-export function buildMergedBannedBlock(guideBannedText = ""): string {
-	const codeBlock = buildBannedWordsBlock();
+export function buildMergedBannedBlock(guideBannedText: string, data: BannedWordsData): string {
+	const codeBlock = buildBannedWordsBlock(data);
 	const guide = (guideBannedText || "").trim();
 	if (!guide) return codeBlock;
 	const codeTokens = new Set(extractBannedTokens(codeBlock));
@@ -577,7 +474,7 @@ export function buildMergedBannedBlock(guideBannedText = ""): string {
 	for (const rawLine of guide.split("\n")) {
 		const stripped = rawLine.trim();
 		if (!stripped) continue;
-		// 与内置清单同题的标题行 → 结构标题而非补充规则 → 跳过（否则会在【指南补充】里再出现一个近同名段）
+		// 与清单同题的标题行 → 结构标题而非补充规则 → 跳过（否则会在【指南补充】里再出现一个近同名段）
 		if (/^#{1,6}\s/.test(stripped) && stripped.includes("网文高频禁用词")) continue;
 		const lineTokens = extractBannedTokens(stripped);
 		if (lineTokens.length >= 2 && lineTokens.every((t) => codeTokens.has(t))) {
@@ -588,8 +485,10 @@ export function buildMergedBannedBlock(guideBannedText = ""): string {
 		}
 		keepLines.push(stripped);
 	}
-	if (!keepLines.length) return codeBlock;
-	return codeBlock + "\n\n【指南补充：去AI腔规则】\n" + keepLines.join("\n");
+	const parts: string[] = [];
+	if (codeBlock) parts.push(codeBlock);
+	if (keepLines.length) parts.push("【指南补充：去AI腔规则】\n" + keepLines.join("\n"));
+	return parts.join("\n\n");
 }
 
 

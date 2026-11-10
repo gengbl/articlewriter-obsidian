@@ -26,11 +26,12 @@
 | 文档 | 覆盖范围 |
 | --- | --- |
 | [agents/command-reference.md](./agents/command-reference.md) | 各命令语义/参数/坑位速查表、移动语义陷阱（updateScene/updateCharacter） |
-| [agents/process-rules.md](./agents/process-rules.md) | 任务收尾：工作更新写回约定、验证要求、CHANGELOG 引用 |
+| **等等命令**[agents/process-rules.md](./agents/process-rules.md) | 任务收尾：工作完成后更新写回约定、验证要求、CHANGELOG 引用 |
+| **等等命令**[PROMPT_MATRIX.md](./PROMPT_MATRIX.md) | 分阶段生成提示词矩阵：阶段 0–3 × 命令 → system/user prompt 来源与行号、上下文注入点、输出解析校验；与 export-ai-prompts 16 节交叉核对（改提示词组装时同步更新） |
 
 ## 推送指南（GitHub 镜像，强制）
 
-每次提交并推送代码/文档后，**立即**把改动同步到 GitHub 镜像并在该目录内推送：
+每次提交并推送代码/文档后，**等待用户指令**把改动同步到 GitHub 镜像并在该目录内推送：
 
 1. 把本次改动的文件逐一拷入 `/home/fosky/workspace/articlewriter-obsidian-git/`（GitHub 镜像 `gengbl/articlewriter-obsidian` 的本地克隆；历史为工作树拷贝式独立提交、非主仓 clone，不能直接 push 同一对象）。
 2. **所有 git 操作都在 `/home/fosky/workspace/articlewriter-obsidian-git` 里执行**：`git add <显式列出>` + **与主仓同消息** commit + `git push origin main`（SSH remote `git@github.com:gengbl/articlewriter-obsidian.git`）。
@@ -58,10 +59,13 @@
 - **禁止并行处理**：执行任何任务一律串行——一次只发起一个工具调用 / 操作，拿到其结果后再进行下一步；即便多个操作彼此独立、本可并发，也不得批量或同时发起。逐步推进以便每步可核验、避免相互覆盖的并发改动。
 - **代码改动后必须跑通 `npm run build`（tsc 零错误）**；可再 `node --check release/main.js` 兜底。**发布门禁**：提交/发布前 `npm run lint`（eslint 类型感知检测四类 no-unsafe-*：assignment/call/member-access/return）必须零违规，命中任一即不得发布——配置在仓库根 `eslint.config.mjs`，规则与背景见 [RELEASE.md](./RELEASE.md)「发布门禁」节。
 - **每次有代码变化，必须检查新增/修改行有无冗余类型断言**：接收方已接受原始窄化类型的断言一律删除、直接赋值（连同关联 eslint-disable 注释）；合法保留场景与判定细则见 [agents/process-rules.md](./agents/process-rules.md)「验证要求」。
-- **每次有功能/命令/交互修改，必须同步更新对应内置文档**——以下文件均为独立 Markdown、由 esbuild `.md=text` loader 打包进 release/main.js，运行时按需从包内恢复写盘：[docs/使用说明.md](./docs/使用说明.md)（→ work_dir《使用说明.md》，仅缺失/空才写）、根 [WRITING_GUIDE.md](./WRITING_GUIDE.md)（系统级创作规范默认内容，播种到插件数据目录；「重新生成系统写作指南」用它覆盖重置）、[docs/WRITING_GUIDE_template.md](./docs/WRITING_GUIDE_template.md)（用户级/小说级空模板，「生成写作指南」投放；**改动 WRITING_GUIDE.md 段落结构后须用 prompts.ts `buildEmptyGuideTemplate` 重生成它**）。改完文档照常走 npm run build + 部署即可生效。
+- **每次有功能/命令/交互修改，马上更新对应内置文档**——以下文件均为独立 Markdown、由 esbuild `.md=text` loader 打包进 release/main.js，运行时按需从包内恢复写盘：[docs/使用说明.md](./docs/使用说明.md)（→ work_dir《使用说明.md》，仅缺失/空才写）、根 [WRITING_GUIDE.md](./WRITING_GUIDE.md)（系统级创作规范默认内容，播种到插件数据目录；「重新生成系统写作指南」用它覆盖重置）、[docs/WRITING_GUIDE_template.md](./docs/WRITING_GUIDE_template.md)（用户级/小说级空模板，「生成写作指南」投放；**改动 WRITING_GUIDE.md 段落结构后须用 prompts.ts `buildEmptyGuideTemplate` 重生成它**）。改完文档照常走 npm run build + 部署即可生效。
 - 「打包发布」类任务先读 [RELEASE.md](./RELEASE.md)（版本号规则、GitHub 镜像 tag + CI 自动上架流程与坑位；GitHub CI 只上三个散文件、不传 zip）。
 - **发布后必核对 GitHub Release**：每个已打 tag 的版本都要在 GitHub 有对应 Release，且资产恰为 `main.js` / `manifest.json` / `styles.css` 三个散文件。收尾用 REST API `GET …/releases/tags/v<版本>` 校验其存在；缺失则走手动回落方案（Web UI 上传）。详见 [agents/l3-build-deploy.md](./agents/l3-build-deploy.md)。
 - 变更历史见 **[CHANGELOG.md](./CHANGELOG.md)**（每次任务收尾向其末尾追加一行，了解历史先读它）。
+- **代码重用**：如果有两处或以上有相同功能，马上进行代码的重构把相同功能封装成函数或模块供使用方调用。
+- **AGENGS清理**：当功能完成后马上从上下文中去除无关的AGENTS。
+- **新功能增加**：有新功能时，新功能的使用和实现描述要下放到L2和L3级别的AGENTS，必要时可以新建L2、L3级文档
 
 ## 张力规则（TENSION_RULES.md）——分步实施记录（2026-11-08）
 
@@ -74,3 +78,16 @@
 5. **传值点**：main.ts 全部调用点（运行时 6＋预览 3）生成前 `await this.loadTensionRules()` 传入；export-ai-prompts 预览视图与运行时同口径（读盘、缺失回落内置默认）。
 6. **门禁与 bundle 核验**：npm run build（tsc 零错误）→ node --check release/main.js → npm run lint 零违规。核验坑：esbuild 非 ASCII 转义存储（CJK→`\uXXXX`、`·`(U+00B7)→`\xB7`），对 release/main.js 做字面中文 grep 必误报 MISS——须先全局解码 `\uXXXX`＋`\xXX` 再搜。
 7. **文档写回**：agents/l2-llm-writing-commands.md（模块概要）、l3-writing-commands-impl.md（三个 input 字段描述）、l3-main-ts-flow.md（生命周期 bullet）、command-reference.md（planning-guide / vol-outline-generate / book-outline-generate 三条）＋ CHANGELOG.md。
+
+## 禁用词（BANNED_WORDS.md）——分步实施记录（2026-11-10）
+
+「AI 常用词/禁用词」清单外置（原硬编码于 src/banned_words.ts）；按以下步骤落地，后续维护（增删词、排查未生效）照此路径走：
+
+1. **独立源文件**：仓库根 `BANNED_WORDS.md`＝清单全文（格式契约见文件头部注释：`## 组名` + `- 「词」：说明`；固定 `## 变体正则` 节 `` - `正则源` → 展示词 ``；**禁 lookbehind**），是播种内容的唯一参考。
+2. **打包导出**：`src/banned_words_default.ts` 以 `import text from "../BANNED_WORDS.md"`（esbuild `.md=text` loader）导出 `DEFAULT_BANNED_WORDS_MD`——与 tension_rules_default.ts 同模式。
+3. **首启播种**：main.ts 三方法——`bannedWordsPath()`（插件数据目录 BANNED_WORDS.md，不被元数据索引收录、走 DataAdapter）＋ `ensureBannedWordsFile()`（onload 调一次，仅缺失时写盘、已存在不覆盖〔用户可编辑定制〕、失败 console.warn 不阻断启动）＋ `loadBannedWords()`（**严格读盘** parseBannedWordsMd——用户直接编辑即生效；**读不到/为空按空清单处理并 console.warn、不回落内置**——内置词仅在文件播种时作内容参考）。
+4. **注入点**：prompts.ts `StoryTypePromptInput` 加可选 `bannedData?` / `bannedGuideText?` 字段；buildStoryTypeSystemPrompt 经 buildMergedBannedBlock（清单块＋各层指南「禁用词」类目补充去重）注入【禁用词】块；**仅正文写作路径**（write-chapter / write-chapters-consecutive / continue-writing / rewrite-chapter / polish-text，writerSystemPrompt(includeBanned=true)）加载注入；非正文 LLM 路径（对话/大纲/策划/deai/repair/export 预览）不加载该清单，【创作规范】用剥离禁用词类目的 writerGuideText（防双份注入）。
+5. **传值点**：main.ts `writerSystemPrompt` 改 async（includeBanned 默认 true），内部 `await this.loadBannedWords()`；全部 11 个调用点——正文 9 处（运行时 5＋export 预览 4）await 取 bannedData，/review 2 处（运行时＋export 预览）传 false。检测路径：autoCleanAi /deai/export-preview 对同一盘上清单 findAiWordHits/findAiSentences 确定性命中检出（精确词＋变体正则双通道；无命中 /deai 直接返回不调 LLM）。
+6. **门禁与 bundle 核验**：npm run build（tsc 零错误）→ node --check release/main.js → npm run lint 零违规。核验坑同张力规则（esbuild CJK→`\uXXXX` 转义存储，字面中文 grep 必误报 MISS，须先解码再搜）。headless smoke：esbuild 临时 bundle（--loader:.md=text）＋node 执行 20/20 通过（seed 解析 45 词/51 变体正则、块组装、空清单语义、命中检出、变体简并、合并去重、解析容错）。
+7. **文档写回**：PROMPT_MATRIX.md（§2 正文路径 / §3 / §6.1 / §6.2 / §7 / §8 全节）、agents/l2-llm-writing-commands.md（模块概要）、l3-writing-commands-impl.md（bannedData 字段描述）、l2-writing-guide.md（词表外置＋加词工作流）、l3-guide-lifecycle.md（banned_words.ts 数据层＋banned_words_default.ts 新行）、l3-main-ts-flow.md（writerSystemPrompt 签名＋生命周期 bullet）、command-reference.md（write-chapter / write-chapters-consecutive / continue-writing / rewrite-chapter / polish-text / deai-clean / fix-chapter-refs / review-chapter / export-ai-prompts / llm-chat 十条）＋ CHANGELOG.md。
+

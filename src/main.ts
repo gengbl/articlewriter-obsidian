@@ -1,4 +1,4 @@
-import { App, Modal, Notice, Platform, Plugin, PluginSettingTab, TAbstractFile, TFile, TFolder, View, WorkspaceLeaf, WorkspaceSidedock, type SettingDefinitionItem, type SettingDefinitionPage, type SettingDefinitionRender, ButtonComponent, Setting } from "obsidian";
+import { App, Modal, Notice, Platform, Plugin, PluginSettingTab, TAbstractFile, TFile, TFolder, View, WorkspaceLeaf, WorkspaceSidedock, type SettingDefinitionItem, type SettingDefinitionPage } from "obsidian";
 import { ActionItem, ActionMenuModal, AddCharacterModal, ChapterListModal, ConfirmModal, ExportPromptsSelectModal, FolderPickerModal, MarkdownViewerModal, MultiFieldModal, NewFilePickerModal, NewStoryInput, NewStoryModal, PanelLine, StoryPickerModal, TextAreaPrompt, TextPanelModal, TextInputModal, VolumeBatchCreateModal } from "./modals";
 import type { AddCharacterResult, CharacterScopeOption } from "./modals";
 import { LlmChatView } from "./llm_chat_view";
@@ -19,7 +19,8 @@ import { GUIDE_TYPES, matchGuideTypes } from "./guide_types_default";
 import { DEFAULT_USAGE_GUIDE } from "./usage_guide_default";
 import { assembleSystemPrompt, chatCompletion, chatStream, describeLlmError, isRetryableLlmError, normalizeBaseURL, testConnection } from "./llm_client";
 import type { Message } from "./llm_client";
-import { findAiWordHits, mergeGuideCategories, simplifyEmphaticRepetition, simplifyNegationContrast, findAiSentences } from "./banned_words";
+import { findAiWordHits, mergeGuideCategories, simplifyEmphaticRepetition, simplifyNegationContrast, findAiSentences, parseBannedWordsMd, type BannedWordsData } from "./banned_words";
+import { DEFAULT_BANNED_WORDS_MD } from "./banned_words_default";
 import { appendOutlineInstruction, applyTypoMarks, BOOK_OUTLINE_GEN_SYSTEM_PROMPT, buildBookOutlineContinuePrompt, buildBookOutlineExtendPrompt, buildBookOutlineGenPrompt, buildChapterPrompt, buildChapterSummaryPrompt, buildContinuePrompt, buildDeaiPrompt, buildPlanningGuideContinuePrompt, buildPlanningGuidePrompt, buildPolishPrompt, buildReviewPrompt, buildRewritePrompt, buildStoryTypeSystemPrompt, buildTypoScanPrompt, buildVolOutlineChapterPrompt, buildVolOutlineDesignPrompt, buildVolRebuildPrompt, buildWritingContext, CHAPTER_SUMMARY_SYSTEM_PROMPT, checkOutlineCoverage, cleanAiText, cleanRelationshipsDoc, embedAggHash, findChapterRefLeaks, findChapterRefSentences, buildChapterRefFixPrompt, fixChapterRefs, formatRetryNote, parseAggHash, parseChapterWithSummary, parseTypoScan, planningGuideMissingSections, serializeAggregateGuide, stripHeading, TYPO_SCAN_SYSTEM_PROMPT, PLANNING_GUIDE_SECTIONS, validateStoryTypeFormat, VOL_OUTLINE_GEN_SYSTEM_PROMPT, VOL_SUMMARY_SYSTEM_PROMPT, BookOutlineGenInput, ChapterRefFixReport, PlanningGuideInput, VolOutlineGenInput, wordRangeFromGuides } from "./prompts";
 import { cnToNum, extractPlannedChapterCount, maxDeclaredEndChapter, mergeVolOutlineChapters, parseChapterSelection, parseRelationships, parseTimelines, parseVolumeDeclarations, splitList, splitVolOutlineByChapter, stripComments, type TimelineEntry, type VolumeDeclaration } from "./md_docs";
 import type { RelationshipEntry, VolumeInfo } from "./md_docs";
@@ -153,6 +154,7 @@ export default class ArticleWriterPlugin extends Plugin {
 		await this.ensureSystemGuideFile(); // 首次运行把系统级写作指南从 data.json/内置默认播种到插件数据目录文件
 		await this.ensureGuideTypeFiles(); // 首次运行把四个「类型要点」文件从内置默认播种到插件数据目录 guide-types/
 		await this.ensureTensionRulesFile(); // 首次运行把情节张力/节奏规则从内置默认播种到插件数据目录 TENSION_RULES.md（生成大纲/策划指南时注入）
+		await this.ensureBannedWordsFile(); // 每次启动确保禁用词清单存在：缺失则用内置默认播种到插件数据目录 BANNED_WORDS.md（运行时唯一来源＝盘上文件，仅正文写作/AI词检测路径使用）
 		void this.ensureUsageDocOnStartup(); // 工作目录已设且《使用说明.md》缺失时：自动生成并打开（首跑引导）；真·首启无工作目录则等 pickWorkDir 投放
 
 		this.addCommand({ id: "set-work-dir", name: "选择工作目录（work_dir，对齐 CLI --work_dir）", callback: () => this.pickWorkDir(false) });
@@ -2330,6 +2332,34 @@ async cmdRenameChapterFile(): Promise<void> {
 		return t && t.trim() ? t : DEFAULT_TENSION_RULES;
 	}
 
+	// ---------- 禁用词清单 BANNED_WORDS.md（插件数据目录播种文件；运行时唯一来源＝盘上文件，仅注入正文写作/AI词检测路径） ----------
+
+	/** 禁用词清单文件路径：插件数据目录 .obsidian/plugins/<id>/BANNED_WORDS.md（不被元数据索引收录，走 DataAdapter 读写） */
+	private bannedWordsPath(): string {
+		return `${this.app.vault.configDir}/plugins/${this.manifest.id}/BANNED_WORDS.md`;
+	}
+
+	/** 每次启动确保文件存在：缺失则用内置默认播种（已存在不覆盖——用户可编辑定制）；失败不阻断启动 */
+	private async ensureBannedWordsFile(): Promise<void> {
+		try {
+			const p = this.bannedWordsPath();
+			if (!(await this.manager.pluginFileExists(p))) {
+				await this.manager.writePluginFile(p, DEFAULT_BANNED_WORDS_MD);
+			}
+		} catch (e) {
+			console.warn("[ArticleWriter] 初始化禁用词清单失败", e);
+		}
+	}
+
+	/** 读取禁用词清单（运行时唯一来源＝盘上文件，用户改过就用改过的；内置词仅在文件缺失播种时作内容参考、运行时不使用——清空/为空的清单照实按空处理） */
+	private async loadBannedWords(): Promise<BannedWordsData> {
+		const t = (await this.manager.readPluginFile(this.bannedWordsPath())) ?? "";
+		if (!t.trim()) {
+			console.warn("[ArticleWriter] BANNED_WORDS.md 缺失或为空，本次按空禁用词清单处理（内置词仅在文件播种时作内容参考）");
+		}
+		return parseBannedWordsMd(t);
+	}
+
 	/** 读取用户级写作指南文本（按小说类型分组） */
 	private async readUserGuideText(storyName: string): Promise<string> {
 		const storyState = await this.manager.loadState(storyName);
@@ -2421,7 +2451,7 @@ async cmdRenameChapterFile(): Promise<void> {
 	}
 
 	/** 合并三层→按题材追加命中类型的「类型要点」节→序列化为可再解析的 MD；按需把带 hash 头的汇总文件写入书目录；返回注入用正文（去 HTML 注释）与合并结果。
-	 * guideText=全文（对话/大纲路径用，禁用词类目经【创作规范】单次注入）；writerGuideText=剥离禁用词类目（正文生成路径用——该内容已由禁用词块 buildMergedBannedBlock 完整承载，防双份注入）。
+	 * guideText=全文（保留全量口径备查；当前不注入任何 LLM 提示词路径）；writerGuideText=剥离禁用词类目（全部 LLM 提示词路径用——正文生成路径的禁用词内容由禁用词块 buildMergedBannedBlock 完整承载，防双份注入）。
 	 * genre：书籍题材自由文本（故事状态.md），未命中任何类型→不注入类型要点（typeText 空串） */
 	private async persistAggregatedGuide(story: string, bookText: string, userText: string, systemText: string, genre: string, writingStyle?: string): Promise<{ guideText: string; writerGuideText: string; merged: Record<string, string> }> {
 		const layers = [bookText, userText, systemText].filter((t) => t.trim()); // 顺序=优先级：小说级 > 用户级 > 系统级
@@ -2432,7 +2462,7 @@ async cmdRenameChapterFile(): Promise<void> {
 			if (!body) continue;
 			typeText += (typeText ? "\n\n" : "") + `## 写作要点（${t.name}）\n` + body;
 		}
-		if (typeText) merged["通用"] = (merged["通用"] ? merged["通用"].trimEnd() + "\n\n" : "") + typeText;
+		if (typeText) merged["通用"] = (merged["通用"] ? merged["通用"].replace(/\s+$/, "") + "\n\n" : "") + typeText; // ES2018 兼容：不用 trimEnd（ES2019），外部检查器缺 @types/node 传递 lib 会判 error 类型误报 no-unsafe-call
 		const body = serializeAggregateGuide(merged);
 		const h = { b: md5(bookText), u: md5(userText), s: md5(systemText), t: md5(typeText), v: "3" }; // v=合并算法版本：块级分组上线 v2、作者身份块置顶 v3，各自强制重建旧汇总一次
 		try {
@@ -3008,7 +3038,7 @@ async cmdRenameChapterFile(): Promise<void> {
 		return key;
 	}
 
-	/** 三层创作规范（小说级 > 用户级 > 系统级插件文件，顺序即优先级）：合并并落盘《写作指南汇总》，guideText=该汇总去注释全文（对话/大纲路径注入），writerGuideText=剥离禁用词类目的正文（正文生成路径注入——该内容已由禁用词块承载，防双份），bannedGuideText=合并后禁用词类目 */
+	/** 三层创作规范（小说级 > 用户级 > 系统级插件文件，顺序即优先级）：合并并落盘《写作指南汇总》，guideText=该汇总去注释全文（保留备查、不注入提示词），writerGuideText=剥离禁用词类目的正文（全部 LLM 提示词路径注入——正文生成路径的禁用词内容由禁用词块承载，防双份），bannedGuideText=合并后禁用词类目（仅正文写作路径经禁用词块注入） */
 	private async loadWriterGuides(storyName: string): Promise<{ bookText: string; userText: string; systemText: string; guideText: string; writerGuideText: string; bannedGuideText: string }> {
 		const bookText = (await this.manager.readGuideAt(this.manager.bookGuidePath(storyName))) ?? "";
 		const userText = (await this.manager.readGuideAt(this.manager.userGuidePath())) ?? "";
@@ -3024,16 +3054,19 @@ async cmdRenameChapterFile(): Promise<void> {
 		return { bookText, userText, systemText, guideText: r.guideText, writerGuideText: r.writerGuideText, bannedGuideText: r.merged["禁用词"] || "" };
 	}
 
-	/** 组装正文生成系统提示词：编写类型格式块+禁用词 → config.system_prompt → 内置默认；末尾附【创作规范】（用剥离禁用词类目的 writerGuideText——该内容已由禁用词块完整承载，防双份注入） */
-	private writerSystemPrompt(
+	/** 组装正文生成系统提示词：编写类型格式块+禁用词 → config.system_prompt → 内置默认；末尾附【创作规范】（用剥离禁用词类目的 writerGuideText——该内容已由禁用词块完整承载，防双份注入）。
+	 *  禁用词块仅注入正文写作路径：includeBanned 默认 true；/review 等非正文路径传 false 退出（不加载禁用词、不注入禁用词块与指南禁用词类目） */
+	private async writerSystemPrompt(
 		baseSp: string | undefined,
-		guides: { guideText: string; writerGuideText: string; bannedGuideText: string },
+		guides: { writerGuideText: string; bannedGuideText: string },
 		writingStyle?: string,
 		title?: string,
 		charNames?: Array<string | null>,
-		identityBoost?: string
-	): string {
-		const custom = buildStoryTypeSystemPrompt({ storyType: writingStyle, guideText: guides.guideText, title, charNames, bannedGuideText: guides.bannedGuideText });
+		identityBoost?: string,
+		includeBanned = true
+	): Promise<string> {
+		const bannedData = includeBanned ? await this.loadBannedWords() : undefined;
+		const custom = buildStoryTypeSystemPrompt({ storyType: writingStyle, guideText: guides.writerGuideText, title, charNames, bannedGuideText: includeBanned ? guides.bannedGuideText : "", bannedData });
 		return assembleSystemPrompt(custom || undefined, guides.writerGuideText, baseSp, identityBoost);
 	}
 
@@ -3793,13 +3826,14 @@ async cmdRenameChapterFile(): Promise<void> {
 		try {
 			if (lastStory && (await this.manager.listStories()).includes(lastStory)) {
 				hasStory = true;
-				guideText = (await this.loadWriterGuides(lastStory)).guideText;
+				guideText = (await this.loadWriterGuides(lastStory)).writerGuideText; // 对话非正文路径——用剥离禁用词类目的口径
 			} else {
 				// 无当前小说：仅用户级+系统级两层，按同一汇总格式合并（不落盘——书目录不存在）
 				const userText = (await this.manager.readGuideAt(this.manager.userGuidePath())) ?? "";
 				const systemText = await this.readSystemGuideText();
 				const merged = mergeGuideCategories([userText, systemText].filter((t) => t.trim()));
-				guideText = stripComments(serializeAggregateGuide(merged)).trim();
+				const writerBody = merged["禁用词"] ? serializeAggregateGuide({ ...merged, "禁用词": "" }) : serializeAggregateGuide(merged); // 同 persistAggregatedGuide：剥离禁用词类目
+				guideText = stripComments(writerBody).trim();
 			}
 		} catch {
 			/* 指南读取失败则不带【创作规范】，不阻断对话 */
@@ -4085,28 +4119,28 @@ async cmdRenameChapterFile(): Promise<void> {
 		return new Error(`${msg}｜端点 ${base}（模型 ${cfg.model_name || "默认"}）。若端点是本地地址，请确认本地模型服务已启动；各命令用的是其所属阶段的模型配置，与 LLM 对话框顶部下拉所选可能不是同一个。`);
 	}
 
-	/** 生成后自动去AI味（对应 _auto_clean_ai）：命中 AI 常用词的句子打回 LLM 重写并原位替换；失败保留原文 */
+	/** 生成后自动去AI味（对应 _auto_clean_ai）：命中禁用词清单（运行时读盘上 BANNED_WORDS.md）的 AI 常用词的句子打回 LLM 重写并原位替换；失败保留原文 */
 	private async autoCleanAi(
 		cfg: LlmConfigDoc,
 		baseSp: string | undefined,
-		guides: { guideText: string },
+		guides: { writerGuideText: string },
 		content: string,
 		onProgress?: () => void
 	): Promise<string> {
 		if (!content || !content.trim()) return content;
-		const hits = findAiWordHits(content);
+		const data = await this.loadBannedWords();
+		const hits = findAiWordHits(content, data);
 		if (!hits.length) return content;
 		new Notice(`检测到 ${String(hits.length)} 处 AI 常用词，正在打回重写…`, 6000);
 		onProgress?.();
 		// 去AI味使用基础系统提示词（不带编写类型块），对齐 Python system_prompt=None 回落行为
-		const sp = assembleSystemPrompt(undefined, guides.guideText, baseSp, undefined);
+		const sp = assembleSystemPrompt(undefined, guides.writerGuideText, baseSp, undefined);
 		try {
 			const { text, report } = await cleanAiText(content, async (p, maxTokens) =>
 				chatCompletion(cfg, [
 					{ role: "system" as const, content: sp },
 					{ role: "user" as const, content: p },
-				], { max_tokens: Math.min(maxTokens, cfg.max_tokens ?? maxTokens) })
-			);
+				], { max_tokens: Math.min(maxTokens, cfg.max_tokens ?? maxTokens) }), 2, data);
 			this.notifyAiReport(report);
 			return text;
 		} catch (e) {
@@ -4275,7 +4309,7 @@ async cmdRenameChapterFile(): Promise<void> {
 				prevRefs = (await this.manager.readOutlineWindow(story, targetKey, { back: 3 })).map((w) => ({ label: w.label, text: w.text || undefined }));
 			} catch { /* 前文大纲窗口读取失败不阻断生成 */ }
 			const wordRange = wordRangeFromGuides(guides.bookText, guides.userText);
-			const sp = this.writerSystemPrompt(setup.systemPrompt, guides, state.writing_style, state.title, data.characters.map((c) => c.name), setup.identityBoost);
+			const sp = await this.writerSystemPrompt(setup.systemPrompt, guides, state.writing_style, state.title, data.characters.map((c) => c.name), setup.identityBoost);
 			const withSummary = state.use_summaries !== false; // v0.2.21+：摘要随写（关闭摘要时不要求也不保存）
 			const built = buildChapterPrompt({
 				chapterNum: data.chapterNum, // v0.0.15：阅读序位置（ordinal，跨卷连续）
@@ -4428,7 +4462,7 @@ async cmdRenameChapterFile(): Promise<void> {
 						sourceOutline: cleaned,
 						strictCurrentOutlineOnly: true,
 						planningGuide: await this.ensurePlanningGuide(story, state),
-						guideText: guides.guideText,
+						guideText: guides.writerGuideText,
 						tensionRules,
 						volumes: volList,
 						targetVolumeName: vol.name,
@@ -4563,7 +4597,7 @@ async cmdRenameChapterFile(): Promise<void> {
 				volumes: vols.map((v) => ({ name: v.name, description: v.description })),
 				targetVolumeName: vol.name,
 				prevVolumeOutline: prevOutline,
-				guideText: guides.guideText,
+				guideText: guides.writerGuideText,
 				tensionRules,
 				chapterCount: count,
 			};
@@ -4699,7 +4733,7 @@ async cmdRenameChapterFile(): Promise<void> {
 				volumes: vols.map((v) => ({ name: v.name, description: v.description })),
 				targetVolumeName: vol.name,
 				prevVolumeOutline: prevOutline,
-				guideText: guides.guideText,
+				guideText: guides.writerGuideText,
 				tensionRules,
 				chapterCount: n,
 			};
@@ -5093,7 +5127,7 @@ async cmdRenameChapterFile(): Promise<void> {
 				volRelationships: relationshipCtx.volRelationships,
 				volumes: vols.map((v) => ({ name: v.name, description: v.description })),
 				planningGuide,
-				guideText: guides.guideText,
+				guideText: guides.writerGuideText,
 				tensionRules,
 				chapterCount: count,
 			};
@@ -5298,7 +5332,7 @@ async cmdRenameChapterFile(): Promise<void> {
 					volumes: vols.map((v) => ({ name: v.name, description: v.description })),
 					targetVolumeName: vol.name,
 					prevVolumeOutline: prevOutline,
-					guideText: guides.guideText,
+					guideText: guides.writerGuideText,
 					tensionRules,
 					chapterCount: n,
 				};
@@ -5461,7 +5495,7 @@ async cmdRenameChapterFile(): Promise<void> {
 					prevRefs = (await this.manager.readOutlineWindow(story, ch.key, { back: 3 })).map((w) => ({ label: w.label, text: w.text || undefined }));
 				} catch { /* 前文大纲窗口读取失败不阻断生成 */ }
 				const wordRange = wordRangeFromGuides(guides.bookText, guides.userText);
-				const sp = this.writerSystemPrompt(setup.systemPrompt, guides, state.writing_style, state.title, data.characters.map((c) => c.name), setup.identityBoost);
+				const sp = await this.writerSystemPrompt(setup.systemPrompt, guides, state.writing_style, state.title, data.characters.map((c) => c.name), setup.identityBoost);
 				const built = buildChapterPrompt({
 					chapterNum: data.chapterNum,
 					chapterLabel: label,
@@ -5592,7 +5626,7 @@ async cmdRenameChapterFile(): Promise<void> {
 				prevRefs = (await this.manager.readOutlineWindow(story, currentKey, { back: 3 })).map((w) => ({ label: w.label, text: w.text || undefined }));
 			} catch { /* 前文大纲窗口读取失败不阻断生成 */ }
 			const wordRange = wordRangeFromGuides(guides.bookText, guides.userText);
-			const sp = this.writerSystemPrompt(setup.systemPrompt, guides, state.writing_style, state.title, data.characters.map((c) => c.name), setup.identityBoost);
+			const sp = await this.writerSystemPrompt(setup.systemPrompt, guides, state.writing_style, state.title, data.characters.map((c) => c.name), setup.identityBoost);
 			const built = buildContinuePrompt({
 				chapterNum: data.chapterNum, // v0.0.15：阅读序位置（ordinal，跨卷连续）
 				chapterLabel: curLabel,
@@ -5703,7 +5737,7 @@ async cmdRenameChapterFile(): Promise<void> {
 				}
 			} catch { /* 大纲桥读取失败不阻断重写 */ }
 			const wordRange = wordRangeFromGuides(guides.bookText, guides.userText);
-			const sp = this.writerSystemPrompt(setup.systemPrompt, guides, state.writing_style, state.title, data.characters.map((c) => c.name), setup.identityBoost);
+			const sp = await this.writerSystemPrompt(setup.systemPrompt, guides, state.writing_style, state.title, data.characters.map((c) => c.name), setup.identityBoost);
 			const prompt = buildRewritePrompt({
 				chapterNum: data.chapterNum, // v0.0.15：阅读序位置（ordinal，跨卷连续）
 				chapterLabel: chLabel,
@@ -5800,7 +5834,7 @@ async cmdRenameChapterFile(): Promise<void> {
 			if (!setup) return;
 			const guides = await this.loadWriterGuides(story);
 			const data = await this.manager.loadWritingData(story, currentKey, { includeCurrentSummary: true });
-			const sp = this.writerSystemPrompt(setup.systemPrompt, guides, state.writing_style, state.title, data.characters.map((c) => c.name), setup.identityBoost);
+			const sp = await this.writerSystemPrompt(setup.systemPrompt, guides, state.writing_style, state.title, data.characters.map((c) => c.name), setup.identityBoost);
 			const prompt = buildPolishPrompt({
 				text: bodyOnDisk,
 				style: style || undefined,
@@ -5857,7 +5891,8 @@ async cmdRenameChapterFile(): Promise<void> {
 				new Notice(`${chLabel}还没有内容`);
 				return;
 			}
-			const hits = findAiWordHits(bodyOnDisk);
+			const data = await this.loadBannedWords();
+			const hits = findAiWordHits(bodyOnDisk, data);
 			if (!hits.length) {
 				new Notice(`✓ ${chLabel}未检测到 AI 常用词`, 6000);
 				return;
@@ -5865,7 +5900,7 @@ async cmdRenameChapterFile(): Promise<void> {
 			const setup = this.getPhaseLlmSetup(3); // v0.2.22+：编写文章阶段
 			if (!setup) return;
 			const guides = await this.loadWriterGuides(story);
-			const baseSp = assembleSystemPrompt(undefined, guides.guideText, setup.systemPrompt, setup.identityBoost); // 去AI味用基础系统提示词
+			const baseSp = assembleSystemPrompt(undefined, guides.writerGuideText, setup.systemPrompt, setup.identityBoost); // 去AI味用基础系统提示词
 
 			const n = new Notice(`正在清洗${chLabel}的 AI 常用词（${String(hits.length)} 处）…\n逐句打回 LLM 重写，可能需要一点时间`);
 			let cleaned: string;
@@ -5876,7 +5911,9 @@ async cmdRenameChapterFile(): Promise<void> {
 						chatCompletion(setup.cfg, [
 							{ role: "system" as const, content: baseSp },
 							{ role: "user" as const, content: p },
-						], { max_tokens: Math.min(maxTokens, setup.cfg.max_tokens ?? maxTokens) })
+						], { max_tokens: Math.min(maxTokens, setup.cfg.max_tokens ?? maxTokens) }),
+					2,
+					data
 				);
 				cleaned = r.text;
 				this.notifyAiReport(r.report);
@@ -5945,7 +5982,7 @@ async cmdRenameChapterFile(): Promise<void> {
 			const setup = this.getPhaseLlmSetup(3); // v0.2.22+：编写文章阶段
 			if (!setup) return;
 			const guides = await this.loadWriterGuides(story);
-			const baseSp = assembleSystemPrompt(undefined, guides.guideText, setup.systemPrompt, setup.identityBoost); // 修复用基础系统提示词（全书共用一份）
+			const baseSp = assembleSystemPrompt(undefined, guides.writerGuideText, setup.systemPrompt, setup.identityBoost); // 修复用基础系统提示词（全书共用一份）
 
 			let fixedChapters = 0, cleanChapters = 0, emptyChapters = 0, notFixedChapters = 0, totalReplaced = 0, totalSkippedSent = 0;
 			for (const ch of targets) {
@@ -6158,7 +6195,7 @@ async cmdRenameChapterFile(): Promise<void> {
 				prevOutlines: prevRefs,
 				withSummary: state.use_summaries !== false,
 			});
-			const sp = this.writerSystemPrompt(setup.systemPrompt, guides, state.writing_style, state.title, data.characters.map((c) => c.name), setup.identityBoost);
+			const sp = await this.writerSystemPrompt(setup.systemPrompt, guides, state.writing_style, state.title, data.characters.map((c) => c.name), setup.identityBoost);
 			return this.exportSection(title, setup.cfg, phaseName(3), [
 				...(hasBody ? ["当前激活章已有正文：运行时 /write 此时不会触发（要接着写用 /continue，整章重写用 /rewrite）；此处导出的是假设触发时实发的提示词。"] : []),
 				"弹窗取默认值：新建标题（沿用现有章）、章节大纲（留空=用盘上《章节大纲.md》）、写作要点（留空）。",
@@ -6196,7 +6233,7 @@ async cmdRenameChapterFile(): Promise<void> {
 				wordRange: wordRangeFromGuides(guides.bookText, guides.userText),
 				withSummary: state.use_summaries !== false,
 			});
-			const sp = this.writerSystemPrompt(setup.systemPrompt, guides, state.writing_style, state.title, data.characters.map((c) => c.name), setup.identityBoost);
+			const sp = await this.writerSystemPrompt(setup.systemPrompt, guides, state.writing_style, state.title, data.characters.map((c) => c.name), setup.identityBoost);
 			return this.exportSection(title, setup.cfg, phaseName(3), ["「续写要点」弹窗取默认值（留空）。留空且有大纲时先做要点覆盖率检查（见上）；有指令时会先把指令并入大纲落盘再拼提示词。", "响应约定：正文＋<SUMMARY> 块（摘要随写只覆盖新续写部分），解析失败整段当正文。"], [
 				{ heading: "系统提示词（system）", content: sp },
 				{ heading: "用户提示词（user）", content: built.prompt },
@@ -6223,7 +6260,7 @@ async cmdRenameChapterFile(): Promise<void> {
 				storyType: state.writing_style,
 				withSummary: state.use_summaries !== false,
 			});
-			const sp = this.writerSystemPrompt(setup.systemPrompt, guides, state.writing_style, state.title, data.characters.map((c) => c.name), setup.identityBoost);
+			const sp = await this.writerSystemPrompt(setup.systemPrompt, guides, state.writing_style, state.title, data.characters.map((c) => c.name), setup.identityBoost);
 			return this.exportSection(title, setup.cfg, phaseName(3), ["「重写要求」弹窗取默认值（留空）。运行时会弹「覆盖整章/仅参考」保存选择，不影响提示词。", "响应约定：正文＋<SUMMARY> 块（摘要覆盖重写后的整章）。"], [
 				{ heading: "系统提示词（system）", content: sp },
 				{ heading: "用户提示词（user）", content: prompt },
@@ -6236,7 +6273,7 @@ async cmdRenameChapterFile(): Promise<void> {
 			const setup = this.getPhaseLlmSetup(3);
 			if (!setup) return noLlm(title);
 			const data = await this.manager.loadWritingData(story, activeKey, { includeCurrentSummary: true, ensureSummaries: false, missingSummaryPlaceholder: summaryPlaceholder }); // v0.2.23+：只读导出——不触发摘要 LLM 生成，缺失处填占位符
-			const sp = this.writerSystemPrompt(setup.systemPrompt, guides, state.writing_style, state.title, data.characters.map((c) => c.name), setup.identityBoost);
+			const sp = await this.writerSystemPrompt(setup.systemPrompt, guides, state.writing_style, state.title, data.characters.map((c) => c.name), setup.identityBoost);
 			const prompt = buildPolishPrompt({ text: bodyOf, style: undefined, summary: data.summaries[data.chapterNum] ?? "", storyType: state.writing_style });
 			return this.exportSection(title, setup.cfg, phaseName(3), ["「润色风格」弹窗取默认值（留空=由模型自行判断风格）。结果面板确认后才覆盖保存；摘要延迟到下次上下文组装时生成。"], [
 				{ heading: "系统提示词（system）", content: sp },
@@ -6255,7 +6292,8 @@ async cmdRenameChapterFile(): Promise<void> {
 			if (simPairs.length) current = simp1;
 			const [merged, repPairs] = simplifyEmphaticRepetition(current);
 			if (repPairs.length) current = merged;
-			const sentences = findAiSentences(current);
+			const data = await this.loadBannedWords();
+			const sentences = findAiSentences(current, data);
 			if (!sentences.length) return this.exportSkipSection(title, "词表与正则均未命中（本地化简后仍无 AI 句式），/deai 不调用 LLM。导出的提示词以当前章正文为基准。");
 			const prompt = buildDeaiPrompt(current, sentences);
 			const maxTokens = Math.min(8192, sentences.length * 300 + 1024);
@@ -6265,7 +6303,7 @@ async cmdRenameChapterFile(): Promise<void> {
 				"响应约定：每行「序号|改写后句子」，解析后按句号回写；改不动的行保留原句。",
 				simPairs.length || repPairs.length ? "正文已先经本地化简（否定对比/强调重复规则），非原始盘上文本。" : "",
 			].filter(Boolean), [
-				{ heading: "系统提示词（system）", content: assembleSystemPrompt(undefined, guides.guideText, setup.systemPrompt, setup.identityBoost) },
+				{ heading: "系统提示词（system）", content: assembleSystemPrompt(undefined, guides.writerGuideText, setup.systemPrompt, setup.identityBoost) },
 				{ heading: "用户提示词（user）", content: prompt },
 			]);
 		});
@@ -6290,7 +6328,7 @@ async cmdRenameChapterFile(): Promise<void> {
 				`max_tokens = min(8192, 句数×300+1024) 受配置封顶 → 本次=${String(runtimeMax)}。最多 2 轮，第 2 轮依赖第 1 轮改写结果。`,
 				"响应约定：每行「序号|改写后句子」；改写后仍含「第N章」的行会被跳过保留。",
 			], [
-				{ heading: "系统提示词（system）", content: assembleSystemPrompt(undefined, guides.guideText, setup.systemPrompt, setup.identityBoost) },
+				{ heading: "系统提示词（system）", content: assembleSystemPrompt(undefined, guides.writerGuideText, setup.systemPrompt, setup.identityBoost) },
 				{ heading: "用户提示词（user）", content: prompt },
 			]);
 		});
@@ -6327,7 +6365,7 @@ async cmdRenameChapterFile(): Promise<void> {
 				bridge,
 				chapterContent: bodyOf,
 			});
-			const sp = this.writerSystemPrompt(setup.systemPrompt, guides, state.writing_style, state.title, data.characters.map((c) => c.name), setup.identityBoost);
+			const sp = await this.writerSystemPrompt(setup.systemPrompt, guides, state.writing_style, state.title, data.characters.map((c) => c.name), setup.identityBoost, false); // /review 产出审阅报告非正文——不注入禁用词块
 			return this.exportSection(title, setup.cfg, phaseName(3), [
 				"「审阅重点」弹窗取默认值（留空）。报告为空时重试，最多 3 次、输入相同。",
 				"审阅走阶段映射（阶段 3 编写文章），不受全局激活态/对话框模型影响。",
@@ -6370,7 +6408,7 @@ async cmdRenameChapterFile(): Promise<void> {
 				volRelationships: relationshipCtx.volRelationships,
 				volumes: vols.map((v) => ({ name: v.name, description: v.description })),
 				planningGuide,
-				guideText: guides.guideText,
+				guideText: guides.writerGuideText,
 				tensionRules: await this.loadTensionRules(), // 张力规则：与运行时同口径（读插件数据目录 TENSION_RULES.md，缺失回落内置默认）
 				chapterCount: defaultCount,
 			});
@@ -6407,7 +6445,7 @@ async cmdRenameChapterFile(): Promise<void> {
 				volumes: vols.map((v) => ({ name: v.name, description: v.description })),
 				targetVolumeName: vol.name,
 				prevVolumeOutline: prevOutline,
-				guideText: guides.guideText,
+				guideText: guides.writerGuideText,
 				tensionRules: await this.loadTensionRules(), // 张力规则：与运行时同口径（读插件数据目录 TENSION_RULES.md，缺失回落内置默认）
 				chapterCount: defaultCount,
 			};
@@ -6458,7 +6496,7 @@ async cmdRenameChapterFile(): Promise<void> {
 				sourceOutline: cleaned,
 				strictCurrentOutlineOnly: true,
 				planningGuide: await this.manager.readPlanningGuide(story), // 导出只读盘；运行时会 ensurePlanningGuide
-				guideText: guides.guideText,
+				guideText: guides.writerGuideText,
 				tensionRules: await this.loadTensionRules(), // 张力规则：与运行时同口径（读插件数据目录 TENSION_RULES.md，缺失回落内置默认）
 				volumes: volList,
 				targetVolumeName: vol.name,
@@ -6555,7 +6593,7 @@ async cmdRenameChapterFile(): Promise<void> {
 		});
 
 		const storyPath = this.manager.storyPath(story);
-		const slugOf = (title: string): string => title.replace(/\s+/g, "-").replace(/[^\u4e00-\u9fa5a-zA-Z0-9\-]/g, "").slice(0, 60);
+		const slugOf = (title: string): string => title.replace(/\s+/g, "-").replace(/[^\u4e00-\u9fa5a-zA-Z0-9-]/g, "").slice(0, 60);
 		entries.unshift({
 			title: "AI提示词（导出说明）",
 			content: [
@@ -6690,7 +6728,7 @@ async cmdRenameChapterFile(): Promise<void> {
 					else bridge.nxt = ref;
 				}
 			} catch { /* 大纲桥读取失败不阻断审阅 */ }
-			const sp = this.writerSystemPrompt(setup.systemPrompt, guides, state.writing_style, state.title, data.characters.map((c) => c.name), setup.identityBoost);
+			const sp = await this.writerSystemPrompt(setup.systemPrompt, guides, state.writing_style, state.title, data.characters.map((c) => c.name), setup.identityBoost, false); // /review 产出审阅报告非正文——不注入禁用词块
 			const prompt = buildReviewPrompt({
 				chapterNum: data.chapterNum, // v0.0.15：阅读序位置（ordinal，跨卷连续）
 				chapterLabel: chLabel,
@@ -6778,7 +6816,6 @@ class ArticleWriterSettingTab extends PluginSettingTab {
 		const key = `writing_phases.${phaseIdx}.identity_boost`;
 		const defaults = buildDefaultLlmConf();
 		const default_value = (defaults.writing_phases ?? [])[phaseIdx]?.identity_boost ?? "";
-		let editing = false;
 		// 显示区域（上）+ 按钮区域（下）
 		const displayEl = container.createEl("div", { cls: "aw-identity-boost-display" });
 		const btnEl = container.createEl("div", { cls: "aw-identity-boost-btns" });
@@ -6791,7 +6828,6 @@ class ArticleWriterSettingTab extends PluginSettingTab {
 			const editBtn = btnEl.createEl("button", { cls: "mod-cta aw-identity-boost-btn" });
 			editBtn.setText("编辑");
 			editBtn.onclick = async () => {
-				editing = true;
 				// 先测量显示区实际高度，编辑框沿用同一像素高度——两种状态高度一致、切换不跳变
 				const pre = displayEl.querySelector("pre");
 				const displayHeight = pre ? pre.offsetHeight : 0;
@@ -6810,7 +6846,6 @@ class ArticleWriterSettingTab extends PluginSettingTab {
 					const newVal = ta.value.trim() || undefined;
 					await this.setControlValue(key, newVal);
 					currentValue = newVal ?? "";
-					editing = false;
 					renderReadOnly();
 					btnSaveHandler = null;
 				};
@@ -6820,7 +6855,6 @@ class ArticleWriterSettingTab extends PluginSettingTab {
 				defaultBtn.onclick = async () => {
 					await this.setControlValue(key, default_value);
 					currentValue = default_value;
-					editing = false;
 					renderReadOnly();
 					btnSaveHandler = null;
 				};
@@ -6829,12 +6863,11 @@ class ArticleWriterSettingTab extends PluginSettingTab {
 					const newVal = ta.value.trim() || undefined;
 					await this.setControlValue(key, newVal);
 					currentValue = newVal ?? "";
-					editing = false;
 					renderReadOnly();
 					btnSaveHandler = null;
 				};
 				ta.addEventListener("keydown", (e: KeyboardEvent) => {
-					if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) btnSaveHandler?.();
+					if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) void btnSaveHandler?.();
 				});
 			};
 		};
@@ -6899,7 +6932,7 @@ class ArticleWriterSettingTab extends PluginSettingTab {
 							const phs = this.conf().writing_phases ?? [];
 							if (!phs[idx]) phs[idx] = { name: "" };
 							phs[idx].llm_config_name = drop.value || undefined;
-							this.plugin.saveData(this.plugin.settings);
+							void this.plugin.saveData(this.plugin.settings);
 						});
 						// identity_boost 设置
 						const ibContainer = container.createEl("div", { cls: "aw-identity-boost-container" });
@@ -6961,8 +6994,8 @@ class ArticleWriterSettingTab extends PluginSettingTab {
 			const idx = Number(phaseCfgMatch[1]);
 			const field = phaseCfgMatch[2];
 			const phases = c.writing_phases ?? [];
-			const rec = phases[idx] as unknown as Record<string, unknown>;
-			return (rec?.[field] ?? "") as string;
+			const rec = phases[idx] as unknown as Record<string, unknown>; // 动态字段名索引需经 Record 中转（合法保留断言）
+			return rec?.[field] ?? "";
 		}
 		if (key.startsWith("cfg.")) {
 			const parts = key.split(".");

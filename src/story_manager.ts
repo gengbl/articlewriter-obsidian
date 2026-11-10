@@ -385,12 +385,13 @@ export class StoryManager {
 
 		// ② 引言/ → 书稿/引言/
 		const prologueSrc = `${base}/${PROLOGUE_DIR_NAME}`;
-		if (this.vault.getAbstractFileByPath(prologueSrc) instanceof TFolder) {
+		const prologueFolder = this.vault.getAbstractFileByPath(prologueSrc); // 捕获一次供 instanceof 收窄复用（免 as TFolder）
+		if (prologueFolder instanceof TFolder) {
 			const dest = `${ms}/${PROLOGUE_DIR_NAME}`;
 			if (this.vault.getAbstractFileByPath(dest) instanceof TFolder) {
 				await this.mergeMoveFolder(prologueSrc, dest);
 			} else {
-				await this.vault.rename(this.vault.getAbstractFileByPath(prologueSrc) as TFolder, dest);
+				await this.vault.rename(prologueFolder, dest);
 			}
 			checks.push({ path: prologueSrc, expect: false }, { path: dest, expect: true });
 		}
