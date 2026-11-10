@@ -119,7 +119,7 @@ export type StatusAction =
 	| { kind: "delete-folder"; path: string } // 案头资料文件夹行右键「删除」：整个文件夹移入回收站（先确认框）
 	| { kind: "new-volume-doc"; story: string; volId: string } // 卷节点 / 卷内「文档」分组右键：在该卷实体目录下新建 .md（语义同 new-file，落点为卷目录而非章节目录）
 	| { kind: "complete-volume-docs"; story: string; volId: string } // 卷内「文档」命名头右键「补全卷文档」：检查该卷下缺失的设定模板（卷大纲/人物/人物关系/场景/时间线五件套）并创建，已存在不覆盖
-	| { kind: "complete-root-docs"; story: string } // 案头资料节点右键「补全资料」：检查书根缺失的默认资料文件（大纲/策划指南/世界观/伏笔/笔记/人物/人物关系/场景/时间线九件套）并按模板创建，已存在不覆盖
+	| { kind: "complete-root-docs"; story: string } // 案头资料节点右键「补全资料」：检查书根缺失的默认资料文件（大纲/策划指南/世界观/伏笔/笔记/人物/人物关系/场景/时间线/张力规则十件套）并按模板创建，已存在不覆盖
 	| { kind: "complete-outline-docs"; story: string } // 「书稿」小节标题右键「补全大纲资料…」：检查参与大纲生成的四件资料（大纲/策划指南/世界观/人物关系）并按模板补缺，已存在不覆盖
 	| { kind: "new-prologue"; story: string } // 「书稿」标题行右键「新建引言…」：书根建「引言」文件夹 + 正文《引言.md》（幂等；已存在仅提示）
 	| { kind: "delete-prologue"; story: string } // 引言节点右键「删除引言」：整个「引言」文件夹移入回收站（先确认框）
@@ -350,7 +350,7 @@ export class StatusView extends ItemView {
 	/** 「案头资料」「书稿」两个小节；isActive=该书是否为当前激活小说（仅其下章节/卷可被 Radio 选中激活）。书稿小节按归属卷渲染为树节点（卷名行 + 缩进章节），未归属章节平铺兜底 */
 	private renderStorySections(parent: HTMLElement, d: StatusDetail, isActive: boolean): void {
 		if (d.globalFiles.length || d.globalFolders.length) {
-			// 案头资料分组：标题行与组内空白右键=「补全资料」（书根默认资料九件套补缺、已存在不覆盖）+「新建资料…」（v0.1.6+：不再提供新建章节/新建卷——建章在书稿具体章节/卷节点上、建卷在书籍列表标题行或书稿小节标题）
+			// 案头资料分组：标题行与组内空白右键=「补全资料」（书根默认资料十件套补缺、已存在不覆盖）+「新建资料…」（v0.1.6+：不再提供新建章节/新建卷——建章在书稿具体章节/卷节点上、建卷在书籍列表标题行或书稿小节标题）
 			const gItems = (): Array<{ label: string; run: () => void } | { sep: true }> => [
 				{ label: "补全资料", run: () => this.runStatusAction({ kind: "complete-root-docs", story: d.storyName }) }, // 检查缺失的默认资料文件并创建，已存在保留不覆盖
 				{ sep: true },

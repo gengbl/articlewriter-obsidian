@@ -25,7 +25,9 @@ export interface WritingStreamSink {
 /** 统一生成过程面板（自定义 ItemView，可停靠任意区域、重载保留位置）。双阶段复用同一实例：
  * ① 摘要延迟生成日志阶段——main.ts notifyGenProgress 驱动，每个 LLM 任务一行带时间戳的工作日志实时追加并自动滚底；
  * ② 章节正文/报告流式阶段——beginStream(title) 进入，实现 WritingStreamSink 契约（原独立 StreamingPreviewModal 的全部语义并入此处），
- *    先展示摘要生成过程、完成后在同一面板内继续流式展示章节生成过程与「保存/不保存」决定。Esc=停止生成（等同放弃） */
+ *    先展示摘要生成过程、完成后在同一面板内继续流式展示章节生成过程与「保存/不保存」决定。
+ *    v0.3.0+ 起停止生成只经「停止生成」按钮：原 document 级 Esc 监听已移除——Esc 在 Obsidian 里无处不在
+ *    （快速切换器/命令面板/编辑器取消都会按到它），实测会误伤流式生成，造成「生成被打断」 */
 export class GenProgressView extends ItemView implements WritingStreamSink {
 	static readonly VIEW_TYPE = "articlewriter-gen-progress";
 
@@ -107,10 +109,7 @@ export class GenProgressView extends ItemView implements WritingStreamSink {
 		const root = parent.createDiv({ cls: "aw-gen-view" });
 		root.createDiv({ text: "生成过程", cls: "aw-gen-title" });
 		this.bodyEl = root.createDiv({ cls: "aw-gen-body" });
-		// Esc=停止当前流式生成（仅流式中且未提交决定时生效；视图卸载自动解绑）
-		this.registerDomEvent(document, "keydown", (e: KeyboardEvent) => {
-			if (e.key === "Escape") this.abortStream();
-		});
+		// v0.3.0+：不再注册 document 级 Esc 停止生成——Esc 无处不在（快速切换器/命令面板/编辑器），实测误伤流式生成；停止只经「停止生成」按钮/「停止全自动写书」命令
 	}
 
 	/** 新一轮摘要阶段开始：清空旧内容并写入分隔行 */
@@ -248,6 +247,19 @@ export class GenProgressView extends ItemView implements WritingStreamSink {
 		this.appendLine(`${message ?? "✓ 已自动保存"}（${elapsedLabel} ${formatElapsedMs(Date.now() - this.streamStartedAt)}）`, "ok");
 	}
 
+	/** v0.3.0+ auto-book 流水线免交互：finish() 之后（done 态、等待「保存/不保存」）自动等价点「保存」。
+	 * 与 finishAuto 的区别：finishAuto 只在流式进行中生效（跳过 done 态）；autoAccept 处理「命令已 finish 进入 done 态」的 CTA 站点（如生成书级大纲的三处保存确认），复用 end(true) 同一收尾路径 */
+	autoAccept(): void {
+		if (!this.submitted && this.streamState === "done") this.end(true);
+	}
+
+	/** v0.3.0+ auto-book 流水线「停止全自动」：等价用户按「停止生成」——streaming 态中断当前流式会话，done 态视为放弃保存收尾（idle/已收尾无操作） */
+	requestStop(): void {
+		if (this.submitted) return;
+		if (this.streamState === "streaming") this.ctrl.abort();
+		else if (this.streamState === "done") this.end(false);
+	}
+
 	private abortStream(): void {
 		if (!this.submitted && this.streamState === "streaming") this.ctrl.abort();
 	}
@@ -267,8 +279,8 @@ export class GenProgressView extends ItemView implements WritingStreamSink {
 		if (this.statusOverride) return; // v0.2.x+ 临时状态优先（重试退避/去AI味等），计时器 tick 不覆盖
 		const elapsed = `已用时 ${formatElapsedMs(Date.now() - this.streamStartedAt)}`; // v0.2.x+ 生成计时
 		if (this.streamState === "streaming") {
-			if (this.fullText.trim()) this.statusEl.setText(`生成中…（已 ${String(this.fullText.length)} 字，${elapsed}，Esc/停止可中断）`);
-			else if (this.reasoningText.trim()) this.statusEl.setText(`模型思考中…（思考已 ${String(this.reasoningText.length)} 字，正文未开始，${elapsed}，Esc/停止可中断）`);
+			if (this.fullText.trim()) this.statusEl.setText(`生成中…（已 ${String(this.fullText.length)} 字，${elapsed}，点「停止生成」可中断）`);
+			else if (this.reasoningText.trim()) this.statusEl.setText(`模型思考中…（思考已 ${String(this.reasoningText.length)} 字，正文未开始，${elapsed}，点「停止生成」可中断）`);
 			else this.statusEl.setText(`等待模型输出…（${elapsed}）`);
 		} else if (this.streamState === "done") this.statusEl.setText(`完成（共 ${String(this.fullText.length)} 字，${elapsed}），请选择是否保存。`);
 	}

@@ -324,6 +324,22 @@ const HTML_COMMENT_RE = () => /<!--[\s\S]*?-->/g; // 必须跨行——汇总文
 const BANNED_TOKEN_RE = () => /[「`]([^」`]+)[」`]/g; // 闭合类必须含 CJK 直角引号 」——曾误写为 »(U+00BB)，致对代码内置块（「」书写）提取 0 token、buildMergedBannedBlock 纯列表行过滤全程失效
 
 /**
+ * v0.2.x+ 指南原文直注入清洗（提示词文件组装路径用）：整块剥离「禁用词」分类块（含标记与内容——
+ * 禁用词内容由禁用词块 buildMergedBannedBlock 单独承载，防双份）与「编写类型」块（由【编写类型】块承载），
+ * 再剥离其余分类标记行（保留块内内容）与全部 HTML 注释。口径对齐 extractGuideCategories 的剔除规则，
+ * 但不做跨层合并去重——三层指南作为独立块按优先级顺序注入，由组装器做块级去重。
+ * 注意：必须在组装器 stripComments 之前跑（本函数自带注释剥离），条目应设 stripComments:false。
+ */
+export function stripGuideCategoryBlock(text: string): string {
+	if (!text) return "";
+	let t = text.replace(CAT_TYPE_BLOCK_RE(), "");
+	const re = new RegExp(CAT_BLOCK_SOURCE, "gs");
+	t = t.replace(re, (whole: string, name: string) => ((name || "").trim() === "禁用词" ? "" : whole));
+	t = t.replace(/<!--\s*\/?\s*写作指南分类\s*[^>]*-->/g, "");
+	return t.replace(HTML_COMMENT_RE(), "").trim();
+}
+
+/**
  * 按分类块拆分写作指南，返回 {通用, 禁用词, 故事风格, 个人特色} 的文本。
  * 多个同名分类块内容会拼接；未包裹内容归入"通用"。
  * 编写类型区块（<!-- 编写类型:xxx -->）从分类内容中剔除，只在原始文本中供
