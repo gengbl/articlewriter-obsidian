@@ -1257,6 +1257,31 @@ export function buildEventsListPrompt(input: EventsListInput): string {
 	return parts.join("\n");
 }
 
+// ---------- v0.3.0+ 世界观生成（auto-book 流水线首阶段：新命令「生成世界观」→ 书级《案头资料/世界观.md》） ----------
+
+export const WORLDVIEW_GEN_SYSTEM_PROMPT = "你是资深小说世界观设计师，擅长把一句话设定扩写为自洽、可供全书创作引用的世界观设定文档。";
+
+export interface WorldviewGenInput {
+	bookTitle: string;
+	premise: string; // 一句话设定（核心输入：state.one_line，弹窗可改）
+	contextDocs?: string; // 调用方装配的上下文块串（【书籍信息】→【创作规范】→【张力规则】，经引用文档配置框过滤）
+}
+
+/** 世界观生成 prompt：以一句话设定为种子生成书级《世界观.md》——固定 H2 小节、首行 H1；
+ * 输出为自由格式文档（readWorldDoc.fullText 原样注入后续提示词），小节只是推荐骨架、允许按题材增删 */
+export function buildWorldviewGenPrompt(input: WorldviewGenInput): string {
+	const reqs: string[] = [
+		`以【一句话设定】为种子扩写：${input.premise}\n世界观必须支撑这句话隐含的故事发生——主角与冲突在世界观中有明确的落点（谁是主角、他为什么不得不行动、阻碍来自哪种规则或势力）`,
+		"按以下 H2 小节组织（可按题材增删改名，但「世界基本规则」与「世界观红线」两节必须有）：\n## 世界与类型\n## 世界基本规则（硬规则，逐条编号）\n## 势力与阵营\n## 地理与关键地点\n## 历史与时间线\n## 力量/科技/社会体系\n## 主角与世界的关系\n## 世界观红线（全书创作不得违背的硬规则，逐条列出）",
+		"硬规则须具体、可判定、彼此不矛盾（写「魔法施放须消耗记忆，施法者会遗忘用其施法的经历」，不写「魔法有代价」）；后续所有大事件与剧情都不得违背这些规则",
+		"只写设定本身，不写情节大纲、不写章节规划、不复述一句话设定之外的既有剧情",
+		"首行为 H1 标题「# 世界观」，各节用 H2；只输出世界观文档正文本身，不要解释、前言说明或代码块包裹",
+	];
+	const parts: string[] = [`请根据下面的一句话设定与书籍信息，为「${input.bookTitle}」生成一份《世界观》。\n\n它是后续《大事件列表》《策划指南》、书级/卷级大纲与全部章节写作的既定事实约束，必须自洽、具体、无内部矛盾。\n\n要求：\n${reqs.map((r, i) => `${i + 1}. ${r}`).join("\n")}`];
+	pushContextDocs(parts, input.contextDocs);
+	return parts.join("\n");
+}
+
 // ---------- v0.2.21+ 写作命令「正文＋摘要」同响应输出协议（正文与 <SUMMARY> 块一并产出，插件确定性解析后分别落盘）----------
 
 /** 写作提示词末尾的摘要协议段：scope=摘要覆盖范围描述（如「本章正文」「新续写部分」）。四条标准与延迟生成的 buildChapterSummaryPrompt 保持一致 */

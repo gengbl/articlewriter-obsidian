@@ -27,7 +27,7 @@ export interface WritingPhase {
 	name: string; // 阶段显示名（如「策划方案生成」）
 	llm_config_name?: string; // 指定使用的模型配置名（留空=回落第一个配置 cfgs[0]；active_llm/chat_model 均不参与阶段回退）
 	identity_boost?: string; // 该阶段的 AI 身份加强提示词，注入到 system prompt 末尾
-	ref_docs?: string[]; // 引用文档配置框（v0.2.25+）：本阶段提示词装配实际注入的引用文档清单。条目 = 内置文档 key（见 PHASE_REF_DOC_CATALOGS）或 "file:<vault 路径>"（用户自选文档）；三层《写作指南》创作规范为锁定项、不在清单内、恒注入。undefined = 该阶段默认清单；[] = 只注入锁定项。
+	ref_docs?: string[]; // 引用文档配置框（v0.2.25+）：本阶段提示词装配实际注入的引用文档清单。条目 = 内置文档 key（见 PHASE_REF_DOC_CATALOGS）或 "file:<vault 路径>"（用户自选文档）或 "skill:<技能名>"（v0.3.0+，读 <work_dir>/SKILLS/<技能名>.md；「编写文章」阶段技能进 system prompt、其余阶段进上下文文档）；三层《写作指南》创作规范为锁定项、不在清单内、恒注入。undefined = 该阶段默认清单；[] = 只注入锁定项。
 }
 
 /** 内置引用文档 key → 界面显示名（全阶段共用词表）。 */

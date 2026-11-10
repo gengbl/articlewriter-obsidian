@@ -21,12 +21,12 @@
 
 两条组装路径：
 
-- **正文路径**（阶段 3 写作命令）：`writerSystemPrompt`（main.ts:3083，async）= `assembleSystemPrompt(buildStoryTypeSystemPrompt({storyType, guideText, title, charNames, bannedGuideText, bannedData}) || undefined, guides.guideCleanText, baseSp, setup.identityBoost)`——customSp 为按书籍题材/指南/禁用词动态生成的【编写类型】system；guides 来自 `loadWriterGuides`（main.ts:3065，内部 `assembleGuideTexts` 直装三层指南原文，不再经《写作指南汇总.md》）；**禁用词块仅注入正文写作路径**（`includeBanned` 默认 true，/review 等非正文路径传 false 退出——不加载禁用词、不注入禁用词块与指南禁用词类目）；【创作规范】用剥离禁用词类目的 `guideCleanText`（该内容已由禁用词块完整承载，防双份注入）。
-- **大纲/策划/AI 拆分路径**（阶段 0/1/2）：直接 `assembleSystemPrompt(undefined, "", <BASE_SP>, setup.identityBoost)`，BASE_SP 为常量——阶段 0 复用 `BOOK_OUTLINE_GEN_SYSTEM_PROMPT`（prompts.ts:1045），大事件列表前置生成用 `EVENTS_LIST_SYSTEM_PROMPT`（prompts.ts:1247），阶段 1/2 用 `VOL_OUTLINE_GEN_SYSTEM_PROMPT`（prompts.ts:941）。调用点：4703 / 4746 / 4824（卷大纲＋兜底批量）、5001 / 5033（策划指南）、4892（大事件列表）、4465（AI 拆分）、5513（book-outline-to-volumes 批量）。
+- **正文路径**（阶段 3 写作命令）：`writerSystemPrompt`（main.ts:3151，async）= `assembleSystemPrompt(buildStoryTypeSystemPrompt({storyType, guideText, title, charNames, bannedGuideText, bannedData, skillsBlock}) || undefined, guides.guideCleanText, baseSp, setup.identityBoost)`——customSp 为按书籍题材/指南/禁用词动态生成的【编写类型】system；guides 来自 `loadWriterGuides`（main.ts:3132，内部 `assembleGuideTexts` 直装三层指南原文，不再经《写作指南汇总.md》）；**禁用词块仅注入正文写作路径**（`includeBanned` 默认 true，/review 等非正文路径传 false 退出——不加载禁用词、不注入禁用词块与指南禁用词类目）；【创作规范】用剥离禁用词类目的 `guideCleanText`（该内容已由禁用词块完整承载，防双份注入）；**v0.2.27+ 技能块**：`skillsBlock = await loadSkillsBlock(3)`（main.ts:2377，读阶段 3 ref_docs 的 `skill:` 条目→SKILLS/<name>.md→【技能 · name】join，无条目＝空串不注入）——`buildStoryTypeSystemPrompt` 内块序＝【编写类型】→【禁用词】→技能块→【强制要求】尾（prompts.ts:503/514 钩子）；正文上下文装配走 `skipSkills:true`，技能只经此单次注入（剧本转换调用点不传＝不注入，见 [agents/l3-skills.md](./agents/l3-skills.md)）。
+- **大纲/策划/AI 拆分路径**（阶段 0/1/2）：直接 `assembleSystemPrompt(undefined, "", <BASE_SP>, setup.identityBoost)`，BASE_SP 为常量——阶段 0 复用 `BOOK_OUTLINE_GEN_SYSTEM_PROMPT`（prompts.ts:1045），大事件列表前置生成用 `EVENTS_LIST_SYSTEM_PROMPT`（prompts.ts:1247），**世界观生成用 `WORLDVIEW_GEN_SYSTEM_PROMPT`（prompts.ts:1262，v0.2.27+）**，阶段 1/2 用 `VOL_OUTLINE_GEN_SYSTEM_PROMPT`（prompts.ts:941）。调用点：4703 / 4746 / 4824（卷大纲＋兜底批量）、5001 / 5033（策划指南）、4892（大事件列表）、5204（世界观）、4465（AI 拆分）、5513（book-outline-to-volumes 批量）。
 
 **identity_boost 注入范围**（v0.2.24+）：全部创作阶段（0/1/2/3 写作命令）统一注入；机械/辅助任务有意不注入（输出协议严格、有漂移风险）：/typo、/analyze-cast、章节/卷摘要延迟生成、autoCleanAi 去AI味。
 
-## 3. 阶段 0 · 策划指南
+## 3. 阶段 0 · 策划指南与世界观
 
 | 项 | 内容 |
 | --- | --- |
@@ -37,6 +37,19 @@
 | 上下文块 | v0.2.24+ prompt_files 装配改造：`planningGuideContextParts` 已退役——调用方 `buildPlanningGuideInput`（main.ts:4844）经 `assemblePromptFiles` 装配 `contextDocs` 传入（【书籍信息】→【张力规则 ·…】→【世界观】→【大事件列表】→【全书大纲】→【卷列表 · 阅读序】，worldOnly 跳过大纲/卷列表条目）；**目标文档本身永不注入**（重新生成不读旧内容、specs 不含《策划指南.md》）；**v0.2.25+ ref_docs 门控**：条目按阶段 0 引用文档配置框过滤（`phaseRefDocKeys(0)`，默认清单＝书籍信息/张力规则/世界观/大事件列表；全书大纲/卷列表默认不注入、可在下拉手动添加）；【大事件列表】块缺失时由 `ensureEventsList` 先生成落盘再装配（见上行）；**新增锁定【创作规范】注入**（`loadWriterGuides` 三层指南、header 常量 `HDR_GUIDE_PLANNING`＝【创作规范 · …生成策划指南时必须遵循…】，策划指南此前无创作规范块——现与其余阶段同口径锁定、不受 ref_docs 开关影响） |
 | 张力规则 | 【创作规范】锁定块后、world 块前，文案「生成策划指南时必须遵循」（调用方 specs 注入，`HDR_TENSION_PLANNING`）——v0.2.25+ 起策划指南已有【创作规范】锁定块（`HDR_GUIDE_PLANNING`），张力规则挂其后 |
 | 输出处理 | `runPlanningGuideStreamed`（main.ts:4926）：十节清单 `PLANNING_GUIDE_SECTIONS`（prompts.ts:1176）为唯一事实源；停止条件＝十节齐全且 finish_reason≠length / 模型精确回复「已完成」（仅十节已齐全时采信、防 token 边界 length 误报，该段不并入，main.ts:4970）/ 用户中止 / 尚缺节时连续 3 轮节数无推进（4939，提示调大 max_tokens）；空结果每轮重试 ×3；最多续写 10 轮 |
+
+### 世界观生成（cmdGenerateWorldview，main.ts:5178，v0.2.27+）
+
+全自动写书流水线首阶段，亦是独立命令 `worldview-generate`。单轮生成（无续写循环）。
+
+| 项 | 内容 |
+| --- | --- |
+| 入口 | `cmdGenerateWorldview`（main.ts:5180）；全自动写书流水线 worldview 阶段（见 [l2-pipeline.md](./agents/l2-pipeline.md)）；export 预览 6941 |
+| premise | 优先 `this.auto.premise`（流水线运行中，弹窗已校验非空）否则 `state.one_line`（state_doc 新增 `one_line?`，空串视为未设置）；皆空 → promptBox 补问（必填，取消/空即中止），补问值经 saveState 写回 `state.one_line` 作下次默认 |
+| system | `assembleSystemPrompt(undefined, "", WORLDVIEW_GEN_SYSTEM_PROMPT, setup.identityBoost)`（prompts.ts:1262，调用点 5204） |
+| user prompt | `buildWorldviewGenPrompt`（prompts.ts:1272）：一句话设定为种子（主角/行动动因/阻碍须在世界观中有落点）＋固定 H2 骨架（「世界基本规则」「世界观红线」必含，其余可按题材增删）＋硬规则可判定不矛盾＋只写设定不写情节＋首行 H1；输出为自由格式文档（`readWorldDoc().fullText` 原样注入后续提示词） |
+| 上下文块 | 书籍信息＋【创作规范】（loadWriterGuides 锁定）＋张力规则三对 pairs 经 `orderRefDocSpecs(pairs, phaseRefDocKeys(0), { guideKey: "guide" })` 按阶段 0「引用文档」配置框过滤注入（与策划指南同口径）；**目标文档《世界观.md》自身不注入** |
+| 输出处理 | `streamWithEmptyRetry` ×3 → `modal.signal.aborted`/空文本检查 → `setWorldDoc`（story_manager.ts:2625，剥正文首部 H1、统一补 `# <书名> 世界观`）＋`finishAuto` 自动落盘（无保存 CTA）；**已有非空直接覆盖、不确认**（流水线语义，手动运行同口径） |
 
 ## 4. 阶段 1 · 大纲域
 
@@ -98,46 +111,47 @@
 ## 7. 横切机制速查
 
 - **张力规则（书内「案头资料/张力规则.md」）**：大纲路径挂【创作规范】块后、策划指南路径挂【书籍信息】后、world 块前且文案「生成策划指南时必须遵循」——v0.2.24+ prompt_files 装配改造后由**调用方的 specs** 注入（旧 volOutlineContextParts / bookOutlineContextParts / planningGuideContextParts 注入行号已退役）；**不进正文写作命令提示词**。全部运行时调用点生成前 `await this.loadTensionRules(story)`（读书内文件、建书随十件套播种、运行时缺失先补播种内置默认、仍缺失/为空回落内置默认）；export-ai-prompts 预览同口径。
-- **禁用词（BANNED_WORDS.md）**：运行时唯一来源＝插件数据目录 BANNED_WORDS.md——每次启动 `ensureBannedWordsFile`（main.ts:2324，onload:139）仅缺失时以内置默认播种写盘；`loadBannedWords`（2336）严格读盘，缺失/为空不回落内置（console.warn，内置词仅作播种内容参考）。注入点**仅正文写作路径**：`writerSystemPrompt(includeBanned=true)`（main.ts:3083）→ `buildStoryTypeSystemPrompt({bannedData, bannedGuideText})` → `buildMergedBannedBlock`（banned_words.ts:484，prompts.ts:510 条件组装）生成【禁用词】块；bannedGuideText＝各层指南「禁用词」类目合并文本（`loadWriterGuides` 返回，main.ts:3065）；非正文 LLM 路径（对话/大纲/策划/deai/repair/export 预览）一律不加载，且其【创作规范】用剥离禁用词类目的 `guideCleanText`（`stripGuideCategoryBlock`，banned_words.ts:333；防双份注入）。AI 词检测路径（autoCleanAi /deai/export-preview）另用该清单做命中检出（`findAiWordHits` banned_words.ts:190 / `findAiSentences` 233）。
+- **禁用词（BANNED_WORDS.md）**：运行时唯一来源＝插件数据目录 BANNED_WORDS.md——每次启动 `ensureBannedWordsFile`（main.ts:2327，onload:140）仅缺失时以内置默认播种写盘；`loadBannedWords`（2339）严格读盘，缺失/为空不回落内置（console.warn，内置词仅作播种内容参考）。注入点**仅正文写作路径**：`writerSystemPrompt(includeBanned=true)`（main.ts:3151）→ `buildStoryTypeSystemPrompt({bannedData, bannedGuideText})` → `buildMergedBannedBlock`（banned_words.ts:484，prompts.ts:510 条件组装）生成【禁用词】块；bannedGuideText＝各层指南「禁用词」类目合并文本（`loadWriterGuides` 返回，main.ts:3132）；非正文 LLM 路径（对话/大纲/策划/deai/repair/export 预览）一律不加载，且其【创作规范】用剥离禁用词类目的 `guideCleanText`（`stripGuideCategoryBlock`，banned_words.ts:333；防双份注入）。AI 词检测路径（autoCleanAi /deai/export-preview）另用该清单做命中检出（`findAiWordHits` banned_words.ts:190 / `findAiSentences` 233）。
 - **CHAPTER_REF_BAN**（prompts.ts:629）：注入点仅三处——buildChapterPrompt 规则 13（825）、buildContinuePrompt 规则 10（895）、buildRewritePrompt（1355）；polish/deai/review 不含。
 - **摘要同响应协议**（v0.2.21+）：`summaryTailInstruction`（1263，私有）供 /write /continue /rewrite（withSummary）在正文末尾追加 `<SUMMARY>` 块要求；`parseChapterWithSummary`（1269）解析，失败静默回落延迟生成管线。
 - **目标文档永不注入自身生成上下文**：大纲/策划各路径的调用方 specs（`assemblePromptFiles`）均不含正在生成的文档（全量或紧凑索引）；已有章节(+摘要)也不进大纲/策划生成——只依据世界观＋策划指南等既定事实。
-- **引用文档配置（ref_docs，v0.2.25+）**：`WritingPhase.ref_docs?: string[]`（plugin_config.ts:30）——每阶段一个引用文档配置框（设置页「写作阶段模型配置」各阶段「引用文档」子标签），条目＝内置文档 key（`REF_DOC_LABELS`/`PHASE_REF_DOC_CATALOGS`/`PHASE_REF_DOC_DEFAULTS`，plugin_config.ts:34/54/81）或 `file:<vault 路径>` 自定义文档。运行时门控入口 `phaseRefDocKeys(phaseIdx)`（main.ts:2785）：`undefined`＝该阶段默认清单（不回填存储）、`[]`＝仅锁定项不注入可选文档；**数组顺序即装配顺序**（排前的先组装，设置页显示序号 + ↑/↓ 调整）。`assembleVolOutlineContext`（4550，默认 phaseIdx=1、AI 拆分路径传 2）、`assembleWritingDocGroups`（4585，默认 phaseIdx=3）、`buildPlanningGuideInput`（4844，阶段 0）三处共用 `orderRefDocSpecs(pairs, ref, opts)`（2792）按清单顺序映射 specs（opts：`guideKey`＝锁定创作规范键、`fileGroup`＝正文族分组），`file:` 条目渲染为【引用文档 · <路径>】块、注入位置＝清单位置。**三级写作指南锁定注入**：阶段 1/2 经【创作规范】spec 恒保留（大纲/策划路径 unshift 固定第一块）、阶段 3 经 system 侧【创作规范】、阶段 0 经 `HDR_GUIDE_PLANNING`（main.ts:53）——均不受 ref_docs 开关影响。/review 与对话命令按**阶段 3** 配置框口径；export-ai-prompts 预览与运行时同口径。
+- **引用文档配置（ref_docs，v0.2.25+）**：`WritingPhase.ref_docs?: string[]`（plugin_config.ts:30）——每阶段一个引用文档配置框（设置页「写作阶段模型配置」各阶段「引用文档」子标签），条目＝内置文档 key（`REF_DOC_LABELS`/`PHASE_REF_DOC_CATALOGS`/`PHASE_REF_DOC_DEFAULTS`，plugin_config.ts:34/54/81）或 `file:<vault 路径>` 自定义文档或 `skill:<技能名>`（v0.2.27+）。运行时门控入口 `phaseRefDocKeys(phaseIdx)`（main.ts:2844）：`undefined`＝该阶段默认清单（不回填存储）、`[]`＝仅锁定项不注入可选文档；**数组顺序即装配顺序**（排前的先组装，设置页显示序号 + ↑/↓ 调整）。`assembleVolOutlineContext`（4641，默认 phaseIdx=1、AI 拆分路径传 2）、`assembleWritingDocGroups`（4676，默认 phaseIdx=3）、`buildPlanningGuideInput`（4935，阶段 0）三处共用 `orderRefDocSpecs(pairs, ref, opts)`（2852）按清单顺序映射 specs（opts：`guideKey`＝锁定创作规范键、`fileGroup`＝正文族分组、`skipSkills`＝跳过 `skill:` 条目），`file:` 条目渲染为【引用文档 · <路径>】块、`skill:` 条目渲染为【技能 · <名称>】块（stripHeading 剥起始标题行）、注入位置＝清单位置。**三级写作指南锁定注入**：阶段 1/2 经【创作规范】spec 恒保留（大纲/策划路径 unshift 固定第一块）、阶段 3 经 system 侧【创作规范】、阶段 0 经 `HDR_GUIDE_PLANNING`（main.ts:53）——均不受 ref_docs 开关影响。/review 与对话命令按**阶段 3** 配置框口径；export-ai-prompts 预览与运行时同口径。**技能条目（v0.2.27+）**：`skill:<技能名>` 读 `<work_dir>/SKILLS/<技能名>.md`（读写全走 vault adapter、不经 story manager，防 ensureLayout 迁移；见 [agents/l3-skills.md](./agents/l3-skills.md)）。注入分两档——阶段 0/1/2 按清单顺序进上下文（【技能 · name】块，同 `file:` 机制）；**阶段 3 例外**：正文族装配 `assembleWritingDocGroups` 传 `skipSkills:true` 跳过，改由 `writerSystemPrompt` 经 `loadSkillsBlock(3)` 注入 system prompt（防双注入，详见 §2 正文路径条）；对话面板装配也走 skipSkills＝不注入技能。
 
-## 8. 完整性交叉核对：export-ai-prompts 17 节
+## 8. 完整性交叉核对：export-ai-prompts 18 节
 
-`cmdExportPrompts`（main.ts:6235）的 features 清单（6241–6259）与 `buildPromptExportDoc`（6278）各 `trySec("…")` 标题**逐字节一致**（含 · 两侧空格），任一处改动须同步另一处，否则该功能点被静默跳过。每节头部行标注该命令所属阶段的模型配置（`exportPhaseName`，6208）。预览的上下文装配与运行时同口径（含 ref_docs 门控，见 §7）。
+`cmdExportPrompts`（main.ts:6553）的 features 清单（6559–6577）与 `buildPromptExportDoc`（6597）各 `trySec("…")` 标题**逐字节一致**（含 · 两侧空格），任一处改动须同步另一处，否则该功能点被静默跳过。每节头部行标注该命令所属阶段的模型配置（`exportPhaseName`，6526）。预览的上下文装配与运行时同口径（含 ref_docs 门控，见 §7）。
 
 **章域 8 节**：
 
 | # | 标题（trySec 行号） | 备注 |
 | --- | --- | --- |
-| 1 | 创作章节 (/write)（6323） | 有正文也导出（附注）；仅无章节大纲时跳过 |
-| 2 | 续写当前章 (/continue)（6359） | `checkOutlineCoverage`（prompts.ts:1571）allCovered 时跳过 |
-| 3 | 重写当前章 (/rewrite)（6395） | |
-| 4 | 润色当前章 (/polish)（6423） | |
-| 5 | 去AI化当前章 (/deai)（6437） | AI 词命中按外部文件 BANNED_WORDS.md 清单检出（见 §7 禁用词）；max_tokens=min(8192, 句数×300+1024) 配置封顶，≤2 轮 |
-| 6 | 修正章节引用 (/fix-refs)（6464） | |
-| 7 | 错别字检测 (/typo)（6489） | 预算 max(cfg, len×2+1024)，3 次重试，parseTypoScan |
-| 8 | 审阅当前章 (/review)（6505） | |
+| 1 | 创作章节 (/write)（6642） | 有正文也导出（附注）；仅无章节大纲时跳过 |
+| 2 | 续写当前章 (/continue)（6678） | `checkOutlineCoverage`（prompts.ts:1571）allCovered 时跳过 |
+| 3 | 重写当前章 (/rewrite)（6714） | |
+| 4 | 润色当前章 (/polish)（6742） | |
+| 5 | 去AI化当前章 (/deai)（6756） | AI 词命中按外部文件 BANNED_WORDS.md 清单检出（见 §7 禁用词）；max_tokens=min(8192, 句数×300+1024) 配置封顶，≤2 轮 |
+| 6 | 修正章节引用 (/fix-refs)（6783） | |
+| 7 | 错别字检测 (/typo)（6808） | 预算 max(cfg, len×2+1024)，3 次重试，parseTypoScan |
+| 8 | 审阅当前章 (/review)（6824） | |
 
-**大纲域 6 节**（v0.2.25+ 新增大事件列表节）：
+**大纲域 7 节**（v0.2.25+ 新增大事件列表节、v0.2.27+ 新增世界观节）：
 
 | # | 标题（trySec 行号） | 备注 |
 | --- | --- | --- |
-| 9 | 生成大事件列表（策划指南前置自动生成）（6533） | 非独立命令——`ensureEventsList` 前置自动生成的调试预览；system = `EVENTS_LIST_SYSTEM_PROMPT` 组装 |
-| 10 | 生成策划指南（仅世界观） (/planning-guide-worldview)（6548） | system 复用 BOOK_OUTLINE_GEN_SYSTEM_PROMPT |
-| 11 | 生成书籍大纲 (/book-outline-generate)（6565） | 有卷模式预览按 `vols.length \|\| defaultCount` 作卷数基准（v0.2.x+ 有卷弹窗问卷数量，见 §4.2） |
-| 12 | 自动生成卷大纲 (/vol-outline-generate)（6596） | 只给 step 1（卷设计）＋ step 2（第1章，占位） |
-| 13 | 从书级大纲生成卷 (/book-outline-to-volumes)（6625） | **恒跳过**——批量流程无法单段预览 |
-| 14 | 从卷大纲生成章节·AI 拆分兜底 (/vol-outline-to-chapters)（6628） | |
+| 9 | 生成世界观 (/worldview-generate)（6852） | v0.2.27+；premise 按盘上 `state.one_line`（空则占位符注明）；system = `WORLDVIEW_GEN_SYSTEM_PROMPT` 组装（见 §3） |
+| 10 | 生成大事件列表（策划指南前置自动生成）（6872） | 非独立命令——`ensureEventsList` 前置自动生成的调试预览；system = `EVENTS_LIST_SYSTEM_PROMPT` 组装 |
+| 11 | 生成策划指南（仅世界观） (/planning-guide-worldview)（6887） | system 复用 BOOK_OUTLINE_GEN_SYSTEM_PROMPT |
+| 12 | 生成书籍大纲 (/book-outline-generate)（6904） | 有卷模式预览按 `vols.length \|\| defaultCount` 作卷数基准（v0.2.x+ 有卷弹窗问卷数量，见 §4.2） |
+| 13 | 自动生成卷大纲 (/vol-outline-generate)（6935） | 只给 step 1（卷设计）＋ step 2（第1章，占位） |
+| 14 | 从书级大纲生成卷 (/book-outline-to-volumes)（6964） | **恒跳过**——批量流程无法单段预览 |
+| 15 | 从卷大纲生成章节·AI 拆分兜底 (/vol-outline-to-chapters)（6967） | |
 
 **摘要域 3 节**：
 
 | # | 标题（trySec 行号） | 备注 |
 | --- | --- | --- |
-| 15 | 分析人物与场景 (/analyze-cast)（6671） | JSON 重试 ×3（formatRetryNote） |
-| 16 | 章节摘要（上下文组装时延迟生成）（6697） | summaryPlaceholder="（此处有摘要，尚未生成）" |
-| 17 | 卷摘要（上下文组装时延迟整体重建）（6716） | |
+| 16 | 分析人物与场景 (/analyze-cast)（7010） | JSON 重试 ×3（formatRetryNote） |
+| 17 | 章节摘要（上下文组装时延迟生成）（7036） | summaryPlaceholder="（此处有摘要，尚未生成）" |
+| 18 | 卷摘要（上下文组装时延迟整体重建）（7055） | |
 
-导出默认章数 `defaultCount=max(chapters.length,1)`。本矩阵 §3–§6 覆盖的运行时调用点与这 17 节一一对应（阶段 0/1/2 各入口＋阶段 3 全部命令与辅助任务），无遗漏项。
+导出默认章数 `defaultCount=max(chapters.length,1)`。本矩阵 §3–§6 覆盖的运行时调用点与这 18 节一一对应（阶段 0/1/2 各入口＋阶段 3 全部命令与辅助任务），无遗漏项。

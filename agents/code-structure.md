@@ -12,7 +12,7 @@ src/main.ts ──esbuild(bundle)──▶ release/main.js ──非生产构建
 - **唯一入口 `src/main.ts`**；`tsconfig.json` include 仅 `src/**/*.ts`——根目录遗留 `.ts` 不参与编译（见「根目录遗留文件」）。
 - `esbuild.config.mjs`：`bundle:true`、`format:cjs`、`target:es2018`（iOS Safari <16.4 约束，**正则不得用 lookbehind 断言**）、`external` = obsidian / electron / @codemirror/* / @lezer/* / node 内置模块；`loader: {".md":"text"}` 把 `docs/使用说明.md` 等文档以纯文本内联进包（首启运行时播种，见 `src/*_default.ts`）。
 - `release/` = 可分发目录（**gitignore**）：构建后自动拷入 `manifest.json`、`styles.css`；`dist/` 同步一份 `main.js` 供社区目录校验器（同样 gitignore）。`WRITING_GUIDE.md` 不再随包发布。
-- 门禁：`npm run build`（tsc 零错误）+ `npm run lint`（eslint 仅四类 `no-unsafe-*` 为 error，见 eslint.config.mjs）；`npm test` 用 esbuild 把 `src/prompts.test.ts` 就地打包成 mjs 交 `node --test`（唯一测试文件）。
+- 门禁：`npm run build`（tsc 零错误）+ `npm run lint`（eslint 仅四类 `no-unsafe-*` 为 error，见 eslint.config.mjs）；另有 advisory 扫描 `npm run lint:obsidianmd`（eslint-plugin-obsidianmd recommended，配置 `eslint.obsidianmd.mjs`，约定见 process-rules.md「验证要求」）；`npm test` 用 esbuild 把 `src/prompts.test.ts` 就地打包成 mjs 交 `node --test`（唯一测试文件）。
 - 约定：`src/` 不用超出 lib ES2018 的 API（flatMap/trimEnd/matchAll 均被 lint 拦），详见 [process-rules.md](./process-rules.md)「验证要求」。
 
 ## `src/` 模块职责表（行数为当前值）

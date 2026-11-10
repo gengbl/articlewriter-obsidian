@@ -1916,3 +1916,27 @@
 	margin-bottom: 8px;
 	box-sizing: border-box;
 }
+
+/* 单行 Setting 把「标签之外的整行剩余宽度」全给控件（AutoBookModal「一句话设定」的 textarea）：
+   根因——Obsidian 核心 .setting-item-control 是 flex-shrink:0 + flex-basis:60%（旧版为 flex:0 0 auto + justify-content:flex-end），
+   而 .setting-item-info 是 flex-grow:1；于是 textarea 只按默认 cols(20) 的宽度靠右摆，长设定在里面横向滚动。
+   这里把标签列收回内容宽（flex:0 0 auto，避免它和控件列平分剩余空间）、控件列 flex:1 1 auto 撑开、textarea 自身 width:100%。
+   类挂在 Setting.settingEl 本身（它已带 .setting-item），选择器写成 .setting-item.aw-setting-stretch …＝特异性 (0,3,0)，
+   稳压核心任何 (0,2,0) 写法；只挂在带本类的那一行上，同弹窗其它字段与设置页完全不受影响 */
+.setting-item.aw-setting-stretch .setting-item-info {
+	flex: 0 0 auto;
+}
+
+.setting-item.aw-setting-stretch .setting-item-control {
+	flex: 1 1 auto;
+	min-width: 0;
+	justify-content: stretch;
+}
+
+.setting-item.aw-setting-stretch .setting-item-control textarea {
+	width: 100%;
+	min-width: 0;
+	max-width: 100%;
+	box-sizing: border-box;
+	resize: vertical; /* 需要更长时可纵向拖拽，宽度锁死避免撑破弹窗 */
+}

@@ -28,7 +28,7 @@
 | [agents/command-reference.md](./agents/command-reference.md) | 各命令语义/参数/坑位速查表、移动语义陷阱（updateScene/updateCharacter） |
 | **等等命令**[agents/code-structure.md](./agents/code-structure.md) | 源码物理结构横切地图：构建产物链、src/ 模块职责与行数、依赖分层、main.ts 内部区块定位、根目录遗留文件、已知重复与债务 |
 | **等等命令**[agents/process-rules.md](./agents/process-rules.md) | 任务收尾：工作完成后更新写回约定、验证要求 |
-| **等等命令**[PROMPT_MATRIX.md](./PROMPT_MATRIX.md) | 分阶段生成提示词矩阵：阶段 0–3 × 命令 → system/user prompt 来源与行号、上下文注入点、输出解析校验；与 export-ai-prompts 17 节交叉核对（改提示词组装时同步更新） |
+| **等等命令**[PROMPT_MATRIX.md](./PROMPT_MATRIX.md) | 分阶段生成提示词矩阵：阶段 0–3 × 命令 → system/user prompt 来源与行号、上下文注入点、输出解析校验；与 export-ai-prompts 18 节交叉核对（改提示词组装时同步更新） |
 
 ## 推送指南（GitHub 镜像，强制）
 

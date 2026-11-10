@@ -1,4 +1,5 @@
 import { App, Component, MarkdownRenderer, Modal, Notice, SuggestModal, Setting, TFile, TFolder, ToggleComponent } from "obsidian";
+import { PIPELINE_STAGES, type StageId } from "./pipeline"; // v0.3.0+：AutoBookModal 起始节点下拉（pipeline.ts 纯数据、不 import obsidian，无循环依赖）
 
 /** 单行文本输入框；提交回调收到值（空串视为取消）。可选 hint：渲染在标题与输入框之间的说明文字（支持 \n 多行，样式 .aw-prompt-hint）；可选 initial：预填初始值（光标置于末尾） */
 export class TextInputModal extends Modal {
@@ -154,6 +155,235 @@ export class NewStoryModal extends Modal {
 	override onClose(): void {
 		this.contentEl.empty();
 		if (!this.submitted && this.onCancel) this.onCancel();
+	}
+}
+
+/** 各卷章数输入共用（AutoBookModal / BookSkillCreateModal）：解析＋由卷数×各卷章数推算全书总章数 */
+const COUNTS_HINT = "每卷一个整数（逗号分隔），或单个整数用于所有卷";
+function parseCountsText(text: string): number[] {
+	return text.split(/[,，、\s]+/).filter(Boolean).map((p) => (/^\d+$/.test(p) ? Number(p) : NaN));
+}
+function computedTotalChapters(volCount: number, nums: number[]): number | null {
+	if (!Number.isSafeInteger(volCount) || volCount < 1 || !nums.length) return null;
+	if (nums.some((n) => !(Number.isSafeInteger(n) && n >= 1))) return null;
+	if (nums.length === 1) return volCount * nums[0];
+	if (nums.length === volCount) return nums.reduce((a, b) => a + b, 0);
+	return null;
+}
+
+/** v0.3.0+ 全自动写书流水线参数弹窗（仅「按技能全自动写书」缺参补填时打开）：起始节点 / 一句话设定 / 规模参数（分卷＝卷数＋各卷章数；平铺＝总章数）/ 覆盖已有产物开关 */
+export interface AutoBookInput {
+	startAt: StageId;
+	premise: string;
+	volumeCount: number; // 分卷模式：计划卷数（≥1）
+	chapterCounts: number[]; // 分卷模式：各卷目标章数（长度＝volumeCount；单值输入时已复制填满）
+	flatTotalChapters: number; // 平铺模式：全书总章数（≥1）
+	overwrite: boolean; // true=已有世界观/策划指南/书级大纲也重新生成（覆盖）；false=已有即跳过
+}
+
+export class AutoBookModal extends Modal {
+	private submitted = false;
+
+	constructor(
+		app: App,
+		private flatMode: boolean,
+		private init: { startAt?: StageId; premise?: string; volumeCount?: number; chapterCounts?: number[]; flatTotalChapters?: number },
+		private onSubmit: (input: AutoBookInput) => void | Promise<void>,
+		private onCancel?: () => void
+	) {
+		super(app);
+	}
+
+	onOpen(): void {
+		this.contentEl.createEl("h3", { text: "按技能全自动写书 — 补填参数" });
+		this.contentEl.createEl("p", { text: "从所选节点起依次执行：生成世界观 → 生成策划指南 → 生成书级大纲 → 建卷并生成卷大纲 → 生成章节大纲 → 连续编写正文。缺少前置文件会在开始前检查并拒绝启动。", cls: "aw-dim" });
+		let startAt: StageId = this.init.startAt ?? "worldview";
+		let premise = this.init.premise ?? "";
+		let volCount = this.init.volumeCount ?? 3;
+		let countsText = (this.init.chapterCounts ?? []).join(", ") || "10";
+		let flatTotal = this.init.flatTotalChapters ?? 30;
+		let overwrite = false;
+		let errText = "";
+		const errEl = this.contentEl.createDiv({ cls: "articlewriter-muted" });
+
+		new Setting(this.contentEl).setName("起始节点").addDropdown((drop) => {
+			for (const s of PIPELINE_STAGES) drop.addOption(s.id, s.name);
+			drop.setValue(startAt).onChange((v) => { startAt = v as StageId; });
+		});
+		// 一句话设定：整行宽度都给输入框（styles.css .aw-setting-stretch），长设定不必在小框里横向滚动；6 行高，可纵向拖拽
+		const premiseSetting = new Setting(this.contentEl).setName("一句话设定");
+		premiseSetting.settingEl.addClass("aw-setting-stretch");
+		premiseSetting.addTextArea((ta) => {
+			ta.setPlaceholder("例：一个能看见别人死期的少年，发现自己每次说出死期都会提前应验");
+			ta.setValue(premise).onChange((v) => (premise = v));
+			ta.inputEl.rows = 6;
+		});
+		if (this.flatMode) {
+			new Setting(this.contentEl).setName("全书总章数").addText((text) => {
+				text.setValue(String(flatTotal)).onChange((v) => { flatTotal = Number(v.trim()) || 0; });
+			});
+		} else {
+			new Setting(this.contentEl).setName("卷数").addText((text) => {
+				text.setValue(String(volCount)).onChange((v) => { volCount = Number(v.trim()) || 0; updateCountsDesc(); });
+			});
+			const countsSetting = new Setting(this.contentEl).setName("各卷章数");
+			countsSetting.addText((text) => {
+				text.setPlaceholder(COUNTS_HINT);
+				text.setValue(countsText).onChange((v) => { countsText = v; updateCountsDesc(); });
+			});
+			const updateCountsDesc = (): void => {
+				const t = computedTotalChapters(volCount, parseCountsText(countsText));
+				countsSetting.setDesc(t != null ? `${COUNTS_HINT}（全书总章数 = ${t}）` : COUNTS_HINT);
+			};
+			updateCountsDesc();
+		}
+		new Setting(this.contentEl).setName("覆盖已有产物").setDesc("开启：世界观/策划指南/书级大纲即使已有内容也重新生成；关闭：已有即跳过该阶段").addToggle((t) => {
+			t.setValue(overwrite).onChange((v) => (overwrite = v));
+		});
+
+		new Setting(this.contentEl).addButton((btn) =>
+			btn.setButtonText("开始").setCta().onClick(async () => {
+				const nums = parseCountsText(countsText);
+				if (!premise.trim() && startAt === "worldview") { errText = "起始节点为「生成世界观」时必须填写一句话设定"; errEl.setText(errText); return; }
+				if (this.flatMode) {
+					if (!(Number.isSafeInteger(flatTotal) && flatTotal >= 1)) { errText = "总章数须为正整数"; errEl.setText(errText); return; }
+				} else {
+					if (!(Number.isSafeInteger(volCount) && volCount >= 1)) { errText = "卷数须为正整数"; errEl.setText(errText); return; }
+					if (nums.some((n) => !(Number.isSafeInteger(n) && n >= 1))) { errText = "各卷章数须全为正整数"; errEl.setText(errText); return; }
+					if (nums.length !== 1 && nums.length !== volCount) { errText = `各卷章数须为 ${volCount} 个（或单个整数用于所有卷），收到 ${nums.length} 个`; errEl.setText(errText); return; }
+				}
+				this.submitted = true;
+				this.close();
+				await this.onSubmit({
+					startAt,
+					premise: premise.trim(),
+					volumeCount: volCount,
+					chapterCounts: this.flatMode ? [] : (nums.length === 1 ? Array.from({ length: volCount }, () => nums[0]) : nums),
+					flatTotalChapters: flatTotal,
+					overwrite,
+				});
+			})
+		);
+	}
+
+	override onClose(): void {
+		this.contentEl.empty();
+		if (!this.submitted && this.onCancel) this.onCancel();
+	}
+}
+
+/** v0.3.0+ 自动化建书技能创建向导：生成「案头资料/<文件名>.md」技能文件（frontmatter 参数＋正文一句话设定），
+ *  供「按技能全自动写书」免交互执行；参数按所选模式校验，与 AutoBookModal 同一套规则 */
+export interface BookSkillCreateInput {
+	fileName: string; // 技能文件名（不含 .md，已去非法字符）
+	startAt: StageId;
+	premise: string; // 正文＝一句话设定
+	mode: "flat" | "volumes";
+	flatTotalChapters: number;
+	volumeCount: number;
+	chapterCounts: number[]; // 长度 1 时已按卷数复制填满
+	overwrite: boolean;
+}
+
+export class BookSkillCreateModal extends Modal {
+	constructor(
+		app: App,
+		private flatMode: boolean, // 当前书籍模式（默认选中项）
+		private initPremise: string, // 预填 state.one_line
+		private onSubmit: (input: BookSkillCreateInput) => void | Promise<void>
+	) {
+		super(app);
+	}
+
+	onOpen(): void {
+		this.contentEl.createEl("h3", { text: "创建自动化建书技能" });
+		this.contentEl.createEl("p", {
+			text: "技能文件将保存到当前书籍「案头资料/」：frontmatter 存规模参数、正文存一句话设定。之后运行「按技能全自动写书」——参数齐全即免交互跑完整流水线，缺参会弹窗补填。技能文件也可在聊天窗口用 @ 引用。",
+			cls: "aw-dim",
+		});
+		let fileName = "自动建书";
+		let startAt: StageId = "worldview";
+		let premise = this.initPremise;
+		let mode: "flat" | "volumes" = this.flatMode ? "flat" : "volumes";
+		let flatTotal = 30;
+		let volCount = 3;
+		let countsText = "10";
+		let overwrite = false;
+		let errText = "";
+		const errEl = this.contentEl.createDiv({ cls: "articlewriter-muted" });
+
+		new Setting(this.contentEl).setName("技能文件名").addText((text) => {
+			text.setPlaceholder("案头资料/下的文件名（不含 .md）");
+			text.setValue(fileName).onChange((v) => (fileName = v));
+		});
+		new Setting(this.contentEl).setName("起始节点").addDropdown((drop) => {
+			for (const s of PIPELINE_STAGES) drop.addOption(s.id, s.name);
+			drop.setValue(startAt).onChange((v) => { startAt = v as StageId; });
+		});
+		const premiseSetting = new Setting(this.contentEl).setName("一句话设定（写入正文）");
+		premiseSetting.settingEl.addClass("aw-setting-stretch");
+		premiseSetting.addTextArea((ta) => {
+			ta.setPlaceholder("例：一个能看见别人死期的少年，发现自己每次说出死期都会提前应验");
+			ta.setValue(premise).onChange((v) => (premise = v));
+			ta.inputEl.rows = 6;
+		});
+		new Setting(this.contentEl).setName("规模模式").addDropdown((drop) => {
+			drop.addOption("flat", "平铺（无卷）");
+			drop.addOption("volumes", "分卷");
+			drop.setValue(mode).onChange((v) => { mode = v as "flat" | "volumes"; applyMode(); });
+		});
+		const flatTotalSetting = new Setting(this.contentEl).setName("全书总章数").addText((text) => {
+			text.setValue(String(flatTotal)).onChange((v) => { flatTotal = Number(v.trim()) || 0; });
+		});
+		const volCountSetting = new Setting(this.contentEl).setName("卷数").addText((text) => {
+			text.setValue(String(volCount)).onChange((v) => { volCount = Number(v.trim()) || 0; updateCountsDesc(); });
+		});
+		const countsSetting = new Setting(this.contentEl).setName("各卷章数");
+		countsSetting.addText((text) => {
+			text.setPlaceholder(COUNTS_HINT);
+			text.setValue(countsText).onChange((v) => { countsText = v; updateCountsDesc(); });
+		});
+		const updateCountsDesc = (): void => {
+			const t = computedTotalChapters(volCount, parseCountsText(countsText));
+			countsSetting.setDesc(t != null ? `${COUNTS_HINT}（全书总章数 = ${t}）` : COUNTS_HINT);
+		};
+		const applyMode = (): void => {
+			flatTotalSetting.settingEl.toggleClass("hide", mode !== "flat");
+			volCountSetting.settingEl.toggleClass("hide", mode !== "volumes");
+			countsSetting.settingEl.toggleClass("hide", mode !== "volumes");
+			updateCountsDesc();
+		};
+		applyMode();
+		new Setting(this.contentEl).setName("覆盖已有产物").setDesc("开启：世界观/策划指南/书级大纲即使已有内容也重新生成；关闭：已有即跳过该阶段").addToggle((t) => {
+			t.setValue(overwrite).onChange((v) => (overwrite = v));
+		});
+
+		new Setting(this.contentEl).addButton((btn) =>
+			btn.setButtonText("创建技能文件").setCta().onClick(async () => {
+				const safeName = fileName.replace(/[\\/:*?"<>|]/g, "").trim();
+				const nums = parseCountsText(countsText);
+				if (!safeName) { errText = "技能文件名不能为空"; errEl.setText(errText); return; }
+				if (!premise.trim() && startAt === "worldview") { errText = "起始节点为「生成世界观」时必须填写一句话设定"; errEl.setText(errText); return; }
+				if (mode === "flat") {
+					if (!(Number.isSafeInteger(flatTotal) && flatTotal >= 1)) { errText = "平铺模式：全书总章数须为正整数"; errEl.setText(errText); return; }
+				} else {
+					if (!(Number.isSafeInteger(volCount) && volCount >= 1)) { errText = "分卷模式：卷数须为正整数"; errEl.setText(errText); return; }
+					if (nums.some((n) => !(Number.isSafeInteger(n) && n >= 1))) { errText = "各卷章数须全为正整数"; errEl.setText(errText); return; }
+					if (nums.length !== 1 && nums.length !== volCount) { errText = `各卷章数须为 ${volCount} 个（或单个整数用于所有卷），收到 ${nums.length} 个`; errEl.setText(errText); return; }
+				}
+				await this.onSubmit({
+					fileName: safeName,
+					startAt,
+					premise: premise.trim(),
+					mode,
+					flatTotalChapters: mode === "flat" ? flatTotal : 0,
+					volumeCount: mode === "volumes" ? volCount : 0,
+					chapterCounts: mode === "volumes" ? (nums.length === 1 ? Array.from({ length: volCount }, () => nums[0]) : nums) : [],
+					overwrite,
+				});
+				this.close();
+			})
+		);
 	}
 }
 
@@ -404,6 +634,28 @@ export class VaultFilePickerModal extends SuggestModal<TFile> {
 	onChooseSuggestion(file: TFile): void {
 		this.close();
 		this.onPick(file.path);
+	}
+}
+
+/** 技能文件选择器（引用文档配置框「添加技能」，v0.3.0+）：按基名模糊搜索 SKILLS/ 下的技能（名单由调用方打开弹窗前异步加载），选中即添加为 skill:<基名> */
+export class SkillPickerModal extends SuggestModal<string> {
+	constructor(app: App, private names: string[], private onPick: (name: string) => void, placeholder = "选择技能（SKILLS/*.md，按名称模糊搜索）…") {
+		super(app);
+		this.inputEl.placeholder = placeholder;
+	}
+
+	getSuggestions(query: string): string[] {
+		const q = query.trim().toLowerCase();
+		return this.names.filter((n) => !q || n.toLowerCase().includes(q)).slice(0, 200);
+	}
+
+	renderSuggestion(name: string, el: HTMLElement): void {
+		el.setText(name);
+	}
+
+	onChooseSuggestion(name: string): void {
+		this.close();
+		this.onPick(name);
 	}
 }
 
@@ -965,7 +1217,7 @@ export class ExportPromptsSelectModal extends Modal {
 			const label = row.createEl("label", { cls: "aw-export-prompts-label" });
 			label.setText(feat.title);
 			if (feat.description) {
-				const desc = row.createEl("span", { cls: "aw-export-prompts-desc" });
+				const desc = row.createSpan({ cls: "aw-export-prompts-desc" });
 				desc.setText(feat.description);
 			}
 		}

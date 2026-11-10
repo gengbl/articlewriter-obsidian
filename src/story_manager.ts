@@ -2621,6 +2621,15 @@ private emptyState(storyName: string): StoryState {
 		return { ...doc.parseWorld(text), fullText: doc.stripComments(text).trim() };
 	}
 
+	/** v0.3.0+「生成世界观」（auto-book 流水线首阶段）：全量写书级《世界观.md》（H1 `# <书名> 世界观` + 正文，正文首部 H1 与尾部空白已去，与 setPlanningGuide 同口径）；缺失则创建、存在则覆盖 */
+	async setWorldDoc(storyName: string, bodyText: string): Promise<void> {
+		const state = await this.loadState(storyName);
+		const title = ((state?.title ?? "").trim()) || "未命名小说";
+		let lines = String(bodyText ?? "").replace(/\s+$/, "").trim().split("\n");
+		while (lines.length && /^#\s/.test(lines[0])) lines.shift(); // 剥掉模型自带的 H1，统一补规范 H1
+		await this.writeDoc(`${this.deskDocsPath(storyName)}/世界观.md`, `# ${title} 世界观\n\n${lines.join("\n").trim()}\n`);
+	}
+
 	/** /world set <字段> <值>：世界/类型/规则/势力/地点/历史/力量体系 */
 	async setWorldField(storyName: string, field: string, value: string): Promise<boolean> {
 		const path = `${this.deskDocsPath(storyName)}/世界观.md`; // 书级《世界观》在「案头资料/」
