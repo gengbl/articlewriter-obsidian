@@ -1408,6 +1408,16 @@ private emptyState(storyName: string): StoryState {
 		return { path: prefixed, text: "" };
 	}
 
+	/** v0.3.3+ 书级《时间线》路径（「案头资料/时间线.md」；旧《大事件列表.md》退场后的统一口径，时间线面板与提示词装配共用） */
+	bookTimelinePath(storyName: string): string {
+		return `${this.deskDocsPath(storyName)}/时间线.md`;
+	}
+
+	/** v0.3.3+ 阶段 0 前置：全量写书级《时间线.md》（AI 生成原文原样落盘、尾部补一个换行）；缺失则创建、存在则覆盖 */
+	async setBookTimeline(storyName: string, content: string): Promise<void> {
+		await this.writeDoc(this.bookTimelinePath(storyName), `${String(content ?? "").replace(/\s+$/, "")}\n`);
+	}
+
 	/**
 	 * v0.2.x+ 时间线面板：只读枚举某书**全部**《时间线.md》来源（书级 + 每一卷 + 每一章），自上而下的完整时间轴概览。
 	 * 顺序——有卷模式：书籍级 → 「书稿/」直属未归卷章节(num升序) → 各卷按阅读序、每卷紧随其成员章节(num升序，条目带 volId)；无卷模式：书籍级 → 全部章节(num升序)。
@@ -1415,8 +1425,8 @@ private emptyState(storyName: string): StoryState {
 	 */
 	async readTimelineDocs(storyName: string): Promise<TimelineDocSource[]> {
 		const out: TimelineDocSource[] = [];
-		const base = this.deskDocsPath(storyName); // 书级《时间线》在「案头资料/」
-		out.push({ scope: "book", label: "书籍级", path: `${base}/时间线.md`, text: await this.readDoc(`${base}/时间线.md`) });
+		const base = this.bookTimelinePath(storyName); // 书级《时间线》在「案头资料/」
+		out.push({ scope: "book", label: "书籍级", path: base, text: await this.readDoc(base) });
 		const chLabel = (ch: { num: number; title: string }): string => `章 · 第${ch.num}章 ${ch.title}`.trim();
 		const all = await this.listChapters(storyName); // 阅读序：「书稿/」直属未归卷在前，其后各卷章节依次(num升序)
 		if ((await this.loadState(storyName))?.use_volumes !== true) {
@@ -1439,6 +1449,19 @@ private emptyState(storyName: string): StoryState {
 			}
 		}
 		return out;
+	}
+
+	/**
+	 * v0.3.3+ 合并时间轴与大事件：把某书**三层**《时间线.md》（书级 → 未归卷章节 → 各卷及其章节，readTimelineDocs 顺序）合并为一段提示词用的时间轴文本。
+	 * 条目按 formatTimelineBlock 规范重新序列化（标题行＝时间点＋事件名，字段行 人物/完成/事件/描述/影响/关联），非时间线标题块与非时间点标题块自然丢弃。
+	 * 各文档内部保持原层级与先后次序（父子事件相邻、不被全局排序打散）；无有效条目（文档缺失或全是旧式内容）返回空串——调用方据此判定「本书暂无时间线」。
+	 */
+	async mergedTimelineText(storyName: string): Promise<string> {
+		const blocks: string[] = [];
+		for (const d of await this.readTimelineDocs(storyName)) {
+			for (const e of doc.parseTimelines(d.text)) blocks.push(doc.formatTimelineBlock(e));
+		}
+		return blocks.join("\n").trim();
 	}
 
 	/**
@@ -3419,28 +3442,6 @@ private emptyState(storyName: string): StoryState {
 		const title = ((state?.title ?? "").trim()) || "未命名小说";
 		const body = String(bodyText ?? "").replace(/\s+$/, "");
 		await this.writeDoc(this.planningGuidePath(storyName), `# ${title} 策划指南\n\n${body}\n`);
-	}
-
-	// ---------- v0.2.25+ 大事件列表（书级单文件 案头资料/大事件列表.md；阶段 0 策划方案生成前置文档：缺失时先生成再续生成策划指南，生成后作为【大事件列表】引用块注入阶段 0 提示词） ----------
-
-	eventsListPath(storyName: string): string {
-		return `${this.deskDocsPath(storyName)}/大事件列表.md`; // 书级《大事件列表》在「案头资料/」
-	}
-
-	/** v0.2.25+「大事件列表」：读书级《大事件列表.md》清洗文本（去注释 + 去首部 H1 标题行，与 readPlanningGuide 同口径）；缺失返回空串 */
-	async readEventsList(storyName: string): Promise<string> {
-		const raw = await this.readDoc(this.eventsListPath(storyName));
-		let lines = doc.stripComments(raw.trim()).trim().split("\n");
-		while (lines.length && /^#\s/.test(lines[0])) lines.shift();
-		return lines.join("\n").trim();
-	}
-
-	/** v0.2.25+「大事件列表」：全量写书级《大事件列表.md》（H1 `# <书名> 大事件列表` + 正文，正文尾部空白已去）；缺失则创建、存在则覆盖 */
-	async setEventsList(storyName: string, bodyText: string): Promise<void> {
-		const state = await this.loadState(storyName);
-		const title = ((state?.title ?? "").trim()) || "未命名小说";
-		const body = String(bodyText ?? "").replace(/\s+$/, "");
-		await this.writeDoc(this.eventsListPath(storyName), `# ${title} 大事件列表\n\n${body}\n`);
 	}
 
 	/** 读正文：剥离 AI 用语标红标签 + 去 "# " 标题行（对齐 _read_std_chapter_dir，摘要哈希基于此文本） */

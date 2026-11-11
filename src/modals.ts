@@ -1,5 +1,6 @@
 import { App, Component, MarkdownRenderer, Modal, Notice, SuggestModal, Setting, TFile, TFolder, ToggleComponent } from "obsidian";
 import { PIPELINE_STAGES, type StageId } from "./pipeline"; // v0.3.0+：AutoBookModal 起始节点下拉（pipeline.ts 纯数据、不 import obsidian，无循环依赖）
+import { parseTimelineTime } from "./md_docs"; // v0.3.3+：EventEditModal 时间点校验（md_docs 纯数据模块，无循环依赖）
 
 /** 单行文本输入框；提交回调收到值（空串视为取消）。可选 hint：渲染在标题与输入框之间的说明文字（支持 \n 多行，样式 .aw-prompt-hint）；可选 initial：预填初始值（光标置于末尾） */
 export class TextInputModal extends Modal {
@@ -171,9 +172,36 @@ function computedTotalChapters(volCount: number, nums: number[]): number | null 
 	return null;
 }
 
-/** v0.3.0+ 全自动写书流水线参数弹窗（仅「按技能全自动写书」缺参补填时打开）：起始节点 / 一句话设定 / 规模参数（分卷＝卷数＋各卷章数；平铺＝总章数）/ 覆盖已有产物开关 */
+/** v0.3.1+ 起始/停止节点双下拉（AutoBookModal / BookSkillCreateModal / SkillRangeModal 共用）：
+ *  停止节点下拉多一项「跑到末尾」（映射 undefined＝至流水线末尾）；返回当前值读取器与区间校验（空串＝合法，停止节点不得排在起始节点之前） */
+function addStageRangeSettings(contentEl: HTMLElement, init: { startAt?: StageId; endAt?: StageId }): { startAt: () => StageId; endAt: () => StageId | undefined; error: () => string } {
+	let startAt: StageId = init.startAt ?? "worldview";
+	let endSel: string = init.endAt ?? "end";
+	new Setting(contentEl).setName("起始节点").addDropdown((drop) => {
+		for (const s of PIPELINE_STAGES) drop.addOption(s.id, s.name);
+		drop.setValue(startAt).onChange((v) => { startAt = v as StageId; });
+	});
+	new Setting(contentEl).setName("停止节点").setDesc("所选阶段也会执行；「跑到末尾」＝一直执行到「连续编写正文」").addDropdown((drop) => {
+		for (const s of PIPELINE_STAGES) drop.addOption(s.id, s.name);
+		drop.addOption("end", "跑到末尾");
+		drop.setValue(endSel).onChange((v) => { endSel = v; });
+	});
+	return {
+		startAt: () => startAt,
+		endAt: () => (endSel === "end" ? undefined : endSel as StageId),
+		error: () => {
+			if (endSel === "end") return "";
+			const i = PIPELINE_STAGES.findIndex((s) => s.id === startAt);
+			const j = PIPELINE_STAGES.findIndex((s) => s.id === endSel);
+			return j < i ? "停止节点不能排在起始节点之前" : "";
+		},
+	};
+}
+
+/** v0.3.0+ 全自动写书流水线参数弹窗（仅「按技能全自动写书」缺参补填时打开）：起始/停止节点 / 一句话设定 / 规模参数（分卷＝卷数＋各卷章数；平铺＝总章数）/ 覆盖已有产物开关 */
 export interface AutoBookInput {
 	startAt: StageId;
+	endAt?: StageId; // v0.3.1+ 停止节点（含）；缺省＝跑到流水线末尾
 	premise: string;
 	volumeCount: number; // 分卷模式：计划卷数（≥1）
 	chapterCounts: number[]; // 分卷模式：各卷目标章数（长度＝volumeCount；单值输入时已复制填满）
@@ -187,7 +215,7 @@ export class AutoBookModal extends Modal {
 	constructor(
 		app: App,
 		private flatMode: boolean,
-		private init: { startAt?: StageId; premise?: string; volumeCount?: number; chapterCounts?: number[]; flatTotalChapters?: number },
+		private init: { startAt?: StageId; endAt?: StageId; premise?: string; volumeCount?: number; chapterCounts?: number[]; flatTotalChapters?: number },
 		private onSubmit: (input: AutoBookInput) => void | Promise<void>,
 		private onCancel?: () => void
 	) {
@@ -196,8 +224,7 @@ export class AutoBookModal extends Modal {
 
 	onOpen(): void {
 		this.contentEl.createEl("h3", { text: "按技能全自动写书 — 补填参数" });
-		this.contentEl.createEl("p", { text: "从所选节点起依次执行：生成世界观 → 生成策划指南 → 生成书级大纲 → 建卷并生成卷大纲 → 生成章节大纲 → 连续编写正文。缺少前置文件会在开始前检查并拒绝启动。", cls: "aw-dim" });
-		let startAt: StageId = this.init.startAt ?? "worldview";
+		this.contentEl.createEl("p", { text: "从起始节点起依次执行：生成世界观 → 生成策划指南 → 生成书级大纲 → 建卷并生成卷大纲 → 生成章节大纲 → 连续编写正文；可用停止节点提前收尾。缺少前置文件会在开始前检查并拒绝启动。", cls: "aw-dim" });
 		let premise = this.init.premise ?? "";
 		let volCount = this.init.volumeCount ?? 3;
 		let countsText = (this.init.chapterCounts ?? []).join(", ") || "10";
@@ -206,10 +233,7 @@ export class AutoBookModal extends Modal {
 		let errText = "";
 		const errEl = this.contentEl.createDiv({ cls: "articlewriter-muted" });
 
-		new Setting(this.contentEl).setName("起始节点").addDropdown((drop) => {
-			for (const s of PIPELINE_STAGES) drop.addOption(s.id, s.name);
-			drop.setValue(startAt).onChange((v) => { startAt = v as StageId; });
-		});
+		const range = addStageRangeSettings(this.contentEl, this.init);
 		// 一句话设定：整行宽度都给输入框（styles.css .aw-setting-stretch），长设定不必在小框里横向滚动；6 行高，可纵向拖拽
 		const premiseSetting = new Setting(this.contentEl).setName("一句话设定");
 		premiseSetting.settingEl.addClass("aw-setting-stretch");
@@ -244,7 +268,9 @@ export class AutoBookModal extends Modal {
 		new Setting(this.contentEl).addButton((btn) =>
 			btn.setButtonText("开始").setCta().onClick(async () => {
 				const nums = parseCountsText(countsText);
-				if (!premise.trim() && startAt === "worldview") { errText = "起始节点为「生成世界观」时必须填写一句话设定"; errEl.setText(errText); return; }
+				const rangeErr = range.error();
+				if (rangeErr) { errText = rangeErr; errEl.setText(errText); return; }
+				if (!premise.trim() && range.startAt() === "worldview") { errText = "起始节点为「生成世界观」时必须填写一句话设定"; errEl.setText(errText); return; }
 				if (this.flatMode) {
 					if (!(Number.isSafeInteger(flatTotal) && flatTotal >= 1)) { errText = "总章数须为正整数"; errEl.setText(errText); return; }
 				} else {
@@ -255,7 +281,8 @@ export class AutoBookModal extends Modal {
 				this.submitted = true;
 				this.close();
 				await this.onSubmit({
-					startAt,
+					startAt: range.startAt(),
+					endAt: range.endAt(),
 					premise: premise.trim(),
 					volumeCount: volCount,
 					chapterCounts: this.flatMode ? [] : (nums.length === 1 ? Array.from({ length: volCount }, () => nums[0]) : nums),
@@ -277,6 +304,7 @@ export class AutoBookModal extends Modal {
 export interface BookSkillCreateInput {
 	fileName: string; // 技能文件名（不含 .md，已去非法字符）
 	startAt: StageId;
+	endAt?: StageId; // v0.3.1+ 停止节点（含）；「跑到末尾」＝不写 end 字段
 	premise: string; // 正文＝一句话设定
 	mode: "flat" | "volumes";
 	flatTotalChapters: number;
@@ -302,7 +330,6 @@ export class BookSkillCreateModal extends Modal {
 			cls: "aw-dim",
 		});
 		let fileName = "自动建书";
-		let startAt: StageId = "worldview";
 		let premise = this.initPremise;
 		let mode: "flat" | "volumes" = this.flatMode ? "flat" : "volumes";
 		let flatTotal = 30;
@@ -316,10 +343,7 @@ export class BookSkillCreateModal extends Modal {
 			text.setPlaceholder("案头资料/下的文件名（不含 .md）");
 			text.setValue(fileName).onChange((v) => (fileName = v));
 		});
-		new Setting(this.contentEl).setName("起始节点").addDropdown((drop) => {
-			for (const s of PIPELINE_STAGES) drop.addOption(s.id, s.name);
-			drop.setValue(startAt).onChange((v) => { startAt = v as StageId; });
-		});
+		const range = addStageRangeSettings(this.contentEl, {});
 		const premiseSetting = new Setting(this.contentEl).setName("一句话设定（写入正文）");
 		premiseSetting.settingEl.addClass("aw-setting-stretch");
 		premiseSetting.addTextArea((ta) => {
@@ -362,8 +386,10 @@ export class BookSkillCreateModal extends Modal {
 			btn.setButtonText("创建技能文件").setCta().onClick(async () => {
 				const safeName = fileName.replace(/[\\/:*?"<>|]/g, "").trim();
 				const nums = parseCountsText(countsText);
+				const rangeErr = range.error();
+				if (rangeErr) { errText = rangeErr; errEl.setText(errText); return; }
 				if (!safeName) { errText = "技能文件名不能为空"; errEl.setText(errText); return; }
-				if (!premise.trim() && startAt === "worldview") { errText = "起始节点为「生成世界观」时必须填写一句话设定"; errEl.setText(errText); return; }
+				if (!premise.trim() && range.startAt() === "worldview") { errText = "起始节点为「生成世界观」时必须填写一句话设定"; errEl.setText(errText); return; }
 				if (mode === "flat") {
 					if (!(Number.isSafeInteger(flatTotal) && flatTotal >= 1)) { errText = "平铺模式：全书总章数须为正整数"; errEl.setText(errText); return; }
 				} else {
@@ -373,7 +399,8 @@ export class BookSkillCreateModal extends Modal {
 				}
 				await this.onSubmit({
 					fileName: safeName,
-					startAt,
+					startAt: range.startAt(),
+					endAt: range.endAt(),
 					premise: premise.trim(),
 					mode,
 					flatTotalChapters: mode === "flat" ? flatTotal : 0,
@@ -384,6 +411,40 @@ export class BookSkillCreateModal extends Modal {
 				this.close();
 			})
 		);
+	}
+}
+
+/** v0.3.1+ 技能运行范围确认弹窗（「按技能全自动写书」参数齐全时弹出）：预填技能文件里的 start/end 节点，
+ *  允许临时调整起始/停止节点后再开跑；确认即回调 (startAt, endAt)，取消＝不执行 */
+export class SkillRangeModal extends Modal {
+	constructor(
+		app: App,
+		private skillName: string,
+		private init: { startAt?: StageId; endAt?: StageId },
+		private onSubmit: (startAt: StageId, endAt?: StageId) => void | Promise<void>
+	) {
+		super(app);
+	}
+
+	onOpen(): void {
+		this.contentEl.createEl("h3", { text: `按技能全自动写书 — ${this.skillName}` });
+		this.contentEl.createEl("p", { text: "技能参数已齐全。确认或调整执行范围后开始；停止节点也会执行，「跑到末尾」＝一直执行到「连续编写正文」。", cls: "aw-dim" });
+		let errText = "";
+		const errEl = this.contentEl.createDiv({ cls: "articlewriter-muted" });
+
+		const range = addStageRangeSettings(this.contentEl, this.init);
+
+		const btn = new Setting(this.contentEl).addButton((b) => b.setButtonText("取消").onClick(() => this.close()));
+		btn.addButton((b) => b.setButtonText("开始").setCta().onClick(async () => {
+			const rangeErr = range.error();
+			if (rangeErr) { errText = rangeErr; errEl.setText(errText); return; }
+			this.close();
+			await this.onSubmit(range.startAt(), range.endAt());
+		}));
+	}
+
+	onClose(): void {
+		this.contentEl.empty();
 	}
 }
 
@@ -1275,5 +1336,147 @@ export class MarkdownViewerModal extends Modal {
 		this.contentEl.empty();
 		this.mdComp?.unload();
 		this.mdComp = undefined;
+	}
+}
+
+// ---------- 时间线面板：事件编辑弹窗（v0.3.1+，v0.3.3+ 合并大事件后随时间线面板使用）----------
+
+/** 事件编辑弹窗提交结果（各字段已去首尾空白；人物/关联已按顿号、逗号、分号拆分为非空数组；title 允许空串＝旧「纯时间点」标题保持无名）。
+ * 时间点非法（parseTimelineTime 解析失败）时弹窗内联报错、不放行提交——合并后时间线节点的时间点随弹窗一起编辑，新建节点必须有合法时间点 */
+export interface EventEditResult {
+	timeText: string; // 时间点原始文本（如 120 / 120-06 / 120-06-15；面板侧经 parseTimelineTime 复解析收窄）
+	title: string; // 事件名（标题行时间点之后的文本；空串＝无名）
+	chars: string[]; // - 人物：
+	done: boolean; // 完成状态（勾选＝已完成，写回 `- 完成：是`）
+	event: string; // - 事件：（多行保留换行）
+	desc: string; // - 描述：（多行保留换行；面板仅悬停 Tip 显示）——弹窗不再提供编辑控件，提交时原样透传 initialValues.desc（编辑保留既有描述、新增为空）
+	impact: string; // - 影响：
+	related: string[]; // - 关联：（其它事件名）
+}
+
+/**
+ * 下拉多选控件（EventEditModal「人物」「关联」两字段共用，交互仿 AddCharacterModal 关系行下拉）：
+ * 已选项各占一行（值 + ✕ 移除）；行尾「＋」下拉只列出尚未选中的候选（选后自动重渲染、候选里去重）；
+ * 无可再选项时显示 emptyHint（候选本来就空、或已全部选完）。initial 中的旧值即使不在候选里也保留为已选行（不丢历史数据）。
+ * 返回当前选中项 getter（保持加入顺序、去重）。
+ */
+const makeMultiSelect = (
+	parent: HTMLElement,
+	placeholder: string,
+	emptyHint: string,
+	options: readonly string[],
+	initial: readonly string[]
+): (() => string[]) => {
+	const host = parent.createDiv({ cls: "aw-ev-msel" });
+	const selected: string[] = [...new Set(initial)];
+	const render = (): void => {
+		host.empty();
+		for (const v of selected) {
+			const row = host.createDiv({ cls: "aw-ev-msel-row" });
+			row.createSpan({ text: v, cls: "aw-ev-msel-val" });
+			row.createEl("button", { text: "✕", cls: "aw-addchar-relrm", attr: { "aria-label": `移除 ${v}` } }).addEventListener("click", () => {
+				selected.splice(selected.indexOf(v), 1);
+				render();
+			});
+		}
+		const remaining = options.filter((o) => !selected.includes(o));
+		if (!remaining.length) {
+			host.createDiv({ text: emptyHint, cls: "aw-dim aw-ev-msel-empty" });
+			return;
+		}
+		const drop = host.createEl("select", { cls: "dropdown aw-addchar-sel" });
+		drop.createEl("option", { text: placeholder, value: "" });
+		for (const o of remaining) drop.createEl("option", { text: o, value: o });
+		drop.addEventListener("change", () => {
+			if (!drop.value) return;
+			selected.push(drop.value);
+			render();
+		});
+	};
+	render();
+	return () => [...selected];
+};
+
+/**
+ * 时间线事件编辑弹窗（时间线面板「新增/编辑事件」共用）：事件名（可空） + 人物（下拉多选） + 已完成（勾选，完成状态） + 事件（多行） + 影响（多行） + 关联（下拉多选，其它事件名）。描述不在弹窗编辑：提交时原样透传 initialValues.desc（编辑保留既有 `- 描述：`、新增为空）。
+ * initialValues 预填（编辑=节点现值；新增=空）；charOptions/relatedOptions 为人物/关联下拉候选（面板注入：人物来自三层《人物.md》，关联为既有事件名、已排除自身）。
+ * 事件名允许留空（＝旧「纯时间点」标题保持无名）；关闭弹窗即放弃（onCancel）。
+ */
+export class EventEditModal extends Modal {
+	private submitted = false;
+
+	constructor(
+		app: App,
+		private title: string,
+		private initialValues: Partial<EventEditResult> | undefined,
+		private charOptions: readonly string[],
+		private relatedOptions: readonly string[],
+		private onSubmit: (result: EventEditResult) => void | Promise<void>,
+		private onCancel?: () => void
+	) {
+		super(app);
+	}
+
+	onOpen(): void {
+		this.contentEl.addClass("aw-form-compact"); // 多字段表单统一紧凑行距（同 MultiFieldModal）
+		this.contentEl.createEl("h3", { text: this.title });
+		let timeText = "";
+		let timeErr: HTMLElement | null = null;
+		let title = "";
+		let done = false;
+		let event = "";
+		let impact = "";
+		new Setting(this.contentEl).setName("时间点").addText((t) => {
+			t.setPlaceholder("如 120 / 120-06 / 120-06-15");
+			t.setValue(this.initialValues?.timeText ?? "");
+			t.onChange((v) => (timeText = v.trim()));
+		});
+		timeErr = this.contentEl.createDiv({ cls: "aw-ev-msel-empty" });
+		timeErr.hide();
+		new Setting(this.contentEl).setName("事件名").addText((t) => {
+			t.setPlaceholder("事件名（可留空；写在时间点之后）");
+			if (this.initialValues?.title) t.setValue(this.initialValues.title);
+			t.onChange((v) => (title = v.trim()));
+		});
+		this.contentEl.createDiv({ text: "人物", cls: "aw-ev-msel-label" }); // 下拉多选（候选＝该书三层《人物.md》角色名）
+		const getChars = makeMultiSelect(this.contentEl, "＋ 选择人物…", this.charOptions.length ? "（候选人物已全部选用）" : "（没有人物候选：先在《人物.md》中登记人物）", this.charOptions, this.initialValues?.chars ?? []);
+		new Setting(this.contentEl).setName("已完成").setDesc("勾选后条目显示「✓ 已完成」徽章，文档写回 `- 完成：是`（取消勾选则不写该行）").addToggle((tg) => {
+			tg.setValue(this.initialValues?.done ?? false);
+			tg.onChange((v) => (done = v));
+		});
+		new Setting(this.contentEl).setName("事件").addTextArea((ta) => { // 多行：事件简述（面板内联显示）
+			ta.setPlaceholder("事件经过简述");
+			ta.setValue(this.initialValues?.event ?? "");
+			ta.inputEl.classList.add("aw-prompt-textarea", "aw-ta-rows"); // 宽度复用既有多行输入类；aw-ta-rows 去掉全局 240px min-height，让 rows 生效
+			ta.inputEl.rows = 5; // 事件＝5 行高
+			ta.onChange((v) => (event = v));
+		});
+		new Setting(this.contentEl).setName("影响").addTextArea((ta) => {
+			ta.setPlaceholder("事件影响 / 后果 / 代价");
+			ta.setValue(this.initialValues?.impact ?? "");
+			ta.inputEl.classList.add("aw-prompt-textarea", "aw-ta-rows"); // 同上：宽度复用、去 min-height
+			ta.inputEl.rows = 2; // 影响＝2 行高
+			ta.onChange((v) => (impact = v));
+		});
+		this.contentEl.createDiv({ text: "关联", cls: "aw-ev-msel-label" }); // 下拉多选（候选＝面板既有事件名，已排除自身）
+		const getRelated = makeMultiSelect(this.contentEl, "＋ 选择关联事件…", this.relatedOptions.length ? "（既有事件已全部选用）" : "（暂无其它既有事件可关联）", this.relatedOptions, this.initialValues?.related ?? []);
+		const btns = new Setting(this.contentEl).addButton((btn) =>
+			btn.setButtonText("保存").setCta().onClick(async () => {
+				if (!parseTimelineTime(timeText)) { // 时间点必填且格式必须可解析（年 / 年-月 / 年-月-日）：非法则内联报错、不关闭弹窗
+					timeErr.setText(`时间点无效：「${timeText || "（空）"}」无法解析，请用 120 / 120-06 / 120-06-15 这类写法`);
+					timeErr.show();
+					return;
+				}
+				this.submitted = true;
+				this.close();
+				await this.onSubmit({ timeText, title, chars: getChars(), done, event: event.trim(), desc: (this.initialValues?.desc ?? "").trim(), impact: impact.trim(), related: getRelated() }); // desc＝透传原值（弹窗无编辑控件），防编辑时抹掉既有描述
+			})
+		);
+		btns.addButton((btn) => btn.setButtonText("取消").onClick(() => this.close())); // onClose 未提交时触发 onCancel
+	}
+
+	override onClose(): void {
+		this.contentEl.empty();
+		if (!this.submitted && this.onCancel) this.onCancel();
 	}
 }

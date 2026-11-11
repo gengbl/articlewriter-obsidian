@@ -10,6 +10,7 @@ import { PIPELINE_STAGES, type StageId } from "./pipeline";
 
 export interface BookSkillSpec {
 	startAt?: StageId; // 起始节点（缺省 worldview）
+	endAt?: StageId; // 停止节点（含；缺省＝跑到流水线末尾）。排在 startAt 之前＝非法区间，runBookSkill 拒绝启动
 	mode?: "flat" | "volumes"; // 规模模式（缺省跟随书籍 state.use_volumes）
 	flatTotalChapters?: number; // 平铺：全书总章数
 	volumeCount?: number; // 分卷：卷数
@@ -75,6 +76,8 @@ export function parseBookSkill(raw: string): BookSkillSpec | null {
 	const spec: BookSkillSpec = { body: clean.slice(m[0].length).trim() };
 	const start = o.start ? unquote(o.start) : undefined;
 	if (start && STAGE_IDS.includes(start)) spec.startAt = start as StageId;
+	const end = o.end ? unquote(o.end) : undefined;
+	if (end && STAGE_IDS.includes(end)) spec.endAt = end as StageId;
 	const mode = o.mode ? unquote(o.mode) : undefined;
 	if (mode === "flat" || mode === "volumes") spec.mode = mode;
 	spec.flatTotalChapters = posInt(o.chapters);
@@ -104,6 +107,7 @@ export function skillMissing(spec: Pick<BookSkillSpec, "premise" | "body" | "fla
 export function formatBookSkill(spec: Omit<BookSkillSpec, "body"> & { body?: string }): string {
 	const lines = ["auto_book: true"];
 	if (spec.startAt) lines.push(`start: ${spec.startAt}`);
+	if (spec.endAt) lines.push(`end: ${spec.endAt}`);
 	if (spec.mode) lines.push(`mode: ${spec.mode}`);
 	if (spec.flatTotalChapters != null) lines.push(`chapters: ${String(spec.flatTotalChapters)}`);
 	if (spec.volumeCount != null) lines.push(`volumes: ${String(spec.volumeCount)}`);

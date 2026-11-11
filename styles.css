@@ -1284,6 +1284,138 @@
 	color: var(--text-normal);
 }
 
+/* 事件名（标题行时间点之后的文本；旧「纯时间点」标题无名则不渲染） */
+.aw-tl-name {
+	display: inline-block;
+	margin-right: 6px;
+	font-size: 0.95em;
+	font-weight: 600;
+	color: var(--text-normal);
+}
+
+/* 「✓ 已完成」徽章（仅 done=true 渲染；与拖动徽章同款框、绿色弱一档） */
+.aw-tl-done {
+	display: inline-block;
+	margin-right: 6px;
+	padding: 0 4px;
+	font-size: 0.78em;
+	color: var(--color-green, #22c55e);
+	border: 1px solid var(--color-green, #22c55e);
+	border-radius: 4px;
+}
+
+/* 影响行（- 影响： 字段）：比事件正文弱化一档 */
+.aw-tl-impact {
+	margin-top: 2px;
+	font-size: 0.85em;
+	white-space: pre-wrap;
+	word-break: break-word;
+	color: var(--text-muted);
+}
+
+/* 关联行（- 关联： 字段）：标签＋可点 chip（点击＝编辑器打开来源文档＋面板条目高亮闪烁）；未命中同名条目＝置灰虚线、不可点 */
+.aw-tl-rels {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 4px;
+	margin-top: 4px;
+}
+
+.aw-tl-rels-lbl {
+	font-size: 0.78em;
+}
+
+.aw-tl-rel {
+	display: inline-block;
+	padding: 0 6px;
+	font-size: 0.8em;
+	border: 1px solid var(--interactive-accent);
+	border-radius: 3px;
+	color: var(--interactive-accent);
+	cursor: pointer;
+}
+
+.aw-tl-rel:hover {
+	background: var(--interactive-accent);
+	color: var(--text-on-accent);
+}
+
+.aw-tl-rel.is-tl-dead {
+	border-style: dashed;
+	border-color: var(--background-modifier-border);
+	color: var(--text-faint);
+	cursor: default;
+}
+
+.aw-tl-rel.is-tl-dead:hover {
+	background: transparent;
+	color: var(--text-faint);
+}
+
+/* 条目动作组（＋子事件/✎ 编辑/✓○ 完成切换/🗑 删除）：条目行是 inline-flow 布局，绝对定位挂右上角（条目本身 position:relative）；默认隐藏、悬停显现 */
+.aw-tl-acts {
+	position: absolute;
+	top: 2px;
+	right: 6px;
+	display: inline-flex;
+	gap: 2px;
+	visibility: hidden;
+}
+
+.aw-tl-item:hover .aw-tl-acts {
+	visibility: visible;
+}
+
+.aw-tl-acts button {
+	width: 24px;
+	height: 22px;
+	padding: 0;
+	font-size: 0.85em;
+	line-height: 1;
+	background: transparent;
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 4px;
+	box-shadow: none;
+}
+
+.aw-tl-acts button:hover {
+	background: var(--background-modifier-hover);
+	border-color: var(--interactive-hover);
+}
+
+.aw-tl-acts button.is-tl-danger:hover {
+	color: var(--color-red);
+	border-color: var(--color-red);
+}
+
+/* 完成状态快速切换按钮（✓/○）：已完成态常显绿色（悬停同框）；未完成 ○ 保持默认灰、悬停绿 */
+.aw-tl-acts button.is-tl-done-on {
+	color: var(--color-green, #22c55e);
+	border-color: var(--color-green, #22c55e);
+}
+
+.aw-tl-acts button.is-tl-done-on:hover {
+	background: var(--background-modifier-hover);
+	border-color: var(--color-green, #22c55e);
+}
+
+.aw-tl-acts button.is-tl-done-off:hover {
+	color: var(--color-green, #22c55e);
+	border-color: var(--color-green, #22c55e);
+}
+
+/* 关联 chip 点击定位：面板目标条目行高亮闪烁 1.2s（与 focusNode removeClass 计时同步） */
+.aw-tl-item.is-tl-target {
+	animation: aw-tl-flash 1.2s ease;
+}
+
+@keyframes aw-tl-flash {
+	0% { box-shadow: 0 0 0 2px var(--interactive-accent); }
+	60% { box-shadow: 0 0 0 6px var(--interactive-accent); }
+	100% { box-shadow: 0 0 0 0 transparent; }
+}
+
 /* 多字段表单统一紧凑行距（MultiFieldModal「新增/编辑人物」等 + AddCharacterModal「添加人物」）：
    Obsidian .setting-item 默认 padding 0.75em≈12px 且带行间分隔线、input 高度约 32px，十几行叠加就非常占纵向空间；
    这里把 padding/分隔线/标签行高/控件高度一起压，并限定作用域不外溢到设置页与其它 Modal */
@@ -1399,6 +1531,37 @@
 	margin-top: 12px;
 }
 
+/* 事件编辑弹窗（EventEditModal）人物/关联下拉多选：已选各占一行（值 + ✕ 移除），行尾下拉补选；下拉复用 .aw-addchar-sel/.aw-addchar-relrm */
+.aw-ev-msel-label {
+	margin: 10px 0 2px;
+	font-weight: 600;
+	color: var(--text-normal);
+}
+
+.aw-ev-msel {
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+	margin: 4px 0 6px;
+}
+
+.aw-ev-msel-row {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+}
+
+.aw-ev-msel-val {
+	flex: 1 1 auto;
+	min-width: 0;
+	overflow-wrap: anywhere; /* 长事件标题换行不撑破弹窗 */
+}
+
+.aw-ev-msel-empty {
+	font-size: 0.85em;
+	margin: 2px 0;
+}
+
 /* ===== 静态样式集中化（原 JS 内联 style 赋值迁移至此）===== */
 
 /* 动作列表滚动区 / 行光标态 */
@@ -1474,6 +1637,12 @@
 .aw-prompt-textarea {
 	width: 100%;
 	min-height: 240px;
+}
+
+/* EventEditModal 三个多行输入框：高度改由 rows 属性决定（事件 5 行、描述/影响 2 行）；
+   全局 240px min-height 会盖过小 rows 值，追加本类只去掉 min-height、宽度沿用 aw-prompt-textarea */
+.aw-prompt-textarea.aw-ta-rows {
+	min-height: 0;
 }
 
 /* 只读文本面板滚动区 / 加粗行 / 底部提示间距 */

@@ -15,6 +15,13 @@ void test("stagesFrom returns the tail sequence from the given start node (inclu
 	assert.deepEqual(stagesFrom("bodies").map((s) => s.id), ["bodies"]);
 });
 
+void test("stagesFrom honours stopAt (inclusive); stop before start yields empty", () => {
+	assert.deepEqual(stagesFrom("worldview", "planning").map((s) => s.id), ["worldview", "planning"]);
+	assert.deepEqual(stagesFrom("book-outline", "book-outline").map((s) => s.id), ["book-outline"]);
+	assert.deepEqual(stagesFrom("volumes", "bodies").map((s) => s.id), ["volumes", "chapter-outlines", "bodies"]);
+	assert.deepEqual(stagesFrom("planning", "worldview"), []); // 停止节点排在起始节点之前＝空序列
+});
+
 void test("requirementsFor filters when=modes and returns only the start stage's requirements", () => {
 	// 分卷模式：volumes 需求含卷声明检查、不含平铺拆书级大纲检查
 	const volReqs = requirementsFor("volumes", false).map((r) => r.id);
