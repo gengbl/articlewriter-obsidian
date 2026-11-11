@@ -18,7 +18,7 @@
 | 写字台（StatusView：书籍列表 / 树节点 / 右键菜单 / 新建文档流程） | [l2-writing-desk.md](./l2-writing-desk.md) | [l3-status-view.md](./l3-status-view.md)、[l3-view-rendering.md](./l3-view-rendering.md) |
 | LLM 对话面板 | [l2-llm-chat-panel.md](./l2-llm-chat-panel.md) | [l3-llm-chat-view.md](./l3-llm-chat-view.md)、[l3-view-rendering.md](./l3-view-rendering.md) |
 | 人物关系面板 | [l2-relationship-panel.md](./l2-relationship-panel.md) | [l3-relationship-view.md](./l3-relationship-view.md)、[l3-md-docs-parsing.md](./l3-md-docs-parsing.md) |
-| 时间线面板 | [l2-timeline-panel.md](./l2-timeline-panel.md) | [l3-timeline-view.md](./l3-timeline-view.md)、[l3-md-docs-parsing.md](./l3-md-docs-parsing.md) |
+| 时间线面板（v0.3.3+ 合并时间轴与大事件：书/卷/章三层《时间线.md》合并时间轴、可编辑事件流〔增删改＋完成切换＋关联 chip 跳转＋拖动改时〕，三层合并块作【时间线】注入提示词；旧事件树面板与《大事件列表.md》退场） | [l2-timeline-panel.md](./l2-timeline-panel.md) | [l3-timeline-view.md](./l3-timeline-view.md)、[l3-md-docs-parsing.md](./l3-md-docs-parsing.md)（时间线解析与块级写函数；共用设施 outline_tree/panel_canvas 见前者） |
 | LLM 写作命令（含「生成过程」面板） | [l2-llm-writing-commands.md](./l2-llm-writing-commands.md) | [l3-writing-commands-impl.md](./l3-writing-commands-impl.md)、[l3-prompt-assembly.md](./l3-prompt-assembly.md)、[l3-summary-pipeline.md](./l3-summary-pipeline.md)、[l3-main-ts-flow.md](./l3-main-ts-flow.md) |
 | 全自动写书流水线（v0.3.0+：一句话→整套书六阶段编排、任意节点起跑、缺前置文件拒绝启动、/worldview-generate 新命令；唯一入口＝自动化建书技能——/book-skill-create 生成案头资料/ 技能文件、/auto-book-from-skill 免交互跑流水线；独立 /auto-book 命令已移除） | [l2-pipeline.md](./l2-pipeline.md) | [l3-pipeline.md](./l3-pipeline.md)、[l3-writing-commands-impl.md](./l3-writing-commands-impl.md) |
 | 写作指南（三层生命周期） | [l2-writing-guide.md](./l2-writing-guide.md) | [l3-guide-lifecycle.md](./l3-guide-lifecycle.md) |

@@ -10,7 +10,7 @@
 
 | 阶段 | 语义 | 运行时调用点（main.ts） |
 | --- | --- | --- |
-| 0 | 策划指南 + 大事件列表 | 4986（ensurePlanningGuide 自动生成）、5015（cmdPlanningGuideWorldview）、4881（ensureEventsList 前置自动生成，挂两入口）、export 6533 / 6548 |
+| 0 | 策划指南 + 时间线（v0.3.3+，旧大事件列表退场） | 5153（ensurePlanningGuide 自动生成）、5182（cmdPlanningGuideWorldview）、5036（ensureTimeline 前置自动生成，挂两入口）、export 7004 / 7019 |
 | 1 | 书级/卷级大纲 | 4703 / 4746 / 4824（cmdGenerateVolOutline 含继续/补全＋无卷兜底批量）、5300 / 5326 / 5358（cmdGenerateBookOutline 含续写/extend）、5513（cmdBookOutlineToVolumes 批量）、export 6565 / 6596 / 6625 |
 | 2 | 卷大纲→章节（AI 拆分兜底） | 4424（cmdVolumeOutlineToChapters）、export 6628 |
 | 3 | 正文写作＋辅助任务 | 101 / 125（摘要 onload 回调）、1658（cmdAnalyzeCast）、2702（剧本转换）、2840（cmdLlmTest 连通测试）、4199（cmdWrite）、5596（cmdWriteConsecutive）、5712（cmdContinueWriting）、5855（cmdRewriteChapter）、5961（cmdPolishText）、6030（cmdDeaiClean）、6103（cmdFixChapterRefs）、6774（cmdTypoCheck）、6850（cmdReviewChapter） |
@@ -22,7 +22,7 @@
 两条组装路径：
 
 - **正文路径**（阶段 3 写作命令）：`writerSystemPrompt`（main.ts:3151，async）= `assembleSystemPrompt(buildStoryTypeSystemPrompt({storyType, guideText, title, charNames, bannedGuideText, bannedData, skillsBlock}) || undefined, guides.guideCleanText, baseSp, setup.identityBoost)`——customSp 为按书籍题材/指南/禁用词动态生成的【编写类型】system；guides 来自 `loadWriterGuides`（main.ts:3132，内部 `assembleGuideTexts` 直装三层指南原文，不再经《写作指南汇总.md》）；**禁用词块仅注入正文写作路径**（`includeBanned` 默认 true，/review 等非正文路径传 false 退出——不加载禁用词、不注入禁用词块与指南禁用词类目）；【创作规范】用剥离禁用词类目的 `guideCleanText`（该内容已由禁用词块完整承载，防双份注入）；**v0.2.27+ 技能块**：`skillsBlock = await loadSkillsBlock(3)`（main.ts:2377，读阶段 3 ref_docs 的 `skill:` 条目→SKILLS/<name>.md→【技能 · name】join，无条目＝空串不注入）——`buildStoryTypeSystemPrompt` 内块序＝【编写类型】→【禁用词】→技能块→【强制要求】尾（prompts.ts:503/514 钩子）；正文上下文装配走 `skipSkills:true`，技能只经此单次注入（剧本转换调用点不传＝不注入，见 [agents/l3-skills.md](./agents/l3-skills.md)）。
-- **大纲/策划/AI 拆分路径**（阶段 0/1/2）：直接 `assembleSystemPrompt(undefined, "", <BASE_SP>, setup.identityBoost)`，BASE_SP 为常量——阶段 0 复用 `BOOK_OUTLINE_GEN_SYSTEM_PROMPT`（prompts.ts:1045），大事件列表前置生成用 `EVENTS_LIST_SYSTEM_PROMPT`（prompts.ts:1247），**世界观生成用 `WORLDVIEW_GEN_SYSTEM_PROMPT`（prompts.ts:1262，v0.2.27+）**，阶段 1/2 用 `VOL_OUTLINE_GEN_SYSTEM_PROMPT`（prompts.ts:941）。调用点：4703 / 4746 / 4824（卷大纲＋兜底批量）、5001 / 5033（策划指南）、4892（大事件列表）、5204（世界观）、4465（AI 拆分）、5513（book-outline-to-volumes 批量）。
+- **大纲/策划/AI 拆分路径**（阶段 0/1/2）：直接 `assembleSystemPrompt(undefined, "", <BASE_SP>, setup.identityBoost)`，BASE_SP 为常量——阶段 0 复用 `BOOK_OUTLINE_GEN_SYSTEM_PROMPT`（prompts.ts:1045），时间线前置生成用 `TIMELINE_GEN_SYSTEM_PROMPT`（prompts.ts:1247，v0.3.3+，替代旧 `EVENTS_LIST_SYSTEM_PROMPT`），**世界观生成用 `WORLDVIEW_GEN_SYSTEM_PROMPT`（prompts.ts:1262，v0.2.27+）**，阶段 1/2 用 `VOL_OUTLINE_GEN_SYSTEM_PROMPT`（prompts.ts:941）。调用点：4703 / 4746 / 4824（卷大纲＋兜底批量）、5168 / 5200（策划指南）、5047（时间线）、5204（世界观）、4465（AI 拆分）、5513（book-outline-to-volumes 批量）。
 
 **identity_boost 注入范围**（v0.2.24+）：全部创作阶段（0/1/2/3 写作命令）统一注入；机械/辅助任务有意不注入（输出协议严格、有漂移风险）：/typo、/analyze-cast、章节/卷摘要延迟生成、autoCleanAi 去AI味。
 
@@ -30,11 +30,11 @@
 
 | 项 | 内容 |
 | --- | --- |
-| 入口 | `ensurePlanningGuide`（main.ts:4986，软依赖——失败返回 ""，后续大纲生成照常进行、只是无【策划规范】块）；`cmdPlanningGuideWorldview`（5015，worldOnly 输入、恒覆盖已有文档）；export 预览 6548。**v0.2.25+ 卷数量弹窗**：两入口生成前共用 `promptPlanningGuideVolumeCount`（main.ts:4908，分卷模式才弹、预填现有卷数、取消＝不按卷组织软处理；平铺模式不弹）。**v0.2.25+ 大事件列表前置**：两入口在卷数量弹窗前先过 `ensureEventsList`（4881，见下行） |
-| 大事件列表（前置自动生成） | 书级《案头资料/大事件列表.md》（`eventsListPath`/`readEventsList`/`setEventsList`，story_manager.ts）。`ensureEventsList`（main.ts:4881）：仅当阶段 0 清单含 `events_list` 时生效（与配置框同口径）；文档已存在＝直接跳过；缺失＝用阶段 0 LLM 配置 + `EVENTS_LIST_SYSTEM_PROMPT`（prompts.ts:1247）+ `buildEventsListPrompt`（1254）经 `streamWithEmptyRetry` 流式生成并落盘，再继续生成策划指南。**生成上下文固定**＝书籍信息＋【创作规范】（锁定）＋张力规则＋世界观（`buildEventsListInput` 4866，不受 ref_docs 过滤——生成上下文与注入清单分离，清单只控制结果是否注入）。失败/中止软处理：Notice 后主流程继续，本次不带【大事件列表】块。export 预览 6533（非独立命令，恒可导出调试） |
-| system | `assembleSystemPrompt(undefined, "", BOOK_OUTLINE_GEN_SYSTEM_PROMPT, setup.identityBoost)`（5001 / 5033） |
-| user prompt | 首轮 `buildPlanningGuidePrompt`（prompts.ts:1205）；截断续写 `buildPlanningGuideContinuePrompt`（1224，缺失节驱动）。**v0.2.25+ 按卷组织**：`PlanningGuideInput.volumeCount`>0 时两 prompt 均追加 `planningGuideVolumeReq` 要求行（十节结构不变，「二、大事件序列」「三、升级路径」「五、反转与伏笔总规划」等节内按卷分 H3 小标题「第X卷 · 卷名」，卷名取自【卷列表 · 阅读序】）；未输入/取消或平铺模式不加该条。**v0.2.25+ 大事件列表门控**：contextDocs 含【大事件列表】块时，首轮 prompt 措辞改为「尤其是世界观与【大事件列表】」并追加「『二、大事件序列』须以【大事件列表】为基础展开、不得与其冲突」；无块则维持原措辞 |
-| 上下文块 | v0.2.24+ prompt_files 装配改造：`planningGuideContextParts` 已退役——调用方 `buildPlanningGuideInput`（main.ts:4844）经 `assemblePromptFiles` 装配 `contextDocs` 传入（【书籍信息】→【张力规则 ·…】→【世界观】→【大事件列表】→【全书大纲】→【卷列表 · 阅读序】，worldOnly 跳过大纲/卷列表条目）；**目标文档本身永不注入**（重新生成不读旧内容、specs 不含《策划指南.md》）；**v0.2.25+ ref_docs 门控**：条目按阶段 0 引用文档配置框过滤（`phaseRefDocKeys(0)`，默认清单＝书籍信息/张力规则/世界观/大事件列表；全书大纲/卷列表默认不注入、可在下拉手动添加）；【大事件列表】块缺失时由 `ensureEventsList` 先生成落盘再装配（见上行）；**新增锁定【创作规范】注入**（`loadWriterGuides` 三层指南、header 常量 `HDR_GUIDE_PLANNING`＝【创作规范 · …生成策划指南时必须遵循…】，策划指南此前无创作规范块——现与其余阶段同口径锁定、不受 ref_docs 开关影响） |
+| 入口 | `ensurePlanningGuide`（main.ts:5153，软依赖——失败返回 ""，后续大纲生成照常进行、只是无【策划规范】块）；`cmdPlanningGuideWorldview`（5182，worldOnly 输入、恒覆盖已有文档）；export 预览 7019。**v0.2.25+ 卷数量弹窗**：两入口生成前共用 `promptPlanningGuideVolumeCount`（main.ts:5074，分卷模式才弹、预填现有卷数、取消＝不按卷组织软处理；平铺模式不弹）。**v0.3.3+ 时间线前置**（替代旧「大事件列表前置」）：两入口在卷数量弹窗前先过 `ensureTimeline`（5036，见下行） |
+| 时间线（前置自动生成，v0.3.3+ 替代旧大事件列表行） | 目标文档＝书级《案头资料/时间线.md》（`StoryManager.bookTimelinePath`/`setBookTimeline`，story_manager.ts:1412/1417；旧《案头资料/大事件列表.md》与其 `eventsListPath`/`readEventsList`/`setEventsList` 全部退场——不迁移、留档 vault，插件无读写路径）。`ensureTimeline`（main.ts:5036）：仅当阶段 0 清单含 `timeline` 时生效（与配置框同口径）；书级文档已有**有效时间点条目**＝直接跳过（旧式纯时间点标题也算有效）；缺失/无有效条目＝用阶段 0 LLM 配置 + `TIMELINE_GEN_SYSTEM_PROMPT`（prompts.ts:1247）+ `buildTimelineGenPrompt`（1254）经 `streamWithEmptyRetry` 流式生成并落盘（`setBookTimeline` 原文原样、尾部补换行），再继续生成策划指南。**生成上下文固定**＝书籍信息＋【创作规范】（锁定）＋张力规则＋世界观（`buildTimelineInput` 5021，不受 ref_docs 过滤——生成上下文与注入清单分离，清单只控制结果是否注入）。失败/中止软处理：Notice「时间线未生成成功，继续生成策划指南（本次不带【时间线】）」后主流程继续。**输出格式＝标题块**：首行 `# 时间线`，每事件一个标题块、标题行＝「时间点 事件名」（`##` 大事件／`###` 小事件／`####` 旁支，时间点取纯数字纪年／年-月／年-月-日、事件名 4–12 字），其下＝**面板事件格式字段行**：`- 人物：` / `- 事件：` / `- 描述：` / `- 影响：` 每条必备（取值同行；`- 描述：` 写比事件更细的原因/经过/细节，仅悬停 Tip 显示）、`- 关联：` 只引用本文档内事件名（无关联可整行省略）、**禁止 `- 完成：` 行**（面板勾选产物）（`TIMELINE_GEN_SYSTEM_PROMPT` 同步该口径，示例含两块事件演示关联引用）——同一格式即时间线面板（`md_docs.parseTimelines`）展示与编辑的口径，旧「纯时间点」标题仍可解析兼容。**格式硬约束＋校验重试**：落盘前用 `md_docs.timelineGenFormatOk`（1099）校验——须≥1 个「时间点 事件名」标题块且零编号清单行/裸事件行，不合格＝带【格式修正要求】注记（内联独立串，非 `formatRetryNote`）重生成一次，仍不合格则原样落盘＋Notice「时间线格式仍不合规（已按原样保存，可在时间线面板手动修正）」软提示。export 预览 7004（非独立命令，恒可导出调试）。**注入侧**：策划指南的【时间线】块不再是单文件，由 `StoryManager.mergedTimelineText`（1459）把三层《时间线.md》（书级→未归卷章节→各卷及其章节，`readTimelineDocs` 顺序）逐条 `formatTimelineBlock` 重序列化合并（保留各文档内部层级与先后次序、不做全局时间排序），无有效条目＝空串＝空块不注入。 |
+| system | `assembleSystemPrompt(undefined, "", BOOK_OUTLINE_GEN_SYSTEM_PROMPT, setup.identityBoost)`（5168 / 5200） |
+| user prompt | 首轮 `buildPlanningGuidePrompt`（prompts.ts:1205）；截断续写 `buildPlanningGuideContinuePrompt`（1224，缺失节驱动）。**v0.2.25+ 按卷组织**：`PlanningGuideInput.volumeCount`>0 时两 prompt 均追加 `planningGuideVolumeReq` 要求行（十节结构不变，「二、大事件序列」「三、升级路径」「五、反转与伏笔总规划」等节内按卷分 H3 小标题「第X卷 · 卷名」，卷名取自【卷列表 · 阅读序】）；未输入/取消或平铺模式不加该条。**v0.3.3+ 时间线门控**（替代旧「大事件列表门控」）：contextDocs 含【时间线】块时，首轮 prompt 措辞改为「尤其是世界观与【时间线】」并追加「『二、大事件序列』须以【时间线】的时间点与事件为基础展开、不得与其冲突」；无块则维持原措辞 |
+| 上下文块 | v0.2.24+ prompt_files 装配改造：`planningGuideContextParts` 已退役——调用方 `buildPlanningGuideInput`（main.ts:4999）经 `assemblePromptFiles` 装配 `contextDocs` 传入（【书籍信息】→【张力规则 ·…】→【世界观】→【时间线】→【全书大纲】→【卷列表 · 阅读序】，worldOnly 跳过大纲/卷列表条目）；**目标文档本身永不注入**（重新生成不读旧内容、specs 不含《策划指南.md》）；**v0.2.25+ ref_docs 门控**：条目按阶段 0 引用文档配置框过滤（`phaseRefDocKeys(0)`，默认清单＝书籍信息/张力规则/世界观/时间线（v0.3.3+，原「大事件列表」退场）；全书大纲/卷列表默认不注入、可在下拉手动添加）；【时间线】块由三层《时间线.md》合并时间轴装配（`mergedTimelineText`，书级无有效条目时先由 `ensureTimeline` 生成落盘再装配，见上行；v0.3.3+ 替代旧单文件【大事件列表】块）；**新增锁定【创作规范】注入**（`loadWriterGuides` 三层指南、header 常量 `HDR_GUIDE_PLANNING`＝【创作规范 · …生成策划指南时必须遵循…】，策划指南此前无创作规范块——现与其余阶段同口径锁定、不受 ref_docs 开关影响） |
 | 张力规则 | 【创作规范】锁定块后、world 块前，文案「生成策划指南时必须遵循」（调用方 specs 注入，`HDR_TENSION_PLANNING`）——v0.2.25+ 起策划指南已有【创作规范】锁定块（`HDR_GUIDE_PLANNING`），张力规则挂其后 |
 | 输出处理 | `runPlanningGuideStreamed`（main.ts:4926）：十节清单 `PLANNING_GUIDE_SECTIONS`（prompts.ts:1176）为唯一事实源；停止条件＝十节齐全且 finish_reason≠length / 模型精确回复「已完成」（仅十节已齐全时采信、防 token 边界 length 误报，该段不并入，main.ts:4970）/ 用户中止 / 尚缺节时连续 3 轮节数无推进（4939，提示调大 max_tokens）；空结果每轮重试 ×3；最多续写 10 轮 |
 
@@ -134,12 +134,12 @@
 | 7 | 错别字检测 (/typo)（6808） | 预算 max(cfg, len×2+1024)，3 次重试，parseTypoScan |
 | 8 | 审阅当前章 (/review)（6824） | |
 
-**大纲域 7 节**（v0.2.25+ 新增大事件列表节、v0.2.27+ 新增世界观节）：
+**大纲域 7 节**（v0.2.25+ 新增大事件列表节、v0.3.3+ 改名时间线节、v0.2.27+ 新增世界观节）：
 
 | # | 标题（trySec 行号） | 备注 |
 | --- | --- | --- |
 | 9 | 生成世界观 (/worldview-generate)（6852） | v0.2.27+；premise 按盘上 `state.one_line`（空则占位符注明）；system = `WORLDVIEW_GEN_SYSTEM_PROMPT` 组装（见 §3） |
-| 10 | 生成大事件列表（策划指南前置自动生成）（6872） | 非独立命令——`ensureEventsList` 前置自动生成的调试预览；system = `EVENTS_LIST_SYSTEM_PROMPT` 组装 |
+| 10 | 生成时间线（策划指南前置自动生成）（7004） | 非独立命令——`ensureTimeline` 前置自动生成的调试预览；system = `TIMELINE_GEN_SYSTEM_PROMPT` 组装（v0.3.3+ 替代旧「生成大事件列表」节） |
 | 11 | 生成策划指南（仅世界观） (/planning-guide-worldview)（6887） | system 复用 BOOK_OUTLINE_GEN_SYSTEM_PROMPT |
 | 12 | 生成书籍大纲 (/book-outline-generate)（6904） | 有卷模式预览按 `vols.length \|\| defaultCount` 作卷数基准（v0.2.x+ 有卷弹窗问卷数量，见 §4.2） |
 | 13 | 自动生成卷大纲 (/vol-outline-generate)（6935） | 只给 step 1（卷设计）＋ step 2（第1章，占位） |

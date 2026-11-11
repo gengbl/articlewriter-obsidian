@@ -14,6 +14,7 @@ void test("parseBookSkill reads all fields and body; invalid fields are ignored 
 	const spec = parseBookSkill(`---
 auto_book: true
 start: book-outline
+end: volumes
 mode: volumes
 chapters: 30
 volumes: 3
@@ -26,6 +27,7 @@ premise: "少年能看见死期"
 `);
 	assert.ok(spec);
 	assert.equal(spec.startAt, "book-outline");
+	assert.equal(spec.endAt, "volumes");
 	assert.equal(spec.mode, "volumes");
 	assert.equal(spec.flatTotalChapters, 30);
 	assert.equal(spec.volumeCount, 3);
@@ -34,9 +36,10 @@ premise: "少年能看见死期"
 	assert.equal(spec.premise, "少年能看见死期");
 	assert.equal(spec.body, "正文一句话设定\n第二行");
 	// 非法字段各自忽略、不整体报废
-	const loose = parseBookSkill("---\nauto_book: true\nstart: nope\nmode: weird\nchapters: -5\nvolumes: abc\nchapter_counts: 10, x\noverwrite: yes\n---\n正文");
+	const loose = parseBookSkill("---\nauto_book: true\nstart: nope\nend: nope\nmode: weird\nchapters: -5\nvolumes: abc\nchapter_counts: 10, x\noverwrite: yes\n---\n正文");
 	assert.ok(loose);
 	assert.equal(loose.startAt, undefined);
+	assert.equal(loose.endAt, undefined);
 	assert.equal(loose.mode, undefined);
 	assert.equal(loose.flatTotalChapters, undefined);
 	assert.equal(loose.volumeCount, undefined);
@@ -68,12 +71,13 @@ void test("skillMissing gates the no-dialogue run by mode and start node", () =>
 
 void test("formatBookSkill round-trips through parseBookSkill", () => {
 	const text = formatBookSkill({
-		startAt: "worldview", mode: "flat", flatTotalChapters: 10,
+		startAt: "worldview", endAt: "book-outline", mode: "flat", flatTotalChapters: 10,
 		overwrite: false, body: "一个能看见别人死期的少年：他说出的死期都会提前应验",
 	});
 	const spec = parseBookSkill(text);
 	assert.ok(spec);
 	assert.equal(spec.startAt, "worldview");
+	assert.equal(spec.endAt, "book-outline");
 	assert.equal(spec.mode, "flat");
 	assert.equal(spec.flatTotalChapters, 10);
 	assert.equal(spec.overwrite, false);

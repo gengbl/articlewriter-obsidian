@@ -83,10 +83,13 @@ export function stageById(id: StageId): StageDef {
 	return s;
 }
 
-/** 从 startAt 起（含）到末尾的阶段序列；默认从 worldview 起跑完整流水线 */
-export function stagesFrom(startAt: StageId): StageDef[] {
+/** 从 startAt 起（含）到 stopAt（含）的阶段序列；stopAt 省略＝到末尾、startAt 默认 worldview 起跑完整流水线；
+ *  stopAt 排在 startAt 之前＝空序列（调用方按「无可执行阶段」拒绝启动） */
+export function stagesFrom(startAt: StageId, stopAt?: StageId): StageDef[] {
 	const i = PIPELINE_STAGES.findIndex((s) => s.id === startAt);
-	return i < 0 ? [] : PIPELINE_STAGES.slice(i);
+	if (i < 0) return [];
+	const end = stopAt ? PIPELINE_STAGES.findIndex((s) => s.id === stopAt) : PIPELINE_STAGES.length - 1;
+	return end < i ? [] : PIPELINE_STAGES.slice(i, end + 1);
 }
 
 /** 起始阶段的前置需求（预检按模式过滤 when 后逐项检查） */

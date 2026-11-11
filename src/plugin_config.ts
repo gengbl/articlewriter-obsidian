@@ -35,7 +35,7 @@ export const REF_DOC_LABELS: Record<string, string> = {
 	book_info: "小说基本信息（来自 故事状态.md：书名/题材/风格）",
 	tension_rules: "张力规则（张力规则.md）",
 	worldview: "世界观（世界观.md）",
-	events_list: "大事件列表（大事件列表.md）",
+	timeline: "时间线（书/卷/章三层《时间线.md》合并时间轴）",
 	book_outline: "全书大纲（大纲.md）",
 	vol_list: "卷列表（卷列表.md）",
 	planning_guide: "策划指南（策划指南.md）",
@@ -53,24 +53,24 @@ export const REF_DOC_LABELS: Record<string, string> = {
 /** 各阶段（0–3）可注入的内置引用文档目录（设置页下拉候选、按阶段裁剪）。 */
 export const PHASE_REF_DOC_CATALOGS: Record<string, string>[] = [
 	// 阶段 0 策划方案生成（/planning-guide-worldview；自动生成策划指南前置链路）
-	{ book_info: REF_DOC_LABELS.book_info, tension_rules: REF_DOC_LABELS.tension_rules, worldview: REF_DOC_LABELS.worldview, events_list: REF_DOC_LABELS.events_list, book_outline: REF_DOC_LABELS.book_outline, vol_list: REF_DOC_LABELS.vol_list },
+	{ book_info: REF_DOC_LABELS.book_info, tension_rules: REF_DOC_LABELS.tension_rules, worldview: REF_DOC_LABELS.worldview, timeline: REF_DOC_LABELS.timeline, book_outline: REF_DOC_LABELS.book_outline, vol_list: REF_DOC_LABELS.vol_list },
 	// 阶段 1 书籍大纲和卷级大纲生成（/book-outline-generate /vol-outline-generate /book-outline-to-volumes）
 	{
-		book_info: REF_DOC_LABELS.book_info, tension_rules: REF_DOC_LABELS.tension_rules, worldview: REF_DOC_LABELS.worldview,
+		book_info: REF_DOC_LABELS.book_info, tension_rules: REF_DOC_LABELS.tension_rules, worldview: REF_DOC_LABELS.worldview, timeline: REF_DOC_LABELS.timeline,
 		planning_guide: REF_DOC_LABELS.planning_guide, outline_source: REF_DOC_LABELS.outline_source, book_outline: REF_DOC_LABELS.book_outline,
 		book_relations: REF_DOC_LABELS.book_relations, vol_relations: REF_DOC_LABELS.vol_relations, vol_list: REF_DOC_LABELS.vol_list,
 		prev_vol_outline: REF_DOC_LABELS.prev_vol_outline,
 	},
 	// 阶段 2 文章大纲生成（/vol-outline-to-chapters）
 	{
-		book_info: REF_DOC_LABELS.book_info, tension_rules: REF_DOC_LABELS.tension_rules, worldview: REF_DOC_LABELS.worldview,
+		book_info: REF_DOC_LABELS.book_info, tension_rules: REF_DOC_LABELS.tension_rules, worldview: REF_DOC_LABELS.worldview, timeline: REF_DOC_LABELS.timeline,
 		planning_guide: REF_DOC_LABELS.planning_guide, outline_source: REF_DOC_LABELS.outline_source, book_outline: REF_DOC_LABELS.book_outline,
 		book_relations: REF_DOC_LABELS.book_relations, vol_relations: REF_DOC_LABELS.vol_relations, vol_list: REF_DOC_LABELS.vol_list,
 		prev_vol_outline: REF_DOC_LABELS.prev_vol_outline,
 	},
 	// 阶段 3 编写文章（/write /continue /rewrite /review /chat）
 	{
-		worldview: REF_DOC_LABELS.worldview, book_relations: REF_DOC_LABELS.book_relations,
+		worldview: REF_DOC_LABELS.worldview, timeline: REF_DOC_LABELS.timeline, book_relations: REF_DOC_LABELS.book_relations,
 		vol_outline: REF_DOC_LABELS.vol_outline, vol_relations: REF_DOC_LABELS.vol_relations,
 		chapter_outline: REF_DOC_LABELS.chapter_outline, characters: REF_DOC_LABELS.characters,
 		scenes: REF_DOC_LABELS.scenes, chapter_relations: REF_DOC_LABELS.chapter_relations,
@@ -79,7 +79,7 @@ export const PHASE_REF_DOC_CATALOGS: Record<string, string>[] = [
 
 /** 各阶段（0–3）引用文档默认清单（初始化配置框；用户改动后以保存值为准）。 */
 export const PHASE_REF_DOC_DEFAULTS: string[][] = [
-	["book_info", "tension_rules", "worldview", "events_list"], // 阶段 0 默认含大事件列表（缺失时自动生成后再继续策划指南；v0.2.25+ 问题③）
+	["book_info", "tension_rules", "worldview", "timeline"], // 阶段 0 默认含时间线（书级《时间线.md》无有效条目时自动生成后再继续策划指南；v0.3.3+ 替代旧大事件列表）
 	["book_info", "tension_rules", "worldview", "planning_guide"], // 阶段 1 默认只注入前四项；大纲来源/全书大纲/关系/卷列表/前卷大纲保留在下拉目录、可手动添加
 	["book_info", "tension_rules", "worldview", "planning_guide", "outline_source", "book_outline", "vol_list", "prev_vol_outline"], // 阶段 2 默认八项；书级/本卷人物关系保留在下拉目录、可手动添加
 	["worldview", "book_relations", "vol_outline", "vol_relations", "chapter_outline", "characters", "scenes", "chapter_relations"],
