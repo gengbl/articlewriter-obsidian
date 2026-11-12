@@ -1,9 +1,9 @@
-// 移植自 Python 版 story_types.py：禁用词清单解析（运行时唯一来源＝插件数据目录 BANNED_WORDS.md，
+// 移植自 Python 版 story_types.py：禁用词清单解析（事实源＝<work_dir>/SKILLS/网文高频禁用词清单.md，v0.3.6+ Skill 化；
 // 由 parseBannedWordsMd 解析为 BannedWordsData）、否定对比/重复强调句式简化、
-// AI 常用词检测与标红、写作指南分类解析合并。
+// AI 常用词检测与标红。
 // 纯函数层，不接触 Vault / LLM。（正则不用 lookbehind 断言——iOS Safari <16.4 不支持、会直接抛 SyntaxError；前置否定改用「(?:^|[^X])」前缀字符替代，替换规则中经 $N 回补该字符）
 
-// ===== 禁用词数据（运行时唯一来源＝插件数据目录 BANNED_WORDS.md；内置词仅在文件缺失时作播种内容参考）=====
+// ===== 禁用词数据（事实源＝SKILLS 技能文件；解析与检测在此，提示词注入走技能块、不再有专用注入函数——v0.3.6+ 已删 buildBannedWordsBlock/buildMergedBannedBlock）=====
 
 /** 变体正则条目：re=匹配正则（禁用 lookbehind 断言——iOS Safari <16.4 不支持），word=展示词（高亮/报告用） */
 export interface BannedPattern {
@@ -23,7 +23,7 @@ const BANNED_WORD_LINE_RE = /^-\s*「([^」]+)」\s*[:：]\s*(.+?)\s*$/; // 词�
 const BANNED_PATTERN_LINE_RE = /^-\s*`([^`]+)`\s*(?:→|->)\s*(.+?)\s*$/; // 变体正则条目：- `正则源` → 展示词
 
 /**
- * 解析 BANNED_WORDS.md 内容为 BannedWordsData。
+ * 解析禁用词清单 Markdown（现读 SKILLS/网文高频禁用词清单.md，旧 BANNED_WORDS.md 同格式）内容为 BannedWordsData。
  * 格式：`## 组名` 标题 + `- 「词」：说明` 条目；固定标题 `## 变体正则` 下为 `` - `正则源` → 展示词 `` 条目。
  * 空行/注释行/不符合格式的行忽略；无效正则按行跳过（console.warn），不影响其他条目。
  */
@@ -65,28 +65,6 @@ const Y = "\u4e5f"; // 也
 export const YE_MEI = Y + "\u6ca1"; // 也没
 export const YE_MEIYOU = Y + "\u6ca1\u6709"; // 也没有
 export const YE_BU_SHI = Y + "\u4e0d\u662f"; // 「也」+「不」+「是」（三段式否定中间段）
-
-/** 生成禁用词提示块（注入网文类型模板）；数据为空（无词且无变体）时返回空串 */
-export function buildBannedWordsBlock(data: BannedWordsData): string {
-	const totalWords = Object.values(data.words).reduce((s, g) => s + g.length, 0);
-	if (!totalWords && !data.patterns.length) return "";
-	const lines = ["【网文高频禁用词（必须遵守）】", "以下词汇/句式属于高频AI腔，生成正文时**禁止使用**："];
-	const shown = new Set<string>(); // 组内已列出的精确词——变体表中再出现同一字符串即跳过（纯展示层去重，不影响检测）
-	for (const [group, words] of Object.entries(data.words)) {
-		lines.push(`\n${group}：`);
-		lines.push(words.map(([w]) => `「${w}」`).join("、"));
-		for (const [w] of words) shown.add(w);
-	}
-	const variants = data.patterns.map((p) => p.word).filter((w, i, arr) => !shown.has(w) && arr.indexOf(w) === i);
-	if (variants.length) {
-		lines.push("\n\n同时警惕以下AI腔变体（出现同样不合格）：");
-		lines.push(variants.map((w) => `「${w}」`).join("、"));
-	}
-	lines.push(
-		"\n要求：如出现以上任一词汇/句式或其变体，即为不合格；用具体动作、细节或大白话替代。"
-	);
-	return lines.join("\n");
-}
 
 // ===== 否定对比句式简化 =====
 // 不是X，是Y → 是Y；不是X，而是Y → 是Y；不是X，也没Y，而是Z → 是Z
@@ -308,203 +286,6 @@ export function markAiWordsHtml(text: string, data: BannedWordsData): string {
 export function stripAiWordMarks(text: string): string {
 	if (!text) return text;
 	return text.split(AI_WORD_MARK_OPEN).join("").split(AI_WORD_MARK_CLOSE).join("");
-}
-
-// ===== 写作指南分类（多层指南按分类分开保存、生成时去重合并）=====
-// 分类块格式（写在指南文件中，人类可编辑，程序解析时剥离）：
-//     <!-- 写作指南分类:禁用词 -->
-//     ...内容...
-//     <!-- /写作指南分类 -->
-// 未包在任何分类块里的内容归入"通用"。
-export const GUIDE_CATEGORY_NAMES = ["禁用词", "故事风格", "个人特色"] as const;
-
-const CAT_BLOCK_SOURCE = "<!--\\s*写作指南分类\\s*[:：]\\s*([^>]+?)\\s*-->(.*?)<!--\\s*/?\\s*写作指南分类\\s*-->";
-const CAT_TYPE_BLOCK_RE = () => /<!--\s*编写类型\s*[:：].*?<!--\s*\/\s*编写类型\s*-->/gs;
-const HTML_COMMENT_RE = () => /<!--[\s\S]*?-->/g; // 必须跨行——汇总文件里 commentOutEmptySections 产出多行注释，单行正则会让 <!-- --> 残行泄漏进正文、round-trip 不幂等
-const BANNED_TOKEN_RE = () => /[「`]([^」`]+)[」`]/g; // 闭合类必须含 CJK 直角引号 」——曾误写为 »(U+00BB)，致对代码内置块（「」书写）提取 0 token、buildMergedBannedBlock 纯列表行过滤全程失效
-
-/**
- * v0.2.x+ 指南原文直注入清洗（提示词文件组装路径用）：整块剥离「禁用词」分类块（含标记与内容——
- * 禁用词内容由禁用词块 buildMergedBannedBlock 单独承载，防双份）与「编写类型」块（由【编写类型】块承载），
- * 再剥离其余分类标记行（保留块内内容）与全部 HTML 注释。口径对齐 extractGuideCategories 的剔除规则，
- * 但不做跨层合并去重——三层指南作为独立块按优先级顺序注入，由组装器做块级去重。
- * 注意：必须在组装器 stripComments 之前跑（本函数自带注释剥离），条目应设 stripComments:false。
- */
-export function stripGuideCategoryBlock(text: string): string {
-	if (!text) return "";
-	let t = text.replace(CAT_TYPE_BLOCK_RE(), "");
-	const re = new RegExp(CAT_BLOCK_SOURCE, "gs");
-	t = t.replace(re, (whole: string, name: string) => ((name || "").trim() === "禁用词" ? "" : whole));
-	t = t.replace(/<!--\s*\/?\s*写作指南分类\s*[^>]*-->/g, "");
-	return t.replace(HTML_COMMENT_RE(), "").trim();
-}
-
-/**
- * 按分类块拆分写作指南，返回 {通用, 禁用词, 故事风格, 个人特色} 的文本。
- * 多个同名分类块内容会拼接；未包裹内容归入"通用"。
- * 编写类型区块（<!-- 编写类型:xxx -->）从分类内容中剔除，只在原始文本中供
- * getStoryTypeGuide 提取，避免与【编写类型】块重复注入。
- * 其余 HTML 注释（人类备注/文档说明）一并剥离，不进入提示词。
- */
-export function extractGuideCategories(text: string): Record<string, string> {
-	const keys = ["通用", ...GUIDE_CATEGORY_NAMES];
-	const buckets: Record<string, string[]> = {};
-	for (const k of keys) buckets[k] = [];
-	if (text) {
-		let t = text.replace(CAT_TYPE_BLOCK_RE(), "");
-		const re = new RegExp(CAT_BLOCK_SOURCE, "gs");
-		re.lastIndex = 0;
-		let pos = 0;
-		let m: RegExpExecArray | null;
-		while ((m = re.exec(t)) !== null) {
-			buckets["通用"].push(t.slice(pos, m.index));
-			const name = (m[1] || "").trim();
-			if (name in buckets) buckets[name].push(m[2]);
-			else buckets["通用"].push(m[0]);
-			pos = m.index + m[0].length;
-		}
-		buckets["通用"].push(t.slice(pos));
-	}
-	const result: Record<string, string> = {};
-	for (const k of keys) {
-		result[k] = buckets[k].join("\n").trim().replace(HTML_COMMENT_RE(), "").trim();
-	}
-	return result;
-}
-
-/** 指南块：level=起始标题级别（0=首个标题前的前言），title=标题文本（去 # 号后 trim），lines=块内全部原始行 */
-interface GuideBlock {
-	level: number;
-	title: string;
-	lines: string[];
-}
-
-/**
- * 把指南文本拆成块：遇到「级别 ≤ 当前块级别」的标题开新块，更深的子标题留在父块内；
- * 首个标题之前的内容归入前言块 (level 0, title "")。代码围栏（``` / ~~~）内的 # 行不当标题。
- */
-function splitGuideBlocks(text: string): GuideBlock[] {
-	const blocks: GuideBlock[] = [];
-	let cur: GuideBlock | null = null;
-	let fence = false;
-	for (const line of String(text || "").split("\n")) {
-		const t = line.trim();
-		if (/^(`{3,}|~{3,})/.test(t)) fence = !fence; // 围栏开关行本身作为普通内容行
-		const m = fence ? null : /^(#{1,6})(?:\s|$)/.exec(t);
-		if (m && (!cur || m[1].length <= cur.level)) {
-			cur = { level: m[1].length, title: t.slice(m[1].length).trim(), lines: [line] };
-			blocks.push(cur);
-		} else if (cur) {
-			cur.lines.push(line);
-		} else {
-			cur = { level: 0, title: "", lines: [line] };
-			blocks.push(cur);
-		}
-	}
-	return blocks;
-}
-
-/**
- * 合并多层写作指南（layers 顺序即优先级：故事层 > 用户层 > 系统层）。
- * - 通用 / 禁用词：块级分组合并——按「标题级别 + 标题文本」把各层同名小节归为一节，
- *   节内按优先级依次拼接各行、逐行去重；每类别独立去重集，避免跨类别同名标题误吞
- *   （曾致用户层禁用词骨架标题吞掉系统层通用同名标题、正文失去小节结构）；
- *   节序按优先级首次出现排列。禁用词的词级去重在 buildMergedBannedBlock 中再完成。
- * - 故事风格 / 个人特色：高优先级层有内容则采用，跳过其余层（避免风格冲突与重复）
- * - 「作者身份」小节（标题含此四字）在通用类内置顶：各层小节按优先级首次出现排列，身份块只在
- *   系统层存在时会排到全部书籍/用户层小节之后（曾致其落到【创作规范】中段、用户以为未注入提示词），
- *   按原意图（作者强化信息位于创作规范最前方、每次生成前先生效）把该块抬到通用类最前。
- */
-export function mergeGuideCategories(layers: string[]): Record<string, string> {
-	const extracted = layers.map((l) => extractGuideCategories(l));
-	const merged: Record<string, string> = { 通用: "", "故事风格": "", "个人特色": "", 禁用词: "" };
-	for (const cat of ["通用", "禁用词"] as const) {
-		const seen = new Set<string>();
-		const slots: GuideBlock[] = [];
-		const slotIndex = new Map<string, number>();
-		for (const cats of extracted) {
-			for (const block of splitGuideBlocks(cats[cat] || "")) {
-				const key = `${block.level}\u0000${block.title}`;
-				let idx = slotIndex.get(key);
-				if (idx === undefined) {
-					idx = slots.length;
-					slotIndex.set(key, idx);
-					slots.push({ level: block.level, title: block.title, lines: [] });
-				}
-				for (const line of block.lines) {
-					const k = line.trim();
-					if (!k || seen.has(k)) continue;
-					seen.add(k);
-					slots[idx].lines.push(line);
-				}
-			}
-		}
-		const out: string[] = [];
-		// 「作者身份」块置顶（保持多个同名块相对顺序）：它通常只在系统层存在，按首现排列会落到最后
-		const idIdx: number[] = [];
-		for (let i = 0; i < slots.length; i++) if (slots[i].title.includes("作者身份")) idIdx.push(i);
-		for (let k = idIdx.length - 1; k >= 0; k--) slots.unshift(slots.splice(idIdx[k], 1)[0]);
-		for (const s of slots) out.push(...s.lines);
-		merged[cat] = out.join("\n").trim();
-	}
-	for (const cats of extracted) {
-		for (const name of ["故事风格", "个人特色"]) {
-			if (!merged[name] && (cats[name] || "").trim()) merged[name] = cats[name].trim();
-		}
-	}
-	return merged;
-}
-
-// 禁用词提取：兼容「词」与 `词` 两种书写
-function extractBannedTokens(text: string): string[] {
-	const tokens: string[] = [];
-	const seen = new Set<string>();
-	const re = BANNED_TOKEN_RE();
-	re.lastIndex = 0;
-	let m: RegExpExecArray | null;
-	while ((m = re.exec(text || "")) !== null) {
-		const w = m[1].trim();
-		if (w && !seen.has(w)) {
-			seen.add(w);
-			tokens.push(w);
-		}
-	}
-	return tokens;
-}
-
-const CN_CHAR_RE = () => /[\u4e00-\u9fff]/g;
-const countCnChars = (s: string): number => (s.match(CN_CHAR_RE()) || []).length;
-
-/**
- * 生成唯一的禁用词提示块：BANNED_WORDS.md 清单（buildBannedWordsBlock）+ 各层指南
- * "禁用词"分类中的补充内容；指南中与清单完全重复的纯词列表行、以及与清单
- * 同题的标题行（如「## 十、网文高频禁用词清单…」，含书籍级空骨架的同名标题）跳过（防重复），
- * 保留说明文字（即使其中提到清单已有的词）与清单没有的补充词。
- */
-export function buildMergedBannedBlock(guideBannedText: string, data: BannedWordsData): string {
-	const codeBlock = buildBannedWordsBlock(data);
-	const guide = (guideBannedText || "").trim();
-	if (!guide) return codeBlock;
-	const codeTokens = new Set(extractBannedTokens(codeBlock));
-	const keepLines: string[] = [];
-	for (const rawLine of guide.split("\n")) {
-		const stripped = rawLine.trim();
-		if (!stripped) continue;
-		// 与清单同题的标题行 → 结构标题而非补充规则 → 跳过（否则会在【指南补充】里再出现一个近同名段）
-		if (/^#{1,6}\s/.test(stripped) && stripped.includes("网文高频禁用词")) continue;
-		const lineTokens = extractBannedTokens(stripped);
-		if (lineTokens.length >= 2 && lineTokens.every((t) => codeTokens.has(t))) {
-			// 纯列表行（去掉词后几乎无其他汉字）→ 跳过；说明性句子（含汉字较多）→ 保留
-			const tokenCn = lineTokens.reduce((s, t) => s + countCnChars(t), 0);
-			const totalCn = countCnChars(stripped);
-			if (totalCn && tokenCn / totalCn >= 0.5) continue;
-		}
-		keepLines.push(stripped);
-	}
-	const parts: string[] = [];
-	if (codeBlock) parts.push(codeBlock);
-	if (keepLines.length) parts.push("【指南补充：去AI腔规则】\n" + keepLines.join("\n"));
-	return parts.join("\n\n");
 }
 
 

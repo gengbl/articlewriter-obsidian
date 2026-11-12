@@ -10,7 +10,6 @@ import {
 	AiHit,
 	AiSentence,
 	BannedWordsData,
-	buildMergedBannedBlock,
 	findAiSentences,
 	findAiWordHits,
 	sentenceBoundsInLine,
@@ -260,23 +259,6 @@ export function stripOutlineMarkers(text: string): string {
 	return t.replace(/\s+/g, " ").trim();
 }
 
-// ---------- 字数配置（对应 writer.py _word_range） ----------
-
-const WORD_RANGE_RE = /<!--\s*字数配置\s*[:：]\s*(\d+)\s*[-~～至到]\s*(\d+)\s*-->/;
-
-/** 从写作指南文本中提取 [min,max]，未找到时默认 [4000,5000]；按传入顺序取第一个命中 */
-export function wordRangeFromGuides(...guides: Array<string | undefined>): [number, number] {
-	for (const g of guides) {
-		if (!g) continue;
-		const m = WORD_RANGE_RE.exec(g);
-		if (m) {
-			const lo = parseInt(m[1], 10);
-			const hi = parseInt(m[2], 10);
-			if (lo > 0 && lo <= hi) return [lo, hi];
-		}
-	}
-	return [4000, 5000];
-}
 
 /** 清洗人物关系文档（去一级标题行与注释；书/卷/章三层通用） */
 export function cleanRelationshipsDoc(rawText: string): string {
@@ -494,23 +476,17 @@ export function storyTypeOf(writingStyle?: string): string {
 
 export interface StoryTypePromptInput {
 	storyType?: string;
-	guideText?: string;
 	title?: string;
 	charNames?: Array<string | null>;
-	/** 禁用词清单数据（来自 BANNED_WORDS.md）；不传则不注入禁用词块（非正文写作路径） */
-	bannedData?: BannedWordsData;
-	bannedGuideText?: string;
-	skillsBlock?: string;
+	skillsBlock?: string; // v0.3.6+：bannedData/【禁用词】注入块已随禁用词 Skill 化移除——词表经阶段 3 技能块（skillsBlock）注入
 }
 
-/** 组装「编写类型 + 禁用词 + skills」系统提示词块（禁用词块仅在传入 bannedData 时注入——只进正文写作路径） */
+/** 组装「编写类型 + skills」系统提示词块（v0.3.6+：禁用词不再单独注入，词表走 SKILLS 技能块） */
 export function buildStoryTypeSystemPrompt(input: StoryTypePromptInput): string {
 	const storyType = storyTypeOf(input.storyType);
-	const block = getStoryTypeGuide(storyType, input.guideText || "", input.title || "", input.charNames);
-	const bannedBlock = input.bannedData ? buildMergedBannedBlock(input.bannedGuideText || "", input.bannedData) : "";
+	const block = getStoryTypeGuide(storyType, input.title || "", input.charNames);
 	const parts: string[] = [];
 	if (block) parts.push(block);
-	if (bannedBlock) parts.push(bannedBlock);
 	if (input.skillsBlock) parts.push(input.skillsBlock);
 	if (!parts.length) return "";
 	const head = parts.join("\n\n");
@@ -525,7 +501,7 @@ export function buildStoryTypeSystemPrompt(input: StoryTypePromptInput): string 
 		"6. 允许用括号附注动作，如：老韩（低头） / 周远航（停住），但只能用于极短动作提示，不能扩展成小说式描述段落\n" +
 		"7. 时间推进必须明确交代：若镜头跨时段、跨天、跨几小时或几天，必须更新场景头时间为 DAY / NIGHT / LATER / NEXT DAY / DAYS LATER 等；严禁多个相邻场景连续都写成 DAY，造成全片像同一时点发生\n" +
 		"8. 场景转换必须明确写出 CUT TO:、FADE OUT:、FADE IN:、CONTINUOUS、INTERCUT、LATER、NEXT DAY、DAYS LATER 等脚本标记；不能直接连写成小说章节\n" +
-		"9. 写作指南中与本类型冲突的条目，以【编写类型】为准\n" +
+		"9. 引用文档或技能中与本类型冲突的条目，以【编写类型】为准\n" +
 		"10. 开始输出前先检查：每一段是不是 scene heading / action / character / dialogue / transition；环境、情绪和心理都必须改写成脚本镜头。绝对不要退回到小说正文写法";
 	return storyType ? head + tail : head;
 }
@@ -804,7 +780,7 @@ export function buildChapterPrompt(input: ChapterPromptInput): { prompt: string;
 	if (storyType) {
 		parts.push("\n" + storyTypeConfirmLine(storyType));
 	}
-	// v0.2.11+：要求清单升级为故事情节设计工艺版——卷内位置意识/结构化大纲字段落地/章末钩子/场景工艺/知识状态/章内因果链/伏笔条款（替代原泛化的「情节合理推进」「章节结尾自然收束」）；v0.2.12+ 第4条章末收束改为「自然终点＋有大纲钩子才落钩子」（与写作指南十二节对齐，原「必须落在钩子悬念点、禁平静收尾」过刚），并新增第12条「通顺与逻辑优先」兜底（原11条工艺项）
+	// v0.2.11+：要求清单升级为故事情节设计工艺版——卷内位置意识/结构化大纲字段落地/章末钩子/场景工艺/知识状态/章内因果链/伏笔条款（替代原泛化的「情节合理推进」「章节结尾自然收束」）；v0.2.12+ 第4条章末收束改为「自然终点＋有大纲钩子才落钩子」（原「必须落在钩子悬念点、禁平静收尾」过刚），并新增第12条「通顺与逻辑优先」兜底（原11条工艺项）
 	// v0.2.25+ 引用文档配置框：vol_outline 可被移出阶段 3 清单——「参照【大纲】」措辞按上下文中实际注入的大纲块门控（卷模式＝【本卷大纲】、平铺模式＝【全书大纲】、无块＝泛指）
 	const outlineBlock = outlineBlockNameOf(input.context);
 	const req3 = `3. 先判断本章在卷结构中的位置与功能（铺垫/升级/反转/高潮/收束${outlineBlock ? `——参照【${outlineBlock}】${outlineBlock === "本卷大纲" ? "及其【卷设计】" : ""}` : ""})，强度与叙事重心与之匹配：反转前的章节持续加压，反转章必须把转折写成具体场景，反转后的章节体现主角状态变化\n`;
@@ -945,13 +921,13 @@ export const VOL_OUTLINE_GEN_SYSTEM_PROMPT = `你是资深小说策划，擅长�
 3. 转变——卷末主角的目标、认知或关系必须较卷初发生实质变化，且变化由其在压力下的选择驱动，而非纯外部事件。
 4. 新意——先想这个剧情最可预测的版本，再在 1–2 个关键处刻意打破它；所有反转须在前文埋过伏笔（回收），禁止机械降神。`;
 
-/** v0.2.24+ 提示词文件装配改造：上下文块（书籍信息/创作规范/张力规则/世界观/策划规范/大纲/人物关系/卷列表等）改由调用方经 assemblePromptFiles 装配为组串传入 */
+/** v0.2.24+ 提示词文件装配改造：上下文块（书籍信息/张力规则/世界观/策划规范/大纲/人物关系/卷列表等）改由调用方经 assemblePromptFiles 装配为组串传入 */
 export interface VolOutlineGenInput {
 	targetVolumeName: string; // 目标卷名（首句「为「X」生成」用）
 	chapterCount: number; // 目标章数（恰好 N 章）
 	strictCurrentOutlineOnly?: boolean; // v0.2.x+：强制本次拆分仅依赖当前卷大纲，不允许把全书大纲/前卷线索当成拆分依据（调用方据此决定 specs skip）
 	hasPlanningGuide?: boolean; // v0.2.25+ 引用文档配置框：组串含【策划规范】块——驱动提示词【策划规范】措辞（无块改泛指、不悬空引用）
-	contextDocs?: string; // 调用方装配的上下文块串（【书籍信息】→【创作规范】→【张力规则】→【世界观设定】→【策划规范】→【当前大纲来源】→【全书大纲】→【书籍/本卷人物关系】→【卷列表 · 阅读序】→【前一卷卷大纲 · 仅参考】）
+	contextDocs?: string; // 调用方装配的上下文块串（【书籍信息】→【张力规则】→【世界观设定】→【策划规范】→【当前大纲来源】→【全书大纲】→【书籍/本卷人物关系】→【卷列表 · 阅读序】→【前一卷卷大纲 · 仅参考】）
 }
 
 /** v0.2.24+ 把调用方经 assemblePromptFiles 装配的上下文组串追加进 prompt 分段（trim 后非空才追加，前置换行对齐旧 contextParts 各块口径） */
@@ -1058,7 +1034,7 @@ export interface BookOutlineGenInput {
 	hasPlanningGuide?: boolean; // 组串含【策划规范】块——驱动策划约束要求行
 	hasBookRelationships?: boolean; // 组串含【书籍人物关系】块——驱动人物关系要求行
 	hasVolRelationships?: boolean; // 组串含【本卷人物关系】块——驱动卷内关系基线要求行
-	contextDocs?: string; // 调用方装配的上下文块串（【书籍信息】→【创作规范】→【张力规则】→【世界观设定】→【策划规范】→【书籍人物关系】→【本卷人物关系】→【卷列表 · 阅读序】）
+	contextDocs?: string; // 调用方装配的上下文块串（【书籍信息】→【张力规则】→【世界观设定】→【策划规范】→【书籍人物关系】→【本卷人物关系】→【卷列表 · 阅读序】）
 }
 
 /** v0.2.x+「生成书籍大纲」prompt：依据全局设定（世界观＋策划指南）生成书级《大纲.md》。两种输出形态：
@@ -1248,7 +1224,7 @@ export const TIMELINE_GEN_SYSTEM_PROMPT = "你是资深小说策划兼时间线�
 
 export interface TimelineGenInput {
 	bookTitle: string;
-	contextDocs: string; // 调用方装配的上下文块串（【书籍信息】→【创作规范】→【张力规则】→【世界观设定】，固定三+1块、不受引用文档配置框过滤）
+	contextDocs: string; // 调用方装配的上下文块串（【书籍信息】→【张力规则】→【世界观设定】，固定三+1块、不受引用文档配置框过滤）
 }
 
 export function buildTimelineGenPrompt(input: TimelineGenInput): string {
@@ -1264,7 +1240,7 @@ export const WORLDVIEW_GEN_SYSTEM_PROMPT = "你是资深小说世界观设计师
 export interface WorldviewGenInput {
 	bookTitle: string;
 	premise: string; // 一句话设定（核心输入：state.one_line，弹窗可改）
-	contextDocs?: string; // 调用方装配的上下文块串（【书籍信息】→【创作规范】→【张力规则】，经引用文档配置框过滤）
+	contextDocs?: string; // 调用方装配的上下文块串（【书籍信息】→【张力规则】，经引用文档配置框过滤）
 }
 
 /** 世界观生成 prompt：以一句话设定为种子生成书级《世界观.md》——固定 H2 小节、首行 H1；
@@ -1523,7 +1499,7 @@ export interface CleanReport {
 	errors: string[];
 }
 
-/** 去AI味主流程：先做句式简化，再最多 maxRounds 轮 LLM 逐句改写（词表来自 BANNED_WORDS.md 解析结果） */
+/** 去AI味主流程：先做句式简化，再最多 maxRounds 轮 LLM 逐句改写（词表来自 SKILLS/网文高频禁用词清单.md 解析结果） */
 export async function cleanAiText(text: string, rewrite: AiRewriteFn, maxRounds: number, data: BannedWordsData): Promise<{ text: string; report: CleanReport }> {
 	const emptyReport: CleanReport = { rounds: 0, simplified: [], replaced: [], remaining: [], errors: [] };
 	if (!text || !text.replace(/\s/g, "")) return { text, report: emptyReport };
@@ -1634,139 +1610,6 @@ export function checkOutlineCoverage(content: string, outline: string): { allCov
 	const uncovered: string[] = [];
 	for (const b of bullets) if (!checkBullet(b, content)) uncovered.push(b);
 	return { allCovered: uncovered.length === 0, uncovered };
-}
-
-// ---------- 三层创作规范：空模板生成 + 汇总文件序列化（纯函数）----------
-
-/**
- * 由既有指南文本抽出「骨架」作为新建空模板：保留顶部多行说明注释块、结构性标记
- * （字数配置 / 写作指南分类±close / 编写类型±close）与全部 ##/### 段名，正文与各条
- * 备注一律清空。三级指南共用同一格式，故以系统级默认文本为唯一来源。
- */
-export function buildEmptyGuideTemplate(src: string): string {
-	const MARK = /^(?:字数配置|写作指南分类|\/写作指南分类|编写类型|\/编写类型)/; // CJK 非 \w，勿加 \b
-	const isMarker = (c: string): boolean => {
-		if (!/^<!--[^]*-->/.test(c.trim())) return false;
-		const inner = c.replace(/^<!--\s*/, "").replace(/\s*-->\s*$/, "");
-		return MARK.test(inner.trim());
-	};
-	const out: string[] = [];
-	let inComment = false;
-	for (const line of String(src || "").split("\n")) {
-		const t = line.trim();
-		if (!inComment) {
-			if (t.startsWith("<!--")) {
-				if (t.endsWith("-->") && t.length > 4) {
-					if (isMarker(line)) out.push(line);
-				} else {
-					inComment = true;
-					out.push(line);
-				}
-			} else if (/^#{1,6}\s/.test(t)) {
-				out.push(line);
-			}
-		} else {
-			out.push(line);
-			if (t.includes("-->")) inComment = false;
-		}
-	}
-	return out.join("\n").replace(/\s+$/, "") + "\n";
-}
-
-/** 汇总文件标题（书籍目录下《写作指南汇总.md》首行） */
-export const AGG_TITLE = "# 写作指南汇总";
-
-/**
- * 把正文里「空指示段」（标题之下到下一个同级/更高级标题之间没有任何内容行的 Markdown 小节）
- * 整体注释掉，并在连续成片的空段上方加一行提示注释——引导用户去 WRITING_GUIDE.md 填写；
- * 注入提示词前 stripComments 会剥掉全部 HTML 注释，故这些段落不参与生成。
- * - 代码围栏（``` / ~~~）内的 # 行不当标题；水平线（---/***）不算内容
- * - 父节为空时整块（含其下嵌套子标题）一次注释，不逐个子节重复提示
- */
-export function commentOutEmptySections(text: string): string {
-	const lines = String(text || "").split("\n");
-	const n = lines.length;
-	const levelAt: number[] = [];
-	let fence = false;
-	for (let i = 0; i < n; i++) {
-		levelAt[i] = 0;
-		const t = lines[i].trim();
-		if (/^(`{3,}|~{3,})/.test(t)) { fence = !fence; continue; } // 围栏开关行本身也不参与判定
-		if (!fence) {
-			const m = /^(#{1,6})(?:\s|$)/.exec(t);
-			if (m) levelAt[i] = m[1].length;
-		}
-	}
-	const HR_RE = /^(?:-{3,}|\*{3,}|_{3,})$/;
-	const endOf = (i: number): number => { // 小节范围 [i, end)，止于下一个同级或更高级标题
-		const lv = levelAt[i];
-		for (let j = i + 1; j < n; j++) if (levelAt[j] > 0 && levelAt[j] <= lv) return j;
-		return n;
-	};
-	const hasContent = (a: number, b: number): boolean => {
-		for (let k = a + 1; k < b; k++) {
-			const t = lines[k].trim();
-			if (!t || levelAt[k] > 0 || HR_RE.test(t)) continue;
-			return true;
-		}
-		return false;
-	};
-	type Claim = { start: number; end: number };
-	const claims: Claim[] = [];
-	let claimedEnd = -1;
-	for (let i = 0; i < n; i++) {
-		if (!levelAt[i] || i < claimedEnd) continue; // 已被空父节整块注释的嵌套子标题跳过
-		const e = endOf(i);
-		if (!hasContent(i, e)) {
-			const prev = claims[claims.length - 1];
-			if (prev && prev.end === i) prev.end = e; // 相邻空段合并成一片，共用一条提示
-			else claims.push({ start: i, end: e });
-			claimedEnd = e;
-		}
-	}
-	const HINT = "<!-- 以下段落暂无内容：请在 WRITING_GUIDE.md（小说级/用户级）对应章节填入写作要求；保存后本汇总自动刷新，这些段落即参与提示词生成 -->";
-	for (let c = claims.length - 1; c >= 0; c--) {
-		const cl = claims[c];
-		const body = lines.slice(cl.start, cl.end).join("\n").replace(/\s+$/, ""); // 去掉尾随空行再包注释
-		lines.splice(cl.start, cl.end - cl.start, HINT, "<!--", body, "-->");
-	}
-	return lines.join("\n");
-}
-
-/**
- * 把 mergeGuideCategories 的合并结果序列化为可再次解析的 MD：通用内容裸放，其余分类用
- * 「<!-- 写作指南分类:X -->…<!-- /写作指南分类 -->」包裹——与三层原格式一致，喂回
- * extractGuideCategories/mergeGuideCategories 即幂等。空分类不输出对应块。
- * 各分类先经 commentOutEmptySections：空指示段整体转 HTML 注释并在上方加填写提示
- * （注入前 stripComments 剥掉，不参与提示词）。
- */
-export function serializeAggregateGuide(m: Record<string, string>): string {
-	const parts: string[] = [];
-	const general = commentOutEmptySections(String(m["通用"] || "")).trim();
-	if (general) parts.push(general);
-	for (const name of ["故事风格", "个人特色"]) {
-		const v = commentOutEmptySections(String(m[name] || "")).trim();
-		if (v) parts.push(`<!-- 写作指南分类:${name} -->\n${v}\n<!-- /写作指南分类 -->`);
-	}
-	const banned = commentOutEmptySections(String(m["禁用词"] || "")).trim();
-	if (banned) parts.push(`<!-- 写作指南分类:禁用词 -->\n${banned}\n<!-- /写作指南分类 -->`);
-	return AGG_TITLE + "\n\n" + parts.join("\n\n") + "\n";
-}
-
-/** 变更检测头（HTML 注释，注入前会被 stripComments 剥掉）：记录三层原文 md5 + 所选类型要点内容 md5（t；无命中为空串——题材/类型文件任一变化即触发重建）+ 合并算法版本 v（合并语义升级时 bump，强制一次性重建旧汇总） */
-export interface AggHashes { b: string; u: string; s: string; t: string; v: string }
-export function aggHashLine(h: AggHashes): string {
-	return `<!-- agg-hash: b=${h.b} u=${h.u} s=${h.s} t=${h.t} v=${h.v} -->`;
-}
-export function embedAggHash(body: string, h: AggHashes): string {
-	return aggHashLine(h) + "\n" + body;
-}
-const AGG_HASH_RE = /^<!--\s*agg-hash:\s*b=([0-9a-f]+)\s+u=([0-9a-f]+)\s+s=([0-9a-f]+)(?:\s+t=([0-9a-f]+))?(?:\s+v=(\d+))?\s*-->/m;
-export function parseAggHash(text: string): AggHashes | null {
-	const m = AGG_HASH_RE.exec(String(text || ""));
-	if (!m) return null;
-	// 旧版汇总头无 t 字段→按空串处理、无 v 字段→按 "1" 处理，与新值必不相等→一次性重建（无害）
-	return { b: m[1], u: m[2], s: m[3], t: m[4] ?? "", v: m[5] ?? "1" };
 }
 
 // ---------- /typo-check 错别字检测（LLM 全文扫描 + 确定性校验） ----------

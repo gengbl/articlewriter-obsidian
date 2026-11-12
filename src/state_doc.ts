@@ -34,7 +34,9 @@ export interface StoryState {
 	use_volumes: boolean; // v0.0.16+：工作模式开关——false=无卷
 	prev_chapters?: number; // v0.2.x+：本书级「使用章节摘要数量组装提示词」（前文窗口章数 N）；显式设置时优先于全局 data.json settings.prevChapters
 	include_volume_summary?: boolean; // v0.2.x+：本书级「是否使用前卷摘要组织提示词」；显式设置时优先于全局 data.json settings.includeVolumeSummary模式（纯 书→章 扁平结构）、true=有卷模式；缺省时按是否含卷数据推断（存量有卷书判 true 防回归，新/扁平书默认 false）
+	word_range?: [number, number]; // v0.3.5+：本书级正文字数区间 [下限,上限]（取代旧 WRITING_GUIDE 指南「字数配置」注释）；显式配置时优先于全局默认 [4000,5000]，非法（下限≤0 或下限>上限）按未配置处理
 	one_line?: string; // v0.3.0+：全自动流水线（auto-book）的一句话设定——/auto-book 弹窗填入后持久化，「生成世界观」命令读取作 premise；仅显式设置时写回
+	book_skills?: Record<BookSkillPhase, string[]>; // v0.3.4+：本书选用的书籍级技能（技能名数组，读 <书>/案头资料/Skill/<名>.md）。键=阶段 key（BOOK_SKILL_PHASE_KEYS）；仅显式配置时写回
 	chapters: Record<string, ChapterMeta>; // 键=复合键（见 chKey/parseChKey）
 	created_at: string;
 	updated_at: string;
@@ -42,6 +44,16 @@ export interface StoryState {
 
 /** 新格式：Obsidian 文件属性风格的状态文档 */
 export const STATE_DOC_NAME = "故事状态.md";
+
+/** 书籍技能阶段键（v0.3.4+）：与 settings.llm.writing_phases 数组下标 0–4 一一对应（阶段本身无规范 key 字符串，此处自定义稳定键）。
+ *  v0.3.7+：「世界观生成」头插为阶段 0——旧四键整体后移，旧 故事状态.md book_skills 各阶段选用随语义键保留、无需迁移。 */
+export const BOOK_SKILL_PHASE_KEYS = ["worldview", "planning", "outline", "volume_outline", "writing"] as const;
+export type BookSkillPhase = (typeof BOOK_SKILL_PHASE_KEYS)[number];
+
+/** 阶段下标 → 书籍技能键（越界返回 undefined）。 */
+export function bookSkillPhaseKey(phaseIdx: number): BookSkillPhase | undefined {
+	return BOOK_SKILL_PHASE_KEYS[phaseIdx];
+}
 /** 旧格式：Python CLI 兼容的 JSON（仅用于读取与一次性迁移备份） */
 export const LEGACY_STATE_JSON = "story_state.json";
 
@@ -64,6 +76,50 @@ function normalizeChapter(raw: unknown): ChapterMeta | null {
 		words: Number.isFinite(words) ? words : 0,
 		volume: asStr(o.volume) || undefined,
 	}; // tags/note 已精简：无消费方，标签/备注只属于《章节信息.md》（旧文档里残留的这两个键解析时忽略、下次保存自然消失）
+}
+
+/** 正文字数区间全局缺省值（v0.3.5+）：书级《故事状态.md》word_range 未配置/非法时的回落（取代旧三层指南「字数配置」注释的内置回落）。 */
+export const WORD_RANGE_DEFAULT: [number, number] = [4000, 5000];
+
+/** 字数区间（v0.3.5+）：只认 [lo,hi] 两元素数组（或空格/逗号分隔字符串，容错手改 frontmatter），lo>0 且 lo<=hi 才有效；非法返回 undefined 视为未配置。 */
+function normalizeWordRange(raw: unknown): [number, number] | undefined {
+	let pair: unknown[] | undefined;
+	if (Array.isArray(raw)) pair = raw;
+	else if (typeof raw === "string") {
+		const m = /^\s*(\d+)\s*(?:[-~～至到]|,|\s)\s*(\d+)\s*$/.exec(raw);
+		if (m) pair = [m[1], m[2]];
+	}
+	if (!pair || pair.length !== 2) return undefined;
+	const lo = Number(pair[0]);
+	const hi = Number(pair[1]);
+	if (!Number.isFinite(lo) || !Number.isFinite(hi)) return undefined;
+	const a = Math.round(lo);
+	const b = Math.round(hi);
+	if (a <= 0 || a > b) return undefined;
+	return [a, b];
+}
+
+/** 书籍技能（v0.3.4+）：只认 BOOK_SKILL_PHASE_KEYS 白名单键、值为非空技能名字符串数组（去重、trim、非法条目丢弃）。无任何有效阶段条目返回 undefined（视为未配置）。 */
+function normalizeBookSkills(raw: unknown): Record<BookSkillPhase, string[]> | undefined {
+	if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
+	const o = raw as Record<string, unknown>;
+	const out = {} as Record<BookSkillPhase, string[]>;
+	let any = false;
+	for (const k of BOOK_SKILL_PHASE_KEYS) {
+		const v = o[k];
+		if (!Array.isArray(v)) continue;
+		const names: string[] = [];
+		for (const item of v) {
+			if (typeof item !== "string" && typeof item !== "number") continue; // 对象/布尔/null 等非法条目丢弃（number 兼容 YAML 裸数字技能名，如 123 → "123"）
+			const s = asStr(item).trim();
+			if (s && !names.includes(s)) names.push(s);
+		}
+		if (names.length) {
+			out[k] = names;
+			any = true;
+		}
+	}
+	return any ? out : undefined;
 }
 
 /**
@@ -120,7 +176,7 @@ export function parseStateDoc(
 	const extraKeys = new Set([
 		"version", "title", "genre", "writing_style", "current_chapter", "current_scene",
 		"current_volume", "total_words", "use_summaries", "use_volumes", "chapters", "created_at", "updated_at",
-		"prev_chapters", "include_volume_summary", "one_line",
+		"prev_chapters", "include_volume_summary", "word_range", "one_line", "book_skills",
 	]);
 	const extra: Record<string, unknown> = {};
 	for (const [k, v] of Object.entries(o)) if (!extraKeys.has(k)) extra[k] = v;
@@ -144,7 +200,9 @@ export function parseStateDoc(
 				? o.prev_chapters
 				: undefined,
 			include_volume_summary: typeof o.include_volume_summary === "boolean" ? o.include_volume_summary : undefined,
+			word_range: normalizeWordRange(o.word_range), // v0.3.5+：书级字数区间（非法/未设置为 undefined，消费方回落 WORD_RANGE_DEFAULT）
 			one_line: asStr(o.one_line).trim() || undefined, // v0.3.0+：一句话设定（空串视为未设置）
+			book_skills: normalizeBookSkills(o.book_skills), // v0.3.4+：书籍技能阶段配置（非法/空结构视为未配置）
 			chapters,
 			created_at: asStr(o.created_at),
 			updated_at: asStr(o.updated_at),
@@ -172,7 +230,17 @@ export function formatStateDoc(
 	// v0.2.x+：本书级提示词组装选项——仅显式设置时写回（未设置的存量文档保持原样、继续走全局设置）
 	if (state.prev_chapters != null) o["prev_chapters"] = state.prev_chapters;
 	if (state.include_volume_summary != null) o["include_volume_summary"] = state.include_volume_summary;
+	if (state.word_range) o["word_range"] = [state.word_range[0], state.word_range[1]]; // v0.3.5+：书级字数区间（YAML 数组写回；未配置不写）
 	if (state.one_line) o["one_line"] = state.one_line; // v0.3.0+：一句话设定（auto-book），仅非空时写回
+	// v0.3.4+：书籍技能阶段配置——仅含有效条目时写回，按 BOOK_SKILL_PHASE_KEYS 固定键序、空数组阶段省略
+	if (state.book_skills) {
+		const bs: Record<string, string[]> = {};
+		for (const k of BOOK_SKILL_PHASE_KEYS) {
+			const v = state.book_skills[k];
+			if (Array.isArray(v) && v.length) bs[k] = [...v];
+		}
+		if (Object.keys(bs).length) o["book_skills"] = bs;
+	}
 	if (state.created_at) o["created_at"] = state.created_at;
 	if (state.updated_at) o["updated_at"] = state.updated_at;
 	const chapters: Record<string, unknown> = {};

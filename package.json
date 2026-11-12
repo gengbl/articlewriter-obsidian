@@ -8,7 +8,7 @@
 		"build": "tsc -noEmit -skipLibCheck && node esbuild.config.mjs --production",
 		"lint": "eslint src/",
 		"lint:obsidianmd": "eslint --config eslint.obsidianmd.mjs src/",
-		"test": "node -e \"const { buildSync } = require('esbuild'); const { execFileSync } = require('child_process'); const fs = require('fs'); const path = require('path'); const outdir = path.join(process.cwd(), '.tmp-tests'); const entries = ['src/prompts.test.ts', 'src/pipeline.test.ts', 'src/book_skill.test.ts', 'src/md_docs.test.ts']; buildSync({ entryPoints: entries, bundle: true, platform: 'node', format: 'esm', outdir, outExtension: { '.js': '.mjs' }, tsconfig: 'tsconfig.json' }); execFileSync(process.execPath, ['--test', ...entries.map((e) => path.join(outdir, e.replace('src/', '').replace('.ts', '.mjs')))], { stdio: 'inherit' }); fs.rmSync(outdir, { recursive: true, force: true });\""
+		"test": "node -e \"const { buildSync } = require('esbuild'); const { execFileSync } = require('child_process'); const fs = require('fs'); const path = require('path'); const outdir = path.join(process.cwd(), '.tmp-tests'); const entries = ['src/prompts.test.ts', 'src/pipeline.test.ts', 'src/book_skill.test.ts', 'src/md_docs.test.ts', 'src/state_doc.test.ts']; buildSync({ entryPoints: entries, bundle: true, platform: 'node', format: 'esm', external: ['yaml'], outdir, outExtension: { '.js': '.mjs' }, tsconfig: 'tsconfig.json' }); execFileSync(process.execPath, ['--test', ...entries.map((e) => path.join(outdir, e.replace('src/', '').replace('.ts', '.mjs')))], { stdio: 'inherit' }); fs.rmSync(outdir, { recursive: true, force: true });\""
 	},
 	"keywords": [
 		"obsidian",

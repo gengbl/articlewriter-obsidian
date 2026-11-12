@@ -15,8 +15,15 @@ export interface TlRow extends TimelineEntry {
 	sourceLabel: string; // 层级标签（书籍级 / 卷 · <卷名> / 章 · 第N章 <标题>），合并展示时随条目显示出处
 }
 
-/** 合并时间轴的轮廓节点（v0.3.1+ 起复用 outline_tree 通用算法）：条目 + 子节点（父＝其前最近一条级别更小的条目，跨层统一规则；无更小级别前驱者为根） */
+/** 合并时间轴的轮廓节点（v0.3.1+ 起复用 outline_tree 通用算法）：条目 + 子节点。**挂父按文档结构**：父＝**同一《时间线.md》内**其前最近一条级别更小的条目（跨文档不挂父）；无更小级别前驱者为根 */
 type TlNode = OutlineNode<TlRow>;
+
+/** 渲染趟的扁平时间线节点（v0.3.3+ 折叠修复）：轮廓节点 + 轮廓深度 + 严格祖先链（自根到父，跨文档不挂父）。渲染＝扁平列表按 (年,月,日) 升序逐行输出：缩进/圆点列/层级导引线由 depth 决定（`.tl-d<n>` 类）、可见性＝祖先链任一命中 collapsedIds 即隐藏——子事件无论时间排在何处都挂在结构父名下，折叠结构父必藏全部（可时间上四散的）后代 */
+interface TlFlatNode {
+	node: TlNode;
+	depth: number; // 轮廓深度（根＝0）：行缩进 .tl-d<min(depth,6)>
+	ancestors: TlRow[]; // 严格祖先链（不含自身）：折叠判定与筛选祖先显示
+}
 
 export interface TlStoryEntry {
 	name: string;
@@ -24,14 +31,14 @@ export interface TlStoryEntry {
 	active: boolean;
 }
 
-/** 时间线面板快照（main.ts 非交互读取构建，只含展示字段）：各层已合并为单一按时间点升序的行列表 */
+/** 时间线面板快照（main.ts 非交互读取构建，只含展示字段）：各层已合并为单一行列表，**保持文档枚举顺序**（书级 → 未归卷章节 → 各卷及其成员章）；时间点升序仅由面板渲染趟负责 */
 export interface TlSnapshot {
 	workDir: string;
 	stories: TlStoryEntry[];
 	activeStory: string | null;
 	activeStoryTitle: string;
 	useVolumes: boolean; // 有卷/无卷模式（空态文案据此给出对应的建文档位置提示）
-	rows: TlRow[]; // 书/卷/章全部条目合并，(年,月,日) 升序；同值保持文档枚举顺序
+	rows: TlRow[]; // 书/卷/章全部条目合并，文档枚举顺序（面板据此按文档结构挂父，再扁平化为时间升序渲染）
 	totalCount: number; // 全部层解析出的事件总条数
 	bookTimelinePath: string; // 书级《时间线.md》路径（＝头部「＋ 事件」根级新增的写入目标；文件可尚不存在，mutate 时自动创建）
 	unparsedDocs: Array<{ label: string; path: string }>; // 原文非空但零有效条目的文档（格式提示 + 可点开查看）
@@ -58,7 +65,7 @@ function tlEpochMs(p: Pick<TimelineEntry, "time" | "month" | "day">): number {
 
 /**
  * 时间线面板（自定义 ItemView，可停靠任意区域、重载保留位置）：
- * 把当前小说**书根 / 卷目录 / 章节目录三层《时间线.md》**合并成一条自上而下的纵向时间轴——条目按时间点（支持 年 / 年-月 / 年-月-日）升序排列，每条带来源层级标签；标题深度即事件级别（#=一级、##=二级、###=三级，可更深），面板按「父＝其前最近一条级别更小的条目」嵌套成轮廓树。
+ * 把当前小说**书根 / 卷目录 / 章节目录三层《时间线.md》**合并成一条自上而下的纵向时间轴——条目按时间点（支持 年 / 年-月 / 年-月-日）升序排列，每条带来源层级标签；标题深度即事件级别（#=一级、##=二级、###=三级，可更深）。**父子关系按文档结构**：同一文档内「父＝其前最近一条级别更小的条目」（跨文档不挂父）；轮廓树仅决定嵌套深度与折叠归属，**渲染是扁平的一条时间升序序列**——子事件即使时间排在别的更大事件之后也仍属于结构父，缩进按轮廓深度、圆点固定在主轴。
  * **时间比例间距**：相邻条目的垂直间隔按其时间差成比例拉开（基准 5px/天、90 天内按真实比例出留白，超过 90 天的间隔压成定高「⋯ 约 N 年 ⋯」时间跳跃标记块防极端点拉爆画布；密度另可用 Ctrl|Shift 滚轮缩放调节）；筛选模式下改紧凑堆叠（命中稀疏不成比例）。汇总行附「跨度 N 年 M 月」（最早到最晚的总时长）。
  * 顶部筛选框可按人物/事件关键词过滤（筛选时显示命中条目及其祖先链、忽略折叠状态）。**双击**条目在编辑器打开来源文件并定位到该时间点标题行（单击不触发，避免误触）；**点击圆点**切换有子事件条目的折叠状态；**右键条目**弹出节点菜单（编辑/添加子事件/添加同级/完成切换/删除）。
  * **事件编辑（v0.3.3+ 合并大事件后由本面板承担，原「大事件」面板已退场）**：头部「＋ 事件」＝书级《时间线.md》文档末尾追加一级节点；条目行右侧动作组（＋／✎／✓○／🗑）＝添加子事件、编辑、完成状态快速切换、删除（删除经 ConfirmModal，根节点＝整棵子树删除）；条目还可带**影响**行（内联小字）与**关联** chip（点击跳到目标事件所在文档标题，并给该条目 1.2s 高亮闪烁）。所有写回按条目 `sourcePath` 定位（updateTimelineBlock/insertTimelineBlock/deleteTimelineBlock），书级文档不存在时自动创建；子事件级别封顶 6（标题深度上限）。
@@ -92,7 +99,7 @@ export class TimelineView extends ItemView {
 	// 时间比例间距的本次渲染趟状态（renderBody 每趟开头重置，随同步 DFS 渲染逐条推进）：是否启用＋上一条已渲染条目的毫秒时刻
 	private tlSpacingOn = false;
 	private tlPrevMs: number | null = null;
-	// 拖动更新时间点的手势状态（仅非筛选比例视图挂载；元素引用每次 renderNode 重建、不跨渲染持有）：候选 {row,startY,els}／激活标志／最近Δ天数／浮标元素
+	// 拖动更新时间点的手势状态（仅非筛选比例视图挂载；元素引用每次 renderRow 重建、不跨渲染持有）：候选 {row,startY,els}／激活标志／最近Δ天数／浮标元素
 	private tlDrag: { row: TlRow; startY: number; els: HTMLElement[]; badge: HTMLElement | null } | null = null; // badge＝条目自身时间徽章（.aw-tl-time），拖动中 setText 立即显示新时间点
 	private tlDragLive = false; // 本手势是否越过阈值成为有效拖拽（未越界＝普通点击/双击，照常放行）
 	private tlDragSteps = 0; // 拖动中最近一次算出的 Δ 步数（步＝条目自身精度单位：含日＝天、只含月＝月、纯年＝年；松手时据此决定是否写回）
@@ -178,7 +185,7 @@ export class TimelineView extends ItemView {
 		btns.createEl("button", { text: "刷新" }).addEventListener("click", () => void this.refresh());
 	}
 
-	/** 主体区：单一合并纵向时间轴（时间点升序、每条带来源标签，按级别嵌套成轮廓树；相邻条目间按时间差插比例间隔——90 天内为留白块 .aw-tl-spacer〔基准 5px/天〕、超出压成定高时间跳跃标记 .aw-tl-skip；筛选模式紧凑堆叠）+ 无有效条目文档的格式提示；汇总行固定显示在底部 sumEl（非筛选视图附「跨度」＝最早到最晚总时长）。重渲染只清 zoomEl——缩放/滚动位置/折叠状态保持 */
+	/** 主体区：单一合并纵向时间轴（**扁平的一条时间升序序列**、每条带来源标签；缩进＝文档结构轮廓深度、折叠按结构子树整棵隐藏；相邻条目间按时间差插比例间隔——90 天内为留白块 .aw-tl-spacer〔基准 5px/天〕、超出压成定高时间跳跃标记 .aw-tl-skip；筛选模式紧凑堆叠）+ 无有效条目文档的格式提示；汇总行固定显示在底部 sumEl（非筛选视图附「跨度」＝最早到最晚总时长，按全 rows min/max 计算）。重渲染只清 zoomEl——缩放/滚动位置/折叠状态保持 */
 	private renderBody(snap: TlSnapshot): void {
 		this.zoomElClear();
 		// 关联 chip 的跳转索引：仅带事件名的条目入索引（旧「纯时间点」标题无名 → 不建索引、相关引用只能定位到文档级）
@@ -198,7 +205,7 @@ export class TimelineView extends ItemView {
 			this.collapsedIds.clear();
 		}
 		const q = this.filterText.trim().toLowerCase();
-		const roots = buildOutlineTree(snap.rows);
+		const flat = this.buildFlatRows(snap.rows); // 逐文档挂父建树 → 扁平化 → 时间升序（v0.3.3+ 折叠修复，见 buildFlatRows）
 		this.tlSpacingOn = q === ""; // 时间比例间距仅非筛选视图（筛选命中稀疏，按真实间隔会拉出荒长空白）
 		this.tlPrevMs = null;
 		if (q) {
@@ -207,12 +214,19 @@ export class TimelineView extends ItemView {
 				this.zoomEl.createDiv({ text: `没有匹配「${this.filterText.trim()}」的时间线条目。`, cls: "aw-dim aw-st-hint" });
 			} else {
 				const list = this.zoomEl.createDiv({ cls: "aw-tl-list" }); // 纵向时间轴（左侧竖线 + 节点圆点），自上而下按时间点升序
-				for (const n of roots) if (this.subtreeHit(n, q)) this.renderNode(list, n, q); // 命中条目连同祖先链展示（忽略折叠状态）
+				const ancestorIds = new Set<string>(); // 命中条目的全部祖先 id：可见集合＝命中条目＋祖先链（忽略折叠状态）
+				for (const f of flat) if (matchRow(f.node.item, q)) for (const a of f.ancestors) ancestorIds.add(a.id);
+				for (const f of flat) if (matchRow(f.node.item, q) || ancestorIds.has(f.node.item.id)) this.renderRow(list, f, q, null);
 			}
 			this.sumEl.setText(`匹配 ${String(matchCount)} 条（共 ${String(snap.totalCount)} 条）`);
 		} else {
 			const list = this.zoomEl.createDiv({ cls: "aw-tl-list" });
-			for (const n of roots) this.renderNode(list, n, "");
+			for (const f of flat) {
+				if (f.ancestors.some((a) => this.collapsedIds.has(a.id))) continue; // 祖先链任一结构父被折叠 → 隐藏（时间上四散的后代也一并藏）
+				let collapsed: number | null = null; // 本条自身折叠且有后代 → 行尾追加「已折叠 N 条」提示
+				if (f.node.children.length && this.collapsedIds.has(f.node.item.id)) collapsed = this.descendantCount(f.node);
+				this.renderRow(list, f, "", collapsed);
+			}
 			const perScope: Record<TlScope, number> = { book: 0, volume: 0, chapter: 0 };
 			let doneCount = 0;
 			for (const r of snap.rows) {
@@ -221,8 +235,15 @@ export class TimelineView extends ItemView {
 			}
 			let spanTxt = "";
 			if (snap.rows.length >= 2) {
-				// rows 全局按时间升序 → 末条 − 首条＝最早到最晚的时间总长（缺月日按年初/一号计）
-				const days = Math.round((tlEpochMs(snap.rows[snap.rows.length - 1]) - tlEpochMs(snap.rows[0])) / TL_DAY_MS);
+				// rows 为文档顺序（非时间序）→ min/max 遍历求最早到最晚总时长（缺月日按年初/一号计）
+				let lo = Number.POSITIVE_INFINITY;
+				let hi = Number.NEGATIVE_INFINITY;
+				for (const r of snap.rows) {
+					const ms = tlEpochMs(r);
+					if (ms < lo) lo = ms;
+					if (ms > hi) hi = ms;
+				}
+				const days = Math.round((hi - lo) / TL_DAY_MS);
 				if (days > 0) spanTxt = `｜跨度 ${this.formatTlSpan(days)}`;
 			}
 			this.sumEl.setText(`共 ${String(snap.totalCount)} 条：书籍级 ${String(perScope.book)} · 卷 ${String(perScope.volume)} · 章 ${String(perScope.chapter)}${doneCount ? `｜已完成 ${String(doneCount)}` : ""}${spanTxt}`);
@@ -236,10 +257,23 @@ export class TimelineView extends ItemView {
 		return countSubtree(node) - 1;
 	}
 
-	/** 筛选模式：该节点自身或任一后代是否命中筛选词（命中则连同祖先链一起展示） */
-	private subtreeHit(node: TlNode, q: string): boolean {
-		if (matchRow(node.item, q)) return true;
-		return node.children.some((c) => this.subtreeHit(c, q));
+	/** 快照 rows（文档枚举顺序）→ 渲染趟扁平时间线：按 **sourcePath 连续段**逐文档 buildOutlineTree 挂父（跨文档不挂父——否则章文档首条会挂到前一书/卷文档末条名下，破坏 addChild/delete 等文档内子树锚点语义），深度优先扁平化为 {node, depth, ancestors}，再按 (年,月,日) 稳定升序——同刻条目保持树序。渲染趟据此逐行输出：缩进＝depth、可见性＝祖先链折叠判定 */
+	private buildFlatRows(rows: TlRow[]): TlFlatNode[] {
+		const flat: TlFlatNode[] = [];
+		let i = 0;
+		while (i < rows.length) {
+			let j = i + 1;
+			while (j < rows.length && rows[j].sourcePath === rows[i].sourcePath) j++; // rows 按文档枚举顺序 → 同文档条目必连续
+			for (const root of buildOutlineTree(rows.slice(i, j))) this.flattenTl(flat, root, 0, []);
+			i = j;
+		}
+		return flat.sort((a, b) => a.node.item.time - b.node.item.time || ((a.node.item.month ?? 0) - (b.node.item.month ?? 0)) || ((a.node.item.day ?? 0) - (b.node.item.day ?? 0)));
+	}
+
+	/** 深度优先展开一棵轮廓树到扁平数组：children 递归、depth+1、祖先链追加自身 */
+	private flattenTl(out: TlFlatNode[], node: TlNode, depth: number, ancestors: TlRow[]): void {
+		out.push({ node, depth, ancestors });
+		for (const c of node.children) this.flattenTl(out, c, depth + 1, [...ancestors, node.item]);
 	}
 
 	/** 切换某条目的折叠状态（圆点点击；仅对有子事件的条目生效） */
@@ -248,19 +282,32 @@ export class TimelineView extends ItemView {
 		else this.collapsedIds.add(id);
 	}
 
-	/** 时间比例间距：本条目时刻与上一条已渲染条目之差 Δ，在**当前容器内、本条目之前**插入间隔元素，随后更新 tlPrevMs。Δ≤TL_SPACER_MAX_DAYS 天 → `.aw-tl-spacer` 纯留白定高块（按 TL_PX_PER_DAY px/天 换算，list/kids 的竖线自动贯穿——空白即「故事里流逝的时间」）；Δ＞上限 → `.aw-tl-skip` 定高时间跳跃标记块（居中「⋯ 约 N 年 ⋯」小字），防极端跨度的孤立点把画布拉到无法使用。rows 全局按时间升序 → DFS 渲染顺序恒为时间非降序 → Δ≥0；同刻条目不插块自然堆叠；折叠的子树被跳过后其兄弟相对父条目的间隔＝两者真实时差；筛选趟（tlSpacingOn=false）整体跳过保持紧凑布局 */
-	private pushTlSpacer(parent: HTMLElement, row: TlRow): void {
+	/** 轮廓层级导引线（v0.3.3+ 视觉增强）：让扁平时间序里的父子从属关系可见。列 k（1≤k≤min(depth,6)）画一条通高竖细线 `.aw-tl-branch-line`（列横坐标与缩进/圆点列同一公式：--tl-guide-start＋(k-1)×--tl-indent，样式见 styles.css nth-child 映射）——同一祖先支的子行被同一条竖向通道串起。
+	 * 条目行（isRow）额外：depth≥1 时肘形接线 `.aw-tl-elbow`（父级列 → 本行圆点，横杆与所有圆点圆心线 top:11px 对齐）；有子事件时子列短桩 `.aw-tl-branch-stub`（列 min(depth,6)+1，自本行圆点下方垂至行尾——子行/间隔块的同列竖线在下方接续）。
+	 * 间隔/跳跃块（isRow=false）只画通高竖线：比例留白内层级通道不断线（留白＝流逝时间，通道＝结构从属） */
+	private attachTlGuides(el: HTMLElement, depth: number, hasKids: boolean, isRow: boolean): void {
+		for (let k = 1; k <= depth; k++) el.createDiv({ cls: "aw-tl-branch-line" });
+		if (!isRow) return;
+		if (hasKids) el.createDiv({ cls: "aw-tl-branch-stub" });
+		if (depth >= 1) el.createDiv({ cls: "aw-tl-elbow" });
+	}
+
+	/** 时间比例间距：本条目时刻与上一条已渲染条目之差 Δ，在**当前容器内、本条目之前**插入间隔元素，随后更新 tlPrevMs。Δ≤TL_SPACER_MAX_DAYS 天 → `.aw-tl-spacer` 纯留白定高块（按 TL_PX_PER_DAY px/天 换算，list 的竖线自动贯穿——空白即「故事里流逝的时间」）；Δ＞上限 → `.aw-tl-skip` 定高时间跳跃标记块（居中「⋯ 约 N 年 ⋯」小字），防极端跨度的孤立点把画布拉到无法使用。两类间隔块同样贯穿本行的轮廓导引线（attachTlGuides，depth＝本行轮廓深度）。扁平数组已按 (年,月,日) 升序（tlEpochMs 缺月日按年初/一号＝同序）→ 渲染顺序恒为时间非降序 → Δ≥0；同刻条目不插块自然堆叠；折叠隐藏的条目被跳过后，其兄弟相对条目的间隔＝两者真实时差；筛选趟（tlSpacingOn=false）整体跳过保持紧凑布局 */
+	private pushTlSpacer(parent: HTMLElement, row: TlRow, depth: number): void {
 		if (!this.tlSpacingOn) return; // 筛选模式紧凑堆叠
 		const ms = tlEpochMs(row);
 		if (this.tlPrevMs !== null && ms > this.tlPrevMs) {
 			const days = (ms - this.tlPrevMs) / TL_DAY_MS;
 			if (days > TL_SPACER_MAX_DAYS) {
-				parent.createDiv({ cls: "aw-tl-skip" }).createSpan({ text: `⋯ 约 ${String(this.formatTlSpan(Math.round(days)))} ⋯`, cls: "aw-dim aw-tl-skiplbl" });
+				const sk = parent.createDiv({ cls: "aw-tl-skip" });
+				this.attachTlGuides(sk, depth, false, false);
+				sk.createSpan({ text: `⋯ 约 ${String(this.formatTlSpan(Math.round(days)))} ⋯`, cls: "aw-dim aw-tl-skiplbl" });
 			} else {
 				const px = Math.round(days * TL_PX_PER_DAY);
 				if (px > 0) {
 					const sp = parent.createDiv({ cls: "aw-tl-spacer" });
 					sp.style.height = `${String(px)}px`; // 动态值（与 sizer 宽高同一模式）
+					this.attachTlGuides(sp, depth, false, false);
 				}
 			}
 		}
@@ -303,31 +350,43 @@ export class TimelineView extends ItemView {
 		});
 	}
 
-	/** 渲染一个轮廓节点：条目行 + （未折叠时）子容器 .aw-tl-kids 递归。
-	 * 条目带 `lv-<级别>` 类（级别＝标题深度，≥5 归入 lv-5）——圆点大小/颜色与正文强调按级别区分（样式见 styles.css `.aw-tl-item.lv-*`）。
-	 * **描述内容（row.desc）只经悬停 Tip 显示、不内联渲染**：desc 非空时用 setTooltip（aria-label 驱动 Obsidian 自绘 .tooltip，可 CSS 定制）给条目与圆点挂同一份 Tip（类 aw-tl-tip，样式见 styles.css）——圆点仅 5–12px，悬停稍有偏差落到条目上也能看到描述；无描述则不挂 Tip。圆点为真实元素 .aw-tl-dot、有子事件时可点击切换折叠状态；**双击**条目在编辑器打开来源文档并定位到该时间点。**拖动更新时间点**（q==="" 时 attachTlDrag 挂载、鼠标左键沿轴上下拖）：整棵子树块实时平移＋浮标提示目标时间，松手写回源《时间线.md》标题行。
-	 * 筛选模式（q 非空）显示整条祖先链且忽略折叠状态，保证命中条目可见。
-	 * **编辑态元素**：条目行注册进 nodeEls（关联 chip 跳转闪烁定位）；有事件名时渲染 `.aw-tl-name` 名称徽章、done 时渲染「✓ 已完成」徽章（`.aw-tl-done`）；有 `- 影响：` 时内联一行 `.aw-tl-impact`；`- 关联：` 每项渲染可点 chip（`.aw-tl-rel`，索引未命中加 `is-tl-dead` 置灰）。行尾动作组 `.aw-tl-acts`（CSS 悬停显现）＝＋子事件（级别＜6）/✎ 编辑/✓○ 完成切换/🗑 删除；右键条目弹节点菜单。动作组 pointerdown 阻止冒泡以免进入拖动改时手势。
-	 * 渲染顺序即文档流＝时间升序：每条先经 pushTlSpacer 按与上一条的时间差插比例间隔块，再建条目行（跨嵌套容器边界同样成立——间隔块始终插在**当前条目所在容器**内、该条目之前） */
-	private renderNode(parent: HTMLElement, node: TlNode, q: string): void {
+	/** 渲染扁平时间线的一行（v0.3.3+ 折叠修复，取代旧 renderNode 的 .aw-tl-kids 嵌套递归）：整棵树只决定缩进深度与折叠归属，DOM 是 list 下的扁平兄弟行序列。
+	 * 条目带 `lv-<级别>` 类（级别＝标题深度，≥5 归入 lv-5）——圆点大小/颜色与正文强调按级别区分；另带 `tl-d<深度>` 类（≥6 归入 6）驱动行缩进与层级列坐标（--tl-d × --tl-indent，样式见 styles.css `.aw-tl-item`）；**圆点落在本行深度列**（根＝主轴、子级逐级右移一列），配合 attachTlGuides 画的通高竖向导引线/肘形接线/短桩，父子从属关系沿竖向通道一眼可辨；有子事件另挂 `.aw-tl-caret` 折叠标识（▾展开/▸折叠，点击切换、Tip 带子事件条数）。
+	 * **描述内容（row.desc）只经悬停 Tip 显示、不内联渲染**：desc 非空时用 setTooltip（aria-label 驱动 Obsidian 自绘 .tooltip，可 CSS 定制）给条目与圆点挂同一份 Tip（类 aw-tl-tip，样式见 styles.css）——圆点仅 5–12px，悬停稍有偏差落到条目上也能看到描述；无描述则不挂 Tip。圆点为真实元素 .aw-tl-dot、有子事件时可点击切换折叠状态（折叠隐藏＝全部结构后代，无论其时间排在何处）；**双击**条目在编辑器打开来源文档并定位到该时间点。**拖动更新时间点**（q==="" 时 attachTlDrag 挂载、鼠标左键沿轴上下拖）：该条目＋其全部**已渲染**后代行实时平移＋浮标提示目标时间，松手写回源《时间线.md》标题行。
+	 * collapsedCount 非 null（仅非筛选趟、本条折叠且有后代时由 renderBody 给出）→ 行尾追加「（已折叠 N 条子事件）」。
+	 * **编辑态元素**：条目行注册进 nodeEls（关联 chip 跳转闪烁定位 + 拖动收集后代行）；有事件名时渲染 `.aw-tl-name` 名称徽章、done 时渲染「✓ 已完成」徽章（`.aw-tl-done`）；有 `- 影响：` 时内联一行 `.aw-tl-impact`；`- 关联：` 每项渲染可点 chip（`.aw-tl-rel`，索引未命中加 `is-tl-dead` 置灰）。行尾动作组 `.aw-tl-acts`（CSS 悬停显现）＝＋子事件（级别＜6）/✎ 编辑/✓○ 完成切换/🗑 删除；右键条目弹节点菜单。动作组 pointerdown 阻止冒泡以免进入拖动改时手势。
+	 * 渲染顺序＝buildFlatRows 扁平数组序＝时间升序：每行先经 pushTlSpacer 按与上一条**已渲染**条目的时间差插比例间隔块（间隔块一律插在 list 内、该行之前——扁平化后不再跨嵌套容器） */
+	private renderRow(parent: HTMLElement, f: TlFlatNode, q: string, collapsedCount: number | null): void {
+		const node = f.node;
 		const row = node.item;
-		this.pushTlSpacer(parent, row); // 时间比例间距（筛选趟/首条为 no-op）
-		const item = parent.createDiv({ cls: `aw-tl-item lv-${String(Math.min(row.level, 5))}` });
-		this.nodeEls.set(row.id, item); // 条目行索引（关联 chip 跳转后高亮闪烁定位）
-		const dot = item.createSpan({ cls: "aw-tl-dot" }); // 节点圆点（替代旧 ::before 伪元素，可点击）
-		if (node.children.length) {
+		const cappedDepth = Math.min(f.depth, 6); // 深度封顶 6（与 tl-d6 深度类同一口径）：缩进、导引线列数、圆点列、短桩列都按它
+		const hasKids = node.children.length > 0;
+		this.pushTlSpacer(parent, row, cappedDepth); // 时间比例间距（筛选趟/首条为 no-op），随同贯穿本行深度的层级导引线
+		const item = parent.createDiv({ cls: `aw-tl-item lv-${String(Math.min(row.level, 5))} tl-d${String(cappedDepth)}` }); // 级别类＝圆点样式；深度类＝行缩进＋圆点所在层级列
+		this.attachTlGuides(item, cappedDepth, hasKids, true); // 层级导引线必须是 item 的前 cappedDepth 个子元素（styles.css 按 nth-child 映射列坐标），圆点/折叠标在其后
+		this.nodeEls.set(row.id, item); // 条目行索引（关联 chip 跳转后高亮闪烁定位；拖动时按结构子树收集后代行）
+		const dot = item.createSpan({ cls: "aw-tl-dot" }); // 节点圆点：落在本行深度列的圆心（与竖向层级通道同一坐标），有子事件时可点击切换折叠
+		const toggleKids = () => {
+			this.toggleCollapse(row.id);
+			if (this.lastSnap) this.renderBody(this.lastSnap);
+		};
+		if (hasKids) {
 			dot.addClass("has-kids");
-			dot.addEventListener("click", () => {
-				this.toggleCollapse(row.id);
-				if (this.lastSnap) this.renderBody(this.lastSnap);
-			});
+			dot.addEventListener("click", toggleKids);
 		}
 		if (row.desc) {
 			// 描述内容只经悬停 Tip 显示（不内联）：条目与圆点同挂一份——圆点仅 5–12px，悬停稍有偏差即落到条目上，两处一致保证看到的都是描述；无描述则不挂 Tip
 			setTooltip(item, row.desc, { classes: ["aw-tl-tip"] });
 			setTooltip(dot, row.desc, { classes: ["aw-tl-tip"] });
 		}
-		item.createSpan({ text: timelineTimeText(row), cls: "aw-tl-time" });
+		item.createSpan({ text: timelineTimeText(row), cls: "aw-tl-time" }); // 时间徽章紧跟圆点：负 margin 从内容缩进拉回圆点右后侧（几何见 styles.css .aw-tl-time），读作「该圆点＝此时间点」
+		if (hasKids) {
+			const caret = item.createSpan({ text: this.collapsedIds.has(row.id) ? "▸" : "▾", cls: "aw-tl-caret" }); // 可折叠标识：▾＝展开中 / ▸＝已折叠，排在时间徽章之后、点击与圆点同一切换
+			setTooltip(caret, this.collapsedIds.has(row.id) ? `已折叠 ${String(this.descendantCount(node))} 条子事件，点击展开` : "有子事件，点击折叠");
+			caret.addEventListener("click", (ev: MouseEvent) => { ev.stopPropagation(); toggleKids(); });
+			caret.addEventListener("pointerdown", (ev: PointerEvent) => ev.stopPropagation()); // caret 不进入拖动改时手势
+			caret.addEventListener("dblclick", (ev: MouseEvent) => ev.stopPropagation());
+		}
 		if (row.title) item.createSpan({ text: row.title, cls: "aw-tl-name" }); // 事件名（旧「纯时间点」标题无名 → 不渲染）
 		if (row.done) item.createSpan({ text: "✓ 已完成", cls: "aw-tl-done" });
 		if (row.sourceLabel) item.createSpan({ text: row.sourceLabel, cls: "aw-dim aw-tl-src" });
@@ -369,17 +428,8 @@ export class TimelineView extends ItemView {
 		bDel.addEventListener("click", (ev) => { ev.stopPropagation(); this.deleteNode(row, node); });
 		item.addEventListener("contextmenu", (ev: MouseEvent) => { ev.preventDefault(); this.openNodeMenu(ev, row, node); }); // 右键菜单＝编辑动作的替代入口（触屏/长按同用）
 		item.addEventListener("dblclick", () => void this.openAt(row)); // 双击定位功能保留；提示文字不再占用 Tip（Tip 专显描述内容）
-		if (q === "") this.attachTlDrag(item, row); // 拖动更新时间点仅非筛选比例视图（筛选紧凑布局下位移无比例语义）
-		if (node.children.length) {
-			if (q === "" && this.collapsedIds.has(row.id)) {
-				item.createSpan({ text: `（已折叠 ${String(this.descendantCount(node))} 条子事件）`, cls: "aw-dim aw-tl-collapsed-hint" });
-			} else {
-				const kids = parent.createDiv({ cls: "aw-tl-kids" }); // 子事件容器：再缩进一级 + 自己的竖线
-				for (const c of node.children) {
-					if (q === "" || this.subtreeHit(c, q)) this.renderNode(kids, c, q);
-				}
-			}
-		}
+		if (q === "") this.attachTlDrag(item, row, node); // 拖动更新时间点仅非筛选比例视图（筛选紧凑布局下位移无比例语义）
+		if (collapsedCount !== null) item.createSpan({ text: `（已折叠 ${String(collapsedCount)} 条子事件）`, cls: "aw-dim aw-tl-collapsed-hint" }); // 折叠提示（按结构子树条数，由 renderBody 判定）
 	}
 
 	/** 条目右键菜单（编辑动作替代入口）：编辑事件 / 添加子事件（级别＜6 时）/ 添加同级 / 标记完成或未完成 / 在编辑器打开 / 删除（含子事件时文案注明） */
@@ -395,22 +445,32 @@ export class TimelineView extends ItemView {
 		menu.showAtPosition({ x: ev.x, y: ev.y });
 	}
 
-	/** 给条目行挂「拖动更新时间点」手势（仅非筛选比例视图调用）：左键按下起候选、pointermove 越过 5px 阈值才激活（未越界＝普通点击/双击，语义不受影响），期间整棵子树块随光标平移＋浮标提示按条目精度单位增减的步数；松手时按位移算出的新时间点≠原值才写回源文档。stopPropagation 使本手势优先于画布平移（bodyEl pointerdown）独占 */
-	private attachTlDrag(item: HTMLElement, row: TlRow): void {
+	/** 给条目行挂「拖动更新时间点」手势（仅非筛选比例视图调用）：左键按下起候选、pointermove 越过 5px 阈值才激活（未越界＝普通点击/双击，语义不受影响），期间该条目＋其全部**已渲染**结构后代行随光标平移＋浮标提示按条目精度单位增减的步数；松手时按位移算出的新时间点≠原值才写回源文档。stopPropagation 使本手势优先于画布平移（bodyEl pointerdown）独占 */
+	private attachTlDrag(item: HTMLElement, row: TlRow, node: TlNode): void {
 		item.addClass("aw-tl-movable"); // grab 光标提示（样式见 styles.css）
 		item.addEventListener("pointerdown", (ev: PointerEvent) => {
 			if (ev.button !== 0 || ev.pointerType !== "mouse") return; // 只响应鼠标左键（触屏保持原生滚动手势）
 			ev.stopPropagation(); // 拦掉画布平移对本手势的接管
 			ev.preventDefault(); // 不触发文字选中等副作用
 			this.tlDrag = { row, startY: ev.clientY, els: [item], badge: item.querySelector<HTMLElement>(".aw-tl-time") ?? null };
-			const kids = item.nextElementSibling; // 紧随其后的子事件容器（renderNode 顺序构建）一并位移 → 整棵子树同移
-			if (kids instanceof HTMLElement && kids.classList.contains("aw-tl-kids")) this.tlDrag.els.push(kids);
+			this.collectTlDescendantEls(node, this.tlDrag.els); // 结构后代行一并位移（扁平布局下后代行时间上四散，逐行收集）
 			this.tlDragLive = false;
 			this.tlDragSteps = 0;
 			document.addEventListener("pointermove", this.onTlDragMove);
 			document.addEventListener("pointerup", this.endTlDrag);
 			document.addEventListener("pointercancel", this.endTlDrag);
 		});
+	}
+
+	/** 拖动位移收集：深度优先遍历结构子树，把**已渲染**（在 nodeEls 中＝未被祖先折叠隐藏）的后代行元素加入位移集合。被折叠的后代不在 DOM，天然跳过；递归只在可见节点内继续 */
+	private collectTlDescendantEls(node: TlNode, els: HTMLElement[]): void {
+		for (const c of node.children) {
+			const el = this.nodeEls.get(c.item.id);
+			if (el) {
+				els.push(el);
+				this.collectTlDescendantEls(c, els);
+			}
+		}
 	}
 
 	/** 条目精度对应的拖动单位：含日＝天（灵敏度沿用比例尺 TL_PX_PER_DAY 逐日）、只含月＝月、纯年＝年（后两者用 TL_DRAG_PX_PER_UNIT，保证正常拖动距离内就能整年/整月增减）。char 供浮标文案 */

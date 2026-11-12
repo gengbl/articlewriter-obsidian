@@ -9,7 +9,7 @@
 - **六阶段与命令映射**（阶段只编排、不重复实现生成逻辑，一律直接调用既有 cmd 方法）：
   | 阶段 | 命令 | 说明 |
   | --- | --- | --- |
-  | worldview | `worldview-generate`（/worldview-generate，**新增命令**） | 一句话设定 → 书级《案头资料/世界观.md》，阶段 0 模型 |
+  | worldview | `worldview-generate`（/worldview-generate，v0.3.0+ 命令；v0.3.7+ 起为写作阶段 0 `PHASE_WORLDVIEW`） | 一句话设定 → 书级《案头资料/世界观.md》，阶段 0 模型 |
   | planning | `planning-guide-worldview`（/planning-guide-worldview） | 复用既有命令 |
   | book-outline | `book-outline-generate`（/book-outline-generate） | 复用既有命令 |
   | volumes | `book-outline-to-volumes`（/book-outline-to-volumes） | **平铺模式整阶段跳过**（无卷） |
@@ -30,7 +30,7 @@
   - **阶段之间**（无流式生成时）关面板＝不影响流水线继续——面板关闭后插件仍缓存其实例（`lastGenPanel`），只有真正的 abort 信号才判停。
   - 已在运行时重复启动被拒（提示先停止）。
 
-- **`worldview-generate`（/worldview-generate）单独运行语义**：流水线首阶段但也是独立命令——一句话设定优先取 state.one_line（auto 运行时取流水线参数），空则弹窗补问（补问值写回 state.one_line 作下次默认）；已有非空**直接覆盖、不确认**（流水线语义，手动运行同口径）；固定 H2 小节结构（「世界基本规则」「世界观红线」必含）、首行 H1，落盘走 `setWorldDoc`（统一补规范 H1、剥模型自带 H1）；上下文＝书籍信息＋创作规范（锁定）＋张力规则，按阶段 0 引用文档配置框过滤注入，**目标文档自身不注入**。
+- **`worldview-generate`（/worldview-generate）单独运行语义**：流水线首阶段但也是独立命令——**v0.3.7+ 手动运行一律弹 multiline 窗确认一句话设定**（state.one_line 有则预填可改、无则空框；「确定」/Ctrl+回车提交，值与盘上不同时写回 state.one_line），auto 运行免交互取流水线参数；已有非空**直接覆盖、不确认**（流水线语义，手动运行同口径）；固定 H2 小节结构（「世界基本规则」「世界观红线」必含）、首行 H1，落盘走 `setWorldDoc`（统一补规范 H1、剥模型自带 H1）；上下文＝书籍信息＋张力规则（**v0.3.5+** 旧「创作规范（锁定）」已随写作指南体系废弃），按阶段 0 引用文档配置框过滤注入（默认清单含 `skill:世界观生成框架`，见 [l2-settings-llm-config.md](./l2-settings-llm-config.md)），**目标文档自身不注入**。
 
 - **export-ai-prompts 覆盖**：大纲域新增「生成世界观 (/worldview-generate)」节（首节），按阶段 0 映射标注模型来源；一句话设定按盘上 state.one_line 装配，空则占位符注明「运行时弹窗补问」。
 

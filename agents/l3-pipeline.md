@@ -79,5 +79,5 @@
 - `src/prompts.ts`（:1262–）：`WORLDVIEW_GEN_SYSTEM_PROMPT` / `WorldviewGenInput { bookTitle, premise, contextDocs? }` / `buildWorldviewGenPrompt`——固定 H2 骨架（「世界基本规则」「世界观红线」必含）、首行 H1、只写设定不写情节；`pushContextDocs` 注入调用方装配块。
 - `src/story_manager.ts` `setWorldDoc`（:2625）：全量写书级《案头资料/世界观.md》，剥正文首部 H1、统一补 `# <书名> 世界观`（与 setPlanningGuide 同口径）。读取侧 `readWorldDoc().fullText`（stripComments 全文）供预检与上下文注入。
 - `src/state_doc.ts`：`one_line?: string`——KEYS 白名单含 `one_line`，空串视为未设置、仅非空写回。
-- `cmdGenerateWorldview`（main.ts :5172–）：阶段 0 `getPhaseLlmSetup(0)`；上下文 pairs＝book_info/guide（锁定）/tension_rules 经 `orderRefDocSpecs(pairs, phaseRefDocKeys(0), { guideKey: "guide" })` 过滤；流式完成自动落盘（auto 语义直接保存）；已有非空直接覆盖不确认。
+- `cmdGenerateWorldview`（main.ts :5292–，装配 :5312）：阶段 0 `getPhaseLlmSetup(PHASE_WORLDVIEW)`（v0.3.7+ 世界观生成为独立写作阶段）；上下文 pairs＝book_info/tension_rules（~~guide（锁定）~~**v0.3.5+ 写作指南体系整体废弃**：guide 对与 `guideKey` 选项已删除）经 `orderRefDocSpecs(pairs, phaseRefDocKeys(PHASE_WORLDVIEW), { bookSkillDir, bookSkillNames })` 过滤（默认清单含 `skill:世界观生成框架`；v0.3.4+ 书籍技能追加注入）；流式完成自动落盘（auto 语义直接保存）；已有非空直接覆盖不确认。
 - export-ai-prompts：features 列表「审阅当前章」后插「生成世界观 (/worldview-generate)」；trySec 节在「大纲域」首节，标题与 features 逐字节一致（选择键）。premise 按盘上 state.one_line，空则占位符「（state.one_line 为空：运行时弹窗补问一句话设定）」。

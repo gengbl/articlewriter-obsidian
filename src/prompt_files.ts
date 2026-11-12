@@ -4,7 +4,6 @@
  * - 本模块按声明顺序读取文件（经注入的 reader，vault 文档与插件数据文件双后端）、清洗（去注释/去标题行/自定义 transform）、
  *   去重（文件路径去重 + 清洗后内容去重，先到先赢——数组顺序即优先级）、按 header 分节包装，最终 join 成完整提示词块串；
  * - 内联动态块（【书籍信息】/【卷列表】等调用方计算文本）以 text 条目混排进同一列表，享受同一套去重与包装。
- * 汇总《写作指南汇总.md》不再进运行时提示词（仅留作用户查看产物）：调用方直接列出三层指南原文文件。
  */
 import { stripComments } from "./md_docs";
 
@@ -16,7 +15,7 @@ export interface PromptSpec {
 	file?: string;
 	/** 内联动态文本块（调用方计算：书籍信息 / 卷列表 / 用户输入大纲等） */
 	text?: string;
-	/** 分节标题；缺省 = 只输出正文（由调用方并入自己的包装，如【创作规范】由 assembleSystemPrompt 包装） */
+	/** 分节标题；缺省 = 只输出正文（由调用方并入自己的包装） */
 	header?: string;
 	/** 去 HTML 注释（文件条目默认 true；false = 原样保留） */
 	stripComments?: boolean;

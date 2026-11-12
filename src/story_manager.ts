@@ -10,7 +10,7 @@ import {
 	parseStateDoc,
 } from "./state_doc";
 export type { ChapterMeta, StoryState } from "./state_doc";
-import type { StoryState } from "./state_doc";
+import type { ChapterMeta, StoryState } from "./state_doc";
 import { DEFAULT_TENSION_RULES } from "./tension_rules_default";
 import {
 	CHAPTER_BODY_TEMPLATE,
@@ -57,7 +57,7 @@ export const MANUSCRIPT_DIR_NAME = "书稿";
 export const VOLUME_DOCS_DIR_NAME = "文档";
 
 /** 书根系统管理项（迁移不搬动、不计入「案头资料」；隐藏点文件另行按前缀跳过） */
-const ROOT_SYSTEM_NAMES = new Set([STATE_DOC_NAME, LEGACY_STATE_JSON, "WRITING_GUIDE.md", "写作指南汇总.md", "AI提示词", "_backup", "卷.md"]);
+const ROOT_SYSTEM_NAMES = new Set([STATE_DOC_NAME, LEGACY_STATE_JSON, "AI提示词", "_backup", "卷.md"]);
 
 /** 人物关系面板数据源（v0.1.9+）：一层《人物关系.md》的归属层级、展示标签、实际路径与原文（文件缺失时 text 为空串） */
 export interface RelationshipDocSource {
@@ -340,7 +340,7 @@ export class StoryManager {
 	 * 旧格式 → 新物理结构一次性迁移引擎（幂等、可重跑）：
 	 * ① 卷目录（书根）→ 整体 rename 到 书稿/<卷>/（章节目录随迁），再建「文档/」子目录并把卷直属 TFile 移入（legacy 前缀名归一裸基名）；
 	 * ② 引言/ → 书稿/引言/；③ 书根章节目录 → 书稿/；④ 书根其余非系统项（九件套 + 用户文件/文件夹）→ 案头资料/。
-	 * 系统项（故事状态.md / story_state.json / WRITING_GUIDE.md / 写作指南汇总.md / AI提示词/ / _backup/ / 卷.md）留书根；隐藏点文件跳过不搬。
+	 * 系统项（故事状态.md / story_state.json / AI提示词/ / _backup/ / 卷.md）留书根；隐藏点文件跳过不搬。
 	 * 冲突按 Obsidian 惯例加 ` (N)` 后缀；目标文件夹已存在时 mergeMoveFolder 逐子项合并后清源。全程 vault.rename/createFolder 直操，不经 writeDoc。
 	 */
 	private async migrateStoryLayout(storyName: string): Promise<void> {
@@ -1261,15 +1261,7 @@ private emptyState(storyName: string): StoryState {
 		return rows.reduce((s, r) => s + r.words, 0);
 	}
 
-	// ---------- 写作指南 WRITING_GUIDE.md（三层中的两个 vault 文件层：小说级 <书名>/ > 用户级 <work_dir>/；第三层系统级存插件设置 data.json，见 main.ts guideLayers） ----------
-
-	bookGuidePath(storyName: string): string {
-		return `${this.storyPath(storyName)}/WRITING_GUIDE.md`;
-	}
-
-	userGuidePath(): string {
-		return `${this.getStoryRoot().replace(/\/+$/, "")}/WRITING_GUIDE.md`;
-	}
+	// ---------- 指定路径文档读写（使用说明等 vault md 通用；v0.3.5+ 旧三层 WRITING_GUIDE.md 已废弃） ----------
 
 	/** 读取指定路径的指南原文；不存在返回 null */
 	async readGuideAt(path: string): Promise<string | null> {
@@ -1282,7 +1274,7 @@ private emptyState(storyName: string): StoryState {
 		await this.writeDoc(path, text.endsWith("\n") ? text : text + "\n");
 	}
 
-	// ---------- 系统级指南：插件数据目录 .obsidian/plugins/<id>/WRITING_GUIDE.md ----------
+	// ---------- 插件数据目录文件读写：.obsidian/plugins/<id>/…（工作区、禁用词等通用） ----------
 	// 该文件在 Obsidian 配置目录下、不被元数据索引收录，getAbstractFileByPath 恒返回 null；
 	// 故走 DataAdapter 按文件系统相对路径读写（vault 根下任意路径均可），不依赖 TFile。
 
@@ -3336,6 +3328,46 @@ private emptyState(storyName: string): StoryState {
 		}
 		await this.saveState(storyName, state);
 		return { chapters: diskChapters.length, totalWords: state.total_words, createdDocs: created, ...(volumeFixed ? { volumeFixed } : {}) };
+	}
+
+	// ---------- 更新故事状态文档（/update-state，轻量同步）----------
+
+	/**
+	 * 以磁盘章节为准更新《故事状态.md》的 chapters 镜像：缺失的补、多余的删，全部条目刷新 title/volume/words
+	 * （卷归属以目录位置为准，同 /scan）；顺带重算 total_words、校正悬空 current_chapter/current_volume。
+	 * 书级参数与正文原样不动（saveState 语义：只重写 frontmatter）、不创建任何模板文档、不改《章节信息》——
+	 * 补齐缺失文档/修正卷字段等重活仍走 rescanStory（/scan）。
+	 */
+	async syncStateDoc(storyName: string): Promise<{ added: number; removed: number; refreshed: number; chapters: number; totalWords: number }> {
+		const diskChapters = await this.listChapters(storyName);
+		const seen = new Set<string>(diskChapters.map((c) => c.key));
+		const state = (await this.loadState(storyName)) ?? this.emptyState(storyName);
+		let added = 0;
+		let removed = 0;
+		let refreshed = 0;
+		for (const ch of diskChapters) {
+			const f = this.vault.getAbstractFileByPath(this.resolveChapterDocPath(`${ch.dir.path}/章节.md`));
+			const words = countPureWords(f instanceof TFile ? stripAiWordMarks(await this.vault.read(f)) : ""); // 与 /scan 同口径：剥离错别字等标记防虚增
+			const meta: ChapterMeta = { title: ch.title, words, volume: ch.vol ?? undefined }; // 卷归属以目录位置为准
+			const prev = state.chapters[ch.key];
+			if (!prev) added++;
+			else if (prev.title !== meta.title || (prev.volume ?? "") !== (meta.volume ?? "") || prev.words !== meta.words) refreshed++;
+			state.chapters[ch.key] = meta;
+		}
+		for (const key of Object.keys(state.chapters)) {
+			if (!seen.has(key)) {
+				delete state.chapters[key]; // 磁盘已无对应目录的多余条目（复合键口径，同 /scan）
+				removed++;
+			}
+		}
+		await this.recomputeTotalWords(storyName, state);
+		const vols = await this.loadVolumes(storyName).catch((): Record<string, doc.VolumeInfo> => ({}));
+		if (state.current_volume && !vols[state.current_volume]) delete state.current_volume;
+		if (state.current_chapter != null && !seen.has(state.current_chapter)) {
+			state.current_chapter = diskChapters.length ? diskChapters[diskChapters.length - 1].key : null; // 悬空激活回退阅读序末章（同 validatedState 语义）
+		}
+		await this.saveState(storyName, state);
+		return { added, removed, refreshed, chapters: diskChapters.length, totalWords: state.total_words };
 	}
 
 	// ---------- 编写类型（/style）----------
