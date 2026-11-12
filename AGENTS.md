@@ -26,9 +26,8 @@
 | 文档 | 覆盖范围 |
 | --- | --- |
 | [agents/command-reference.md](./agents/command-reference.md) | 各命令语义/参数/坑位速查表、移动语义陷阱（updateScene/updateCharacter） |
-| **等等命令**[agents/code-structure.md](./agents/code-structure.md) | 源码物理结构横切地图：构建产物链、src/ 模块职责与行数、依赖分层、main.ts 内部区块定位、根目录遗留文件、已知重复与债务 |
-| **等等命令**[agents/process-rules.md](./agents/process-rules.md) | 任务收尾：工作完成后更新写回约定、验证要求 |
-| **等等命令**[PROMPT_MATRIX.md](./PROMPT_MATRIX.md) | 分阶段生成提示词矩阵：阶段 0–3 × 命令 → system/user prompt 来源与行号、上下文注入点、输出解析校验；与 export-ai-prompts 18 节交叉核对（改提示词组装时同步更新） |
+| **等待命令**[agents/code-structure.md](./agents/code-structure.md) | 源码物理结构横切地图：构建产物链、src/ 模块职责与行数、依赖分层、main.ts 内部区块定位、根目录遗留文件、已知重复与债务 |
+| **等待命令**[agents/process-rules.md](./agents/process-rules.md) | 任务收尾：工作完成后更新写回约定、验证要求 |
 
 ## 推送指南（GitHub 镜像，强制）
 
@@ -36,7 +35,7 @@
 
 1. 把本次改动的文件逐一拷入 `/home/fosky/workspace/articlewriter-obsidian-git/`（GitHub 镜像 `gengbl/articlewriter-obsidian` 的本地克隆；历史为工作树拷贝式独立提交、非主仓 clone，不能直接 push 同一对象）。
 2. **所有 git 操作都在 `/home/fosky/workspace/articlewriter-obsidian-git` 里执行**：`git add <显式列出>` + **与主仓同消息** commit + `git push origin main`（SSH remote `git@github.com:gengbl/articlewriter-obsidian.git`）。
-3. 发布日在 GitHub 镜像打标签并推送：**无 v 前缀**（`0.0.12`）。推新 tag 即触发 `.github/workflows/release.yml`——CI 从源码重建、attestation 签名并自动创建/更新 GitHub Release（资产 = `main.js` / `manifest.json` / `styles.css` 三个散文件；写作指南 `WRITING_GUIDE.md` 已全面停止发布——不上 GitHub Release；不上传 zip）。tag 触发的运行取**打 tag 那一刻**的 workflow 文件，改过 CI 须确保改动已包含在被 tag 的 commit 中。
+3. 发布日在 GitHub 镜像打标签并推送：**无 v 前缀**（`0.0.12`）。推新 tag 即触发 `.github/workflows/release.yml`——CI 从源码重建、attestation 签名并自动创建/更新 GitHub Release（资产 = `main.js` / `manifest.json` / `styles.css` 三个散文件；不上传 zip）。tag 触发的运行取**打 tag 那一刻**的 workflow 文件，改过 CI 须确保改动已包含在被 tag 的 commit 中。
 
 手动回落方案等细节见 [agents/l3-build-deploy.md](./agents/l3-build-deploy.md)「GitHub 镜像同步（强制）」与 [RELEASE.md](./RELEASE.md)。
 
@@ -60,7 +59,7 @@
 - **禁止并行处理**：执行任何任务一律串行——一次只发起一个工具调用 / 操作，拿到其结果后再进行下一步；即便多个操作彼此独立、本可并发，也不得批量或同时发起。逐步推进以便每步可核验、避免相互覆盖的并发改动。
 - **代码改动后必须跑通 `npm run build`（tsc 零错误）**；可再 `node --check release/main.js` 兜底。**发布门禁**：提交/发布前 `npm run lint`（eslint 类型感知检测四类 no-unsafe-*：assignment/call/member-access/return）必须零违规，命中任一即不得发布——配置在仓库根 `eslint.config.mjs`，规则与背景见 [RELEASE.md](./RELEASE.md)「发布门禁」节。
 - **每次有代码变化，必须检查新增/修改行有无冗余类型断言**：接收方已接受原始窄化类型的断言一律删除、直接赋值（连同关联 eslint-disable 注释）；合法保留场景与判定细则见 [agents/process-rules.md](./agents/process-rules.md)「验证要求」。
-- **每次有功能/命令/交互修改，马上更新对应内置文档**——以下文件均为独立 Markdown、由 esbuild `.md=text` loader 打包进 release/main.js，运行时按需从包内恢复写盘：[docs/使用说明.md](./docs/使用说明.md)（→ work_dir《使用说明.md》，仅缺失/空才写）、根 [WRITING_GUIDE.md](./WRITING_GUIDE.md)（系统级创作规范默认内容，播种到插件数据目录；「重新生成系统写作指南」用它覆盖重置）、[docs/WRITING_GUIDE_template.md](./docs/WRITING_GUIDE_template.md)（用户级/小说级空模板，「生成写作指南」投放；**改动 WRITING_GUIDE.md 段落结构后须用 prompts.ts `buildEmptyGuideTemplate` 重生成它**）。改完文档照常走 npm run build + 部署即可生效。
+- **每次有功能/命令/交互修改，马上更新对应内置文档**——以下文件均为独立 Markdown、由 esbuild `.md=text` loader 打包进 release/main.js，运行时按需从包内恢复写盘：[docs/使用说明.md](./docs/使用说明.md)（→ work_dir《使用说明.md》，仅缺失/空才写）、根 [TENSION_RULES.md](./TENSION_RULES.md)（内置张力规则，播种到书内案头资料/张力规则.md）。v0.3.5 起三层写作指南体系废弃：根 `WRITING_GUIDE.md`、`docs/WRITING_GUIDE_template.md`、`docs/guide-types/` 及对应 import 已全部移除，字数配置改走书级《故事状态.md》`word_range`；v0.3.6 起根 `BANNED_WORDS.md` 也已 Skill 化删除——词表事实源迁到 `src/skills_default.ts` DEFAULT_SKILLS 的「网文高频禁用词清单」条目（正文逐字内嵌、不再走 .md loader）。改完文档照常走 npm run build + 部署即可生效。
 - 「打包发布」类任务先读 [RELEASE.md](./RELEASE.md)（版本号规则、GitHub 镜像 tag + CI 自动上架流程与坑位；GitHub CI 只上三个散文件、不传 zip）。
 - **发布后必核对 GitHub Release**：每个已打 tag 的版本都要在 GitHub 有对应 Release，且资产恰为 `main.js` / `manifest.json` / `styles.css` 三个散文件。收尾用 REST API `GET …/releases/tags/v<版本>` 校验其存在；缺失则走手动回落方案（Web UI 上传）。详见 [agents/l3-build-deploy.md](./agents/l3-build-deploy.md)。
 - 变更历史见 **推送时修改[CHANGELOG.md](./CHANGELOG.md)**（增加本次修改的汇总，摘要为一到两条记录）。

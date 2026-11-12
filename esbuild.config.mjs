@@ -44,7 +44,7 @@ let options = {
 };
 
 fs.mkdirSync("release", { recursive: true }); // 编译产物统一放 release/（该目录已 gitignore，不入库）
-// release/ 即可分发目录：把非编译但插件必需的文件一并拷入。写作指南 WRITING_GUIDE.md 不再随包发布——其文本已由 .md=text 内联进 main.js（见 src/system_guide_default.ts），首启由运行时播种系统级文件；移出 release/ 以通过社区校验器「无额外不支持文件」检查
+// release/ 即可分发目录：把非编译但插件必需的文件一并拷入；移出 release/ 的 md（如旧 WRITING_GUIDE.md、BANNED_WORDS.md）以通过社区校验器「无额外不支持文件」检查——v0.3.5+ 写作指南体系已废弃；v0.3.6+ 禁用词 Skill 化，仓库根 BANNED_WORDS.md 已删（词表内联进 src/skills_default.ts），docs/使用说明.md 等内置 md 均由 .md=text loader 内联进 main.js
 for (const f of ["manifest.json", "styles.css"]) fs.copyFileSync(f, `release/${f}`);
 
 if (watch) {

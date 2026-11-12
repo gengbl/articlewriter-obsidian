@@ -1085,8 +1085,11 @@
 	font-weight: bold;
 }
 
-/* 纵向时间轴条目列表：左侧连续竖线 + 节点圆点，条目自上而下按时间点升序排列 */
+/* 纵向时间轴条目列表：左侧连续竖线 + 节点圆点，条目自上而下按时间点升序排列。
+   --tl-indent＝一个轮廓深度的宽度（行缩进/圆点列间距/导引线列间距/肘形接线宽度共用）；--tl-guide-start＝第 1 层（depth 1）圆点列的横坐标（item 坐标系）——两值联动，改缩进只改 --tl-indent */
 .aw-tl-list {
+	--tl-indent: 22px;
+	--tl-guide-start: 12px;
 	position: relative;
 	margin: 4px 0 6px 5px;
 	padding-left: 14px;
@@ -1104,9 +1107,17 @@
 
 .aw-tl-item {
 	position: relative;
-	padding: 2px 6px 8px 10px;
+	padding: 2px 6px 8px calc(14px + var(--tl-d, 0) * var(--tl-indent, 22px)); /* 左缩进＝轮廓深度（每级 --tl-indent，--tl-d 由 .tl-d<n> 深度类给出）；基线 14px 把内容左缘让过子列短桩（列 d+1＝12px＋d×indent 处），圆点/导引线另行按 --tl-d 落列（见 .aw-tl-dot / .aw-tl-branch-line） */
 	border-radius: 4px;
 }
+
+/* 轮廓深度缩进类（v0.3.3+ 扁平渲染取代 .aw-tl-kids 嵌套）：深度＝文档结构挂父链长度，≥6 归入 tl-d6（代码侧封顶） */
+.aw-tl-item.tl-d1 { --tl-d: 1; }
+.aw-tl-item.tl-d2 { --tl-d: 2; }
+.aw-tl-item.tl-d3 { --tl-d: 3; }
+.aw-tl-item.tl-d4 { --tl-d: 4; }
+.aw-tl-item.tl-d5 { --tl-d: 5; }
+.aw-tl-item.tl-d6 { --tl-d: 6; }
 
 .aw-tl-item:hover {
 	background: var(--background-modifier-hover);
@@ -1147,21 +1158,91 @@
 	white-space: nowrap;
 }
 
-/* 节点圆点（真实元素 .aw-tl-dot，替代旧 ::before 伪元素以便点击）：圆心对齐竖线中轴（list/kids padding-left 14px，dot 左缘贴容器内边）；默认 8px＝二级基准。颜色＝同级标题色（Obsidian 核心 --hN-color 变量、主题可覆写；经 color＋currentColor 实现，核心默认值 inherit 时正常继承文本色而非透明；变量未定义的旧版 Obsidian 回落旧配色） */
+/* 节点圆点（真实元素 .aw-tl-dot，替代旧 ::before 伪元素以便点击）：圆心落在**本行深度列**的横坐标（--tl-d × --tl-indent − 10px，与同深度导引线同一列；depth 0＝主轴中心＝list 坐标 4px − padding-left 14px）——父子层级沿竖向通道一眼可辨。translateX(-50%) 让圆心恰在 left 坐标，各级尺寸不同也无需微调 left；默认 8px＝二级基准。颜色＝级别色变量 --tl-lv-color（lv-N 类定义，见下；缺省＝二级 --h2-color），背景走 currentColor——折叠标识 .aw-tl-caret 同用该变量，圆点与 caret 同色成组（经 color＋currentColor 实现，核心默认值 inherit 时正常继承文本色而非透明；变量未定义的旧版 Obsidian 回落旧配色） */
 .aw-tl-dot {
 	position: absolute;
-	left: -14px;
+	left: calc(var(--tl-d, 0) * var(--tl-indent, 22px) - 10px);
+	transform: translateX(-50%);
 	top: 7px;
 	width: 8px;
 	height: 8px;
 	border-radius: 50%;
-	color: var(--h2-color, var(--interactive-accent));
+	color: var(--tl-lv-color, var(--h2-color, var(--interactive-accent)));
 	background: currentColor;
 }
+
+/* 级别色变量（v0.3.3+ caret 同色需求收敛的单一来源）：＝同级标题色 --hN-color，供圆点与折叠标识 caret 共用；二级不定义、走使用处 --tl-lv-color 的缺省链（--h2-color→interactive-accent；下列回落值与旧 lv-N .aw-tl-dot 内联配色逐一相同） */
+.aw-tl-item.lv-1 { --tl-lv-color: var(--h1-color, var(--color-red)); }
+.aw-tl-item.lv-3 { --tl-lv-color: var(--h3-color, var(--color-green)); }
+.aw-tl-item.lv-4 { --tl-lv-color: var(--h4-color, var(--color-yellow)); }
+.aw-tl-item.lv-5 { --tl-lv-color: var(--h5-color, var(--text-faint)); }
 
 /* 有子事件的圆点可点击切换折叠状态 */
 .aw-tl-dot.has-kids {
 	cursor: pointer;
+}
+
+/* 可折叠标识（▾＝展开中 / ▸＝已折叠）：排在时间徽章之后、随其后流动——一眼看出哪行有子事件、当前折叠与否；点击与圆点同一切换（timeline_view renderRow）。字号再大一半（0.85em→1.3em）、颜色＝级别色 --tl-lv-color（与本级圆点同色成组，见 .aw-tl-dot 段；占位宽 1.2em 随字号等比缩放） */
+.aw-tl-caret {
+	display: inline-block;
+	width: 1.2em;
+	margin-right: 2px;
+	text-align: center;
+	font-size: 1.3em;
+	line-height: 1;
+	color: var(--tl-lv-color, var(--h2-color, var(--interactive-accent))); /* ＝本级圆点颜色 */
+	cursor: pointer;
+	user-select: none;
+}
+
+.aw-tl-caret:hover {
+	color: var(--interactive-accent); /* 底色已是级别色，hover 换强调色作可点反馈（旧 text-muted→text-normal 的加深语义不再适用） */
+}
+
+/* 轮廓层级导引线（attachTlGuides，v0.3.3+ 视觉增强）：让扁平时间序里的父子从属关系可见。
+   列 k（1≤k≤封顶 6）横坐标＝--tl-guide-start＋(k-1)×--tl-indent，与行缩进/圆点列同一公式（--tl-guide-start＝--tl-indent−10px，故深度 k 行圆点圆心恰落在列 k）——同一祖先支的子行被同一条竖向通道串起。
+   nth-child 映射＝列号：代码侧恒把 branch-line 生成为行/间隔块的前 depth 个子元素，nth-child(k) 即列 k；depth＞6 已在代码封顶（tl-d6） */
+.aw-tl-branch-line {
+	position: absolute;
+	top: 0;
+	bottom: 0;
+	width: 1px;
+	background: var(--background-modifier-border);
+	opacity: 0.55; /* 比主轴略淡：只做层级通道暗示，不抢主轴的时间流视觉 */
+}
+
+.aw-tl-branch-line:nth-child(1) { left: var(--tl-guide-start, 12px); }
+.aw-tl-branch-line:nth-child(2) { left: calc(var(--tl-guide-start, 12px) + var(--tl-indent, 22px)); }
+.aw-tl-branch-line:nth-child(3) { left: calc(var(--tl-guide-start, 12px) + 2 * var(--tl-indent, 22px)); }
+.aw-tl-branch-line:nth-child(4) { left: calc(var(--tl-guide-start, 12px) + 3 * var(--tl-indent, 22px)); }
+.aw-tl-branch-line:nth-child(5) { left: calc(var(--tl-guide-start, 12px) + 4 * var(--tl-indent, 22px)); }
+.aw-tl-branch-line:nth-child(6) { left: calc(var(--tl-guide-start, 12px) + 5 * var(--tl-indent, 22px)); }
+
+/* 子列短桩（仅本行有子事件）：位于子级列（depth+1），自本行圆点下缘垂到行尾——与下方子行/间隔块的同列导引线接续，父→全部子事件的通道连续不断 */
+.aw-tl-branch-stub {
+	position: absolute;
+	top: 17px; /* 圆点下缘＝圆心线 11px＋最大半径 6px（一级 12px 圆点） */
+	bottom: 0;
+	left: calc(var(--tl-guide-start, 12px) + var(--tl-d, 0) * var(--tl-indent, 22px)); /* 列 depth+1：guide-start＋(k-1)×indent，k＝d+1 */
+	width: 1px;
+	background: var(--background-modifier-border);
+	opacity: 0.55;
+}
+
+/* 肘形接线（仅 depth≥1 行）：从父级列（depth-1）横拉到本行圆点（depth 列），横杆压在圆点圆心线 top:11px 上——读出「挂在谁名下」；depth 0 无需（主轴本身就是其父线） */
+.aw-tl-elbow {
+	position: absolute;
+	top: 11px;
+	left: calc(var(--tl-guide-start, 12px) + (var(--tl-d, 0) - 2) * var(--tl-indent, 22px));
+	width: var(--tl-indent, 22px);
+	height: 1px;
+	background: var(--background-modifier-border);
+	opacity: 0.55;
+}
+
+/* 时间比例留白块（高度由代码按天设置）：position:relative 供通高导引线挂接——空白里层级通道不断（留白＝流逝时间，通道＝结构从属） */
+.aw-tl-spacer {
+	position: relative;
 }
 
 /* 按事件级别区分（标题深度 #=一级 … ######=六级，lv-5 覆盖 ≥5 级）：圆点尺寸 + 颜色（＝同级标题色 --hN-color）+ 正文强调。
@@ -1171,28 +1252,24 @@
 	top: 5px;
 	width: 12px;
 	height: 12px;
-	color: var(--h1-color, var(--color-red));
 }
 
 .aw-tl-item.lv-3 .aw-tl-dot {
 	top: 7.5px;
 	width: 7px;
 	height: 7px;
-	color: var(--h3-color, var(--color-green));
 }
 
 .aw-tl-item.lv-4 .aw-tl-dot {
 	top: 8px;
 	width: 6px;
 	height: 6px;
-	color: var(--h4-color, var(--color-yellow));
 }
 
 .aw-tl-item.lv-5 .aw-tl-dot {
 	top: 8.5px;
 	width: 5px;
 	height: 5px;
-	color: var(--h5-color, var(--text-faint));
 }
 
 .aw-tl-item.lv-1 .aw-tl-event {
@@ -1215,25 +1292,9 @@
 	font-size: var(--font-ui-smaller);
 }
 
-/* 子事件容器：嵌套再缩进一级 + 自己的竖线（几何与父级 .aw-tl-list 相同，整体右移 margin-left） */
-.aw-tl-kids {
-	position: relative;
-	margin-left: 8px;
-	padding-left: 14px;
-}
-
-.aw-tl-kids::before {
-	content: "";
-	position: absolute;
-	left: 3px;
-	top: 0;
-	bottom: 4px;
-	width: 2px;
-	background: var(--background-modifier-border);
-}
-
-/* 时间跳跃标记块：相邻条目间隔超过 90 天时把比例留白压成此定高行（居中「⋯ 约 N 年 ⋯」小字），防极端跨度的孤立时间点拉爆画布；list/kids 竖线自动贯穿 */
+/* 时间跳跃标记块：相邻条目间隔超过 90 天时把比例留白压成此定高行（居中「⋯ 约 N 年 ⋯」小字），防极端跨度的孤立时间点拉爆画布；list 竖线自动贯穿；position:relative 供通高导引线挂接（跳跃里层级通道同样不断） */
 .aw-tl-skip {
+	position: relative;
 	display: flex;
 	align-items: center;
 	justify-content: center;
@@ -1245,9 +1306,10 @@
 	color: var(--text-faint);
 }
 
-/* 时间点徽章（任意数字；等宽数字避免不同长度跳动） */
+/* 时间点徽章（任意数字；等宽数字避免不同长度跳动）：紧贴圆点右后侧——负 margin 从内容缩进（padding-left 基线 14px）左拉 12px，徽章左缘落在本行深度列圆点圆心右侧 2px 内（圆心线＝--tl-d×--tl-indent−10px），大圆点（一级 12px）压住徽章左端盖住其左边框，读作「该圆点＝此时间点」一体化；徽章不透明背景顺带盖过其后穿过的子列短桩竖线（列 d+1），短桩自圆点下缘 top:17px 起、与徽章基本不冲突 */
 .aw-tl-time {
 	display: inline-block;
+	margin-left: -12px; /* 徽章左缘＝item 坐标 −12px＝圆点圆心右 2px（见上注释）；不能改为缩小 .aw-tl-item 的 padding-left 基线——块级内容（evwrap 等）会穿过子列短桩竖线 */
 	margin-right: 6px;
 	padding: 0 6px;
 	font-size: 0.9em;
@@ -1478,6 +1540,18 @@
 /* 末尾一般承载按钮行（确定/创建/删除）：特异性写到 0,4,0 以免被上面 0,3,0 的 padding 简写覆盖 */
 .aw-form-compact > .setting-item:last-child:not(:first-child) {
 	padding-top: 6px;
+}
+
+/* 弹窗按钮行（保存/取消）成组贴右：上面按钮规则给每个按钮 margin-left:auto，两个按钮时空档被平分、
+   各自撑开（保存落到行中部）；这里隐藏空标签列、control 改 flex-end、清掉按钮 auto，让按钮组整体靠右 */
+.aw-form-compact .setting-item.aw-btns-right > .setting-item-info {
+	display: none;
+}
+.aw-form-compact .setting-item.aw-btns-right > .setting-item-control {
+	justify-content: flex-end;
+}
+.aw-form-compact .setting-item.aw-btns-right .setting-item-control button {
+	margin-left: 0;
 }
 
 .aw-form-compact h3 {
@@ -1808,6 +1882,15 @@
 .aw-phase-tabs-content {
 	padding: 0;
 }
+/* 书籍 Skill 阶段配置弹窗内复用上述 tab 骨架（v0.3.4+）：Modal contentEl 已有内边距，去掉设置页版的外边距与左右内距 */
+.aw-bskill-tabs {
+	margin-top: 8px;
+	padding: 0;
+}
+/* tab 内容区最小高度≈5 行已选 Skill（行≈28px＋gap 4px）＋一点余量：已选很少时弹窗也不塌缩 */
+.aw-bskill-tabs .aw-phase-tabs-content {
+	min-height: 170px;
+}
 /* 模型配置行（全自定义类名，避免嵌套 setting-item 的 CSS 冲突；布局对齐 LLM 全局设置：标签左对齐、下拉框占满剩余宽度） */
 .aw-phase-model-row {
 	display: flex;
@@ -1830,40 +1913,9 @@
 	padding: 0 6px;
 	font-size: 0.9em;
 }
-/* 阶段页内层子标签（身份加强 | 引用文档）：视觉比外层阶段 tab 轻一档 */
-.aw-phase-subtabs-header {
-	display: flex;
-	gap: 4px;
-	margin-top: 8px;
-	border-bottom: 1px solid var(--background-modifier-border);
-}
-.aw-phase-subtab-btn {
-	padding: 4px 10px;
-	background: transparent;
-	border: none;
-	border-bottom: 2px solid transparent;
-	cursor: pointer;
-	font-size: var(--font-ui-smaller);
-	color: var(--text-muted);
-	transition: all 0.2s;
-}
-.aw-phase-subtab-btn:hover {
-	color: var(--text-normal);
-	border-bottom-color: var(--interactive-accent);
-}
-.aw-phase-subtab-btn.is-active {
-	color: var(--text-normal);
-	border-bottom-color: var(--interactive-accent);
-	font-weight: var(--font-bold);
-}
+/* v0.3.4+：阶段页内层子标签（身份加强 | 引用文档）已随身份加强 Skill 化删除，仅剩引用文档直排；aw-phase-subtabs-* 中只保留 content 容器 */
 .aw-phase-subtabs-content {
 	padding: 8px 0 0;
-}
-/* 身份加强容器现在位于子标签内容区内：子标签头已有分隔线，去掉容器自带的上边框/上间距 */
-.aw-phase-subtabs-content .aw-identity-boost-container {
-	margin-top: 0;
-	padding-top: 4px;
-	border-top: none;
 }
 /* LLM 配置 tab 区块（全局设置 + 模型配置两 tab；模型配置页=列表/详情两形态；tab 骨架复用 aw-phase-tabs-*） */
 .aw-llm-row {
@@ -1972,10 +2024,6 @@
 	border-radius: var(--radius-s);
 	background: var(--background-secondary);
 }
-.aw-refdocs-row.is-locked {
-	background: var(--background-secondary-alt);
-	opacity: 0.8;
-}
 .aw-refdocs-lock {
 	flex: 0 0 auto;
 	font-size: 0.9em;
@@ -2005,11 +2053,6 @@
 	overflow: hidden;
 	text-overflow: ellipsis;
 	white-space: nowrap;
-}
-.aw-refdocs-locked-tag {
-	flex: 0 0 auto;
-	font-size: var(--font-ui-smaller);
-	color: var(--text-faint);
 }
 .aw-refdocs-del {
 	flex: 0 0 auto;
@@ -2045,47 +2088,7 @@
 	padding: 0 10px;
 	font-size: var(--font-ui-smaller);
 }
-/* identity_boost 设置项布局 */
-.aw-identity-boost-container {
-	margin-top: 12px;
-	padding-top: 12px;
-	border-top: 1px solid var(--background-modifier-border);
-	width: 100%;
-	max-width: 100%;
-}
-.aw-identity-boost-desc {
-	font-size: var(--font-smaller);
-	color: var(--text-muted);
-	margin-bottom: 8px;
-}
-.aw-identity-boost-display {
-	margin-bottom: 8px;
-	width: 100%;
-}
-.aw-identity-boost-display pre {
-	white-space: pre-wrap;
-	word-break: break-word;
-	margin: 0;
-	min-height: 120px; /* 与编辑框 .aw-identity-boost-textarea 的 min-height 同口径：短/空内容时两态高度一致；长内容时由 main.ts 测量后同步给 textarea */
-	font-family: var(--font-monospace);
-	font-size: var(--font-smaller);
-	color: var(--text-muted);
-	text-align: left;
-}
-.aw-identity-boost-btns {
-	display: flex;
-	gap: 6px;
-	flex-wrap: wrap;
-}
-.aw-identity-boost-textarea {
-	width: 100%;
-	min-width: 0;
-	max-width: 100%;
-	min-height: 120px;
-	margin-bottom: 8px;
-	box-sizing: border-box;
-}
-
+/* v0.3.4+：identity_boost 设置项样式（aw-identity-boost-*）已随身份加强 Skill 化删除——文本编辑改到 SKILLS/ 技能文件（Obsidian 原生编辑） */
 /* 单行 Setting 把「标签之外的整行剩余宽度」全给控件（AutoBookModal「一句话设定」的 textarea）：
    根因——Obsidian 核心 .setting-item-control 是 flex-shrink:0 + flex-basis:60%（旧版为 flex:0 0 auto + justify-content:flex-end），
    而 .setting-item-info 是 flex-grow:1；于是 textarea 只按默认 cols(20) 的宽度靠右摆，长设定在里面横向滚动。

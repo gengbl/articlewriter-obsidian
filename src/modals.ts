@@ -1,8 +1,11 @@
-import { App, Component, MarkdownRenderer, Modal, Notice, SuggestModal, Setting, TFile, TFolder, ToggleComponent } from "obsidian";
+import { App, Modal, Notice, SuggestModal, Setting, TFile, TFolder, ToggleComponent } from "obsidian";
 import { PIPELINE_STAGES, type StageId } from "./pipeline"; // v0.3.0+：AutoBookModal 起始节点下拉（pipeline.ts 纯数据、不 import obsidian，无循环依赖）
 import { parseTimelineTime } from "./md_docs"; // v0.3.3+：EventEditModal 时间点校验（md_docs 纯数据模块，无循环依赖）
+import { type BookSkillPhase } from "./state_doc"; // v0.3.4+：BookSkillPhaseModal 阶段键（state_doc 纯数据模块，无循环依赖）
+import { GENRE_SKILL_NAMES } from "./skills_default"; // v0.3.6+：NewStoryModal 题材下拉（skills_default 纯数据模块，无 import，无循环依赖）
 
-/** 单行文本输入框；提交回调收到值（空串视为取消）。可选 hint：渲染在标题与输入框之间的说明文字（支持 \n 多行，样式 .aw-prompt-hint）；可选 initial：预填初始值（光标置于末尾） */
+/** 文本输入框；提交回调收到值（空串视为取消）。可选 hint：渲染在标题与输入框之间的说明文字（支持 \n 多行，样式 .aw-prompt-hint）；可选 initial：预填初始值（光标置于末尾）；
+ *  multiline（v0.3.7+）：5 行 textarea 占满整行（去无标签行的定宽 info 列＋.aw-prompt-textarea 宽度 100%＋aw-ta-rows 去全局 min-height）＋右对齐「确定/取消」按钮行；回车换行、Ctrl/Cmd+回车或点「确定」提交 */
 export class TextInputModal extends Modal {
 	private submitted = false;
 
@@ -13,31 +16,67 @@ export class TextInputModal extends Modal {
 		private onSubmit: (value: string) => void | Promise<void>,
 		private onCancel?: () => void,
 		private hintText?: string,
-		private initialText?: string
+		private initialText?: string,
+		private multiline?: boolean
 	) {
 		super(app);
 	}
 
 	onOpen(): void {
 		this.contentEl.createEl("h3", { text: this.title });
+		if (this.multiline) this.contentEl.addClass("aw-form-compact"); // control 改 stretch，textarea width:100% 才真正撑满整行（.aw-prompt-textarea 单用时无标签行 control 是 flex:0 auto）
 		if (this.hintText) this.contentEl.createDiv({ text: this.hintText, cls: "aw-prompt-hint" }); // v0.1.6+：详细说明放输入框上方（原仅占位符提示、易被忽略）
-		new Setting(this.contentEl).addText((text) => {
-			text.setPlaceholder(this.placeholderText);
-			if (this.initialText) text.inputEl.value = this.initialText; // 预填（可选；回车即按预填值提交）
-			text.inputEl.focus();
-			window.setTimeout(() => { const n = text.inputEl.value.length; text.inputEl.setSelectionRange(n, n); }, 0); // 光标置末尾，避免选中态误删预填内容
-			text.inputEl.addEventListener("keydown", (e) => {
-				if (e.key === "Enter") {
-					e.preventDefault();
-					const value = text.inputEl.value.trim();
-					this.submitted = true;
-					this.close();
-					void this.onSubmit(value);
-				} else if (e.key === "Escape") {
-					this.close(); // onClose 触发 onCancel
-				}
+		const commit = (el: HTMLInputElement | HTMLTextAreaElement) => {
+			const value = el.value.trim();
+			this.submitted = true;
+			this.close();
+			void this.onSubmit(value);
+		};
+		const caretToEnd = (el: HTMLInputElement | HTMLTextAreaElement) => {
+			const n = el.value.length;
+			el.setSelectionRange(n, n); // 光标置末尾，避免选中态误删预填内容
+		};
+		if (this.multiline) {
+			let taEl: HTMLTextAreaElement | undefined; // 供下方「确定/取消」按钮行取值
+			const row = new Setting(this.contentEl).addTextArea((ta) => {
+				taEl = ta.inputEl;
+				ta.setPlaceholder(this.placeholderText);
+				if (this.initialText) ta.inputEl.value = this.initialText;
+				ta.inputEl.classList.add("aw-prompt-textarea", "aw-ta-rows"); // 宽度复用既有多行输入类（100% 占满行宽）；aw-ta-rows 去掉全局 240px min-height，让 rows 生效
+				ta.inputEl.rows = 5; // 5 行高
+				ta.inputEl.focus();
+				window.setTimeout(() => caretToEnd(ta.inputEl), 0); // 延到 Modal.open() 自动聚焦（会全选预填文本）之后再置光标
+				ta.inputEl.addEventListener("keydown", (e) => {
+					if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
+						e.preventDefault();
+						commit(ta.inputEl); // Ctrl/Cmd+回车提交
+					} else if (e.key === "Escape") {
+						this.close(); // onClose 触发 onCancel
+					} // 多行模式裸回车＝插入换行（textarea 原生行为，不拦截）
+				});
 			});
-		});
+			row.infoEl.remove(); // 无标签行：去掉 .aw-form-compact 定宽 6.5em 的空 info 列，textarea 才真正占满整行（否则左侧留白）
+			// 显式提交/取消按钮行（同 SkillEditModal 口径）：多行裸回车是换行不能只靠键盘提交；取消走 close()→onClose→submitted=false→onCancel
+			const btns = new Setting(this.contentEl)
+				.addButton((btn) => btn.setButtonText("确定").setCta().onClick(() => { if (taEl) commit(taEl); }))
+				.addButton((btn) => btn.setButtonText("取消").onClick(() => this.close()));
+			btns.settingEl.addClass("aw-btns-right"); // 确定/取消成组贴右（既有类：隐藏空标签列＋control flex-end＋清 auto margin）
+		} else {
+			new Setting(this.contentEl).addText((text) => {
+				text.setPlaceholder(this.placeholderText);
+				if (this.initialText) text.inputEl.value = this.initialText; // 预填（可选；回车即按预填值提交）
+				text.inputEl.focus();
+				window.setTimeout(() => caretToEnd(text.inputEl), 0); // 光标置末尾，避免选中态误删预填内容（原 setTimeout 时序不变）
+				text.inputEl.addEventListener("keydown", (e) => {
+					if (e.key === "Enter") {
+						e.preventDefault();
+						commit(text.inputEl);
+					} else if (e.key === "Escape") {
+						this.close(); // onClose 触发 onCancel
+					}
+				});
+			});
+		}
 	}
 
 	override onClose(): void {
@@ -109,7 +148,10 @@ export interface NewStoryInput {
 
 const PRESET_STYLES = ["网文小说", "剧本", "普通小说", "散文随笔"];
 
-/** 新书创建：标题 / 题材类型 / 编写类型（对齐 Python /new 三项询问） */
+// 建书弹窗「题材类型」下拉选项：与内置四题材技法技能（DEFAULT_SKILLS 的题材类条目）同源，剥去「写法」后缀即题材名（玄幻仙侠/科幻/历史武侠/都市现实）
+const PRESET_GENRES = GENRE_SKILL_NAMES.map((n) => n.replace(/写法$/, ""));
+
+/** 新书创建：标题 / 题材类型（四题材下拉，与 SKILLS 技法技能同源） / 编写类型（对齐 Python /new 三项询问） */
 export class NewStoryModal extends Modal {
 	private submitted = false;
 
@@ -119,8 +161,9 @@ export class NewStoryModal extends Modal {
 
 	onOpen(): void {
 		this.contentEl.createEl("h3", { text: "创建新小说" });
+		this.contentEl.addClass("aw-form-compact"); // label 定宽 + 控件占满剩余空间（styles.css .aw-form-compact，同 MultiFieldModal 等）
 		let title = "";
-		let genre = "网文小说";
+		let genre = PRESET_GENRES[0]; // 默认四题材首项（玄幻仙侠）
 		let style = "网文小说";
 
 		new Setting(this.contentEl).setName("标题").addText((text) => {
@@ -128,9 +171,9 @@ export class NewStoryModal extends Modal {
 			text.onChange((v) => (title = v));
 			text.inputEl.focus();
 		});
-		new Setting(this.contentEl).setName("题材类型").addText((text) => {
-			text.setValue(genre);
-			text.onChange((v) => (genre = v));
+		new Setting(this.contentEl).setName("题材类型").addDropdown((drop) => {
+			for (const g of PRESET_GENRES) drop.addOption(g, g); // 四题材与 SKILLS/ 技法技能同源（GENRE_SKILL_NAMES 剥「写法」）
+			drop.setValue(genre).onChange((v) => (genre = v));
 		});
 		new Setting(this.contentEl)
 			.setName("编写类型")
@@ -1310,35 +1353,6 @@ export class ExportPromptsSelectModal extends Modal {
 	}
 }
 
-/** 只读 Markdown 展示面板（用于无 vault 文件载体的内容，如系统级创作规范） */
-export class MarkdownViewerModal extends Modal {
-	constructor(
-		app: App,
-		private title: string,
-		private markdown: string,
-	) {
-		super(app);
-	}
-
-	private mdComp?: Component; // 本地 dts 中 Modal 非 Component，用独立组件承载渲染生命周期（关闭时 unload）
-
-	onOpen(): void {
-		const { contentEl } = this;
-		contentEl.empty();
-		contentEl.createEl("h3", { text: this.title });
-		const body = contentEl.createDiv({ cls: "aw-md-viewer" });
-		this.mdComp = new Component();
-		this.mdComp.load();
-		void MarkdownRenderer.render(this.app, this.markdown, body, "", this.mdComp);
-	}
-
-	override onClose(): void {
-		this.contentEl.empty();
-		this.mdComp?.unload();
-		this.mdComp = undefined;
-	}
-}
-
 // ---------- 时间线面板：事件编辑弹窗（v0.3.1+，v0.3.3+ 合并大事件后随时间线面板使用）----------
 
 /** 事件编辑弹窗提交结果（各字段已去首尾空白；人物/关联已按顿号、逗号、分号拆分为非空数组；title 允许空串＝旧「纯时间点」标题保持无名）。
@@ -1357,22 +1371,23 @@ export interface EventEditResult {
 /**
  * 下拉多选控件（EventEditModal「人物」「关联」两字段共用，交互仿 AddCharacterModal 关系行下拉）：
  * 已选项各占一行（值 + ✕ 移除）；行尾「＋」下拉只列出尚未选中的候选（选后自动重渲染、候选里去重）；
- * 无可再选项时显示 emptyHint（候选本来就空、或已全部选完）。initial 中的旧值即使不在候选里也保留为已选行（不丢历史数据）。
- * 返回当前选中项 getter（保持加入顺序、去重）。
+ * 无可再选项时显示 emptyHint（传空串＝不显示占位提示）。initial 中的旧值即使不在候选里也保留为已选行（不丢历史数据）。
+ * 返回 `{ get, render }`：get＝当前选中项（保持加入顺序、去重）；render＝重画（外部按 tab 切换等场景复用同一节点重渲染）。
  */
 const makeMultiSelect = (
 	parent: HTMLElement,
 	placeholder: string,
 	emptyHint: string,
 	options: readonly string[],
-	initial: readonly string[]
-): (() => string[]) => {
-	const host = parent.createDiv({ cls: "aw-ev-msel" });
+	initial: readonly string[],
+	host?: HTMLElement // 可传入现成宿主节点（不传＝在 parent 内新建并挂载）。外部游离宿主（tab 切换摘下/挂回）须显式调 render() 重画
+): { get: () => string[]; render: () => void } => {
+	const el = host ?? parent.createDiv({ cls: "aw-ev-msel" });
 	const selected: string[] = [...new Set(initial)];
 	const render = (): void => {
-		host.empty();
+		el.empty();
 		for (const v of selected) {
-			const row = host.createDiv({ cls: "aw-ev-msel-row" });
+			const row = el.createDiv({ cls: "aw-ev-msel-row" });
 			row.createSpan({ text: v, cls: "aw-ev-msel-val" });
 			row.createEl("button", { text: "✕", cls: "aw-addchar-relrm", attr: { "aria-label": `移除 ${v}` } }).addEventListener("click", () => {
 				selected.splice(selected.indexOf(v), 1);
@@ -1381,10 +1396,10 @@ const makeMultiSelect = (
 		}
 		const remaining = options.filter((o) => !selected.includes(o));
 		if (!remaining.length) {
-			host.createDiv({ text: emptyHint, cls: "aw-dim aw-ev-msel-empty" });
+			if (emptyHint) el.createDiv({ text: emptyHint, cls: "aw-dim aw-ev-msel-empty" }); // 传空串＝全部选完后不显示任何占位提示
 			return;
 		}
-		const drop = host.createEl("select", { cls: "dropdown aw-addchar-sel" });
+		const drop = el.createEl("select", { cls: "dropdown aw-addchar-sel" });
 		drop.createEl("option", { text: placeholder, value: "" });
 		for (const o of remaining) drop.createEl("option", { text: o, value: o });
 		drop.addEventListener("change", () => {
@@ -1394,7 +1409,7 @@ const makeMultiSelect = (
 		});
 	};
 	render();
-	return () => [...selected];
+	return { get: () => [...selected], render };
 };
 
 /**
@@ -1469,10 +1484,167 @@ export class EventEditModal extends Modal {
 				}
 				this.submitted = true;
 				this.close();
-				await this.onSubmit({ timeText, title, chars: getChars(), done, event: event.trim(), desc: (this.initialValues?.desc ?? "").trim(), impact: impact.trim(), related: getRelated() }); // desc＝透传原值（弹窗无编辑控件），防编辑时抹掉既有描述
+				await this.onSubmit({ timeText, title, chars: getChars.get(), done, event: event.trim(), desc: (this.initialValues?.desc ?? "").trim(), impact: impact.trim(), related: getRelated.get() }); // desc＝透传原值（弹窗无编辑控件），防编辑时抹掉既有描述
 			})
 		);
 		btns.addButton((btn) => btn.setButtonText("取消").onClick(() => this.close())); // onClose 未提交时触发 onCancel
+		btns.settingEl.addClass("aw-btns-right"); // 保存/取消成组贴右（同 SkillEditModal）
+	}
+
+	override onClose(): void {
+		this.contentEl.empty();
+		if (!this.submitted && this.onCancel) this.onCancel();
+	}
+}
+
+// ---------- 书籍级写作技能（v0.3.4+）：技能编写弹窗＋阶段配置弹窗（面板本体由 main.ts 用 ActionMenuModal 组装菜单项）----------
+
+/** 技能保存位置级别：system＝全局 <work_dir>/SKILLS/<name>.md（跨书共用）；book＝<书>/案头资料/Skill/<name>.md（本书专属） */
+export type SkillLevel = "system" | "book";
+
+export interface SkillEditResult {
+	name: string; // 技能基名（不含 .md）
+	level: SkillLevel; // 保存位置；编辑态改级别＝另存到新位置（原文件由调用方删除）
+	content: string; // 技能完整 Markdown 正文
+}
+
+/**
+ * 技能编写弹窗（新建＋编辑共用，v0.3.4+）：名称 + 保存位置 + 多行正文（新建态正文由调用方预填格式模板，用户填充）。
+ * editing=null 为新建（名称可填、保存位置默认书籍级）；编辑态名称只读（保存回原路径，防 故事状态.md book_skills 引用悬空），
+ * 改「保存位置」提交＝另存另一级同名下（调用方负责写新删旧）。名称非法（空 / 含文件名非法字符 / 以 .md 结尾）时内联报错、不关闭弹窗。
+ */
+export class SkillEditModal extends Modal {
+	private submitted = false;
+
+	constructor(
+		app: App,
+		private title: string,
+		private editing: { name: string; level: SkillLevel } | null,
+		private initialContent: string,
+		private onSubmit: (result: SkillEditResult) => void | Promise<void>,
+		private onCancel?: () => void
+	) {
+		super(app);
+	}
+
+	onOpen(): void {
+		this.contentEl.addClass("aw-form-compact"); // 多字段表单统一紧凑行距（同 EventEditModal）
+		this.contentEl.createEl("h3", { text: this.title });
+		let name = this.editing?.name ?? "";
+		let level: SkillLevel = this.editing?.level ?? "book";
+		let content = this.initialContent; // v0.3.4+ 修复：编辑态必须以 initialContent 起算——不碰编辑器直接保存会清空原文件
+		const ed = this.editing; // 收窄一次（回调闭包里 this.editing 的窄化不保留）
+		let nameErr: HTMLElement | null = null;
+		if (ed) {
+			new Setting(this.contentEl).setName("Skill 名称").addText((t) => {
+				t.setValue(ed.name); // 编辑态：名称只读（＝保存回原位）
+				t.setDisabled(true);
+			});
+		} else {
+			new Setting(this.contentEl).setName("Skill 名称").addText((t) => {
+				t.setPlaceholder("如 反转钩子设计（不带 .md 后缀）");
+				t.onChange((v) => (name = v.trim()));
+			});
+			nameErr = this.contentEl.createDiv({ cls: "aw-ev-msel-empty" });
+			nameErr.hide();
+		}
+		new Setting(this.contentEl)
+			.setName("保存位置")
+			.setDesc(this.editing ? "更改位置并保存＝以同名另存到新位置，原文件自动删除（书籍级引用同步清理）" : "系统级＝SKILLS/（全部书籍共用）；书籍级＝案头资料/Skill/（仅本书）")
+			.addDropdown((d) => {
+				d.addOption("system", "系统级（SKILLS/）");
+				d.addOption("book", "书籍级（案头资料/Skill/）");
+				d.setValue(level);
+				d.onChange((v) => (level = v === "system" ? "system" : "book"));
+			});
+		new Setting(this.contentEl).setName("Skill 内容").addTextArea((ta) => {
+			ta.setPlaceholder("技能按独立 Markdown 章节编写；注入提示词时剥去起始标题行、以【技能 · 名称】包裹");
+			ta.setValue(this.initialContent);
+			ta.inputEl.classList.add("aw-prompt-textarea", "aw-ta-rows"); // 宽度复用既有多行输入类；aw-ta-rows 去掉全局 240px min-height，让 rows 生效
+			ta.inputEl.rows = 16;
+			ta.onChange((v) => (content = v));
+		});
+		const btns = new Setting(this.contentEl).addButton((btn) =>
+			btn.setButtonText("保存").setCta().onClick(async () => {
+				if (!ed && (!name || /[\\/:*?"<>|]/.test(name) || name.toLowerCase().endsWith(".md"))) {
+					nameErr?.setText(name ? `Skill 名称无效：「${name}」不能包含 \\ / : * ? " < > | 或以 .md 结尾` : "Skill 名称不能为空");
+					nameErr?.show();
+					return;
+				}
+				this.submitted = true;
+				this.close();
+				await this.onSubmit({ name, level, content });
+			})
+		);
+		btns.addButton((btn) => btn.setButtonText("取消").onClick(() => this.close())); // onClose 未提交时触发 onCancel
+		btns.settingEl.addClass("aw-btns-right"); // 保存/取消成组贴右（aw-form-compact 默认每钮 margin-left:auto，双钮会把空档平分拆散）
+	}
+
+	override onClose(): void {
+		this.contentEl.empty();
+		if (!this.submitted && this.onCancel) this.onCancel();
+	}
+}
+
+/**
+ * 书籍技能阶段配置弹窗（v0.3.4+）：四个阶段（0–3）各一节下拉多选（候选＝本书 案头资料/Skill/ 技能名），
+ * 保存回 故事状态.md book_skills（空阶段＝不写该键）。phases 标签由调用方按 settings.llm.writing_phases 显示名传入。
+ */
+export class BookSkillPhaseModal extends Modal {
+	private submitted = false;
+
+	constructor(
+		app: App,
+		private phases: Array<{ key: BookSkillPhase; label: string }>,
+		private skillNames: readonly string[],
+		private current: Partial<Record<BookSkillPhase, readonly string[]>>,
+		private onSubmit: (result: Partial<Record<BookSkillPhase, string[]>>) => void | Promise<void>,
+		private onCancel?: () => void
+	) {
+		super(app);
+	}
+
+	onOpen(): void {
+		this.contentEl.addClass("aw-form-compact");
+		this.contentEl.createEl("h3", { text: "书籍 Skill 阶段配置" });
+		if (!this.skillNames.length) this.contentEl.createDiv({ text: "（尚无书籍级技能：先用「新建 Skill…」保存一条到案头资料/Skill/）", cls: "aw-dim" });
+		// 各阶段 tab 页（tab 数由调用方传入的 phases/defs 决定，现＝五阶段；骨架复用设置页「写作阶段模型配置」的 aw-phase-tabs-* 类，阶段名同源 WRITING_PHASE_LABELS）；每 tab＝该阶段已选 Skill 列表（✕ 移除）＋「＋ 添加技能…」下拉
+		const tabContainer = this.contentEl.createDiv({ cls: "aw-phase-tabs-container aw-bskill-tabs" });
+		const tabHeader = tabContainer.createDiv({ cls: "aw-phase-tabs-header" });
+		const tabContent = tabContainer.createDiv({ cls: "aw-phase-tabs-content" });
+		const msels = this.phases.map((p) => { // 各阶段控件各建一次（宿主先游离创建、状态常驻）——切 tab 只换挂宿主，切来切去不丢未保存的改动
+			const m = makeMultiSelect(tabContent, "＋ 添加技能…", this.skillNames.length ? "" : "（没有技能候选：先新建技能）", this.skillNames, this.current[p.key] ?? []);
+			return m;
+		});
+		const hosts = Array.from(tabContent.children); // makeMultiSelect 在 tabContent 内生成的 .aw-ev-msel 宿主，按 phases 顺序
+		let activeTab = 0;
+		const showTab = (idx: number): void => {
+			activeTab = idx;
+			tabHeader.querySelectorAll(".aw-phase-tab-btn").forEach((b, i) => b.classList.toggle("is-active", i === idx));
+			tabContent.empty();
+			tabContent.appendChild(hosts[idx]);
+			msels[idx].render(); // 宿主换挂后重画（empty 清掉了旧内容）
+		};
+		this.phases.forEach((p, idx) => {
+			const btn = tabHeader.createEl("button", { cls: "aw-phase-tab-btn" + (idx === 0 ? " is-active" : "") });
+			btn.setText(p.label);
+			btn.onclick = () => { if (activeTab !== idx) showTab(idx); };
+		});
+		showTab(0);
+		const btns = new Setting(this.contentEl).addButton((btn) =>
+			btn.setButtonText("保存").setCta().onClick(async () => {
+				this.submitted = true;
+				const out: Partial<Record<BookSkillPhase, string[]>> = {};
+				this.phases.forEach((p, i) => {
+					const v = msels[i].get();
+					if (v.length) out[p.key] = v;
+				});
+				this.close();
+				await this.onSubmit(out);
+			})
+		);
+		btns.addButton((btn) => btn.setButtonText("取消").onClick(() => this.close())); // onClose 未提交时触发 onCancel
+		btns.settingEl.addClass("aw-btns-right"); // 保存/取消成组贴右（同 SkillEditModal）
 	}
 
 	override onClose(): void {

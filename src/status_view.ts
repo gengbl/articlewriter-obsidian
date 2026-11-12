@@ -120,6 +120,8 @@ export type StatusAction =
 	| { kind: "new-volume-doc"; story: string; volId: string } // 卷节点 / 卷内「文档」分组右键：在该卷实体目录下新建 .md（语义同 new-file，落点为卷目录而非章节目录）
 	| { kind: "complete-volume-docs"; story: string; volId: string } // 卷内「文档」命名头右键「补全卷文档」：检查该卷下缺失的设定模板（卷大纲/人物/人物关系/场景/时间线五件套）并创建，已存在不覆盖
 	| { kind: "complete-root-docs"; story: string } // 案头资料节点右键「补全资料」：检查书根缺失的默认资料文件（大纲/策划指南/世界观/伏笔/笔记/人物/人物关系/场景/时间线/张力规则十件套）并按模板创建，已存在不覆盖
+	| { kind: "skill-new"; story: string } // 案头资料节点右键「新建 Skill…」：打开新建技能弹窗（预填格式模板，保存只落盘不进配置），与命令面板同义
+	| { kind: "book-skill-phases"; story: string } // 案头资料节点右键「书籍 Skill 阶段配置…」：直达四阶段选用配置（写 故事状态.md book_skills），与命令面板同义
 	| { kind: "complete-outline-docs"; story: string } // 「书稿」小节标题右键「补全大纲资料…」：检查参与大纲生成的四件资料（大纲/策划指南/世界观/人物关系）并按模板补缺，已存在不覆盖
 	| { kind: "new-prologue"; story: string } // 「书稿」标题行右键「新建引言…」：书根建「引言」文件夹 + 正文《引言.md》（幂等；已存在仅提示）
 	| { kind: "delete-prologue"; story: string } // 引言节点右键「删除引言」：整个「引言」文件夹移入回收站（先确认框）
@@ -353,6 +355,8 @@ export class StatusView extends ItemView {
 			// 案头资料分组：标题行与组内空白右键=「补全资料」（书根默认资料十件套补缺、已存在不覆盖）+「新建资料…」（v0.1.6+：不再提供新建章节/新建卷——建章在书稿具体章节/卷节点上、建卷在书籍列表标题行或书稿小节标题）
 			const gItems = (): Array<{ label: string; run: () => void } | { sep: true }> => [
 				{ label: "补全资料", run: () => this.runStatusAction({ kind: "complete-root-docs", story: d.storyName }) }, // 检查缺失的默认资料文件并创建，已存在保留不覆盖
+				{ label: "新建 Skill…", run: () => this.runStatusAction({ kind: "skill-new", story: d.storyName }) }, // v0.3.4+：新建技能弹窗（案头资料/Skill/ 或 SKILLS/，预填格式模板；创建与配置解耦）
+				{ label: "书籍 Skill 阶段配置…", run: () => this.runStatusAction({ kind: "book-skill-phases", story: d.storyName }) }, // v0.3.4+：直达四阶段选用配置（写 故事状态.md book_skills）
 				{ sep: true },
 				{ label: "新建资料…", run: () => this.runStatusAction({ kind: "new-file", story: d.storyName, key: null }) },
 			];

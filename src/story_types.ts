@@ -410,9 +410,6 @@ const CUSTOM_TYPE_TEMPLATE = (storyType: string) =>
 	"如果这是一种文类或文体，请遵循该类别的通行格式、叙事方式与语言风格；" +
 	"如果是你自定义的风格要求，请严格按其描述执行。";
 
-const TYPE_BLOCK_START_RE = /<!--\s*编写类型\s*[:：]\s*(.+?)\s*-->/;
-const TYPE_BLOCK_END_RE = /<!--\s*\/\s*编写类型\s*-->/;
-
 /** 返回类型的展示名（预设类型返回展示名，未知类型原样返回） */
 export function getStoryTypeDisplay(storyType: string): string {
 	if (STORY_TYPES[storyType]) return STORY_TYPES[storyType][0];
@@ -426,49 +423,18 @@ export function getStoryTypeDescription(storyType: string): string {
 }
 
 /**
- * 从写作指南文本中解析【编写类型】区块，返回 {类型名: 区块内容}。
- * 只取每个类型第一个区块；内容为空/未闭合的区块被忽略。
- */
-export function extractGuideTypeBlocks(guideText: string): Record<string, string> {
-	const result: Record<string, string> = {};
-	if (!guideText) return result;
-	const lines = guideText.split("\n");
-	let i = 0;
-	while (i < lines.length) {
-		const m = TYPE_BLOCK_START_RE.exec(lines[i]);
-		if (m) {
-			const name = m[1].trim();
-			const block: string[] = [];
-			i += 1;
-			while (i < lines.length && !TYPE_BLOCK_END_RE.test(lines[i])) {
-				block.push(lines[i]);
-				i += 1;
-			}
-			if (i >= lines.length) break; // 未闭合：忽略该区块
-			const content = block.join("\n").trim();
-			if (name && content && !(name in result)) result[name] = content;
-		}
-		i += 1;
-	}
-	return result;
-}
-
-/**
  * 根据编写类型生成注入提示词的【编写类型】格式要求块。
- * 优先级：写作指南中的对应类型区块 > 内置模板 > 自定义类型模板。
+ * 优先级：内置模板 > 自定义类型模板。
+ * v0.3.5+：旧「写作指南中的对应类型区块优先」一层已随写作指南体系废弃（题材要点改走 SKILLS/ 技能）。
  */
 export function getStoryTypeGuide(
 	storyType: string,
-	guideText = "",
 	title = "",
 	charNames?: Array<string | null>,
 ): string {
 	storyType = (storyType || "").trim();
 	if (!storyType) return "";
-	let guide = extractGuideTypeBlocks(guideText)[storyType];
-	if (guide === undefined) {
-		guide = STORY_TYPES[storyType]?.[2] ?? CUSTOM_TYPE_TEMPLATE(storyType);
-	}
+	let guide = STORY_TYPES[storyType]?.[2] ?? CUSTOM_TYPE_TEMPLATE(storyType);
 	guide = guide.replace("{title}", title || "");
 	guide = guide.replace(
 		"{char_names}",

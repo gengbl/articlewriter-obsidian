@@ -191,21 +191,13 @@ export async function testConnection(cfg: LlmConfigDoc): Promise<LlmTestResult> 
 
 /**
  * 组装最终 system prompt（对齐 Python llm_client.generate 的解析链 + _apply_agents）：
- * customSp（编写类型格式块等命令级提示）> baseSp（设置文档全局 system_prompt）> DEFAULT_SYSTEM_PROMPT；
- * guideText（三层 WRITING_GUIDE 合并原文：故事级 > 用户级 > 系统级 data.json）存在时追加【创作规范】段。
+ * customSp（编写类型格式块等命令级提示）> baseSp（设置文档全局 system_prompt）> DEFAULT_SYSTEM_PROMPT。
+ * v0.3.5+：旧第 2 参 guideText（三层 WRITING_GUIDE 合并原文、追加【创作规范】段）已随写作指南体系废弃。
  */
-export function assembleSystemPrompt(customSp?: string, guideText = "", baseSp?: string, identityBoost?: string): string {
+export function assembleSystemPrompt(customSp?: string, baseSp?: string): string {
 	const b = (baseSp || "").trim();
-	let sp = (customSp && customSp.trim()) || (b ? b : DEFAULT_SYSTEM_PROMPT);
-	const g = (guideText || "").trim();
-	if (g) {
-		sp += "\n\n【创作规范】\n以下是本项目要求必须遵守的创作规范，请在生成时严格遵循；若与前面的【编写类型】格式要求冲突，以【编写类型】为准：\n" + g;
-	}
-	// v0.2.x+：设置值本身可能已带「【身份加强】」标记（旧版默认文本即如此）——追加前先剥掉，避免输出里连续出现两个标记
-	const ib = (identityBoost || "").trim().replace(/^【身份加强】\s*/, "");
-	if (ib) {
-		sp += "\n\n【身份加强】\n" + ib;
-	}
+	const sp = (customSp && customSp.trim()) || (b ? b : DEFAULT_SYSTEM_PROMPT);
+	// v0.3.4+：原第 4 参 identityBoost（末尾附【身份加强】块）已移除——身份加强 Skill 化，经技能通道（【技能 · 身份加强·<阶段名>】）注入
 	return sp;
 }
 
@@ -229,7 +221,7 @@ export function describeLlmError(e: unknown): string {
 	let out = bits.length ? bits.join(" · ") : String(e);
 	// 上下文窗口溢出（llama-server / vLLM / OpenAI 等直接 4xx 拒绝）：追加可操作诊断。注意文案不得含「输出为空」「未返回内容」——streamOnce 依赖这两个串判定空结果重试
 	if (/exceeds the available context size|maximum context length|context length exceeded|prompt is too long|too many tokens/i.test(out)) {
-		out += " · 提示词超出模型上下文窗口（服务端直接拒绝）：① 换上下文窗口更大的端点/模型 ② 调大服务端上下文（如 llama-server --ctx-size 131072，内存代价随之增长）③ 减少注入内容（降低目标章数 / 用「继续生成」而非完整生成 / 精简策划指南与写作指南）";
+		out += " · 提示词超出模型上下文窗口（服务端直接拒绝）：① 换上下文窗口更大的端点/模型 ② 调大服务端上下文（如 llama-server --ctx-size 131072，内存代价随之增长）③ 减少注入内容（降低目标章数 / 用「继续生成」而非完整生成 / 精简策划指南与引用文档）";
 	}
 	return out.replace(/Bearer .+/g, "Bearer ***").replace(/\bsk-[A-Za-z0-9_-]{6,}/g, "sk-***");
 }

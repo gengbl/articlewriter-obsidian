@@ -13,7 +13,7 @@ interface ChatTurn {
  * 常驻 LLM 对话面板（自定义 ItemView，可停靠到任意工作区区域、重载后保留位置）：
  * Enter 发送 / Shift+Enter 换行（含中文输入法合成态保护），助手回复流式逐块显示；
  * 「停止生成」只中断当前一轮、会话保留；顶部下拉切换任意已保存的模型配置（对后续轮次生效）。
- * 每轮请求前置对话专用系统提示词（对齐 CLI chat.py _chat_reply：友好助手身份+【创作规范】指南+当前小说上下文快照），多轮历史用原生 messages 传递；历史不落盘。
+ * 每轮请求前置对话专用系统提示词（对齐 CLI chat.py _chat_reply：友好助手身份+当前小说上下文快照），多轮历史用原生 messages 传递；历史不落盘。v0.3.5+：旧【创作规范】三层指南已随写作指南体系废弃。
  * 关闭面板时中断进行中的请求。
  */
 export class LlmChatView extends ItemView {
@@ -119,7 +119,7 @@ export class LlmChatView extends ItemView {
 		const inputBox = root.createDiv({ cls: "aw-chat-input" });
 		this.inputEl = inputBox.createEl("textarea");
 		this.inputEl.rows = 3;
-		this.inputEl.placeholder = "Enter 发送 · Shift+Enter 换行；@引用vault文件（弹窗选择或手输路径），范围可写 :12 / :3-10 或直接紧跟如 @[[x.md]]3-5——发送时替换为对应行的实际内容；每轮自动携带助手身份+创作规范+当前小说上下文；历史不落盘"; // 空时显示的提示在框内，输入即消失
+		this.inputEl.placeholder = "Enter 发送 · Shift+Enter 换行；@引用vault文件（弹窗选择或手输路径），范围可写 :12 / :3-10 或直接紧跟如 @[[x.md]]3-5——发送时替换为对应行的实际内容；每轮自动携带助手身份+当前小说上下文；历史不落盘"; // 空时显示的提示在框内，输入即消失
 		// @ 引用候选弹窗：锚定在输入框上方，键入 @ 触发、随后续字符过滤
 		this.refPopupEl = inputBox.createDiv({ cls: "aw-ref-popup" });
 		this.inputEl.addEventListener("input", () => this.updateRefPopup());
@@ -212,7 +212,7 @@ export class LlmChatView extends ItemView {
 		try {
 			const sp = await this.getSystemPrompt();
 			this.spLabelEl.setText(
-				`提示词：助手身份+创作规范${sp.hasStory ? "+当前小说上下文" : ""}（约 ${Math.round(sp.text.length / 1000)}k 字）`,
+				`提示词：助手身份${sp.hasStory ? "+当前小说上下文" : ""}（约 ${Math.round(sp.text.length / 1000)}k 字）`,
 			);
 		} catch {
 			this.spLabelEl.setText("提示词：加载失败（本轮将仅按模型默认行为回答，详见控制台）");
@@ -406,7 +406,7 @@ export class LlmChatView extends ItemView {
 		this.addMessage("user", text); // 气泡回显原始输入（保留 @ 引用标记，不显示替换结果）
 		this.inputEl.value = "";
 		this.hideRefPopup();
-		this.setStatus(sysContent ? `正在回复（${cfg.name || "?"}）· 已注入创作规范提示词 …` : `正在回复（${cfg.name || "?"}）· 未携带提示词 …`);
+		this.setStatus(sysContent ? `正在回复（${cfg.name || "?"}）· 已注入助手提示词 …` : `正在回复（${cfg.name || "?"}）· 未携带提示词 …`);
 		this.setBusy(true);
 		this.ctrl = new AbortController();
 		const el = this.addMessage("assistant", "");

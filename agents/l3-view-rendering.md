@@ -4,7 +4,7 @@
 
 | Modal | 用途 |
 | --- | --- |
-| `TextInputModal` | 单个短文本输入（标题、ID、章节号等）；**v0.1.6+ 第 6 参可选 hintText：详细说明渲染在标题与输入框之间**（`.aw-prompt-hint`，muted 色 0.9em、white-space:pre-line 支持 \n 多行）；第 7 参可选 initialText 预填初始值（光标置末尾）。长说明一律走 hint 放输入框上方，placeholder 只留极短占位（main.ts prompt() 第 3 参 hint / 第 4 参 initial 透传） |
+| `TextInputModal` | 单个短文本输入（标题、ID、章节号等）；**v0.1.6+ 第 6 参可选 hintText：详细说明渲染在标题与输入框之间**（`.aw-prompt-hint`，muted 色 0.9em、white-space:pre-line 支持 \n 多行）；第 7 参可选 initialText 预填初始值（光标置末尾）。长说明一律走 hint 放输入框上方，placeholder 只留极短占位（main.ts prompt() 第 3 参 hint / 第 4 参 initial 透传）；**v0.3.7+ 第 8 参可选 multiline：改用 5 行 textarea**（contentEl 挂 `.aw-form-compact` 让无标签行 control 撑满＋textarea 挂 `.aw-prompt-textarea.aw-ta-rows` 宽度 100%、去全局 240px min-height 让 rows 生效＋`infoEl.remove()` 去掉定宽空标签列占满整行；底部「确定 CTA/取消」按钮行挂既有 `aw-btns-right` 成组贴右；裸回车＝换行，点「确定」或 Ctrl/Cmd+回车提交，Esc 取消）——仅 `cmdGenerateWorldview` 补问一句话设定传 true，其余调用点单行行为逐字不变 |
 | `TextAreaPrompt` | 多行内容（场景正文、世界观历史、大纲追加） |
 | `VolumeBatchCreateModal` | **批量新建卷**：顶部提示已有卷名单（重名校验），输入框+「添加」逐行把新卷名加入待建列表（回车=添加），每行带 ↑/↓（调创建顺序）/删除；「确定创建」（CTA，空列表禁用点击）→ onSubmit(names[]) 由 main.ts createVolumesInOrder 按序落盘；构造 `(app, storyName, existingNames[], onSubmit, onCancel?)`。命令面板「新建卷」、写字台右键「新建卷…」、零卷书整理/切换引导三处共用 pickNewVolumeNames 包装 |
 | `MultiFieldModal` | 多字段表单；第 7 参 `initialValues` 预填——**所有"编辑已有实体"入口用它** |
@@ -13,9 +13,10 @@
 | `ActionMenuModal` | 通用动作列表：label + sub + marker（如 `▶ 当前`）+ disabled；↑↓/回车/点击选择。**一切"选一个实体再做操作"的菜单都用它**。交互约定：鼠标悬停行文字加粗提示可点；行采用 flex 布局并前置两个固定宽度列：`.aw-sel`（选中的非 disabled 行经其 `::before` 显示圆点 `●`，随 `.aw-selected` 类切换、无需重渲染）与 `.aw-cur`（承载「▶ 当前」等 marker，无则留空占位）——两列定宽使带/不带标记的行主标签起点始终一致、左对齐，↑↓移动选择不再右移/跳动；**点行只移动选中、不执行**——须再点「确认」CTA 或按回车才触发 onSelect（避免误触即改状态）。样式见 styles.css `.aw-action-row*`。 |
 | `TextPanelModal` | 只读展示面板（show 类命令），行支持 bold/dim/accent |
 | ~~`StreamingPreviewModal`~~→GenProgressView 流式阶段 | LLM 写作命令的流式预览已并入统一生成过程面板（ItemView「生成过程」，非居中 Modal）：beginStream(title) 进入小节，append/reset/setStatus + finish(保存/放弃)/fail，done Promise 驱动写盘确认；点「停止生成」按钮/流式中关面板＝abort（v0.3.0+ 起 Esc 不再中断）。与摘要延迟生成日志共用同一实例——先展示摘要工作过程、完成后同面板继续章节正文 |
-| `MarkdownViewerModal` | 只读渲染展示（系统级创作规范等无 vault 文件载体的内容），构造 `(app, title, markdown)` |
+| ~~`MarkdownViewerModal`~~ | （已删除——**v0.3.5+ 写作指南体系整体废弃**：该类曾用于只读渲染系统级创作规范等无 vault 载体的内容，最后一处调用「查看系统写作指南」已随体系移除，modals.ts 中类定义一并删除） |
 | `ConfirmModal` | 危险操作确认；Esc=取消 |
-| `StoryPickerModal` / `ChapterListModal` / `FolderPickerModal` / `NewStoryModal` | 小说选择 / 章节打开 / work_dir 初始化 / 建书三问 |
+| `StoryPickerModal` / `ChapterListModal` / `FolderPickerModal` | 小说选择 / 章节打开 / work_dir 初始化 |
+| `NewStoryModal` | **建书三问**（v0.3.6+ 改版）：标题 text → **题材类型下拉**（四选项＝`PRESET_GENRES`，来自 skills_default 导出 `GENRE_SKILL_NAMES`（DEFAULT_SKILLS 四题材技法技能键）剥「写法」后缀：玄幻仙侠/科幻/历史武侠/都市现实，默认首项）→ 编写类型下拉（`PRESET_STYLES`）+自定义 text → 「创建」CTA。`onSubmit` 回 `NewStoryInput{title,genre,style}`，genre 落《故事状态.md》→【小说类型】提示词块；contentEl 挂 `aw-form-compact`（label 定宽、控件占满剩余空间） |
 
 ## 通用约定
 
