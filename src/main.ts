@@ -2465,9 +2465,24 @@ async cmdRenameChapterFile(): Promise<void> {
 		return dir ? `${dir}/SKILLS` : "SKILLS";
 	}
 
-	/** 技能文件路径：SKILLS/<name>.md（name＝清单里 skill: 后的基名） */
-	private skillPath(name: string): string {
+	/** 技能文件路径：SKILLS/<name>.md（name＝清单里 skill: 后的基名）。public＝设置页引用文档行双击打开技能用 */
+	skillPath(name: string): string {
 		return `${this.skillsDir()}/${name}.md`;
+	}
+
+	/** 在编辑器中打开技能文件（v0.4.2+ 设置页引用文档「技能 · X」行双击）：文件缺失先试 ensureSkillsFiles 重播种（内置技能误删可回），仍缺则 Notice 提示 */
+	async openSkillFile(name: string): Promise<void> {
+		const p = this.skillPath(name);
+		let file = this.app.vault.getAbstractFileByPath(p);
+		if (!(file instanceof TFile)) {
+			await this.ensureSkillsFiles();
+			file = this.app.vault.getAbstractFileByPath(p);
+		}
+		if (!(file instanceof TFile)) {
+			new Notice(`技能文件不存在：${p}（可在 ${this.skillsDir()}/ 下新建 ${name}.md）`, 6000);
+			return;
+		}
+		await this.app.workspace.getLeaf(false).openFile(file);
 	}
 
 	/** 启动/设置工作目录后确保内置技能文件存在：仅缺失才写、绝不覆盖用户内容（禁用词清单技能播种也走这里，v0.3.6+ Skill 化）；失败不阻断 */
@@ -7582,7 +7597,7 @@ class ArticleWriterSettingTab extends PluginSettingTab {
 			rerender();
 		};
 
-		container.createDiv({ cls: "aw-refdocs-desc", text: "装配该阶段提示词时注入的引用文档。可删除、添加、调整顺序——序号即装配顺序，排在前面的先组装进提示词。新增文档可来自 vault 中的 Markdown 文件，也可添加技能文件（工作目录 SKILLS/ 下的 Markdown，写作技巧类短文档；「编写文章」阶段的技能注入系统提示词）。未做任何改动时使用该阶段的默认清单。" });
+		container.createDiv({ cls: "aw-refdocs-desc", text: "装配该阶段提示词时注入的引用文档。可删除、添加、调整顺序——序号即装配顺序，排在前面的先组装进提示词。新增文档可来自 vault 中的 Markdown 文件，也可添加技能文件（工作目录 SKILLS/ 下的 Markdown，写作技巧类短文档；「编写文章」阶段的技能注入系统提示词；双击技能行可在编辑器中打开编辑）。未做任何改动时使用该阶段的默认清单。" });
 
 		const list = container.createDiv({ cls: "aw-refdocs-list" });
 		const saved = phs[phaseIdx].ref_docs;
@@ -7606,6 +7621,10 @@ class ArticleWriterSettingTab extends PluginSettingTab {
 			} else if (key.startsWith("skill:")) {
 				row.createSpan({ cls: "aw-refdocs-lock", text: "🎯" });
 				row.createSpan({ cls: "aw-refdocs-label", text: `技能 · ${key.slice(6)}` });
+				// v0.4.2+：双击技能行 → 编辑器打开 SKILLS/<基名>.md 直接编辑（内置技能文件缺失会自动重播种）
+				const skillName = key.slice(6);
+				row.setAttr("title", "双击在编辑器中打开该技能文件进行编辑");
+				row.addEventListener("dblclick", () => void this.plugin.openSkillFile(skillName));
 			} else {
 				used.add(key);
 				row.createSpan({ cls: "aw-refdocs-lock", text: "📚" });

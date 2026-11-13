@@ -13,7 +13,7 @@
   - 阶段 0–3（世界观生成／策划方案生成／书籍大纲和卷级大纲生成／文章大纲生成，即除编写文章外全部阶段）：`skill:` 条目经 `orderRefDocSpecs` 就地转为 `{ file: SKILLS/<name>.md, header: 【技能 · name】, stripHeading: true }` 进**上下文文档**（user prompt 侧），位置随清单顺序。
   - 阶段 4（编写文章）：正文族上下文装配传 `skipSkills: true` 跳过 `skill:` 条目；技能改由 `writerSystemPrompt` 调 `loadSkillsBlock(PHASE_WRITING)` 装配后经 `buildStoryTypeSystemPrompt` 的 `skillsBlock` 钩子进 **system prompt**（排在编写类型块之后；v0.3.6+ 原禁用词专用块已删，词表清单经此技能块注入）。技能只在此注入一次。
 - **不接技能的入口**：LLM 对话面板（chat 装配走编写文章阶段（`PHASE_WRITING`）默认清单且走 skipSkills）、剧本转换（`buildStoryTypeSystemPrompt` 另一调用点不传 skillsBlock）——与「技能服务于五阶段写作」的设计一致。
-- **设置页交互**：引用文档配置框（各阶段 tab 内）新增「添加技能…」按钮——异步列 SKILLS/ 下 `.md` 基名、过滤已添加项，弹 `SkillPickerModal`（SuggestModal 按名称模糊搜索），选中即 commit `skill:<基名>`；清单中 skill 条目渲染为「🎯 技能 · <name>」行，可删除/排序。SKILLS/ 无新技能时 Notice 提示。
+- **设置页交互**：引用文档配置框（各阶段 tab 内）新增「添加技能…」按钮——异步列 SKILLS/ 下 `.md` 基名、过滤已添加项，弹 `SkillPickerModal`（SuggestModal 按名称模糊搜索），选中即 commit `skill:<基名>`；清单中 skill 条目渲染为「🎯 技能 · <name>」行，可删除/排序。**v0.4.2+ 该行支持双击编辑**：双击 → `plugin.openSkillFile(name)` 经 `skillPath` 解析 `SKILLS/<name>.md`，存在即在编辑器 `getLeaf(false).openFile` 打开；缺失先跑 `ensureSkillsFiles()` 重播种（内置技能误删可回）再查，仍缺 Notice 提示可自建。行带 title 提示。SKILLS/ 无新技能时 Notice 提示。
 - **关键陷阱（必读）**：SKILLS 读写**一律绕开 `manager.readDoc/writeDoc`**——`storyNameOfPath` 把 work_dir 第一级目录当书名，经 readDoc/writeDoc 会触发 `ensureLayout` 把 SKILLS/ 当旧格式书迁移（技能文件被搬进 案头资料/书稿）。全部直接走 vault adapter（`exists` 检查 + `adapter.write` 自动建父目录）；`promptReader()` 有 skillsPrefix 分支同样绕 readDoc。`listStories` 只认含 故事状态.md 的目录，SKILLS/ 不会冒充书。story_manager 零改动。
 - **去重**：清单中重复 `skill:<name>` 条目——`loadSkillsBlock` 内 names 去重；上下文文档路径由装配器 `assemblePromptFiles` 的 seenFiles 兜底。
 
