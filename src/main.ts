@@ -2399,11 +2399,7 @@ async cmdRenameChapterFile(): Promise<void> {
 		try {
 			if (await adapter.exists(`${dir}/WRITING_GUIDE.md`)) await adapter.remove(`${dir}/WRITING_GUIDE.md`); // 插件数据目录不被元数据索引收录，无回收站语义，直接删
 			const typesDir = `${dir}/guide-types`;
-			if (await adapter.exists(typesDir)) {
-				const listed = await adapter.list(typesDir);
-				for (const f of listed.files ?? []) await adapter.remove(f);
-				await adapter.remove(typesDir);
-			}
+			if (await adapter.exists(typesDir)) await adapter.rmdir(typesDir, true); // 目录须走 rmdir 递归删：adapter.remove 只支持文件，对目录抛 EISDIR
 		} catch (e) {
 			console.warn("[ArticleWriter] 清理插件数据目录写作指南产物失败", e);
 		}
