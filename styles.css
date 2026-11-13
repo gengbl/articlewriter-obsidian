@@ -1852,15 +1852,20 @@
 	   显示模式下 pre 中文长文本会把它撑满，编辑模式下 textarea 固有宽度窄导致整体收缩、右侧大片空白；
 	   显式 width:100% 让两种模式都占满整行 */
 	width: 100%;
+	min-width: 0; /* flex item 允许收缩到父宽（手机窄屏不横向溢出） */
+	box-sizing: border-box; /* width:100% 含左右 padding：否则内容区比父容器宽 32px，手机端整体横向溢出 */
 	display: block;
 }
 .aw-phase-tabs-header {
 	display: flex;
+	flex-wrap: wrap; /* 手机窄屏：tab 按钮总宽超容器时整块换行（按钮内文字不断行），不再挤出屏幕 */
 	gap: 4px;
 	border-bottom: 1px solid var(--background-modifier-border);
 	margin-bottom: 12px;
 }
 .aw-phase-tab-btn {
+	max-width: 100%; /* 单个长标签也不撑破容器 */
+	white-space: nowrap; /* 换行粒度=整个按钮，避免标签内部折断 */
 	padding: 6px 12px;
 	background: transparent;
 	border: none;
@@ -2009,6 +2014,7 @@
 	flex-direction: column;
 	gap: 4px;
 	margin-bottom: 10px;
+	min-width: 0; /* 手机上清单宽度跟随父容器，不被单行内容撑宽 */
 }
 .aw-refdocs-empty {
 	font-size: var(--font-ui-smaller);
@@ -2023,6 +2029,9 @@
 	border: 1px solid var(--background-modifier-border);
 	border-radius: var(--radius-s);
 	background: var(--background-secondary);
+	box-sizing: border-box; /* 行宽含内距，手机端不被 padding 顶出屏幕 */
+	max-width: 100%;
+	min-width: 0; /* 行内长文本按 flex 规则收缩（label 省略号兜底），不撑宽父容器 */
 }
 .aw-refdocs-lock {
 	flex: 0 0 auto;
@@ -2062,12 +2071,15 @@
 }
 .aw-refdocs-addrow {
 	display: flex;
+	flex-wrap: wrap; /* 手机窄屏：下拉与「添加引用文档」按钮放不下时按钮整块换行 */
 	align-items: center;
 	gap: 8px;
 	margin-bottom: 8px;
+	min-width: 0;
 }
 .aw-refdocs-select {
-	flex: 1 1 auto;
+	flex: 1 1 160px; /* 基线 160px：剩余宽度不足时换行而不是压缩到不可用/撑破容器 */
+	max-width: 100%;
 	min-width: 0;
 	height: 24px;
 	min-height: 24px;
