@@ -1,4 +1,4 @@
-import { ItemView, Setting, WorkspaceLeaf } from "obsidian";
+import { ItemView, Scope, Setting, WorkspaceLeaf } from "obsidian";
 
 /** v0.2.x+ 生成计时：毫秒时长格式化——<60s →「42s」；≥60s →「3m 07s」（面板状态行/完成行与连续编写总用时共用） */
 export function formatElapsedMs(ms: number): string {
@@ -20,6 +20,7 @@ export interface WritingStreamSink {
 	setStatus(text: string): void;
 	finish(): void;
 	fail(message: string): void;
+	markStopped?(): void; // v0.4.x+ 可选：命令侧按 signal.aborted 终止流程后定格面板（计时/状态行/按钮），停止在去AI味等后处理阶段同样可见
 }
 
 /** 统一生成过程面板（自定义 ItemView，可停靠任意区域、重载保留位置）。双阶段复用同一实例：
@@ -27,7 +28,10 @@ export interface WritingStreamSink {
  * ② 章节正文/报告流式阶段——beginStream(title) 进入，实现 WritingStreamSink 契约（原独立 StreamingPreviewModal 的全部语义并入此处），
  *    先展示摘要生成过程、完成后在同一面板内继续流式展示章节生成过程与「保存/不保存」决定。
  *    v0.3.0+ 起停止生成只经「停止生成」按钮：原 document 级 Esc 监听已移除——Esc 在 Obsidian 里无处不在
- *    （快速切换器/命令面板/编辑器取消都会按到它），实测会误伤流式生成，造成「生成被打断」 */
+ *    （快速切换器/命令面板/编辑器取消都会按到它），实测会误伤流式生成，造成「生成被打断」；
+ *    v0.4.x+ 面板焦点内按裸 Esc 还会触发 Obsidian 非编辑器面板默认行为（跳转焦点到最近使用的文档，
+ *    表现为「显示的内容跳到其它文档」）——view scope 注册 Escape 返回 false（handled+preventDefault）吞掉它，
+ *    Esc 依然不做任何停止动作，带修饰键组合不受影响 */
 export class GenProgressView extends ItemView implements WritingStreamSink {
 	static readonly VIEW_TYPE = "articlewriter-gen-progress";
 
@@ -56,6 +60,11 @@ export class GenProgressView extends ItemView implements WritingStreamSink {
 
 	constructor(leaf: WorkspaceLeaf) {
 		super(leaf);
+		// v0.4.x+：面板获得焦点时按裸 Esc——Obsidian 对非编辑器面板的默认行为是把焦点跳到最近使用的文档
+		// （生成过程中表现为「内容跳到其它文档」）。view scope 优先于 app scope，返回 false = handled + preventDefault，
+		// 直接吞掉；停止仍只走「停止生成」按钮（v0.3.0+ 语义不变）。
+		this.scope = new Scope(this.app.scope);
+		this.scope.register([], "Escape", () => false);
 	}
 
 	getViewType(): string {
@@ -261,7 +270,21 @@ export class GenProgressView extends ItemView implements WritingStreamSink {
 	}
 
 	private abortStream(): void {
-		if (!this.submitted && this.streamState === "streaming") this.ctrl.abort();
+		if (!this.submitted && this.streamState === "streaming") {
+			this.ctrl.abort();
+			this.setStatus("已停止，正在收尾…"); // v0.4.x+ 点击即时反馈：statusOverride 优先于计时刷新，避免「点了没反应」的错觉（收尾各站点按 signal.aborted 终止）
+		}
+	}
+
+	/** v0.4.x+ 停止收尾定格：命令侧检测到 signal.aborted 并终止流程后调用（流式或去AI味等后处理阶段停止都适用）——
+	 * 计时定格、状态行改为「已停止生成（用时 X）」、移除已失效的「停止生成」按钮。
+	 * 正文保留展示但不入 done 态（本章未保存、也无「保存/不保存」按钮）；下一轮 beginStream 重建三件套。 */
+	markStopped(): void {
+		if (this.submitted || this.streamState !== "streaming") return;
+		this.stopTimer();
+		this.statusOverride = "已停止"; // 防任何残余 updateStatus 把定格文案刷回计时文案
+		if (this.statusEl) this.statusEl.setText(`已停止生成（用时 ${formatElapsedMs(Date.now() - this.streamStartedAt)}），本章正文未保存`);
+		if (this.footerEl) this.footerEl.empty();
 	}
 
 	/** 会话收尾（保存/放弃/失败关闭）：resolve done，正文保留展示，按钮区换成结果行 */
