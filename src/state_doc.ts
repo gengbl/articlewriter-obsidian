@@ -1,5 +1,8 @@
 import { parse, stringify } from "yaml";
 
+import { PIPELINE_STAGES, type StageId } from "./pipeline";
+import { posInt } from "./book_skill"; // 正整数宽松解析共用（旧技能文件解析与 auto_book 配置同一口径）
+
 // ===== 运行态（对齐 Python 版 story_state.json version 2，只存运行态不存文档内容）=====
 // 存储载体改为 Obsidian「文件属性」风格的 MD 文档：<书名>/故事状态.md
 // YAML frontmatter = 插件管理的运行态；正文可自由写笔记（保存时原样保留）。
@@ -8,6 +11,18 @@ export interface ChapterMeta {
 	title: string;
 	words: number;
 	volume?: string;
+}
+
+/** v0.4.1+ 全自动建书配置（auto-book 流水线参数）：存于《故事状态.md》frontmatter 的 auto_book 嵌套块，
+ *  取代旧「案头资料/自动建书.md」独立技能文档。规模模式复用 use_volumes（false=平铺）、一句话设定复用 one_line，
+ *  此处只存执行范围与规模参数；legacy 技能文件由各命令入口自动迁移合并进来。 */
+export interface AutoBookConfig {
+	start?: StageId; // 起始节点（缺省 worldview）
+	end?: StageId; // 停止节点（含；缺省＝跑到流水线末尾「连续编写正文」）
+	chapters?: number; // 平铺（use_volumes:false）：全书总章数
+	volumes?: number; // 分卷（use_volumes:true）：卷数
+	chapter_counts?: number[]; // 分卷：各卷章数（长度＝volumes 或 1；runAutoBook 末值复制兜底）
+	overwrite?: boolean; // 已有世界观/策划指南/书级大纲是否重新生成
 }
 
 /** 章节复合键：根域（未归属）"N"，卷域 "volId:N"。卷 id 禁止含冒号（addVolume 校验）。 */
@@ -36,6 +51,7 @@ export interface StoryState {
 	include_volume_summary?: boolean; // v0.2.x+：本书级「是否使用前卷摘要组织提示词」；显式设置时优先于全局 data.json settings.includeVolumeSummary模式（纯 书→章 扁平结构）、true=有卷模式；缺省时按是否含卷数据推断（存量有卷书判 true 防回归，新/扁平书默认 false）
 	word_range?: [number, number]; // v0.3.5+：本书级正文字数区间 [下限,上限]（取代旧 WRITING_GUIDE 指南「字数配置」注释）；显式配置时优先于全局默认 [4000,5000]，非法（下限≤0 或下限>上限）按未配置处理
 	one_line?: string; // v0.3.0+：全自动流水线（auto-book）的一句话设定——/auto-book 弹窗填入后持久化，「生成世界观」命令读取作 premise；仅显式设置时写回
+	auto_book?: AutoBookConfig; // v0.4.1+：全自动建书配置（执行范围＋规模参数）——旧「案头资料/自动建书.md」技能文档合并进状态文档；仅显式配置时写回
 	book_skills?: Record<BookSkillPhase, string[]>; // v0.3.4+：本书选用的书籍级技能（技能名数组，读 <书>/案头资料/Skill/<名>.md）。键=阶段 key（BOOK_SKILL_PHASE_KEYS）；仅显式配置时写回
 	chapters: Record<string, ChapterMeta>; // 键=复合键（见 chKey/parseChKey）
 	created_at: string;
@@ -122,6 +138,61 @@ function normalizeBookSkills(raw: unknown): Record<BookSkillPhase, string[]> | u
 	return any ? out : undefined;
 }
 
+/** 全自动建书配置（v0.4.1+）：只认 AutoBookConfig 白名单键——start/end 须为合法 StageId、chapters/volumes 正整数、
+ *  chapter_counts 正整数数组（手改 frontmatter 容错逗号/顿号/空白分隔字符串，含非法项整条丢弃）、overwrite 布尔；
+ *  非法字段各自忽略、不整体报废；无任何有效条目返回 undefined（视为未配置）。 */
+export function normalizeAutoBook(raw: unknown): AutoBookConfig | undefined {
+	if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
+	const o = raw as Record<string, unknown>;
+	const out: AutoBookConfig = {};
+	const stageIds: string[] = PIPELINE_STAGES.map((s) => s.id);
+	if (typeof o.start === "string" && stageIds.includes(o.start)) out.start = o.start as StageId;
+	if (typeof o.end === "string" && stageIds.includes(o.end)) out.end = o.end as StageId;
+	const chapters = posInt(o.chapters);
+	if (chapters != null) out.chapters = chapters;
+	const volumes = posInt(o.volumes);
+	if (volumes != null) out.volumes = volumes;
+	if (Array.isArray(o.chapter_counts)) {
+		const nums: number[] = [];
+		for (const item of o.chapter_counts) {
+			const n = posInt(item);
+			if (n == null) break; // 含非法项整条丢弃（与旧技能文件解析同口径）
+			nums.push(n);
+		}
+		if (nums.length === o.chapter_counts.length) out.chapter_counts = nums;
+	} else if (typeof o.chapter_counts === "string") {
+		const inner = o.chapter_counts.startsWith("[") && o.chapter_counts.endsWith("]") ? o.chapter_counts.slice(1, -1) : o.chapter_counts;
+		const items = inner.split(/[,，、\s]+/).filter(Boolean);
+		const nums: number[] = [];
+		for (const x of items) {
+			const n = posInt(x);
+			if (n == null) break;
+			nums.push(n);
+		}
+		if (items.length && nums.length === items.length) out.chapter_counts = nums;
+	} else {
+		const n = posInt(o.chapter_counts); // 标量单值＝各卷同章数（与旧技能文件同口径）
+		if (n != null) out.chapter_counts = [n];
+	}
+	if (typeof o.overwrite === "boolean") out.overwrite = o.overwrite;
+	return Object.keys(out).length ? out : undefined;
+}
+
+/** 全自动写书免交互开跑所需参数是否齐全：返回缺失项中文说明（空数组＝可直接开跑范围确认）。
+ *  premise 取 state.one_line；规模模式由 use_volumes 决定（flatMode=true＝平铺看 chapters，false＝分卷看 volumes＋chapter_counts）；
+ *  仅起始节点＝worldview 时才要求一句话设定（从后续节点起跑不必重新建世界观） */
+export function autoBookMissing(premise: string | undefined, cfg: AutoBookConfig | undefined, flatMode: boolean, startAt: StageId): string[] {
+	const miss: string[] = [];
+	if (startAt === "worldview" && !(premise ?? "").trim()) miss.push("一句话设定（one_line）");
+	if (flatMode) {
+		if (cfg?.chapters == null) miss.push("全书总章数（auto_book.chapters）");
+	} else {
+		if (cfg?.volumes == null) miss.push("卷数（auto_book.volumes）");
+		if (!cfg?.chapter_counts?.length) miss.push("各卷章数（auto_book.chapter_counts）");
+	}
+	return miss;
+}
+
 /**
  * 解析状态文档：frontmatter → StoryState；返回正文与用户自定义属性（extra，保存时原样保留）。
  * frontmatter 缺失/非法时 state=null（body 为全文）。
@@ -176,7 +247,7 @@ export function parseStateDoc(
 	const extraKeys = new Set([
 		"version", "title", "genre", "writing_style", "current_chapter", "current_scene",
 		"current_volume", "total_words", "use_summaries", "use_volumes", "chapters", "created_at", "updated_at",
-		"prev_chapters", "include_volume_summary", "word_range", "one_line", "book_skills",
+		"prev_chapters", "include_volume_summary", "word_range", "one_line", "auto_book", "book_skills",
 	]);
 	const extra: Record<string, unknown> = {};
 	for (const [k, v] of Object.entries(o)) if (!extraKeys.has(k)) extra[k] = v;
@@ -202,6 +273,7 @@ export function parseStateDoc(
 			include_volume_summary: typeof o.include_volume_summary === "boolean" ? o.include_volume_summary : undefined,
 			word_range: normalizeWordRange(o.word_range), // v0.3.5+：书级字数区间（非法/未设置为 undefined，消费方回落 WORD_RANGE_DEFAULT）
 			one_line: asStr(o.one_line).trim() || undefined, // v0.3.0+：一句话设定（空串视为未设置）
+			auto_book: normalizeAutoBook(o.auto_book), // v0.4.1+：全自动建书配置（非法/空结构视为未配置）
 			book_skills: normalizeBookSkills(o.book_skills), // v0.3.4+：书籍技能阶段配置（非法/空结构视为未配置）
 			chapters,
 			created_at: asStr(o.created_at),
@@ -232,6 +304,18 @@ export function formatStateDoc(
 	if (state.include_volume_summary != null) o["include_volume_summary"] = state.include_volume_summary;
 	if (state.word_range) o["word_range"] = [state.word_range[0], state.word_range[1]]; // v0.3.5+：书级字数区间（YAML 数组写回；未配置不写）
 	if (state.one_line) o["one_line"] = state.one_line; // v0.3.0+：一句话设定（auto-book），仅非空时写回
+	// v0.4.1+：全自动建书配置——仅含有效条目时写回，按固定键序（start/end/chapters/volumes/chapter_counts/overwrite）
+	if (state.auto_book) {
+		const ab = normalizeAutoBook(state.auto_book) ?? {};
+		const blk: Record<string, unknown> = {};
+		if (ab.start) blk["start"] = ab.start;
+		if (ab.end) blk["end"] = ab.end;
+		if (ab.chapters != null) blk["chapters"] = ab.chapters;
+		if (ab.volumes != null) blk["volumes"] = ab.volumes;
+		if (ab.chapter_counts?.length) blk["chapter_counts"] = [...ab.chapter_counts];
+		if (ab.overwrite != null) blk["overwrite"] = ab.overwrite;
+		if (Object.keys(blk).length) o["auto_book"] = blk;
+	}
 	// v0.3.4+：书籍技能阶段配置——仅含有效条目时写回，按 BOOK_SKILL_PHASE_KEYS 固定键序、空数组阶段省略
 	if (state.book_skills) {
 		const bs: Record<string, string[]> = {};

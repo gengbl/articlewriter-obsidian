@@ -117,6 +117,14 @@ interface LlmChatBody {
 	[k: string]: unknown;
 }
 
+/**
+ * 是否本机回环端点（127.0.0.1 / localhost / [::1]）：本地 Strata serve 的缓存调参私有字段（strata_prefix / strata_checkpoint）
+ * 只对这类端点下发——远端 OpenAI/vLLM/llama.cpp 常对未知字段直接 400。
+ */
+export function isLoopbackBaseUrl(url?: string): boolean {
+	return /^https?:\/\/(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1])(?::\d+)?(?:\/|$)/i.test((url || "").trim());
+}
+
 function buildParams(cfg: LlmConfigDoc, messages: Message[], stream: boolean, extra?: Record<string, unknown>): LlmChatBody {
 	const body: LlmChatBody = {
 		model: cfg.model_name || undefined, // 本地服务常忽略/自取已加载模型；空则省略该字段
@@ -132,6 +140,14 @@ function buildParams(cfg: LlmConfigDoc, messages: Message[], stream: boolean, ex
 	const ex = samplingExtras(cfg);
 	if (ex) Object.assign(body, ex);
 	if (extra) Object.assign(body, extra);
+	// v0.4.x+ 本地 Strata serve 前缀缓存私有字段：strata_prefix（钉位，见 main.ts cachePin）/ strata_checkpoint（是否为该请求落 KV 检查点）。
+	// ① 非回环端点一律剥掉 strata_*（远端对未知字段可能 400）；② 非流式一次性调用（摘要、去AI味清洗、问答等）默认 checkpoint=false——
+	// 它们的提示词只用到一次，落检查点纯属浪费 KV 池，还会挤掉章节请求好不容易攒起的缓存前缀。
+	if (!isLoopbackBaseUrl(cfg.base_url)) {
+		for (const k of Object.keys(body)) if (k.startsWith("strata_")) delete body[k];
+	} else if (!stream && body.strata_checkpoint === undefined) {
+		body.strata_checkpoint = false;
+	}
 	// 已知端点上限保护：DeepSeek 官方（V4 时代，deepseek-flash / deepseek-v4-pro）最大输出 384K tokens，超限请求会被 400 拒绝。
 	// 注意旧 V3/R1 时代上限是 8192——对思考型模型夹到那个值是致命的：思考与正文共享同一 max_tokens 预算，
 	// 8192 会被 reasoning_content 全部耗尽、content 恒空（表现为「思考型模型正文为空」）。旧模型名已于 2026-07-24 停用，无需特判。

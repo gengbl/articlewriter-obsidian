@@ -1,6 +1,6 @@
 # L3 · 全自动写书流水线实现细节（v0.3.0+）
 
-改动 auto-book-from-skill（按技能全自动写书）/ worldview-generate 相关代码前必读对应条目。
+改动 auto-book-run（全自动写书）/ auto-book-config（配置全自动建书…）/ worldview-generate 相关代码前必读对应条目。
 
 ## src/pipeline.ts（纯数据 + 纯函数，不 import obsidian）
 
@@ -24,7 +24,7 @@
 
 ## main.ts：全自动写书流水线编排段（cmdWriteConsecutive 之后、/continue 段之前）
 
-- 命令注册（:213–216）：`worldview-generate` / `auto-book-stop` / `book-skill-create` / `auto-book-from-skill`（独立 `auto-book` 命令已移除，入口只剩技能路径）。无独立 slash 注册表——`/xxx` 只写在命令 name 文案里。
+- 命令注册（:209–212）：`worldview-generate` / `auto-book-stop` / `auto-book-config` / `auto-book-run`（v0.4.1+：旧 `book-skill-create` / `auto-book-from-skill` 已删除，独立 `auto-book` 命令更早已移除，入口只剩 auto-book-run 一条路径）。无独立 slash 注册表——`/xxx` 只写在命令 name 文案里。
 - `runAutoBook(story, flatMode, input)`：
   1. `stages = stagesFrom(input.startAt, input.endAt)` 预计算执行范围——空数组（停止节点排在起始节点之前）即 Notice「全自动未开始——停止节点排在起始节点之前，执行范围为空」return（v0.3.1+ 兜底，弹窗侧已校验）。然后 `autoMissing(story, requirementsFor(input.startAt, flatMode))` 预检——非空即 Notice 列缺失项 return（**零生成**）。
   2. 置 `this.auto = auto`（局部 const）+ `this.lastGenPanel = null`（清上一轮含手动生成的面板 abort 残留）。
@@ -43,41 +43,45 @@
 - `requestStop()`（:258）：streaming→`ctrl.abort()`；done→`end(false)`（放弃保存收尾）；idle/已收尾无操作。
 - `signal` getter 透出当前 AbortController.signal；`beginStream` 每轮新建 controller——阶段间 abort 状态不跨轮残留（但 lastGenPanel 缓存的是**最近一轮**的 signal，runAutoBook 开头置 null 再清一次保险）。
 
-## src/modals.ts：AutoBookModal（仅「按技能全自动写书」缺参补填时打开——标题「按技能全自动写书 — 补填参数」）
+## src/modals.ts：AutoBookModal（仅「全自动写书」缺参补填时打开——标题「全自动写书 — 补填参数」）
 
 - `AutoBookInput { startAt, endAt?, premise, volumeCount, chapterCounts, flatTotalChapters, overwrite }`（`endAt` v0.3.1+，undefined＝跑到流水线末尾）；import `PIPELINE_STAGES, StageId`（pipeline.ts 不 import obsidian，无循环依赖）。
-- **`addStageRangeSettings(container, init)` 共用助手（v0.3.1+，AutoBookModal / BookSkillCreateModal / SkillRangeModal 三处复用）**：渲染「起始节点」「停止节点」两个下拉（均按 PIPELINE_STAGES 顺序；停止下拉多一项「跑到末尾（连续编写正文）」＝undefined），返回 `{ startAt(), endAt(), error() }` 闭包——`error()` 校验停止节点是否排在起始节点之前（非法返回中文错误串，合法返回 null）。
-- 表单：起始/停止节点双下拉（上述助手）/ 一句话 textarea（`settingEl.addClass("aw-setting-stretch")` ＋ `rows = 6`：styles.css 该类把标签列收回 `flex:0 0 auto`、控件列 `flex:1 1 auto`、textarea `width:100%`＋`resize:vertical`，让输入框吃掉标签之外的整行剩余宽度——核心 `.setting-item-control` 默认只按 textarea 的 cols 宽度靠右摆）/ 平铺＝总章数、分卷＝卷数＋各卷章数（逗号/顿号/空格分隔；两组互斥、按书模式只渲染一组；分卷模式各卷章数 `setDesc` 实时显示「全书总章数 = N」推算值，不单独输入总章数）/ 覆盖 toggle。校验：worldview 起始必填 premise；正整数；各卷章数须 1 个（复制填满）或恰好卷数个字段的；起止区间非法（`range.error()`）；失败写行内 errEl、不关窗。预填值＝技能里已有的参数（startAt/endAt/premise/卷数/各卷章数/总章数，空值留空待补）。
-- `onSubmit` 在 `close()` 之后 await；`onCancel` 可选（未提交关闭时回调，runBookSkill 补填路径未传）。
+- **`addStageRangeSettings(container, init, onStartChange?)` 共用助手（v0.3.1+，AutoBookModal / BookSkillCreateModal / SkillRangeModal 三处复用）**：渲染「起始节点」「停止节点」两个下拉（均按 PIPELINE_STAGES 顺序；停止下拉多一项「跑到末尾（连续编写正文）」＝undefined），返回 `{ startAt(), endAt(), error() }` 闭包——`error()` 校验停止节点是否排在起始节点之前（非法返回中文错误串，合法返回空串）。v0.4.1+ 起第三参 `onStartChange(id)`＝起始节点变更回调（起始下拉 onChange 里触发），AutoBookModal/AutoBookConfigModal 用它联动「一句话设定」行显隐（只在 `startAt()==="worldview"` 时显示，`aw-hide` 类切换）。
+- 表单（v0.4.1+ 重构为共用助手）：起始/停止节点双下拉（上述助手，带 `onStartChange` 联动）/ 一句话设定（`addPremiseSetting`：堆叠布局 `aw-setting-stack`——标签自占一行、textarea 自占一行吃满弹窗宽度，`rows = 6`＋`resize:vertical`；仅起始节点＝worldview 时显示，`aw-hide` 类切换）/ 规模参数（`addScaleSettings`：按模式互斥显隐〔aw-hide 类〕——平铺仅「全书总章数」可编辑输入；分卷仅卷数＋各卷章数〔逗号/顿号/空格分隔〕，全书总章数整行隐藏、`syncCountsDesc()` 把推算值实时写进各卷章数说明行「（全书总章数 = N）」）/ 覆盖 toggle。校验：`scale.error()`＋`range.error()`＋worldview 起始必填 premise；失败写行内 errEl、不关窗。提交取 `scale.read()`（单值各卷章数按卷数复制填满）。预填值＝《故事状态.md》auto_book 配置里已有的参数（startAt/endAt/premise/卷数/各卷章数/总章数，空值留空待补）。
+- `onSubmit` 在 `close()` 之后 await；`onCancel` 可选（未提交关闭时回调，cmdAutoBookRun 补填路径未传）。
 
-## src/modals.ts：SkillRangeModal（v0.3.1+，「按技能全自动写书」参数齐全时的范围确认弹窗）
+## src/modals.ts：SkillRangeModal（v0.3.1+，「全自动写书」参数齐全时的范围确认弹窗）
 
-- 构造：`(app, skillName, init: { startAt?, endAt? }, onSubmit: (startAt, endAt?) => …)`——无 onCancel，取消/Esc＝什么都不做（不跑流水线）。
-- 标题「按技能全自动写书 — <技能名>」，说明行解释「停止节点也会执行，『跑到末尾』＝一直执行到『连续编写正文』」；表单即 `addStageRangeSettings` 双下拉（预填技能 start/end）；「开始」按钮先查 `range.error()`（非法写行内 errEl 不关窗），合法才 `close()` 后回调 `(startAt, endAt)` → main.ts 侧转手喂 `runAutoBook`。
+- 构造：`(app, title, init: { startAt?, endAt? }, onSubmit: (startAt, endAt?) => …)`——v0.4.1+ 第 2 参改传书名（`state.title || "当前书"`，旧版是技能名）；无 onCancel，取消/Esc＝什么都不做（不跑流水线）。
+- 标题「全自动写书 — <书名>」，说明行解释「停止节点也会执行，『跑到末尾』＝一直执行到『连续编写正文』」；表单即 `addStageRangeSettings` 双下拉（预填 `auto_book` 的 start/end）；「开始」按钮先查 `range.error()`（非法写行内 errEl 不关窗），合法才 `close()` 后回调 `(startAt, endAt)` → main.ts 侧转手喂 `runAutoBook`。
 
-## src/book_skill.ts 建书技能（v0.3.0+，纯函数，不 import obsidian/yaml）
+## src/book_skill.ts 旧建书技能解析（v0.3.0+；v0.4.1+ 起仅作一次性迁移工具，纯函数，不 import obsidian/yaml）
 
+- **模块现状**：建书配置已并入《故事状态.md》auto_book 块（state_doc.ts），本模块不再创建/读取技能文件——只保留 `parseBookSkill` 供 `migrateLegacyBookSkills`（main.ts）把旧《案头资料/*.md》技能文件迁移进状态文档后删除文件。`skillMissing`/`formatBookSkill` 已删除。
 - **不 import yaml 的原因**：yaml 是 CJS 包，测试走 esbuild→ESM（`.mjs`）打包会报 `Dynamic require of "process" is not supported`——故手写单层 frontmatter 解析（`parseFlatFrontmatter`：一行一项 `key: value`，空行/`#` 注释跳过，非法行（无冒号/键不合法）整块判 null＝非技能文件；不支持嵌套/多行值）。
-- `BookSkillSpec`：`startAt/endAt/mode/flatTotalChapters/volumeCount/chapterCounts/overwrite/premise` 全可选 + `body`（正文＝一句话设定）。`endAt`（v0.3.1+）＝停止节点 id〔含〕，缺省＝跑到流水线末尾。
+- `BookSkillSpec`：`startAt/endAt/mode/flatTotalChapters/volumeCount/chapterCounts/overwrite/premise` 全可选 + `body`（正文＝一句话设定）。`endAt`＝停止节点 id〔含〕，缺省＝跑到流水线末尾。
 - `parseBookSkill(raw)`：`FM_RE` 取 frontmatter → 标记判定 `o.auto_book === "true"`（**未加引号的布尔 true**；`"true"` 带引号字符串不算）→ 逐字段宽松解析：`start`/`end` 须在 STAGE_IDS（非法各自忽略）、`mode` 仅 flat|volumes、`chapters`/`volumes` 走 `posInt`、`chapter_counts` 走 `parseCounts`（`[8, 10]` 方括号或逗号/顿号/空白分隔，含非法项整条丢弃）、`overwrite` 仅 `true`/`false` 字面量、`premise` 走 `unquote`（双引号标量按 JSON 语义解引）。**字段非法各自忽略、不整体报废**；BOM 先剥。
-- `skillMissing(spec, flatMode, startAt)`：缺参判定——startAt=worldview 时一句话设定（premise∨body 合并传入）必填；平铺要 `chapters`；分卷要 `volumes`＋`chapter_counts`（长度 1 即算齐全，runAutoBook 末值复制兜底）。返回中文缺失项数组，空＝免交互可跑。
-- `formatBookSkill(spec)`：向导落盘用——frontmatter 只写已设置字段（含 `end: <stage id>`，v0.3.1+，未设置不写），`premise` 用 `JSON.stringify` 双引号标量（与 `unquote` 对偶、yaml 兼容），正文空则省略。
-- 测试：`src/book_skill.test.ts`（5 组：完整解析含 `end`/无标记与非法 frontmatter→null/`auto_book: "true"` 与 `overwrite: yes` 等宽松与严格边界/skillMissing 各分支/formatBookSkill 往返含 `end`）。
+- `posInt(v)`：正整数宽松解析（number 或纯数字字符串）——v0.4.1+ 起 state_doc.ts `normalizeAutoBook` 也 import 复用（唯一保留的跨模块共享件）。
+- 测试：`src/book_skill.test.ts`（4 组：非技能文档→null（无 frontmatter/无标记/非法行）/全字段解析且非法字段各自忽略/chapter_counts 方括号数组与逗号字符串/旧技能文件迁移解析〔v0.4.1+〕）。缺参与落盘格式化组已随 `skillMissing`/`formatBookSkill` 删除。
 
-## main.ts + modals.ts：建书技能接线
+## main.ts + modals.ts：全自动建书配置接线（v0.4.1+）
 
-- 命令注册（:215–216）：`book-skill-create` / `auto-book-from-skill`。
-- `cmdCreateBookSkill`：ensureWorkDir → requireStory → ensureVolumeLayout → `this.auto` 拒并发 → `new BookSkillCreateModal(app, state.use_volumes === false, state.one_line, onSubmit)`。onSubmit：路径 `manager.deskDocsPath(story)/<文件名>.md`，已存在弹 ConfirmModal 确认覆盖，写盘＝`formatBookSkill`（含 `endAt: input.endAt`）＋**按 input.mode 过滤规模字段**（flat 只写 chapters、volumes 只写 volumes＋chapter_counts，另一组传 undefined 不落盘）＋`body: input.premise`（正文即一句话设定，不写 premise 字段）。
-- `cmdAutoBookFromSkill`（:6046，**流水线唯一入口**）：ensureWorkDir → requireStory → ensureVolumeLayout → `if (this.auto)` 拒重复启动 → `adapter.list(desk)` 枚举 `案头资料/*.md` 逐个 `parseBookSkill`（读失败跳过）→ 零技能 Notice 提示先跑向导 → 单个直接 `runBookSkill`、多个弹 `SkillPickerModal`（第 4 参 placeholder＝"选择建书技能（案头资料/…）"，默认值仍是 SKILLS 文案；onPick 契约为 void，`void this.runBookSkill` 丢弃 Promise——obsidianmd/no-misused-promises）。
-- `runBookSkill`（try/catch notifyError 自兜）：`flatMode = spec.mode ? spec.mode === "flat" : state.use_volumes === false`（技能 mode 优先于书籍实际模式）；premise＝`(spec.premise ?? "").trim() || body`；`skillMissing`（只查起始阶段需求，不受停止节点影响）空＝弹 `SkillRangeModal` 预填 `{ startAt: spec.startAt ?? "worldview", endAt: spec.endAt }`，点「开始」才 `runAutoBook`（volumeCount/chapterCounts/flatTotalChapters 缺省传 0/[]、overwrite 缺省 false；取消/Esc＝不跑）；非空＝Notice 列缺失项 + `new AutoBookModal` 预填技能参数（init 含 `endAt`）补填后开跑（两条路径最终都走 runAutoBook，预检/停止机制完全一致）。
-- `BookSkillCreateModal`＋`BookSkillCreateInput`（含 `endAt?`）：表单＝文件名（默认「自动建书」）/起始＋停止节点双下拉（`addStageRangeSettings`）/一句话 textarea（预填 state.one_line）/规模模式下拉（默认跟随书籍）/规模参数/覆盖 toggle；**规模参数随模式切换显隐**（`applyMode()`＝三个 `settingEl.toggleClass("hide", …)`：flat 只显示全书总章数、volumes 只显示卷数＋各卷章数）；校验规则与 AutoBookModal 同一套（长度 1 章数按卷数复制填满、起止区间查 `range.error()`），提交对象取 `range.startAt()/range.endAt()`，onSubmit 非所选模式传 0/[]。
-- 规模输入共用助手（modals.ts）：`COUNTS_HINT`（各卷章数占位/说明文案）＋`parseCountsText`（逗号/顿号/空白分隔解析，非法项→NaN）＋`computedTotalChapters(volCount, nums)`（单值×卷数或逐项求和，参数不齐返回 null）＋`addStageRangeSettings`（起止双下拉，见上节）——AutoBookModal 与 BookSkillCreateModal 的分卷模式都在各卷章数 `setDesc` 实时显示「全书总章数 = N」，提交校验也走 `parseCountsText`。
-- `SkillPickerModal`（modals.ts :641）：placeholder 改第 4 可选参，默认值保持 SKILLS 选择场景文案。
+main.ts「v0.4.1+ 全自动建书」段（:6150–，runAutoBook 编排之后）：`migrateLegacyBookSkills` / `saveAutoBookConfig` / `cmdAutoBookConfig` / `cmdAutoBookRun` 四件套。
+
+- `migrateLegacyBookSkills(story, state)`（:6155，两个命令入口都先跑）：`adapter.list(deskDocsPath)` 枚举 `案头资料/*.md` 逐个 `parseBookSkill`（读失败跳过），命中即按文件名排序逐个合并——**`spec.mode` 覆盖 `state.use_volumes`**（旧流水线按技能 mode 执行，保持行为一致）、premise∨正文**仅当 `state.one_line` 为空时**写入、`start/end/chapters/volumes/chapter_counts/overwrite` 并入 `state.auto_book`（已有键被技能值覆盖）→ `adapter.remove` 删除全部命中文件 → `saveState` ＋ Notice（列出文件名＋迁移后模式）。零命中＝原 state 直返、零写盘。多个技能文件时后者覆盖前者的同名字段。
+- `saveAutoBookConfig(story, input: AutoBookConfigInput)`（:6191）：写回状态文档——`use_volumes = input.mode === "volumes"`；`one_line` 仅 premise 非空才写（空＝保持原值）；`auto_book` **整块替换**（不是 merge）：`startAt !== "worldview"` 才写 `start`、`endAt` 有值才写 `end`、规模字段只写所选模式那组（flat＝chapters、volumes＝volumes＋chapter_counts）、`overwrite` 恒写——模式切换时另一模式旧键自动清掉。
+- `cmdAutoBookConfig`（:6210，「配置全自动建书…」）：ensureWorkDir → requireStory → ensureVolumeLayout → `this.auto` 拒并发 → `migrateLegacyBookSkills` → `new AutoBookConfigModal(app, { flatMode, premise: state.one_line, startAt/endAt/volumeCount/chapterCounts/flatTotalChapters/overwrite 全部预填自 state }, onSubmit)`；onSubmit＝`saveAutoBookConfig` ＋成功 Notice；try/catch notifyError。
+- `cmdAutoBookRun`（:6239，**流水线唯一入口**）：ensureWorkDir → requireStory → ensureVolumeLayout → `if (this.auto)` 拒重复启动 → `migrateLegacyBookSkills` → `flatMode = state.use_volumes === false`、`cfg = state.auto_book`、`premise = state.one_line`、`startAt = cfg?.start ?? "worldview"` → `autoBookMissing(premise, cfg, flatMode, startAt)`（state_doc.ts 导出，见下节）判定：
+  - 空缺失＝弹 `SkillRangeModal(app, state.title || "当前书", { startAt, endAt: cfg?.end }, …)`，确认回调转手 `runAutoBook(story, flatMode, { startAt, endAt, premise, volumeCount: cfg?.volumes ?? 0, chapterCounts: cfg?.chapter_counts ?? [], flatTotalChapters: cfg?.chapters ?? 0, overwrite: cfg?.overwrite ?? false })`。
+  - 非空＝Notice「全自动建书配置缺少参数：…」＋ `new AutoBookModal` 预填已有配置补填；提交后先 `saveAutoBookConfig` 持久化（失败只 Notice「补填参数保存失败…（本次运行不受影响）」、**不阻断开跑**），再 `runAutoBook`（补填弹窗的规模模式会改写 `use_volumes`，runAutoBook 的 flatMode 取补填弹窗所选模式）。
+- `AutoBookConfigModal`＋`AutoBookConfigInput`（modals.ts，替代旧 BookSkillCreateModal/BookSkillCreateInput）：标题「配置全自动建书 — 当前书」；表单＝起始＋停止节点双下拉（`addStageRangeSettings`，带 `onStartChange`）/一句话设定（`addPremiseSetting`，标签「一句话设定（写入 one_line）」，预填 state.one_line，仅起始节点＝worldview 时显示，**留空＝保存时不动 one_line**）/规模模式下拉（默认跟随书籍，onChange 调 `scale.setMode`）/规模参数（`addScaleSettings`）/覆盖 toggle；**规模显隐由 `addScaleSettings.applyMode()` 统一处理**（三个 `settingEl.toggleClass("aw-hide", …)` 互斥切换：flat 仅全书总章数可编辑、volumes 仅卷数/各卷章数且全书总章数整行隐藏推算值进各卷章数说明行）；校验规则与 AutoBookModal 同一套（`range.error()`＋`scale.error()`；premise 不必填），按钮「保存配置」，提交对象取 `range.startAt()/range.endAt()`＋`scale.read()`＋`scale.mode()`。
+- 规模/一句话输入共用助手（modals.ts）：`COUNTS_HINT`（各卷章数占位/说明文案）＋`parseCountsText`（逗号/顿号/空白分隔解析，非法项→NaN）＋`computedTotalChapters(volCount, nums)`（单值×卷数或逐项求和，参数不齐返回 null）＋`addStageRangeSettings`（起止双下拉，见上节）＋**v0.4.1+ `addPremiseSetting(contentEl, name, initial)`**（一句话设定堆叠行，返回 `{settingEl, value()}`，styles.css `.aw-setting-stack`＝`flex-direction:column`＋控件列 `display:block;width:100%`＋textarea `width:100%`）＋**`addScaleSettings(contentEl, init)` 返回 `ScaleControls {mode(), setMode(m), error(), read()}`**（渲染全书总章数/卷数/各卷章数三行、按模式互斥 aw-hide 显隐；`setMode`→`applyMode()` 切三行 `aw-hide` 类并同步说明行；`error()` 中文校验文案〔「平铺模式：全书总章数须为正整数」等〕；`read()` 单值章数复制填满）**显隐类必须用自带 `.aw-hide`（styles.css `display:none!important`）——Obsidian 核心 app.css 没有 `.hide` 类规则（app.asar 全文检索无 `.hide{…}`），早期写 `toggleClass("hide")` 类挂上却毫无效果，表现为「重启后弹窗毫无变化」**——AutoBookModal / AutoBookConfigModal / SkillRangeModal 三弹窗复用这组助手，分卷模式全书总章数整行隐藏、推算值（`syncCountsDesc()`→`computedTotalChapters`）只作各卷章数说明行展示、不落盘。
+- `SkillPickerModal`（modals.ts）：旧建书技能选择场景已随 auto-book-from-skill 删除；现仅剩设置页「引用文档」清单的技能添加处（main.ts :7662）使用，走默认 placeholder「选择技能（SKILLS/*.md…）」——指写作技巧技能，与建书配置无关。
 
 ## 世界观生成三件套 + 落盘
 
 - `src/prompts.ts`（:1262–）：`WORLDVIEW_GEN_SYSTEM_PROMPT` / `WorldviewGenInput { bookTitle, premise, contextDocs? }` / `buildWorldviewGenPrompt`——固定 H2 骨架（「世界基本规则」「世界观红线」必含）、首行 H1、只写设定不写情节；`pushContextDocs` 注入调用方装配块。
 - `src/story_manager.ts` `setWorldDoc`（:2625）：全量写书级《案头资料/世界观.md》，剥正文首部 H1、统一补 `# <书名> 世界观`（与 setPlanningGuide 同口径）。读取侧 `readWorldDoc().fullText`（stripComments 全文）供预检与上下文注入。
-- `src/state_doc.ts`：`one_line?: string`——KEYS 白名单含 `one_line`，空串视为未设置、仅非空写回。
+- `src/state_doc.ts`：`one_line?: string`——KEYS 白名单含 `one_line`，空串视为未设置、仅非空写回。**v0.4.1+ `auto_book?: AutoBookConfig`**（嵌套块，extraKeys 白名单含 `auto_book`）：`AutoBookConfig { start?, end?, chapters?, volumes?, chapter_counts?, overwrite? }`；parse 侧 `normalizeAutoBook(raw)` 清洗（stage id 白名单、`posInt`（book_skill.ts 导出复用）、`chapter_counts` 三形态＝YAML 数组/分隔字符串/标量单值→`[n]`，非法项各自忽略、数组含非法项整条丢弃）；formatStateDoc 固定键序写出（start/end/chapters/volumes/chapter_counts/overwrite，只写非空键，chapter_counts 为 YAML 块列表，全空＝整键省略）；导出 `autoBookMissing(premise, cfg, flatMode, startAt)` 缺参判定（仅 worldview 起跑要求 premise；flat 要 chapters；volumes 要 volumes＋chapter_counts，长度 1 即算齐全）。测试：`src/state_doc.test.ts`（auto_book 解析/清洗/键序写出/autoBookMissing 各分支）。
 - `cmdGenerateWorldview`（main.ts :5292–，装配 :5312）：阶段 0 `getPhaseLlmSetup(PHASE_WORLDVIEW)`（v0.3.7+ 世界观生成为独立写作阶段）；上下文 pairs＝book_info/tension_rules（~~guide（锁定）~~**v0.3.5+ 写作指南体系整体废弃**：guide 对与 `guideKey` 选项已删除）经 `orderRefDocSpecs(pairs, phaseRefDocKeys(PHASE_WORLDVIEW), { bookSkillDir, bookSkillNames })` 过滤（默认清单含 `skill:世界观生成框架`；v0.3.4+ 书籍技能追加注入）；流式完成自动落盘（auto 语义直接保存）；已有非空直接覆盖不确认。
 - export-ai-prompts：features 列表「审阅当前章」后插「生成世界观 (/worldview-generate)」；trySec 节在「大纲域」首节，标题与 features 逐字节一致（选择键）。premise 按盘上 state.one_line，空则占位符「（state.one_line 为空：运行时弹窗补问一句话设定）」。

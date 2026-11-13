@@ -312,13 +312,18 @@ export const PROMPT_DOCS_ROOT = new Set(["大纲.md", "世界观.md", "人物.md
 export const PROMPT_DOCS_VOLUME = new Set(["卷大纲.md", "人物.md", "人物关系.md", "场景.md"]); // 《卷摘要.md》仅在 includeVolumeSummary 开关开启时注入，默认不算
 export const PROMPT_DOCS_CHAPTER = new Set(["章节.md", "章节大纲.md", "人物.md", "人物关系.md", "场景.md"]); // v0.2.23+：建章播种六件中除《章节信息》外全部参与（其不再注入写作上下文，v0.2.24+ 注入面改由调用方 PromptSpec 列表声明）
 
+/** v0.4.x+ 前缀缓存锚点回传容器：调用方传入空对象，buildWritingContext 写入「稳定段字符数」（提示词中与逐章请求无关的前缀长度） */
+export interface StableSink {
+	stableChars?: number;
+}
+
 /**
  * 纯函数版 get_context_for_writing：所有磁盘读取与文档装配由调用方完成。
  * v0.0.15 三层结构——故事情况分「书籍级 / 卷级 / 章级」小节渲染：
  * - 文档原文（世界观/大纲/人物关系等）由调用方经 assemblePromptFiles 按层装配为组串传入（bookDocs/volDocs/chapterDocs），本函数只负责分节渲染与结构化列表
  * - 人物/场景按归属分层（当前卷内 → 卷级；其余 → 书级），本章目录归属的条目已由章级组串原文渲染、此处排除避免重复
  */
-export function buildWritingContext(input: WritingContextInput): string {
+export function buildWritingContext(input: WritingContextInput, out?: StableSink): string {
 	const parts: string[] = [];
 	if (input.title) parts.push(`【小说标题】${input.title}`);
 	if (input.genre) parts.push(`【小说类型】${input.genre}`);
@@ -373,45 +378,36 @@ export function buildWritingContext(input: WritingContextInput): string {
 	const volChars = inVolume ? chars.filter((c) => c.vol === activeVolId) : [];
 	const bookChars = chars.filter((c) => !(inVolume && c.vol === activeVolId));
 
+	// v0.3.8+ 前缀缓存友好排序：稳定块（书级文档→前卷摘要→卷级文档）全部排前，按本章提及过滤的角色/场景列表与逐章滑动的【前文内容】窗口压后，
+	// 再叠章级块——相邻章节请求的稳定公共前缀＝system＋标题/类型＋书级文档＋前卷摘要＋卷级文档，可整段命中缓存（此前易变块夹在稳定块中间，缓存只吃到 system）
 	parts.push("\n== 故事情况 · 书籍级 ==");
 	const bookDocs = (input.bookDocs || "").trim();
 	if (bookDocs) parts.push(`\n${bookDocs}`);
+
+	// v0.1.4+：前文窗口跨卷缺口——本卷内不足 prevN 章时以最近各前卷《卷摘要》填充（由近及远），不拉取他卷章节细节
+	// v0.3.8+：随缓存友好排序上移到书级文档之后（卷内逐章不变）
+	if ((input.prevN ?? 3) > 0 && (input.chapterNum > 1) && (input.prevVolSummaries?.length)) {
+		for (const pv of input.prevVolSummaries) parts.push(`\n【前卷摘要 · ${pv.name}】\n${pv.text}`);
+	}
+
+	// v0.4.x+ 前缀缓存锚点：稳定段＝标题/类型＋书籍级文档＋前卷摘要（+ 卷级标题与卷级文档）。
+	// 卷摘要及之后的角色/场景列表、前文内容、章级块都是逐章易变项，一律不计入。
+	let stableEnd = parts.length;
+	if (inVolume) {
+		parts.push(`\n== 故事情况 · 卷级（${volTitle}） ==`);
+		const volDocs = (input.volDocs || "").trim();
+		if (volDocs) parts.push(`\n${volDocs}`);
+		stableEnd = parts.length;
+		const vs = (input.volSummary || "").trim();
+		if (vs) parts.push(`\n【卷摘要】\n${vs}`);
+	}
+
 	// v0.2.25+：不再注入【全书大纲】全文（用户定稿：阶段 3 写作上下文只依赖本卷/本章大纲）；标记提示只看实际注入的大纲文本（本章大纲 + 三层组串），不再悬空指向未注入的全书大纲
 	const markerText = [input.chapterOutlineText || "", bookDocs, input.volDocs || "", input.chapterDocs || ""].join("\n");
 	if (/<角色\s*[：:]|<场景\s*[：:]/.test(markerText)) {
 		parts.push("（大纲中 <角色：...>/<场景：...> 标记处，需在对应情节简单描写该角色与场景）");
 	}
 	renderCharBlock("【书籍角色设定】", bookChars);
-
-	// v0.1.4+：前文窗口跨卷缺口——本卷内不足 prevN 章时以最近各前卷《卷摘要》填充（由近及远），不拉取他卷章节细节
-	if ((input.prevN ?? 3) > 0 && (input.chapterNum > 1) && (input.prevVolSummaries?.length)) {
-		for (const pv of input.prevVolSummaries) parts.push(`\n【前卷摘要 · ${pv.name}】\n${pv.text}`);
-	}
-
-	const prevN = input.prevN ?? 3;
-	if (input.chapterNum > 1 && prevN > 0) {
-		const labelAt = (i: number): string => input.prevChapters.find((p) => p.num === i)?.label || `第${i}章`;
-		// v0.1.4+：窗口可能因跨卷限制/空章出现缺口——标题与遍历范围按实际收录章节的 min/max ordinal，缺位自动跳过
-		const present = input.prevChapters.filter((p) => p.content.trim());
-		if (present.length) {
-			const first = Math.min(...present.map((p) => p.num));
-			const last = Math.max(...present.map((p) => p.num));
-			parts.push(`\n【前文内容】（${labelAt(first)}至${labelAt(last)}）`);
-			for (let i = first; i <= last; i++) {
-				const prev = input.prevChapters.find((p) => p.num === i);
-				if (!prev || !prev.content) continue;
-				const summary = ((input.summaries[i] || "")).trim();
-				parts.push(`\n--- ${labelAt(i)} ${prev.title || ""} ---`);
-				if (summary) {
-					parts.push(`[摘要] ${summary}`);
-				} else {
-					const preview = prev.content.slice(0, 500);
-					parts.push(preview);
-					if (prev.content.length > 500) parts.push("[...内容省略...]");
-				}
-			}
-		}
-	}
 
 	const allScenes = new Map(input.scenes.map((s) => [s.scene_id, s]));
 	const exclScenes = new Set(input.excludeSceneIds || []); // 本章目录《场景.md》归属者已由章级组串【本章场景】原文渲染
@@ -446,15 +442,34 @@ export function buildWritingContext(input: WritingContextInput): string {
 	const volScenes = inVolume ? sceneList.filter((s) => s.vol === activeVolId) : [];
 	const bookScenes = sceneList.filter((s) => !(inVolume && s.vol === activeVolId));
 	renderSceneBlock(inVolume ? "【书籍场景】" : multiScenes ? "【场景】" : "【当前场景】", bookScenes, multiScenes);
-
 	if (inVolume) {
-		parts.push(`\n== 故事情况 · 卷级（${volTitle}） ==`);
-		const volDocs = (input.volDocs || "").trim();
-		if (volDocs) parts.push(`\n${volDocs}`);
-		const vs = (input.volSummary || "").trim();
-		if (vs) parts.push(`\n【卷摘要】\n${vs}`);
 		renderCharBlock("【本卷角色设定】", volChars);
 		renderSceneBlock("【本卷场景】", volScenes, multiScenes);
+	}
+
+	const prevN = input.prevN ?? 3;
+	if (input.chapterNum > 1 && prevN > 0) {
+		const labelAt = (i: number): string => input.prevChapters.find((p) => p.num === i)?.label || `第${i}章`;
+		// v0.1.4+：窗口可能因跨卷限制/空章出现缺口——标题与遍历范围按实际收录章节的 min/max ordinal，缺位自动跳过
+		const present = input.prevChapters.filter((p) => p.content.trim());
+		if (present.length) {
+			const first = Math.min(...present.map((p) => p.num));
+			const last = Math.max(...present.map((p) => p.num));
+			parts.push(`\n【前文内容】（${labelAt(first)}至${labelAt(last)}）`);
+			for (let i = first; i <= last; i++) {
+				const prev = input.prevChapters.find((p) => p.num === i);
+				if (!prev || !prev.content) continue;
+				const summary = ((input.summaries[i] || "")).trim();
+				parts.push(`\n--- ${labelAt(i)} ${prev.title || ""} ---`);
+				if (summary) {
+					parts.push(`[摘要] ${summary}`);
+				} else {
+					const preview = prev.content.slice(0, 500);
+					parts.push(preview);
+					if (prev.content.length > 500) parts.push("[...内容省略...]");
+				}
+			}
+		}
 	}
 
 	// v0.2.24+：《伏笔.md》不再注入写作上下文——伏笔仅由大纲内 [伏]…[/] 标记驱动（buildChapterPrompt 要求第 8 条），文档本身仍由 foreshadow-* 命令管理入库
@@ -465,7 +480,9 @@ export function buildWritingContext(input: WritingContextInput): string {
 		parts.push(`\n== 故事情况 · 章级（${inVolume ? `${volTitle}·` : ""}${chLabel}） ==`);
 		parts.push(`\n${chapterDocs}`);
 	}
-	return parts.join("\n");
+	const text = parts.join("\n");
+	if (out) out.stableChars = parts.slice(0, stableEnd).join("\n").length;
+	return text;
 }
 
 // ---------- 编写类型系统提示词（对应 writer.py _story_type_system_prompt / _story_type_confirm_line） ----------
@@ -756,7 +773,11 @@ export function buildChapterPrompt(input: ChapterPromptInput): { prompt: string;
 	const label = (input.chapterLabel || `第${input.chapterNum}章`).trim();
 	const [wordLow, wordHigh] = input.wordRange;
 	const parts: string[] = [];
-	parts.push(`请创作${label}`);
+	// v0.3.8+ 前缀缓存友好排序：【写作上下文】整块提到 user 消息最前（书级/卷级稳定文档在前、易变块在其后），
+	// 「请创作第N章＋章节大纲＋约束＋用户要求」等逐章必变内容与其后的要求清单全部压到末尾——相邻章节请求可复用「上下文稳定段」整段前缀；
+	// 任务指令后置同样符合「指令压轴」惯例，不削弱约束效力
+	parts.push(`\n以下是写作上下文：\n${input.context}`);
+	parts.push(`\n请创作${label}`);
 	if (chapterOutline) {
 		parts.push(`章节大纲：${chapterOutline}`);
 		const markerGuide = buildOutlineMarkerGuide(chapterOutline);
@@ -775,7 +796,6 @@ export function buildChapterPrompt(input: ChapterPromptInput): { prompt: string;
 	if (input.userInstruction) parts.push(`用户要求：${input.userInstruction}`);
 	const descGuide = descStyleGuide(input.descStyle);
 	if (descGuide) parts.push(descGuide);
-	parts.push(`\n以下是写作上下文：\n${input.context}`);
 	const storyType = storyTypeOf(input.storyType);
 	if (storyType) {
 		parts.push("\n" + storyTypeConfirmLine(storyType));
@@ -836,11 +856,13 @@ export function buildContinuePrompt(input: ContinuePromptInput): { prompt: strin
 	const confirmLine = storyTypeConfirmLine(input.storyType);
 	const tail1000 = (input.existingContent || "").slice(-1000);
 	const [wordLow, wordHigh] = input.wordRange;
+	// v0.3.8+ 前缀缓存友好排序：写作上下文块提到最前（其内部已按稳定→易变排序），带章号的引导语与逐章/逐次易变段全部压后，
+	// 同一章多次续写及相邻章续写请求都能复用「上下文稳定段」整段前缀
 	const prompt = `
+${input.context}
+
 ${confirmLine}
 以下是${label}的已有内容，请继续续写：
-
- ${input.context}
 
  ${!chapterPrep.cleaned ? `【大纲提示】当前尚无本章大纲，请按前文脉络与${outlineRef}自然续写。\n\n` : ""}${buildOutlineMarkerGuide(chapterOutline)}
 
@@ -1144,7 +1166,9 @@ export function buildBookOutlineExtendPrompt(input: BookOutlineExtendInput): str
 export interface PlanningGuideInput {
 	bookTitle: string; // 书名（首句「为「X」生成」用）
 	contextDocs?: string; // 调用方装配的上下文块串（【书籍信息】→【张力规则】→【世界观设定】→【全书大纲】→【卷列表 · 阅读序】）
-	volumeCount?: number; // v0.2.25+ 分卷规划：本书计划卷数（弹窗输入，预填现有卷数）；>0 时生成要求按卷组织（标明卷序号与卷名），undefined/0＝不分卷或用户取消
+	volumeCount?: number; // v0.2.25+ 分卷规划：本书计划卷数（弹窗输入，预填现有卷数）；>0 时生成要求恰好 N 卷按卷组织，undefined/0＝未指定（配合 volumeMode 走「按需分卷」软要求）
+	volumeMode?: boolean; // v0.4.x+ 分卷模式（use_volumes≠false）：未给卷数（取消弹窗）时也附「按需分卷」按卷组织要求——分卷模式恒带分卷信息
+	noVolumes?: boolean; // v0.4.x+ 无卷模式（《故事状态.md》use_volumes=false）：按卷要求缺失时附带禁卷强提示，与 volumeCount>0 互斥
 }
 
 /** v0.2.x+ 策划指南固定十节（顺序即文档结构）：首轮 prompt 的节清单、截断检测（planningGuideMissingSections）、
@@ -1169,11 +1193,23 @@ export function planningGuideMissingSections(text: string): string[] {
 	return PLANNING_GUIDE_SECTIONS.filter((s) => !headings.some((h) => h.includes(s.title))).map((s) => `${s.no}、${s.title}`);
 }
 
-/** v0.2.25+ 分卷规划要求（首轮与续写 prompt 共用同一事实源）：弹窗输入的卷数 >0 时要求《策划指南》按卷组织（标明卷序号与卷名）；未输入/取消或平铺模式返回空串不加该条 */
-function planningGuideVolumeReq(volumeCount?: number): string {
-	const n = volumeCount ?? 0;
-	if (!Number.isSafeInteger(n) || n < 1) return "";
-	return `本书按 ${n} 卷规划（阅读序第 1 至第 ${n} 卷）。《策划指南》须按卷组织：在「二、大事件序列」「三、升级路径」「五、反转与伏笔总规划」等节内按卷分组，每卷用 H3 小标题「第X卷 · 卷名」（有【卷列表 · 阅读序】块时卷名取自其中，无该块或卷名未知时只写「第X卷」），写明该卷承载的大事件、张力抬升与反转落位；各卷须在卷内自然收束，卷末不留新悬念`;
+/** v0.2.25+ 分卷规划要求（首轮与续写 prompt 共用同一事实源）：弹窗输入的卷数 >0 时要求《策划指南》恰好 N 卷按卷组织；
+ *  v0.4.x+ 分卷模式（volumeMode）但未给卷数（取消弹窗）时改附「按需分卷」软要求——分卷模式下《策划指南》恒带分卷信息，不再出现整份无卷结构；
+ *  平铺（无卷）模式返回空串（禁卷强提示走 planningGuideNoVolReq） */
+function planningGuideVolumeReq(input: PlanningGuideInput): string {
+	const n = input.volumeCount ?? 0;
+	if (Number.isSafeInteger(n) && n >= 1) return `本书按 ${n} 卷规划（阅读序第 1 至第 ${n} 卷）。《策划指南》须按卷组织：在「二、大事件序列」「三、升级路径」「五、反转与伏笔总规划」等节内按卷分组，每卷用 H3 小标题「第X卷 · 卷名」（有【卷列表 · 阅读序】块时卷名取自其中，无该块或卷名未知时只写「第X卷」），写明该卷承载的大事件、张力抬升与反转落位；各卷须在卷内自然收束，卷末不留新悬念`;
+	if (input.noVolumes || !input.volumeMode) return "";
+	return "本书为分卷模式（《故事状态.md》use_volumes≠false）：《策划指南》须按卷组织——按需分卷（通常 1–5 卷，阅读序自第 1 卷起）：在「二、大事件序列」「三、升级路径」「五、反转与伏笔总规划」等节内按卷分组，每卷用 H3 小标题「第X卷 · 卷名」（有【卷列表 · 阅读序】块时卷名取自其中，无该块或卷名未知时只写「第X卷」），写明该卷承载的大事件、张力抬升与反转落位；各卷须在卷内自然收束，卷末不留新悬念";
+}
+
+/** v0.4.x+ 无卷模式禁卷强提示（首轮与续写 prompt 共用）：故事状态 use_volumes=false 时此前只是「不加按卷要求」，
+ *  模型仍按网文惯例自发输出「第X卷/分卷规划」（用户实测无卷模式自动化生成策划结果混入分卷信息）——
+ *  与按卷组织要求互斥（volumeCount>0 时不生效） */
+function planningGuideNoVolReq(input: PlanningGuideInput): string {
+	if (planningGuideVolumeReq(input)) return "";
+	if (!input.noVolumes) return "";
+	return "本书为无卷模式（《故事状态.md》use_volumes=false，纯 书籍→章节 扁平结构，全书不设卷）：《策划指南》不得输出任何分卷信息——禁止出现「第X卷」「卷名」「分卷规划」「按卷组织」等卷划分表述；全书主线、大事件序列、升级路径、反转与伏笔、节奏曲线一律以全书整体组织，布局只用相对位置（开篇/中段/后段/结局）表述";
 }
 
 /** v0.2.x+「策划指南」prompt：依据世界观设定生成书级《策划指南.md》——仅输出大事件简略内容，不处理章节问题。
@@ -1185,8 +1221,9 @@ export function buildPlanningGuidePrompt(input: PlanningGuideInput): string {
 	const reqs: string[] = [
 		`请根据下面的书籍设定（尤其是世界观${hasTimeline ? "与【时间线】" : ""}），为本书生成一份《策划指南》，${hasTimeline ? "「二、大事件序列」须以【时间线】的时间点与事件为基础展开、不得与其冲突，" : ""}重点输出大事件的简略内容：\n\n${sectionsBlock}`,
 	];
-	const volReq = planningGuideVolumeReq(input.volumeCount); // v0.2.25+：有卷时按卷组织（十节结构不变，节内按卷分 H3）
+	const volReq = planningGuideVolumeReq(input); // v0.2.25+：有卷时按卷组织（十节结构不变，节内按卷分 H3）
 	if (volReq) reqs.push(volReq);
+	else { const noVol = planningGuideNoVolReq(input); if (noVol) reqs.push(noVol); } // v0.4.x+：无卷模式附禁卷强提示
 
 	reqs.push("只输出策划指南正文本身（上述十个 H2 节），不要输出 H1 标题、解释、前言说明或代码块包裹");
 
@@ -1202,8 +1239,9 @@ export function buildPlanningGuideContinuePrompt(input: PlanningGuideInput, exis
 		"只从【已生成部分】被截断处继续写：不要重复、改写或总结任何已生成内容，不要输出 H1 标题、前言说明或代码块包裹",
 		"若现有文本末尾停在某个节标题处或该节内容不完整，先补完该节（已有的标题行不要重复输出）",
 	];
-	const volReq = planningGuideVolumeReq(input.volumeCount); // v0.2.25+：与首轮 prompt 同口径的按卷组织要求
+	const volReq = planningGuideVolumeReq(input); // v0.2.25+：与首轮 prompt 同口径的按卷组织要求
 	if (volReq) reqs.push(volReq);
+	else { const noVol = planningGuideNoVolReq(input); if (noVol) reqs.push(noVol); } // v0.4.x+：与首轮同口径——无卷模式续写同样附禁卷强提示，防续写段混入分卷信息
 	if (missing.length) {
 		reqs.push(`尚缺以下节，须按序补全：${missing.join("、")}`);
 	} else {
@@ -1499,8 +1537,10 @@ export interface CleanReport {
 	errors: string[];
 }
 
-/** 去AI味主流程：先做句式简化，再最多 maxRounds 轮 LLM 逐句改写（词表来自 SKILLS/网文高频禁用词清单.md 解析结果） */
-export async function cleanAiText(text: string, rewrite: AiRewriteFn, maxRounds: number, data: BannedWordsData): Promise<{ text: string; report: CleanReport }> {
+/** 去AI味主流程：先做句式简化，再最多 maxRounds 轮 LLM 逐句改写（词表来自 SKILLS/网文高频禁用词清单.md 解析结果）。
+ * shouldAbort（可选）：每轮开跑前检查，返回 true 即就地收尾、不再发起后续轮次的 LLM 请求——
+ * 用于「停止生成」后即时退出（改写函数自身被 abort 抛错时由调用方兜住）。 */
+export async function cleanAiText(text: string, rewrite: AiRewriteFn, maxRounds: number, data: BannedWordsData, shouldAbort?: () => boolean): Promise<{ text: string; report: CleanReport }> {
 	const emptyReport: CleanReport = { rounds: 0, simplified: [], replaced: [], remaining: [], errors: [] };
 	if (!text || !text.replace(/\s/g, "")) return { text, report: emptyReport };
 	let current = text;
@@ -1516,6 +1556,7 @@ export async function cleanAiText(text: string, rewrite: AiRewriteFn, maxRounds:
 		current = merged;
 	}
 	for (let rnd = 1; rnd <= maxRounds; rnd++) {
+		if (shouldAbort?.()) break; // 用户已停止：不再发起本轮改写，直接以当前进度收尾
 		const sentences = findAiSentences(current, data);
 		if (!sentences.length) break;
 		report.rounds = rnd;

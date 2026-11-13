@@ -1,16 +1,17 @@
 /**
- * v0.3.0+ 自动化建书技能（book skill）：技能文件＝<书目录>/案头资料/<名称>.md——
+ * v0.3.0+ 自动化建书技能（book skill）：旧技能文件＝<书目录>/案头资料/<名称>.md——
  * frontmatter（`auto_book: true` 标记 + 规模参数）＋ 正文＝一句话设定。
- * 「创建自动化建书技能」向导生成该文件；「按技能全自动写书」解析后直接跑 auto-book 流水线
- * （参数齐全＝免交互开跑；缺参＝预填弹窗补填）。聊天窗口可用 @[[案头资料/xx.md]] 引用（文件在 vault 内，天然支持）。
- * 注意与 SKILLS/ 写作技巧技能（skills_default.ts）区分：那是注入提示词的技巧文档，这里是驱动流水线的建书模板。
+ * v0.4.1+ 建书配置已合并进《故事状态.md》frontmatter 的 auto_book 块（见 state_doc.ts AutoBookConfig），
+ * 不再创建/读取技能文件；本模块只保留 parseBookSkill 供旧技能文件一次性迁移（merge 进状态文档后删除文件）。
+ * 注意与 SKILLS/ 写作技巧技能（skills_default.ts）、书籍级技能（案头资料/Skill/）区分：那两类都是注入提示词的技能文档，
+ * 这里曾用于驱动 auto-book 流水线的建书模板，现仅存量迁移用途。
  * 纯函数（不 import obsidian、不 import yaml——手写单层 frontmatter 解析，测试 ESM 打包零依赖），可被 tests/ 直接断言。
  */
 import { PIPELINE_STAGES, type StageId } from "./pipeline";
 
 export interface BookSkillSpec {
 	startAt?: StageId; // 起始节点（缺省 worldview）
-	endAt?: StageId; // 停止节点（含；缺省＝跑到流水线末尾）。排在 startAt 之前＝非法区间，runBookSkill 拒绝启动
+	endAt?: StageId; // 停止节点（含；缺省＝跑到流水线末尾）。排在 startAt 之前＝非法区间，起跑前拒绝
 	mode?: "flat" | "volumes"; // 规模模式（缺省跟随书籍 state.use_volumes）
 	flatTotalChapters?: number; // 平铺：全书总章数
 	volumeCount?: number; // 分卷：卷数
@@ -37,7 +38,7 @@ function parseFlatFrontmatter(fm: string): Record<string, string> | null {
 	return o;
 }
 
-/** 双引号标量解引（JSON 语义，formatBookSkill 写 premise 用 JSON.stringify 对偶）；非引号值原样返回 */
+/** 双引号标量解引（JSON 语义，兼容旧 formatBookSkill 用 JSON.stringify 写盘的 premise 标量）；非引号值原样返回 */
 function unquote(v: string): string {
 	if (v.length >= 2 && v.startsWith('"') && v.endsWith('"')) {
 		try {
@@ -50,8 +51,8 @@ function unquote(v: string): string {
 	return v;
 }
 
-/** 正整数宽松解析（number 或纯数字字符串），非法/非正返回 undefined（视为未设置） */
-function posInt(v: unknown): number | undefined {
+/** 正整数宽松解析（number 或纯数字字符串），非法/非正返回 undefined（视为未设置）。v0.4.1+ 起 state_doc.ts 的 auto_book 配置解析共用 */
+export function posInt(v: unknown): number | undefined {
 	const n = typeof v === "number" ? v : typeof v === "string" && /^\d+$/.test(v.trim()) ? Number(v.trim()) : NaN;
 	return Number.isSafeInteger(n) && n >= 1 ? n : undefined;
 }
@@ -62,8 +63,13 @@ function parseCounts(v: string | undefined): number[] | undefined {
 	const inner = v.startsWith("[") && v.endsWith("]") ? v.slice(1, -1) : v;
 	const items = inner.split(/[,，、\s]+/).filter(Boolean);
 	if (!items.length) return undefined;
-	const nums = items.map((x) => posInt(x));
-	return nums.every((n) => n != null) ? (nums as number[]) : undefined;
+	const nums: number[] = [];
+	for (const x of items) {
+		const n = posInt(x);
+		if (n == null) return undefined;
+		nums.push(n);
+	}
+	return nums;
 }
 
 /** 解析建书技能文件：非 frontmatter / frontmatter 非法 / 无 auto_book: true 标记 → null（普通案头资料文档）；字段非法各自忽略、不整体报废 */
@@ -90,30 +96,3 @@ export function parseBookSkill(raw: string): BookSkillSpec | null {
 	return spec;
 }
 
-/** 免交互开跑所需参数是否齐全：返回缺失项中文说明（空数组＝可直接跑）。premise 取「premise 字段 ∨ 正文」合并后的值传入 */
-export function skillMissing(spec: Pick<BookSkillSpec, "premise" | "body" | "flatTotalChapters" | "volumeCount" | "chapterCounts">, flatMode: boolean, startAt: StageId): string[] {
-	const miss: string[] = [];
-	if (startAt === "worldview" && !(spec.premise ?? "").trim() && !spec.body.trim()) miss.push("一句话设定（正文或 premise）");
-	if (flatMode) {
-		if (spec.flatTotalChapters == null) miss.push("全书总章数（chapters）");
-	} else {
-		if (spec.volumeCount == null) miss.push("卷数（volumes）");
-		if (!spec.chapterCounts?.length) miss.push("各卷章数（chapter_counts）");
-	}
-	return miss;
-}
-
-/** 序列化为技能文件全文（frontmatter 只写已设置字段；premise 用 JSON 双引号标量——yaml 兼容；正文空则省略） */
-export function formatBookSkill(spec: Omit<BookSkillSpec, "body"> & { body?: string }): string {
-	const lines = ["auto_book: true"];
-	if (spec.startAt) lines.push(`start: ${spec.startAt}`);
-	if (spec.endAt) lines.push(`end: ${spec.endAt}`);
-	if (spec.mode) lines.push(`mode: ${spec.mode}`);
-	if (spec.flatTotalChapters != null) lines.push(`chapters: ${String(spec.flatTotalChapters)}`);
-	if (spec.volumeCount != null) lines.push(`volumes: ${String(spec.volumeCount)}`);
-	if (spec.chapterCounts?.length) lines.push(`chapter_counts: ${spec.chapterCounts.join(", ")}`);
-	if (spec.overwrite != null) lines.push(`overwrite: ${String(spec.overwrite)}`);
-	if (spec.premise?.trim()) lines.push(`premise: ${JSON.stringify(spec.premise.trim())}`);
-	const body = (spec.body ?? "").trim();
-	return `---\n${lines.join("\n")}\n---\n\n${body ? `${body}\n` : ""}`;
-}

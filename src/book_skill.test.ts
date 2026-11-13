@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { formatBookSkill, parseBookSkill, skillMissing } from "./book_skill";
+import { parseBookSkill } from "./book_skill";
 
 void test("parseBookSkill returns null for non-skill docs (no frontmatter / no marker / bad yaml)", () => {
 	assert.equal(parseBookSkill("# 普通案头资料\n正文"), null);
@@ -55,37 +55,12 @@ void test("parseBookSkill accepts chapter_counts as yaml array or comma string",
 	assert.deepEqual(str?.chapterCounts, [8, 10, 12]);
 });
 
-void test("skillMissing gates the no-dialogue run by mode and start node", () => {
-	const full = { premise: "x", body: "", flatTotalChapters: 10, volumeCount: 3, chapterCounts: [10, 10, 10] };
-	assert.deepEqual(skillMissing(full, true, "worldview"), []);
-	assert.deepEqual(skillMissing(full, false, "worldview"), []);
-	// 平铺缺总章数；分卷缺卷数/各卷章数
-	assert.deepEqual(skillMissing({ premise: "x", body: "" }, true, "worldview"), ["全书总章数（chapters）"]);
-	assert.deepEqual(skillMissing({ premise: "x", body: "" }, false, "worldview"), ["卷数（volumes）", "各卷章数（chapter_counts）"]);
-	// 起始节点非 worldview 时一句话设定可缺；worldview 时 premise∨正文 至少要有一个
-	assert.deepEqual(skillMissing({ body: "" }, false, "bodies"), ["卷数（volumes）", "各卷章数（chapter_counts）"]);
-	assert.deepEqual(skillMissing({ body: "正文即设定" }, true, "worldview"), ["全书总章数（chapters）"]);
-	// 各卷章数长度 1（末值复制兜底）视为齐全
-	assert.deepEqual(skillMissing({ premise: "x", body: "", volumeCount: 3, chapterCounts: [10] }, false, "planning"), []);
-});
-
-void test("formatBookSkill round-trips through parseBookSkill", () => {
-	const text = formatBookSkill({
-		startAt: "worldview", endAt: "book-outline", mode: "flat", flatTotalChapters: 10,
-		overwrite: false, body: "一个能看见别人死期的少年：他说出的死期都会提前应验",
-	});
-	const spec = parseBookSkill(text);
+void test("parseBookSkill parses legacy skill docs for one-time migration (v0.4.1+)", () => {
+	// premise 含冒号（旧 formatBookSkill 用 JSON 双引号标量写盘）——迁移解析须还原
+	const spec = parseBookSkill('---\nauto_book: true\nmode: flat\nchapters: 10\npremise: "a: b"\n---\n');
 	assert.ok(spec);
-	assert.equal(spec.startAt, "worldview");
-	assert.equal(spec.endAt, "book-outline");
 	assert.equal(spec.mode, "flat");
 	assert.equal(spec.flatTotalChapters, 10);
-	assert.equal(spec.overwrite, false);
-	assert.equal(spec.body, "一个能看见别人死期的少年：他说出的死期都会提前应验");
-	// 分卷＋premise 字段（含冒号，JSON 双引号标量保 yaml 合法）
-	const vol = formatBookSkill({ mode: "volumes", volumeCount: 2, chapterCounts: [8, 12], premise: "a: b", body: "" });
-	const volSpec = parseBookSkill(vol);
-	assert.deepEqual(volSpec?.chapterCounts, [8, 12]);
-	assert.equal(volSpec?.premise, "a: b");
-	assert.equal(volSpec?.body, "");
+	assert.equal(spec.premise, "a: b");
+	assert.equal(spec.body, "");
 });
