@@ -459,14 +459,15 @@ export function buildWritingContext(input: WritingContextInput, out?: StableSink
 			for (let i = first; i <= last; i++) {
 				const prev = input.prevChapters.find((p) => p.num === i);
 				if (!prev || !prev.content) continue;
-				const summary = ((input.summaries[i] || "")).trim();
+				const summary = stripComments(input.summaries[i] || "").trim();
 				parts.push(`\n--- ${labelAt(i)} ${prev.title || ""} ---`);
 				if (summary) {
 					parts.push(`[摘要] ${summary}`);
 				} else {
-					const preview = prev.content.slice(0, 500);
+					const body = stripComments(prev.content); // v0.4.2+：前文章节原文里的模板/作者 HTML 注释不进提示词
+					const preview = body.slice(0, 500);
 					parts.push(preview);
-					if (prev.content.length > 500) parts.push("[...内容省略...]");
+					if (body.length > 500) parts.push("[...内容省略...]");
 				}
 			}
 		}
@@ -498,7 +499,9 @@ export interface StoryTypePromptInput {
 	skillsBlock?: string; // v0.3.6+：bannedData/【禁用词】注入块已随禁用词 Skill 化移除——词表经阶段 3 技能块（skillsBlock）注入
 }
 
-/** 组装「编写类型 + skills」系统提示词块（v0.3.6+：禁用词不再单独注入，词表走 SKILLS 技能块） */
+/** 组装「编写类型 + skills」系统提示词块（v0.3.6+：禁用词不再单独注入，词表走 SKILLS 技能块）
+ *  v0.4.x+：故事类型的强制规则改为可选 skill，只有配置了相应 skill 时才注入，避免默认总是硬编码进提示词。
+ */
 export function buildStoryTypeSystemPrompt(input: StoryTypePromptInput): string {
 	const storyType = storyTypeOf(input.storyType);
 	const block = getStoryTypeGuide(storyType, input.title || "", input.charNames);
@@ -506,21 +509,7 @@ export function buildStoryTypeSystemPrompt(input: StoryTypePromptInput): string 
 	if (block) parts.push(block);
 	if (input.skillsBlock) parts.push(input.skillsBlock);
 	if (!parts.length) return "";
-	const head = parts.join("\n\n");
-	const tail =
-		"\n\n【强制要求】\n" +
-		`本小说确定的编写类型是「${storyType}」。你必须严格按照上面的【编写类型】格式要求输出，这是不可违背的硬性规定：\n` +
-		"1. 输出格式必须完全符合该类型（网文=分段叙述、剧本=INT./EXT. 场景头 + 动作段 + 角色名独立一行 + 台词另起一段 + CUT TO: / CONTINUOUS / INTERCUT 等转场、普通小说=散文叙事、散文随笔=写意随笔），不得混用其它文体格式\n" +
-		"2. 若生成内容不符合该类型的格式特征，即为不合格，需要重写；剧本不能出现长篇小说叙述、作者旁白、心理分析、总结性说明、大纲式标题、章节导航或任何说明性段落\n" +
-		"3. 剧本必须以 INT./EXT. / FADE IN: / CUT TO: / CONTINUOUS / INTERCUT 等脚本标记开头；每一场必须按：动作段 → 角色名 → 台词 的顺序组织，角色名与台词必须分两行，不能混成一句\n" +
-		"4. 对白必须只是角色发言，场景环境和动作必须写成镜头描述；禁止写 ‘他想、她觉得、忽然、顿时、只见、作者写道、心中、内心、仿佛、似乎、意识到、明白了’ 这类小说性叙述句式\n" +
-		"5. 所有环境描写、人物情绪、心理状态、背景信息都必须转换成可视化的镜头动作/场景信号，例如：‘雨声敲在玻璃上’、‘手心渗出汗，指节发白’、‘她盯着门把手，没动’；绝不允许写‘他心里很慌’或‘她觉得很难受’\n" +
-		"6. 允许用括号附注动作，如：老韩（低头） / 周远航（停住），但只能用于极短动作提示，不能扩展成小说式描述段落\n" +
-		"7. 时间推进必须明确交代：若镜头跨时段、跨天、跨几小时或几天，必须更新场景头时间为 DAY / NIGHT / LATER / NEXT DAY / DAYS LATER 等；严禁多个相邻场景连续都写成 DAY，造成全片像同一时点发生\n" +
-		"8. 场景转换必须明确写出 CUT TO:、FADE OUT:、FADE IN:、CONTINUOUS、INTERCUT、LATER、NEXT DAY、DAYS LATER 等脚本标记；不能直接连写成小说章节\n" +
-		"9. 引用文档或技能中与本类型冲突的条目，以【编写类型】为准\n" +
-		"10. 开始输出前先检查：每一段是不是 scene heading / action / character / dialogue / transition；环境、情绪和心理都必须改写成脚本镜头。绝对不要退回到小说正文写法";
-	return storyType ? head + tail : head;
+	return parts.join("\n\n");
 }
 
 export function storyTypeConfirmLine(storyType?: string): string {
@@ -763,6 +752,8 @@ export interface ChapterPromptInput {
 	wordRange: [number, number];
 	descStyle?: string;
 	storyType?: string;
+	storyTypeSkillBlock?: string; // v0.4.x+：编写类型规则可选 skill，配置了才注入
+	taskSkillBlock?: string; // v0.4.x+：章节任务模板可选 skill，配置了才注入
 	prevOutlines: OutlineRef[];
 	withSummary?: boolean; // v0.2.21+：要求同响应末尾输出 <SUMMARY> 摘要块（插件确定性解析后分别落盘）
 }
@@ -797,29 +788,35 @@ export function buildChapterPrompt(input: ChapterPromptInput): { prompt: string;
 	const descGuide = descStyleGuide(input.descStyle);
 	if (descGuide) parts.push(descGuide);
 	const storyType = storyTypeOf(input.storyType);
-	if (storyType) {
-		parts.push("\n" + storyTypeConfirmLine(storyType));
+	const storyTypeSkill = (input.storyTypeSkillBlock || "").trim();
+	if (storyType && storyTypeSkill) {
+		parts.push(storyTypeSkill);
 	}
 	// v0.2.11+：要求清单升级为故事情节设计工艺版——卷内位置意识/结构化大纲字段落地/章末钩子/场景工艺/知识状态/章内因果链/伏笔条款（替代原泛化的「情节合理推进」「章节结尾自然收束」）；v0.2.12+ 第4条章末收束改为「自然终点＋有大纲钩子才落钩子」（原「必须落在钩子悬念点、禁平静收尾」过刚），并新增第12条「通顺与逻辑优先」兜底（原11条工艺项）
 	// v0.2.25+ 引用文档配置框：vol_outline 可被移出阶段 3 清单——「参照【大纲】」措辞按上下文中实际注入的大纲块门控（卷模式＝【本卷大纲】、平铺模式＝【全书大纲】、无块＝泛指）
 	const outlineBlock = outlineBlockNameOf(input.context);
-	const req3 = `3. 先判断本章在卷结构中的位置与功能（铺垫/升级/反转/高潮/收束${outlineBlock ? `——参照【${outlineBlock}】${outlineBlock === "本卷大纲" ? "及其【卷设计】" : ""}` : ""})，强度与叙事重心与之匹配：反转前的章节持续加压，反转章必须把转折写成具体场景，反转后的章节体现主角状态变化\n`;
-	parts.push(
-		"\n请创作本章内容，要求：" +
-		`\n1. 严格按【章节大纲】及上方【大纲约束】执行：要点全部写到、顺序遵循、不偏离主线、不添加大段无关情节\n` +
-		`2. 总字数严格控制在${wordHigh}字以内（目标${wordLow}-${wordHigh}字）：不足${wordLow}字继续充实，达到${wordHigh}字必须收尾，严禁超限\n` +
-		req3 +
-		"4. 若大纲含「升级反转」「人物变化」「章末钩子」条目，必须写成具体的场景、转折或变化，不得一笔带过；章节结尾以本章情节的自然终点收束——大纲给出「章末钩子」时落在钩子的悬念点上，未给时不强求爆点，但禁止以总结段或感悟段收尾\n" +
-		"5. 每个场景有明确的目标与障碍；对话承载冲突或信息增量，不写寒暄注水；关键转折用动作、对话和细节演出来，不用叙述概括\n" +
-		"6. 人物的行动与决定只能依赖其在前文中已知悉的信息，不得使用其不可能知道的信息；配角按其自身目标与逻辑行动，不做主角的工具\n" +
-		"7. 章内场景之间以「因此/但是」因果衔接，而非按时间顺序排列；主角的目标、认知或关系较章初至少推进一步（除非大纲明确说明）\n" +
-		"8. 若本章大纲明确要求埋设或回收某伏笔，必须具体写出；不要主动提及与之无关的未完成伏笔\n" +
-		"9. 与前后文保持连贯，人物性格一致\n" +
-		"10. 文风自然平实，画面感来自具体细节，避免华丽形容词堆砌\n" +
-		"11. 不要使用常见的比喻（如\"像……一样\"\"如……般\"\"仿佛……\"），表达方式要普通，能直说就直说\n" +
-		"12. 通顺与逻辑优先于一切风格手法：每句话成分完整、语序正常，读一遍就懂；每个行动都有动机和缘由，前后信息不断链——不得为追求风格写出病句、乱序或逻辑断裂的段落\n" +
-		`13. ${CHAPTER_REF_BAN}\n\n请直接输出正文内容，不要包含任何标题或额外说明` + (input.withSummary ? "（末尾要求的摘要块除外）。" + summaryTailInstruction("本章正文") : "。")
-	);
+	const req3 = `3. 先判断本章在卷结构中的位置与功能（铺垫/升级/反转/高潮/收束${outlineBlock ? `——参照【${outlineBlock}】${outlineBlock === "本卷大纲" ? "及其【卷设计】" : ""}` : ""}），强度与叙事重心与之匹配：反转前的章节持续加压，反转章必须把转折写成具体场景，反转后的章节体现主角状态变化\n`;
+	const taskSkill = (input.taskSkillBlock || "").trim();
+	if (taskSkill) {
+		parts.push(taskSkill);
+	} else {
+		parts.push(
+			"\n请按以下要求创作本章正文：" +
+			`\n1. 严格按【章节大纲】及上方【大纲约束】执行：要点全部写到、顺序遵循、不偏离主线、不添加大段无关情节\n` +
+			`2. 总字数严格控制在${wordHigh}字以内（目标${wordLow}-${wordHigh}字）：不足${wordLow}字继续充实，达到${wordHigh}字必须收尾，严禁超限\n` +
+			req3 +
+			"4. 若大纲含「升级反转」「人物变化」「章末钩子」条目，必须写成具体的场景、转折或变化，不得一笔带过；章节结尾以本章情节的自然终点收束——大纲给出「章末钩子」时落在钩子的悬念点上，未给时不强求爆点，但禁止以总结段或感悟段收尾\n" +
+			"5. 每个场景有明确的目标与障碍；对话承载冲突或信息增量，不写寒暄注水；关键转折用动作、对话和细节演出来，不用叙述概括\n" +
+			"6. 人物的行动与决定只能依赖其在前文中已知悉的信息，不得使用其不可能知道的信息；配角按其自身目标与逻辑行动，不做主角的工具\n" +
+			"7. 章内场景之间以「因此/但是」因果衔接，而非按时间顺序排列；主角的目标、认知或关系较章初至少推进一步（除非大纲明确说明）\n" +
+			"8. 若本章大纲明确要求埋设或回收某伏笔，必须具体写出；不要主动提及与之无关的未完成伏笔\n" +
+			"9. 与前后文保持连贯，人物性格一致\n" +
+			"10. 文风自然平实，画面感来自具体细节，避免华丽形容词堆砌\n" +
+			"11. 不要使用常见的比喻（如\"像……一样\"\"如……般\"\"仿佛……\"），表达方式要普通，能直说就直说\n" +
+			"12. 通顺与逻辑优先于一切风格手法：每句话成分完整、语序正常，读一遍就懂；每个行动都有动机和缘由，前后信息不断链——不得为追求风格写出病句、乱序或逻辑断裂的段落\n" +
+			`13. ${CHAPTER_REF_BAN}\n\n请直接输出正文内容，不要包含任何标题或额外说明` + (input.withSummary ? "（末尾要求的摘要块除外）。" + summaryTailInstruction("本章正文") : "。")
+		);
+	}
 	return { prompt: parts.join("\n"), foreshadows: prepared.foreshadows };
 }
 
@@ -836,6 +833,8 @@ export interface ContinuePromptInput {
 	prevOutlines: OutlineRef[];
 	descStyle?: string;
 	storyType?: string;
+	storyTypeSkillBlock?: string; // v0.4.x+：编写类型规则可选 skill
+	taskSkillBlock?: string; // v0.4.x+：续写任务可选 skill
 	currentSummary?: string;
 	existingContent: string;
 	wordRange: [number, number];
@@ -853,7 +852,8 @@ export function buildContinuePrompt(input: ContinuePromptInput): { prompt: strin
 	const outlineRef = outlineBlock ? `【${outlineBlock}】` : "大纲";
 	const prevBlock = buildPrevOutlinesBlock(input.prevOutlines || []);
 	const descGuide = descStyleGuide(input.descStyle);
-	const confirmLine = storyTypeConfirmLine(input.storyType);
+	const storyTypeSkill = (input.storyTypeSkillBlock || "").trim();
+	const taskSkill = (input.taskSkillBlock || "").trim();
 	const tail1000 = (input.existingContent || "").slice(-1000);
 	const [wordLow, wordHigh] = input.wordRange;
 	// v0.3.8+ 前缀缓存友好排序：写作上下文块提到最前（其内部已按稳定→易变排序），带章号的引导语与逐章/逐次易变段全部压后，
@@ -861,8 +861,8 @@ export function buildContinuePrompt(input: ContinuePromptInput): { prompt: strin
 	const prompt = `
 ${input.context}
 
-${confirmLine}
-以下是${label}的已有内容，请继续续写：
+${storyTypeSkill ? storyTypeSkill : ""}
+${taskSkill ? taskSkill : "以下是" + label + "的已有内容，请继续续写："}
 
  ${!chapterPrep.cleaned ? `【大纲提示】当前尚无本章大纲，请按前文脉络与${outlineRef}自然续写。\n\n` : ""}${buildOutlineMarkerGuide(chapterOutline)}
 
@@ -1356,6 +1356,8 @@ export interface RewritePromptInput {
 	currentSummary?: string;
 	wordRange: [number, number];
 	storyType?: string;
+	storyTypeSkillBlock?: string; // v0.4.x+：编写类型规则可选 skill
+	taskSkillBlock?: string; // v0.4.x+：重写任务可选 skill
 	withSummary?: boolean; // v0.2.21+：要求同响应末尾输出 <SUMMARY> 摘要块（覆盖重写后的整章）
 }
 
@@ -1365,13 +1367,12 @@ export function buildRewritePrompt(input: RewritePromptInput): string {
 	const oldContent = input.oldContent || "";
 	const summaryBlock = oldContent ? `【本章摘要】\n${input.currentSummary || "（无）"}` : "（本章暂无内容）";
 	const oldContentBlock = oldContent ? `【原章节内容（仅作为参考起点）】\n${oldContent.slice(0, 4500)}` : "";
-	const confirmLine = storyTypeConfirmLine(input.storyType);
+	const storyTypeSkill = (input.storyTypeSkillBlock || "").trim();
+	const taskSkill = (input.taskSkillBlock || "").trim();
 	const [wordLow, wordHigh] = input.wordRange;
 	return `
-${confirmLine}
-这是 /rewrite 命令——**重构改写**当前章节。你可以大幅调整情节走向、结构安排和叙事方式，与原内容可以完全不同。
-
-请重写${label}。
+${storyTypeSkill ? storyTypeSkill : ""}
+${taskSkill ? taskSkill : "这是 /rewrite 命令——**重构改写**当前章节。你可以大幅调整情节走向、结构安排和叙事方式，与原内容可以完全不同。\n\n请重写" + label + "。"}
 
 【写作上下文】
 ${input.context}
@@ -1439,13 +1440,17 @@ export interface PolishPromptInput {
 	style?: string;
 	summary?: string;
 	storyType?: string;
+	storyTypeSkillBlock?: string; // v0.4.x+：编写类型规则可选 skill
+	taskSkillBlock?: string; // v0.4.x+：润色任务可选 skill
 }
 
 export function buildPolishPrompt(input: PolishPromptInput): string {
 	const summaryBlock = input.summary ? `【本章摘要】\n${input.summary}` : "";
+	const storyTypeSkill = (input.storyTypeSkillBlock || "").trim();
+	const taskSkill = (input.taskSkillBlock || "").trim();
 	return `
-${storyTypeConfirmLine(input.storyType)}
-这是 /polish 命令——**仅润色编辑文字表达**。不改变情节走向、人物行为或小说内容。
+${storyTypeSkill ? storyTypeSkill : ""}
+${taskSkill ? taskSkill : "这是 /polish 命令——**仅润色编辑文字表达**。不改变情节走向、人物行为或小说内容。"}
 
 ${input.style ? `【风格要求】${input.style}` : ""}
 

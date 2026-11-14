@@ -1478,7 +1478,7 @@ export class EventEditModal extends Modal {
 		});
 		this.contentEl.createDiv({ text: "人物", cls: "aw-ev-msel-label" }); // 下拉多选（候选＝该书三层《人物.md》角色名）
 		const getChars = makeMultiSelect(this.contentEl, "＋ 选择人物…", this.charOptions.length ? "（候选人物已全部选用）" : "（没有人物候选：先在《人物.md》中登记人物）", this.charOptions, this.initialValues?.chars ?? []);
-		new Setting(this.contentEl).setName("已完成").setDesc("勾选后条目显示「✓ 已完成」徽章，文档写回 `- 完成：是`（取消勾选则不写该行）").addToggle((tg) => {
+		new Setting(this.contentEl).setName("已完成").addToggle((tg) => { // v0.4.3+：去掉字段说明文字，只留「已完成」标题＋开关
 			tg.setValue(this.initialValues?.done ?? false);
 			tg.onChange((v) => (done = v));
 		});

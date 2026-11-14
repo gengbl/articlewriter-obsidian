@@ -285,6 +285,21 @@ export function splitVolOutlineRawBlocks(text: string): VolOutlineRawBlock[] {
 }
 
 /**
+ * 取卷大纲中章号落在 [lo,hi] 的章节块（v0.4.3+ 编写文章阶段「前后 N 章大纲节选」用）：
+ * 复用 splitVolOutlineRawBlocks 的围栏感知切分，**逐行原样保留**（`## 第N章 <标题>` 标记行与章块内注释都在，由调用方统一清洗/剥标记）；
+ * **前言块恒保留**（卷设计、本卷定位等卷级信息对正文写作仍有用，且不属于任何章号）；
+ * lo>hi 或窗口内无章块时只剩前言（可能为空串）——调用方据此决定是否回退整份大纲。
+ */
+export function sliceVolOutlineChapters(text: string, lo: number, hi: number): string {
+	const out: string[] = [];
+	for (const b of splitVolOutlineRawBlocks(text)) {
+		if (b.num != null && (b.num < lo || b.num > hi)) continue; // 章块不在窗口内 → 丢弃；前言（num=null）恒保留
+		out.push(...b.lines);
+	}
+	return out.join("\n").trim();
+}
+
+/**
  * 把新生成的章块合并进现有卷大纲（v0.2.x+「从书级大纲生成卷」按章补全落盘）：
  * oldBody 为现有《卷大纲.md》剥去首部 H1 的原始文本（保留注释），newContent 为 LLM 新产出；
  * 两侧各按章标记切分为原始行块，新内容中每个章号——已存在于旧内容（或新内容自身重复）→ 丢弃并计入 dropped（已有章原样保留、绝不重写）；

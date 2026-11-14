@@ -48,6 +48,7 @@ export interface StoryState {
 	use_summaries: boolean;
 	use_volumes: boolean; // v0.0.16+：工作模式开关——false=无卷
 	prev_chapters?: number; // v0.2.x+：本书级「使用章节摘要数量组装提示词」（前文窗口章数 N）；显式设置时优先于全局 data.json settings.prevChapters
+	next_chapters?: number; // v0.4.3+：本书级「后续参考章数」（后文窗口章数 N，0=不注入后章）——编写文章阶段的大纲块按前 prev_chapters／后 next_chapters 只注入当前章前后若干章的大纲节选；显式设置时优先于全局 data.json settings.nextChapters
 	include_volume_summary?: boolean; // v0.2.x+：本书级「是否使用前卷摘要组织提示词」；显式设置时优先于全局 data.json settings.includeVolumeSummary模式（纯 书→章 扁平结构）、true=有卷模式；缺省时按是否含卷数据推断（存量有卷书判 true 防回归，新/扁平书默认 false）
 	word_range?: [number, number]; // v0.3.5+：本书级正文字数区间 [下限,上限]（取代旧 WRITING_GUIDE 指南「字数配置」注释）；显式配置时优先于全局默认 [4000,5000]，非法（下限≤0 或下限>上限）按未配置处理
 	one_line?: string; // v0.3.0+：全自动流水线（auto-book）的一句话设定——/auto-book 弹窗填入后持久化，「生成世界观」命令读取作 premise；仅显式设置时写回
@@ -96,6 +97,12 @@ function normalizeChapter(raw: unknown): ChapterMeta | null {
 
 /** 正文字数区间全局缺省值（v0.3.5+）：书级《故事状态.md》word_range 未配置/非法时的回落（取代旧三层指南「字数配置」注释的内置回落）。 */
 export const WORD_RANGE_DEFAULT: [number, number] = [4000, 5000];
+
+/** 前后章窗口章数（v0.4.3+）：prev_chapters／next_chapters 共用的非负整数清洗；非整数/负数/非数字返回 undefined（视为未配置）。
+ *  注意与 prev_chapters 历史口径一致：只认 YAML 数字，字符串数字按未配置处理（手改 frontmatter 时须写 `next_chapters: 3` 而非 `"3"`）。 */
+function normalizeNonNegInt(raw: unknown): number | undefined {
+	return typeof raw === "number" && Number.isInteger(raw) && raw >= 0 ? raw : undefined;
+}
 
 /** 字数区间（v0.3.5+）：只认 [lo,hi] 两元素数组（或空格/逗号分隔字符串，容错手改 frontmatter），lo>0 且 lo<=hi 才有效；非法返回 undefined 视为未配置。 */
 function normalizeWordRange(raw: unknown): [number, number] | undefined {
@@ -247,7 +254,7 @@ export function parseStateDoc(
 	const extraKeys = new Set([
 		"version", "title", "genre", "writing_style", "current_chapter", "current_scene",
 		"current_volume", "total_words", "use_summaries", "use_volumes", "chapters", "created_at", "updated_at",
-		"prev_chapters", "include_volume_summary", "word_range", "one_line", "auto_book", "book_skills",
+		"prev_chapters", "next_chapters", "include_volume_summary", "word_range", "one_line", "auto_book", "book_skills",
 	]);
 	const extra: Record<string, unknown> = {};
 	for (const [k, v] of Object.entries(o)) if (!extraKeys.has(k)) extra[k] = v;
@@ -267,9 +274,8 @@ export function parseStateDoc(
 				? o.use_volumes
 				: Object.keys(chapters).some((k) => parseChKey(k).vol != null) || !!asStr(o.current_volume),
 			// v0.2.x+：本书级提示词组装选项——仅显式设置时保留（非法值视为未设置），否则回落全局 data.json 设置
-			prev_chapters: typeof o.prev_chapters === "number" && Number.isInteger(o.prev_chapters) && o.prev_chapters >= 0
-				? o.prev_chapters
-				: undefined,
+			prev_chapters: normalizeNonNegInt(o.prev_chapters),
+			next_chapters: normalizeNonNegInt(o.next_chapters),
 			include_volume_summary: typeof o.include_volume_summary === "boolean" ? o.include_volume_summary : undefined,
 			word_range: normalizeWordRange(o.word_range), // v0.3.5+：书级字数区间（非法/未设置为 undefined，消费方回落 WORD_RANGE_DEFAULT）
 			one_line: asStr(o.one_line).trim() || undefined, // v0.3.0+：一句话设定（空串视为未设置）
@@ -301,6 +307,7 @@ export function formatStateDoc(
 	o["use_volumes"] = state.use_volumes; // 恒显式写出，保存后行为确定（不再依赖缺省推断）
 	// v0.2.x+：本书级提示词组装选项——仅显式设置时写回（未设置的存量文档保持原样、继续走全局设置）
 	if (state.prev_chapters != null) o["prev_chapters"] = state.prev_chapters;
+	if (state.next_chapters != null) o["next_chapters"] = state.next_chapters; // v0.4.3+：书级后 N 章（未配置不写，走全局 settings.nextChapters）
 	if (state.include_volume_summary != null) o["include_volume_summary"] = state.include_volume_summary;
 	if (state.word_range) o["word_range"] = [state.word_range[0], state.word_range[1]]; // v0.3.5+：书级字数区间（YAML 数组写回；未配置不写）
 	if (state.one_line) o["one_line"] = state.one_line; // v0.3.0+：一句话设定（auto-book），仅非空时写回

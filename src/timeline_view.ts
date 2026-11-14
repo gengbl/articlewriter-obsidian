@@ -41,7 +41,6 @@ export interface TlSnapshot {
 	rows: TlRow[]; // 书/卷/章全部条目合并，文档枚举顺序（面板据此按文档结构挂父，再扁平化为时间升序渲染）
 	totalCount: number; // 全部层解析出的事件总条数
 	bookTimelinePath: string; // 书级《时间线.md》路径（＝头部「＋ 事件」根级新增的写入目标；文件可尚不存在，mutate 时自动创建）
-	unparsedDocs: Array<{ label: string; path: string }>; // 原文非空但零有效条目的文档（格式提示 + 可点开查看）
 }
 
 /** 某行是否命中筛选词（人物名 + 事件名 + 事件正文匹配） */
@@ -128,11 +127,29 @@ export class TimelineView extends ItemView {
 		void this.refresh();
 	}
 
+	async onClose(): Promise<void> {
+		this.canvas?.dispose(); // v0.4.3+：断开尺寸观察器（避免观察器持有已移除的 DOM）
+	}
+
+	/** v0.4.3+ ItemView 尺寸变化钩子：先重算画布尺寸兜底（内容重渲染由 CanvasPanel 的尺寸观察器在宽度真变化时回调） */
+	onResize(): void {
+		if (this.built) this.canvas.apply();
+	}
+
 	private buildUI(parent: HTMLElement): void {
 		this.built = true;
 		this.rootEl = parent.createDiv({ cls: "aw-status-view aw-tl-view" }); // 复用写字台的容器/字体/滚动布局样式
 		this.topEl = this.rootEl.createDiv({ cls: "aw-st-top" }); // 固定头部：倍率标签 + 筛选框 + 刷新按钮
-		this.canvas = new CanvasPanel(this.rootEl, { bodyCls: "aw-st-tree aw-tl-body", sizerCls: "aw-tl-sizer", zoomCls: "aw-tl-zoom", zoomVar: "--tl-transform", zoomLabelCls: "aw-dim aw-tl-zoomlbl is-hidden", min: TL_ZOOM_MIN, max: TL_ZOOM_MAX }); // 画布主体：overflow:auto 原生滚动＋Ctrl|Shift+滚轮缩放＋左键拖动平移（设施共用）
+		this.canvas = new CanvasPanel(this.rootEl, {
+			bodyCls: "aw-st-tree aw-tl-body",
+			sizerCls: "aw-tl-sizer",
+			zoomCls: "aw-tl-zoom",
+			zoomVar: "--tl-transform",
+			zoomLabelCls: "aw-dim aw-tl-zoomlbl is-hidden",
+			min: TL_ZOOM_MIN,
+			max: TL_ZOOM_MAX,
+			onResize: () => this.onCanvasResize(), // v0.4.3+：面板尺寸变化时按新宽度重渲染内容（画布尺寸已由 CanvasPanel 先 apply）
+		}); // 画布主体：overflow:auto 原生滚动＋Ctrl|Shift+滚轮缩放＋左键拖动平移（设施共用）
 		this.bodyEl = this.canvas.bodyEl;
 		this.sizerEl = this.canvas.sizerEl;
 		this.zoomEl = this.canvas.zoomEl;
@@ -156,6 +173,15 @@ export class TimelineView extends ItemView {
 		} finally {
 			this.busy = false;
 		}
+	}
+
+	/** v0.4.3+ 面板尺寸变化（拖侧栏 / 分屏 / 窗口缩放 / 移动端抽屉开合）→ 用最近快照同步重渲染内容与布局：
+	 *  宽度变化会改变条目换行、层级列坐标与时间比例间距的可用横向空间；不重新读盘（防 resize 触发摘要生成等 IO），
+	 *  重渲染只清 zoomEl——缩放倍率、滚动位置、折叠状态都保持。
+	 *  拖动更新时间点手势期间跳过：行元素正被拖动逻辑持有，清 DOM 会中断手势。 */
+	private onCanvasResize(): void {
+		if (!this.built || this.busy || this.tlDrag || !this.lastSnap) return;
+		this.render(this.lastSnap);
 	}
 
 	/** 重渲染前清主体：条目元素索引与 DOM 同步作废（关联 chip 的旧引用一并失效） */
@@ -248,7 +274,6 @@ export class TimelineView extends ItemView {
 			}
 			this.sumEl.setText(`共 ${String(snap.totalCount)} 条：书籍级 ${String(perScope.book)} · 卷 ${String(perScope.volume)} · 章 ${String(perScope.chapter)}${doneCount ? `｜已完成 ${String(doneCount)}` : ""}${spanTxt}`);
 		}
-		if (snap.unparsedDocs.length) this.renderUnparsed(snap.unparsedDocs);
 		this.canvas.apply(); // 内容尺寸变化 → 同步 sizer 与滚动限位
 	}
 
@@ -337,17 +362,6 @@ export class TimelineView extends ItemView {
 			return `还没有时间线：点头部「＋ 事件」新建，或在${where}手动记录——每条事件一个标题块，标题＝时间点 + 空格 + 事件名（如 \`## 120-06-15 黑市陷阱\`；只写时间点＝无名条目），可带 \`- 人物：A、B\` / \`- 完成：是\` / \`- 事件：…\` / \`- 描述：…\` / \`- 影响：…\` / \`- 关联：标题A、标题B\` 字段行；标题深度即事件级别（\`#\`=一级、\`##\`=二级、\`###\`=三级，可更深＝更细的子事件），面板会把三层合并成一条按时间排序的时间轴并按级别嵌套展示。`;
 		}
 		return null;
-	}
-
-	/** 有内容但零有效条目的文档提示行：列出层级标签（可点击打开对应《时间线.md》检查格式） */
-	private renderUnparsed(docs: Array<{ label: string; path: string }>): void {
-		const line = this.zoomEl.createDiv({ cls: "aw-dim aw-st-hint" });
-		line.createSpan({ text: "以下《时间线.md》有内容但没有有效条目（需 `#/##/### <时间点>[ 事件名]` 标题）：" });
-		docs.forEach((d, i) => {
-			if (i) line.createSpan({ text: "、" });
-			const s = line.createSpan({ text: d.label, cls: "aw-tl-unparsed" });
-			s.addEventListener("click", () => void this.openFile(d.path));
-		});
 	}
 
 	/** 渲染扁平时间线的一行（v0.3.3+ 折叠修复，取代旧 renderNode 的 .aw-tl-kids 嵌套递归）：整棵树只决定缩进深度与折叠归属，DOM 是 list 下的扁平兄弟行序列。
@@ -755,9 +769,4 @@ export class TimelineView extends ItemView {
 		}
 	}
 
-	private async openFile(path: string): Promise<void> {
-		const f = this.app.vault.getAbstractFileByPath(path);
-		if (!(f instanceof TFile)) return; // 候选路径（文档尚未创建）静默忽略
-		await this.app.workspace.getLeaf().openFile(f);
-	}
 }

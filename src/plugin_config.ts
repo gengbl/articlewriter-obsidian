@@ -4,8 +4,76 @@
 // 注意：本插件依赖桌面端运行环境与 LLM 接口，且 api_key 以明文存于 data.json。
 // 为了避免移动端环境/本地服务兼容性问题，插件声明为 desktop-only；请勿将 .obsidian 同步/共享到不可信位置。
 
+export const LLM_PROVIDER_OPTIONS = ["openai-compatible", "deepseek", "qwen"] as const;
+export type LlmProviderType = (typeof LLM_PROVIDER_OPTIONS)[number];
+
+export function normalizeLlmProvider(value?: string): LlmProviderType {
+	const raw = (value ?? "").trim().toLowerCase();
+	if (!raw) return "openai-compatible";
+	if (raw === "openai" || raw === "openai-compatible" || raw === "openai_compatible" || raw === "openai compatible") return "openai-compatible";
+	if (raw === "deepseek" || raw === "deepseek-chat" || raw === "deepseek-chat-reasoning") return "deepseek";
+	if (raw === "qwen" || raw === "qwen-dashscope" || raw === "qwen_dashscope" || raw === "dashscope") return "qwen";
+	return "openai-compatible";
+}
+
+export function defaultBaseUrlForProvider(provider?: string): string | undefined {
+	switch (normalizeLlmProvider(provider)) {
+		case "deepseek":
+			return "https://api.deepseek.com";
+		case "qwen":
+			return "https://dashscope.aliyuncs.com/compatible-mode/v1";
+		default:
+			return undefined;
+	}
+}
+
+export function getVisibleLlmFields(provider?: string): Array<"base_url" | "model_name" | "api_key" | "temperature" | "max_tokens" | "top_p" | "repeat_penalty" | "reasoning_effort" | "thinking"> {
+	const normalized = normalizeLlmProvider(provider);
+	const common = ["base_url", "model_name", "api_key", "temperature", "max_tokens", "top_p", "repeat_penalty", "reasoning_effort"] as const;
+	if (normalized === "deepseek") return [...common, "thinking"]; 
+	return [...common];
+}
+
+export function isLlmConfigEnabled(config?: { enabled?: boolean } | null): boolean {
+	return config?.enabled !== false;
+}
+
+export function toggleLlmConfigEnabled<T extends { enabled?: boolean }>(config: T): boolean {
+	const nextEnabled = !isLlmConfigEnabled(config);
+	config.enabled = nextEnabled;
+	return nextEnabled;
+}
+
+export function filterEnabledLlmConfigs<T extends { enabled?: boolean }>(configs: T[] = []): T[] {
+	return configs.filter((cfg) => isLlmConfigEnabled(cfg));
+}
+
+export function selectEnabledLlmName<T extends { name: string; enabled?: boolean }>(configs: T[] = [], preferred?: string): string | undefined {
+	const enabled = filterEnabledLlmConfigs(configs);
+	if (!enabled.length) return undefined;
+	if (preferred && enabled.some((cfg) => cfg.name === preferred)) return preferred;
+	return enabled[0].name;
+}
+
+export function setLlmConfigEnabled<T extends { name: string; enabled?: boolean }>(conf: Pick<PluginConfig, "chat_model" | "active_llm" | "writing_phases" | "llm_configs"> | undefined, cfg: T, enabled: boolean): void {
+	cfg.enabled = enabled;
+	if (!conf) return;
+	if (!enabled) {
+		if (conf.chat_model === cfg.name) conf.chat_model = undefined;
+		if (conf.active_llm === cfg.name) conf.active_llm = selectEnabledLlmName(conf.llm_configs ?? [], undefined);
+		for (const phase of conf.writing_phases ?? []) {
+			if (phase.llm_config_name === cfg.name) phase.llm_config_name = undefined;
+		}
+		return;
+	}
+	if (!conf.chat_model && !conf.active_llm) {
+		conf.chat_model = cfg.name;
+	}
+}
+
 export interface LlmConfigDoc {
 	name: string;
+	enabled?: boolean;
 	provider?: string;
 	api_key?: string;
 	base_url?: string;
@@ -58,7 +126,7 @@ export const REF_DOC_LABELS: Record<string, string> = {
 	book_relations: "书级人物关系（人物关系.md）",
 	vol_relations: "本卷人物关系（本卷人物关系.md）",
 	prev_vol_outline: "前一卷卷大纲（链式上下文）",
-	vol_outline: "大纲（卷模式＝本卷《卷大纲.md》；平铺模式＝书级《大纲.md》）",
+	vol_outline: "大纲（卷模式＝本卷《卷大纲.md》；平铺模式＝书级《大纲.md》；编写文章阶段＝当前章前 N 章/后 N 章节选）",
 	chapter_outline: "本章大纲（大纲.md 本章小节）",
 	characters: "人物档案（人物/）",
 	scenes: "场景档案（场景/）",
@@ -130,7 +198,7 @@ export function buildDefaultLlmConf(): PluginConfig {
 		top_p: 0.9,
 		repeat_penalty: 1.1,
 		thinking: "",
-		reasoning_effort: "high",
+		reasoning_effort: "none",
 		retry_times: 3,
 		retry_delay: 3,
 	};
@@ -141,9 +209,9 @@ export function buildDefaultLlmConf(): PluginConfig {
 			// local 默认关思考（reasoning_effort:"none"）：本地 llama-server + Qwen 等模板默认开思考，
 			// 思考与正文共享 max_tokens 预算，"high" 会耗尽预算致 content 恒空（大纲/长文生成失败根因）。
 			// 需要思考的本地模型自行在设置页改回 high/max。
-			{ name: "local", provider: "openai", base_url: "http://localhost:8509", model_name: "", ...base, reasoning_effort: "none", openai_extras: ["repeat_penalty"], api_style: "" },
-			{ name: "deepseek", provider: "deepseek", api_key: "", base_url: "https://api.deepseek.com", model_name: "", ...base, openai_extras: [], api_style: "responses" },
-			{ name: "qwen-dashscope", provider: "openai", api_key: "", base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1", model_name: "", ...base, openai_extras: [], api_style: "" },
+			{ name: "local", enabled: true, provider: "openai-compatible", base_url: "http://localhost:8509", model_name: "", ...base, reasoning_effort: "none", openai_extras: ["repeat_penalty"], api_style: "" },
+			{ name: "deepseek", enabled: true, provider: "deepseek", api_key: "", base_url: "https://api.deepseek.com", model_name: "", ...base, openai_extras: [], api_style: "responses" },
+			{ name: "qwen-dashscope", enabled: true, provider: "qwen", api_key: "", base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1", model_name: "", ...base, openai_extras: [], api_style: "" },
 		],
 		system_prompt: "",
 		desc_style: "normal",

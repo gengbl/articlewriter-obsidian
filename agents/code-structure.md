@@ -22,7 +22,7 @@ src/main.ts ──esbuild(bundle)──▶ release/main.js ──非生产构建
 | `main.ts` | 7946 | 插件入口＋全部命令实现＋面板装配＋设置页（内部区块见下节） | `default ArticleWriterPlugin` |
 | `story_manager.ts` | 3974 | 磁盘结构层：书/卷/章实体目录与文档的 CRUD、状态文档、章节重排顺延、打包合集、扫描重建 | `StoryManager`、`CHAPTER_SUFFIX_TO_BASE`、`WritingDocPaths`、章节/卷读写全套 |
 | `prompts.ts` | 1763 | 各生成阶段提示词组装（纯函数，不触 Vault/LLM）：编写章节、大纲族、策划指南、人物分析、deai/查重/错字等；上下文入参收 `bookDocs/volDocs/chapterDocs` 预装配文档串 | `build*Prompt`、各 `*_SYSTEM_PROMPT`、`CleanReport`、`cleanRelationshipsDoc` |
-| `md_docs.ts` | 1115 | MD 文本解析/序列化：人物/场景/关系/伏笔/世界观字段级 parse↔format、章选解析、拆分卷大纲 | `CharacterDoc/SceneDoc/…`、`parse*/format*`、`splitVolOutlineByChapter` |
+| `md_docs.ts` | 1115 | MD 文本解析/序列化：人物/场景/关系/伏笔/世界观字段级 parse↔format、章选解析、拆分卷大纲 | `CharacterDoc/SceneDoc/…`、`parse*/format*`、`splitVolOutlineByChapter`（v0.4.3+ 同族 `sliceVolOutlineChapters`：按章号窗口取块，供编写文章阶段前后 N 章大纲节选） |
 | `modals.ts` | 1003 | 通用弹窗库（16 个 Modal/SuggestModal） | `TextInputModal`、`ActionMenuModal`、`TextPanelModal`、`ConfirmModal`… |
 | `relationship_view.ts` | 781 | 人物关系面板（ItemView，SVG 图＋列表） | `RelationshipView`、`RelSnapshot` |
 | `status_view.ts` | 773 | 「写字台」面板（ItemView，书/卷/章树＋动作分发） | `StatusView`、`StatusAction`、`StatusSnapshot` |
@@ -67,7 +67,7 @@ L3: main.ts(→其余全部)          prompts.test.ts(→prompts)
 | ├ 卷/场景/人物/伏笔/世界命令 | 1147–2032 | `cmdVolume*`(L1149)`/cmdScene*`(L1345)`/cmdCharacter*`(L1521)`/cmdAnalyzeCast`(L1662)`/cmdForeshadow*`(L1869)`/cmdWorld*`(L1955)、大纲追加/章大纲打开(L1989) |
 | ├ 章节管理/打包 | 2033–2264 | `cmdChapterDelete`(L2053)`/Rename/Renumber/cmdPack*`(L2133)`/cmdRescanStory`(L2202) |
 | ├ 文档生命周期 | 2265–2810 | `cmdCompleteState`(L2279)`/cmdSetWordRange`(L2323，v0.3.5+ 字数区间命令，写《故事状态.md》`word_range`)`/purgeWritingGuideArtifacts`(L2357，v0.3.5 启动清理：各层 WRITING_GUIDE.md＋《写作指南汇总.md》＋插件数据目录 guide-types/＋data.json 遗留字段)`/wordRangeOf`(L2398)`/tensionRulesPath`(L2405)`/bannedWordsPath`(L2423)`/promptReader`(L2727)`/cmdGenerateUsageDoc`(L2793，借用 story_manager `readGuideAt`/`writeGuideAt` 做指定路径文档读写) |
-| ├ LLM 装配 | 2915–3260 | `getPhaseLlmSetup`(L2915)`/cmdLlmTest`(L2994)`/openAddCharacterDialog`(L3118)`/loadSkillsBlock`(L2506)`/loadBookSkillsBlock`(L2565)`/writerSystemPrompt`(L3222；v0.3.5+：旧 `loadWriterGuides` 三层指南加载已随写作指南体系废弃删除) |
+| ├ LLM 装配 | 2915–3300 | `getPhaseLlmSetup`(L2915)`/cmdLlmTest`(L2994)`/openAddCharacterDialog`(L3118)`/loadSkillsBlockFrom`(L2580，v0.4.2+ 系统级与书籍级技能块共用装配)`/loadSkillsBlock`(L2596)`/loadBookSkillsBlock`(L2646)`/writerSystemPrompt`(L3293；v0.3.5+：旧 `loadWriterGuides` 三层指南加载已随写作指南体系废弃删除) |
 | ├ 面板快照/动作 | 3076–3916 | `schedule*Refresh` 防抖、`get*Snapshot`(L3129)、`handleStatusAction`(L3355 起巨型分发) |
 | ├ 生成执行层 | 3917–4174 | `genFailure`(L3917)`/stream 封装`、`decorateLlmError`(L4113)`、notifyAiReport`(L4152)、字数/引用告警 |
 | ├ 写作命令族 | 4175–6064 | `cmdWrite`(L4177)、`assembleVolOutlineContext`(L4519)`/assembleWritingDocGroups`(L4550) 装配 helper、`cmdVolumeOutlineToChapters`(L4402)、卷/书大纲族（`genVolOutlineIncremental` L4059 等）、`cmdWriteConsecutive`(L5459)`/cmdContinueWriting`(L5575)`/cmdRewriteChapter`(L5718)`/cmdPolishText`(L5824)`/cmdDeaiClean`(L5893)`/cmdFixChapterRefs`(L5966) |

@@ -174,3 +174,28 @@ void test("autoBookMissing：按模式与起始节点判缺参（空数组＝免
 	assert.deepEqual(autoBookMissing("", { volumes: 3, chapter_counts: [10, 10, 10] }, false, "bodies"), [], "非 worldview 起跑不要求一句话设定");
 	assert.deepEqual(autoBookMissing("设定", { chapters: 30, volumes: 3 }, false, "worldview"), ["各卷章数（auto_book.chapter_counts）"], "分卷模式忽略平铺 chapters 键");
 });
+
+// v0.4.3+：书级后 N 章（next_chapters）——与 prev_chapters 同口径：仅显式数字写回、非负整数有效、未配置省略
+void test("next_chapters format→parse 往返；未配置不写；0 有意义（关闭后章窗口）", () => {
+	const st = baseState();
+	st.next_chapters = 2;
+	assert.equal(parseStateDoc(formatStateDoc(st)).state?.next_chapters, 2);
+	const st0 = baseState();
+	st0.next_chapters = 0;
+	const doc0 = formatStateDoc(st0);
+	assert.match(doc0, /^next_chapters: 0$/m, "0 显式写出（≠未配置）");
+	assert.equal(parseStateDoc(doc0).state?.next_chapters, 0);
+	assert.ok(!formatStateDoc(baseState()).includes("next_chapters"), "未配置不写");
+});
+
+void test("next_chapters 清洗：负数/小数/字符串数字/缺键 → undefined；键在白名单内不落 extra", () => {
+	const bad = ["next_chapters: -1", "next_chapters: 1.5", 'next_chapters: "3"', "next_chapters: abc"];
+	for (const fm of bad) {
+		const r = parseStateDoc(`---\n${fm}\n---\n`);
+		assert.equal(r.state?.next_chapters, undefined, fm);
+		assert.equal(r.extra, undefined, `${fm} → 不落 extra`);
+	}
+	const ok = parseStateDoc("---\nnext_chapters: 3\nprev_chapters: 2\n---\n");
+	assert.equal(ok.state?.next_chapters, 3);
+	assert.equal(ok.state?.prev_chapters, 2, "prev_chapters 收敛到同一清洗函数后行为不变");
+});

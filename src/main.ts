@@ -11,7 +11,7 @@ import { chapterOutlineTemplate, countPureWords, FORESHADOW_TEMPLATE, formatLoca
 import { safeFilename } from "./story_types";
 import { StoryManager, NO_VOL_MODE_MSG, CHAPTER_DIR_RE, PROLOGUE_DIR_NAME, DESK_DOCS_DIR_NAME, MANUSCRIPT_DIR_NAME, type WritingDocPaths } from "./story_manager";
 import { BOOK_SKILL_PHASE_KEYS, bookSkillPhaseKey, WORD_RANGE_DEFAULT, autoBookMissing, type AutoBookConfig, type BookSkillPhase, chKey, parseChKey, type StoryState } from "./state_doc";
-import { BANNED_LIST_SKILL_NAME, buildDefaultLlmConf, IDENTITY_BOOST_SKILL_PREFIX, PHASE_CHAPTER_OUTLINE, PHASE_OUTLINE, PHASE_PLANNING, PHASE_REF_DOC_CATALOGS, PHASE_REF_DOC_DEFAULTS, PHASE_WORLDVIEW, PHASE_WRITING, REF_DOC_LABELS, WRITING_PHASE_LABELS } from "./plugin_config";
+import { BANNED_LIST_SKILL_NAME, buildDefaultLlmConf, defaultBaseUrlForProvider, filterEnabledLlmConfigs, getVisibleLlmFields, IDENTITY_BOOST_SKILL_PREFIX, isLlmConfigEnabled, normalizeLlmProvider, PHASE_CHAPTER_OUTLINE, PHASE_OUTLINE, PHASE_PLANNING, PHASE_REF_DOC_CATALOGS, PHASE_REF_DOC_DEFAULTS, PHASE_WORLDVIEW, PHASE_WRITING, REF_DOC_LABELS, selectEnabledLlmName, setLlmConfigEnabled, toggleLlmConfigEnabled, WRITING_PHASE_LABELS } from "./plugin_config";
 import type { LlmConfigDoc, PluginConfig, WritingPhase } from "./plugin_config";
 import { DEFAULT_TENSION_RULES } from "./tension_rules_default";
 import { DEFAULT_USAGE_GUIDE } from "./usage_guide_default";
@@ -23,7 +23,7 @@ import { BANNED_LIST_SKILL_HEAD, DEFAULT_SKILLS, SKILL_CONTENT_TEMPLATE } from "
 import { appendOutlineInstruction, applyTypoMarks, BOOK_OUTLINE_GEN_SYSTEM_PROMPT, bookInfoText, buildBookOutlineContinuePrompt, buildBookOutlineExtendPrompt, buildBookOutlineGenPrompt, buildChapterPrompt, buildChapterSummaryPrompt, buildContinuePrompt, buildDeaiPrompt, buildPlanningGuideContinuePrompt, buildPlanningGuidePrompt, buildPolishPrompt, buildReviewPrompt, buildRewritePrompt, buildStoryTypeSystemPrompt, buildTimelineGenPrompt, buildTypoScanPrompt, buildVolOutlineChapterPrompt, buildVolOutlineDesignPrompt, buildVolRebuildPrompt, buildWritingContext, CHAPTER_SUMMARY_SYSTEM_PROMPT, checkOutlineCoverage, cleanAiText, cleanRelationshipsDoc, findChapterRefLeaks, findChapterRefSentences, buildChapterRefFixPrompt, fixChapterRefs, formatRetryNote, parseChapterWithSummary, parseTypoScan, planningGuideMissingSections, stripHeading, TIMELINE_GEN_SYSTEM_PROMPT, TYPO_SCAN_SYSTEM_PROMPT, PLANNING_GUIDE_SECTIONS, validateStoryTypeFormat, VOL_OUTLINE_GEN_SYSTEM_PROMPT, VOL_SUMMARY_SYSTEM_PROMPT, WORLDVIEW_GEN_SYSTEM_PROMPT, BookOutlineGenInput, ChapterRefFixReport, TimelineGenInput, PlanningGuideInput, VolOutlineGenInput, WorldviewGenInput, buildWorldviewGenPrompt, volumeListText, type StableSink } from "./prompts";
 import { requirementsFor, stagesFrom, type StageId, type StageRequirement } from "./pipeline";
 import { assemblePromptFiles, type AssembledPrompt, type PromptFileReader, type PromptSpec } from "./prompt_files";
-import { cnToNum, extractPlannedChapterCount, maxDeclaredVolumeNum, mergeVolOutlineChapters, parseChapterSelection, parseRelationships, parseTimelines, parseVolumeDeclarations, splitList, splitVolOutlineByChapter, stripComments, stripForeshadowMarks, timelineGenFormatOk, type TimelineEntry, type VolumeDeclaration } from "./md_docs";
+import { cnToNum, extractPlannedChapterCount, maxDeclaredVolumeNum, mergeVolOutlineChapters, parseChapterSelection, parseRelationships, parseTimelines, parseVolumeDeclarations, sliceVolOutlineChapters, splitList, splitVolOutlineByChapter, stripComments, stripForeshadowMarks, timelineGenFormatOk, type TimelineEntry, type VolumeDeclaration } from "./md_docs";
 import type { RelationshipEntry } from "./md_docs";
 import { CAST_ANALYZE_SYSTEM_PROMPT, aggregateCastAnalyses, buildCastChapterPrompt, buildCharacterWritePlan, buildRelationshipWritePlan, buildSceneWritePlan, parseCastChapterAnalysis, relPairKey } from "./cast_analyzer";
 import type { CastChapterAnalysis } from "./cast_analyzer";
@@ -33,6 +33,7 @@ interface ArticleWriterSettings {
 	lastStory: string;
 	autoOpenOnCreate: boolean;
 	prevChapters?: number; // v0.1.4+：写作提示词「前文内容」窗口章数 N（缺省/非法按 CLI 默认 3；0=不注入前文）。卷模式窗口限本卷、跨卷缺口以各前卷《卷摘要》填充
+	nextChapters?: number; // v0.4.3+：写作提示词「后续参考」窗口章数 N（缺省/非法按 3；0=不注入后章）。当前消费方＝编写文章阶段的大纲节选（前 prevN／后 nextN 章）
 	includeVolumeSummary?: boolean; // v0.1.4+：是否把整卷《卷摘要》注入写作上下文（含跨卷前卷摘要）；默认关——对齐 Python 原版严格 prev_n 语义，只注入最近 N 章
 	llm?: PluginConfig; // LLM 多组模型配置 + system_prompt/desc_style（替代 ~/.articlewriter/config.json，存插件数据目录 data.json）
 }
@@ -42,6 +43,7 @@ const DEFAULT_SETTINGS: ArticleWriterSettings = {
 	lastStory: "",
 	autoOpenOnCreate: true,
 	prevChapters: 3,
+	nextChapters: 3,
 };
 
 /** 「添加人物」关系类型下拉的可选值：均能命中 relationship_view.ts 的类型正则（保证图视图边色/图标可识别），空值=未标注 */
@@ -95,6 +97,12 @@ export default class ArticleWriterPlugin extends Plugin {
 		return Number.isFinite(n) && n >= 0 ? n : 3;
 	}
 
+	/** v0.4.3+：data.json settings.nextChapters → 有效后续参考章数 N（缺省/非法回落 3；0=不注入后章）——书级 next_chapters 显式设置时优先（解析在 story_manager.loadWritingData） */
+	private effectiveNextN(): number {
+		const n = Math.floor(Number(this.settings.nextChapters ?? 3));
+		return Number.isFinite(n) && n >= 0 ? n : 3;
+	}
+
 	async onload(): Promise<void> {
 		await this.loadSettings();
 		this.manager = new StoryManager({
@@ -102,6 +110,7 @@ export default class ArticleWriterPlugin extends Plugin {
 			getStoryRoot: () => this.settings.workDir,
 			onStateChanged: () => this.notifyContextChanged(),
 			getPrevChapters: () => this.effectivePrevN(), // v0.1.4+：实时读 data.json，改设置即时生效
+			getNextChapters: () => this.effectiveNextN(), // v0.4.3+：后续参考章数（编写文章阶段大纲节选窗口）
 			includeVolumeSummary: () => !!this.settings.includeVolumeSummary, // v0.1.4+：卷摘要注入开关（默认关）
 			generateChapterSummary: async ({ label, sourceText, viaOutline }) => { // v0.1.4+：缺失/过期章节摘要的 LLM 延迟生成入口（对齐 CLI _summarize_chapter），无配置/失败返回 null；v0.2.22+：走编写文章阶段配置
 				const setup = this.getPhaseLlmSetup(PHASE_WRITING);
@@ -299,7 +308,12 @@ export default class ArticleWriterPlugin extends Plugin {
 			this.settings.llm = buildDefaultLlmConf();
 			await this.saveData(this.settings);
 			new Notice("已预置 3 组模型配置模板（local / deepseek / qwen-dashscope）\n请在 Obsidian 设置 → ArticleWriter 填写 api_key/模型名", 8000);
-		} else if (!this.settings.llm.writing_phases || this.settings.llm.writing_phases.length < 5) {
+		} else {
+			for (const cfg of this.settings.llm.llm_configs ?? []) {
+				if (cfg.enabled == null) cfg.enabled = true;
+			}
+		}
+		if (!this.settings.llm.writing_phases || this.settings.llm.writing_phases.length < 5) {
 			// v0.2.24+：旧数据补字段：写作阶段模型配置骨架（各阶段 name/llm_config_name），不覆盖用户已有内容
 			// v0.3.7+：「世界观生成」头插为阶段 0——恰为旧四阶段（length===4）时先头插新阶段骨架，原条目整体后移（已保存的 llm_config_name/ref_docs 随对象保留）
 			// v0.3.4+：identity_boost 已 Skill 化——不再播种该字段；旧 data.json 残留值由 migrateIdentityBoostSkills() 在技能播种前迁移到 SKILLS/ 文件并从盘上清除
@@ -840,23 +854,58 @@ await this.promptCreateVolumesIfEmpty(story); // 零卷 → 先弹建卷框（�
 		]);
 	}
 
-	/** v0.2.x+「补全故事状态可用参数」专用：收集书级 prev_chapters（非负整数，0=不注入前文），预填当前全局生效值；非法输入重弹，取消返回 null */
-	private async promptPrevChaptersInput(story: string): Promise<number | null> {
+	/** 「补全故事状态可用参数」专用：收集一个书级章窗口参数（prev_chapters／next_chapters 共用，v0.4.3+ 抽公共）——
+	 *  非负整数（0＝不注入该方向）、预填当前全局生效值、非法输入重弹、取消返回 null */
+	private async promptWindowChaptersInput(opts: {
+		story: string;
+		field: string;
+		title: string;
+		placeholder: string;
+		what: string;
+		zeroMeans: string;
+		prefill: number;
+	}): Promise<number | null> {
 		for (;;) {
 			const raw = await this.prompt(
-				"使用章节摘要数量（prev_chapters）",
-				"前文窗口章数 N（非负整数，如 3）",
+				opts.title,
+				opts.placeholder,
 				[
-					`《${story}》的故事状态文档缺少书级参数 prev_chapters（写作提示词「前文内容」窗口章数）。`,
-					`输入非负整数：0＝不注入前文；当前按全局设置生效（N=${this.effectivePrevN()}，已预填在输入框）。`,
+					`《${opts.story}》的故事状态文档缺少书级参数 ${opts.field}（${opts.what}）。`,
+					`输入非负整数：0＝${opts.zeroMeans}；当前按全局设置生效（N=${opts.prefill}，已预填在输入框）。`,
 					"输入后按回车确认、Esc 取消：",
 				].join("\n"),
-				String(this.effectivePrevN())
+				String(opts.prefill)
 			);
 			if (raw == null) { new Notice("已取消补全故事状态参数", 4000); return null; }
 			if (!/^\d+$/.test(raw.trim())) { new Notice(`数值无效：请输入非负整数（收到「${raw}」）`, 6000); continue; }
 			return parseInt(raw.trim(), 10);
 		}
+	}
+
+	/** v0.2.x+：收集书级 prev_chapters（前文窗口章数） */
+	private async promptPrevChaptersInput(story: string): Promise<number | null> {
+		return this.promptWindowChaptersInput({
+			story,
+			field: "prev_chapters",
+			title: "使用章节摘要数量（prev_chapters）",
+			placeholder: "前文窗口章数 N（非负整数，如 3）",
+			what: "写作提示词「前文内容」窗口章数；编写文章阶段的大纲节选也按它取当前章之前 N 章",
+			zeroMeans: "不注入前文",
+			prefill: this.effectivePrevN(),
+		});
+	}
+
+	/** v0.4.3+：收集书级 next_chapters（后文窗口章数，编写文章阶段大纲节选取当前章之后 N 章） */
+	private async promptNextChaptersInput(story: string): Promise<number | null> {
+		return this.promptWindowChaptersInput({
+			story,
+			field: "next_chapters",
+			title: "后续参考章数（next_chapters）",
+			placeholder: "后文窗口章数 N（非负整数，如 3）",
+			what: "编写文章阶段大纲节选取当前章之后 N 章",
+			zeroMeans: "不注入后章大纲",
+			prefill: this.effectiveNextN(),
+		});
 	}
 
 	/** v0.3.5+「设置本章字数区间」：弹窗收集 [下限,上限]，写入《故事状态.md》word_range（取代旧 WRITING_GUIDE 指南「字数配置」注释）；输入「4000-5000」「4000~5000」「4000 5000」皆可，非法重弹，取消返回 null */
@@ -2296,7 +2345,7 @@ async cmdRenameChapterFile(): Promise<void> {
 		}
 	}
 
-	/** v0.2.x+「补全故事状态可用参数」：升级旧的故事状态文档——把缺失的书级提示词组装选项（prev_chapters / include_volume_summary）逐项询问后显式补写进 frontmatter（正文原样保留、其余键不动）；两项均已显式设置时仅提示无需补全。旧版 story_state.json 载体经 loadState/saveState 顺带迁移为 MD 文档 */
+	/** v0.2.x+「补全故事状态可用参数」：升级旧的故事状态文档——把缺失的书级提示词组装选项（prev_chapters / next_chapters（v0.4.3+） / include_volume_summary / word_range）逐项询问后显式补写进 frontmatter（正文原样保留、其余键不动）；全部已显式设置时仅提示无需补全。旧版 story_state.json 载体经 loadState/saveState 顺带迁移为 MD 文档 */
 	async cmdCompleteState(): Promise<void> {
 		if (!(await this.ensureWorkDir())) return;
 		const story = await this.requireStory();
@@ -2304,10 +2353,11 @@ async cmdRenameChapterFile(): Promise<void> {
 		const state = await this.manager.loadState(story);
 		if (!state) { new Notice("读取故事状态文档失败", 6000); return; }
 		const missingPrev = state.prev_chapters == null;
+		const missingNext = state.next_chapters == null;
 		const missingVolSum = state.include_volume_summary == null;
 		const missingRange = state.word_range == null;
-		if (!missingPrev && !missingVolSum && !missingRange) {
-			new Notice(`《${story}》故事状态文档的可用参数已齐全（prev_chapters=${state.prev_chapters}、include_volume_summary=${state.include_volume_summary}、word_range=${state.word_range![0]}-${state.word_range![1]}），无需补全`, 8000);
+		if (!missingPrev && !missingNext && !missingVolSum && !missingRange) {
+			new Notice(`《${story}》故事状态文档的可用参数已齐全（prev_chapters=${state.prev_chapters}、next_chapters=${state.next_chapters}、include_volume_summary=${state.include_volume_summary}、word_range=${state.word_range![0]}-${state.word_range![1]}），无需补全`, 8000);
 			return;
 		}
 		const parts: string[] = [];
@@ -2316,6 +2366,12 @@ async cmdRenameChapterFile(): Promise<void> {
 			if (n == null) return; // 取消：不写盘
 			state.prev_chapters = n;
 			parts.push(`prev_chapters=${n}`);
+		}
+		if (missingNext) {
+			const n = await this.promptNextChaptersInput(story);
+			if (n == null) return; // 取消：不写盘
+			state.next_chapters = n;
+			parts.push(`next_chapters=${n}`);
 		}
 		if (missingVolSum) {
 			const on = await this.confirmBox(
@@ -2576,23 +2632,30 @@ async cmdRenameChapterFile(): Promise<void> {
 		}
 	}
 
-	/** 装配阶段 phaseIdx 的技能块（system prompt 注入用）：ref_docs 清单过滤 skill: 条目（去重）→ 读 SKILLS/<name>.md → 剥起始标题行 → 【技能 · name】拼接；无条目/全读不到返回空串 */
+	/** 技能块共用装配（系统级 SKILLS/ 与书籍级 案头资料/Skill/ 同口径）：name+文件路径 → 读原文 → 剥 HTML 注释与起始标题行 → 【技能 · name】拼接；读失败/读空跳过，全空返回空串 */
+	private async loadSkillsBlockFrom(entries: Array<{ name: string; file: string }>): Promise<string> {
+		const parts: string[] = [];
+		for (const { name, file } of entries) {
+			let t: string | null = null;
+			try {
+				t = (await this.app.vault.adapter.exists(file)) ? await this.app.vault.adapter.read(file) : null;
+			} catch { /* 读失败按缺失跳过 */ }
+			if (!t || !t.trim()) continue;
+			const body = stripHeading(stripComments(t)).trim(); // 注释先剥，再剥标题行（注释行在前会挡住标题剥离）；两者都不进提示词
+			if (!body) continue;
+			parts.push(`【技能 · ${name}】\n${body}`);
+		}
+		return parts.join("\n\n");
+	}
+
+	/** 装配阶段 phaseIdx 的系统级技能块（system prompt 注入用）：ref_docs 清单过滤 skill: 条目（去重）→ 读 SKILLS/<name>.md；无条目/全读不到返回空串 */
 	private async loadSkillsBlock(phaseIdx: number): Promise<string> {
 		const names: string[] = [];
 		for (const k of this.phaseRefDocKeys(phaseIdx)) {
 			if (k.startsWith("skill:") && !names.includes(k.slice(6))) names.push(k.slice(6));
 		}
 		if (!names.length) return "";
-		const parts: string[] = [];
-		for (const name of names) {
-			let t: string | null = null;
-			try {
-				t = (await this.app.vault.adapter.exists(this.skillPath(name))) ? await this.app.vault.adapter.read(this.skillPath(name)) : null;
-			} catch { /* 读失败按缺失跳过 */ }
-			if (!t || !t.trim()) continue;
-			parts.push(`【技能 · ${name}】\n${stripHeading(t).trim()}`);
-		}
-		return parts.join("\n\n");
+		return this.loadSkillsBlockFrom(names.map((name) => ({ name, file: this.skillPath(name) })));
 	}
 
 	// ---------- 书籍级技能（v0.3.4+）：技能文件＝<书>/案头资料/Skill/<name>.md（每书一份、写字台「案头资料」下 Skill 子文件夹）；阶段选用存于 故事状态.md 的 book_skills（阶段 key → 技能名数组）----------
@@ -2635,21 +2698,11 @@ async cmdRenameChapterFile(): Promise<void> {
 		return names.map((name) => ({ file: `${dir}/${name}.md`, header: `【技能 · ${name}】`, stripHeading: true }));
 	}
 
-	/** 装配阶段 phaseIdx 的书籍技能块（现仅「编写文章」阶段＝PHASE_WRITING 经 writerSystemPrompt 注入 system prompt）：读案头资料/Skill/<name>.md → 剥起始标题行 → 【技能 · name】拼接；无条目/全读不到返回空串 */
+	/** 装配阶段 phaseIdx 的书籍技能块（现仅「编写文章」阶段＝PHASE_WRITING 经 writerSystemPrompt 注入 system prompt）：读案头资料/Skill/<name>.md；清洗与拼接走 loadSkillsBlockFrom（与系统级技能同口径）；无条目/全读不到返回空串 */
 	async loadBookSkillsBlock(storyName: string, phaseIdx: number): Promise<string> {
 		const names = await this.phaseBookSkillNames(storyName, phaseIdx);
 		if (!names.length) return "";
-		const parts: string[] = [];
-		for (const name of names) {
-			let t: string | null = null;
-			try {
-				const p = this.bookSkillPath(storyName, name);
-				t = (await this.app.vault.adapter.exists(p)) ? await this.app.vault.adapter.read(p) : null;
-			} catch { /* 读失败按缺失跳过 */ }
-			if (!t || !t.trim()) continue;
-			parts.push(`【技能 · ${name}】\n${stripHeading(t).trim()}`);
-		}
-		return parts.join("\n\n");
+		return this.loadSkillsBlockFrom(names.map((name) => ({ name, file: this.bookSkillPath(storyName, name) })));
 	}
 
 	/** 逐级确保 vault 目录存在（adapter.mkdir 一次只建一层；adapter.write 不承诺创建父目录——v0.3.4+ 技能保存失败 bug 修复：写技能文件前必须先显式建目录） */
@@ -2988,7 +3041,7 @@ async cmdRenameChapterFile(): Promise<void> {
 	/** 按写作阶段获取模型配置：优先使用阶段指定的 llm_config_name，未指定则取第一个配置（cfgs[0]）；active_llm（旧版激活态）与对话框选择的 chat_model 均不参与阶段回退——切换对话框模型/激活态不影响各阶段用哪个模型；无可用配置返回 null */
 	private getPhaseLlmSetup(phaseIndex: number): { cfg: LlmConfigDoc; systemPrompt?: string; descStyle?: string } | null {
 		const conf = this.settings.llm ?? null;
-		const cfgs = conf?.llm_configs ?? [];
+		const cfgs = filterEnabledLlmConfigs(conf?.llm_configs ?? []);
 		if (!conf || !cfgs.length) return null;
 		const phases = conf.writing_phases ?? [];
 		const phase = phases[phaseIndex];
@@ -3038,7 +3091,9 @@ async cmdRenameChapterFile(): Promise<void> {
 	 */
 	async setActiveLlmFromChat(name: string): Promise<void> {
 		const conf = this.settings.llm;
-		if (!conf || !name || conf.chat_model === name) return;
+		if (!conf || !name) return;
+		const allowed = filterEnabledLlmConfigs(conf.llm_configs ?? []).map((cfg) => cfg.name);
+		if (!allowed.includes(name) || conf.chat_model === name) return;
 		conf.chat_model = name;
 		await this.saveSettings();
 		new Notice(`已切换对话框模型：${name}`, 4000);
@@ -3462,11 +3517,11 @@ async cmdRenameChapterFile(): Promise<void> {
 	/**
 	 * 时间线面板快照：工作目录 + 小说概览 + 当前书**全部**《时间线.md》解析结果（书根 / 每一卷 / 每一章），全程非交互只读。
 	 * 各层条目合并为单一按时间点升序的行列表（年→月→日，同值保持文档枚举顺序）；每行带层级标签与来源路径供展示及双击定位。
-	 * 单层解析失败降级为空列表不影响其余层；原文非空但零条目的文档进 unparsedDocs 供展示侧给格式提示。
+	 * 单层解析失败降级为空列表不影响其余层；原文非空但零条目的文档直接跳过——v0.4.3+ 起面板不再在列表下方给「无有效条目」提示行。
 	 */
 	async getTimelineSnapshot(): Promise<TlSnapshot> {
 		const root = this.settings.workDir.replace(/\/+$/, "");
-		if (!root) return { workDir: "", stories: [], activeStory: null, activeStoryTitle: "", useVolumes: false, bookTimelinePath: "", rows: [], totalCount: 0, unparsedDocs: [] };
+		if (!root) return { workDir: "", stories: [], activeStory: null, activeStoryTitle: "", useVolumes: false, bookTimelinePath: "", rows: [], totalCount: 0 };
 		const names = await this.manager.listStories();
 		const last = this.settings.lastStory?.trim() ?? "";
 		const stories: TlStoryEntry[] = [];
@@ -3479,21 +3534,19 @@ async cmdRenameChapterFile(): Promise<void> {
 			stories.push({ name, title, active: name === last });
 		}
 		const active = last && names.includes(last) ? last : null;
-		if (!active) return { workDir: root, stories, activeStory: null, activeStoryTitle: "", useVolumes: false, bookTimelinePath: "", rows: [], totalCount: 0, unparsedDocs: [] };
+		if (!active) return { workDir: root, stories, activeStory: null, activeStoryTitle: "", useVolumes: false, bookTimelinePath: "", rows: [], totalCount: 0 };
 		const state = await this.manager.loadState(active);
 		const docs = await this.manager.readTimelineDocs(active); // 各层原文（只读），顺序按 manager 约定（有卷模式每卷紧随其成员章）
 		const rows: TlRow[] = [];
-		const unparsedDocs: Array<{ label: string; path: string }> = [];
 		for (const d of docs) {
 			let list: TimelineEntry[] = [];
 			try {
 				list = parseTimelines(d.text);
 			} catch { /* 单层解析失败不影响其余层 */ }
-			if (!list.length && d.text.trim()) unparsedDocs.push({ label: d.label, path: d.path }); // 有内容但无有效条目 → 展示侧格式提示
 			list.forEach((e, i) => rows.push({ ...e, id: `${d.path}#${i}`, scope: d.scope, sourcePath: d.path, sourceLabel: d.label })); // id＝来源路径#文档内序号：稳定标识供折叠状态跨刷新保持
 		}
 		// rows 保持文档枚举顺序（**不按时间全局排序**）：面板据此在**每个文档内部**按「父＝其前最近一条级别更小的条目」挂父——跨文档/跨时间的子事件仍挂在结构父下；时间点升序渲染由面板渲染趟负责
-		return { workDir: root, stories, activeStory: active, activeStoryTitle: stories.find((s) => s.name === active)?.title ?? active, useVolumes: state?.use_volumes === true, bookTimelinePath: this.manager.bookTimelinePath(active), rows, totalCount: rows.length, unparsedDocs };
+		return { workDir: root, stories, activeStory: active, activeStoryTitle: stories.find((s) => s.name === active)?.title ?? active, useVolumes: state?.use_volumes === true, bookTimelinePath: this.manager.bookTimelinePath(active), rows, totalCount: rows.length };
 	}
 
 	/** 时间线编辑弹窗「人物」下拉候选（v0.3.3+ 合并大事件）：当前书三层《人物.md》角色名去重排序（与人物关系面板「人物状态」同源）；无当前书/读取失败返回空数组（弹窗退化为无候选） */
@@ -4849,24 +4902,69 @@ async cmdRenameChapterFile(): Promise<void> {
 		return assemblePromptFiles(this.promptReader(), this.orderRefDocSpecs(pairs, ref, { bookSkillDir: this.bookSkillsDir(story), bookSkillNames: await this.phaseBookSkillNames(story, phaseIdx) }));
 	}
 
+	/** v0.4.3+：编写文章阶段的大纲块（替代原先注入整份卷大纲/全书大纲）——按本书前后章窗口配置，只取当前章前 N 章与后 N 章的大纲节选：
+	 *  - 卷模式：本卷《卷大纲.md》按**卷内本地章号**（localNum）切窗口；平铺模式：书级《大纲.md》按**全书章号**（chapterNum）切；
+	 *  - 窗口 = [当前章号 - prevN, 当前章号 + nextN]，夹到 ≥1；节选**恒含前言块**（【卷设计】/本卷定位），章标记行保留；
+	 *  - 章号缺失、读盘失败、或取到的节选与全文等价 → 回退整份大纲的 file spec（保证上下文不缺大纲）；
+	 *  - 窗口内无任何章块且前言为空（prevN=nextN=0 的空大纲）→ 返回空 text（不注入）；
+	 *  - 块归 chapter 组：内容逐章变化，不能落在 prompts.ts 前缀缓存的稳定段（vol 组在 stableEnd 之前）。
+	 *  header 保持【本卷大纲】/【全书大纲】不变——prompts.ts outlineBlockNameOf 与正文要求的第 3 条措辞按 header 门控，不随节选改动 */
+	private async writingOutlineSpec(
+		storyName: string,
+		dp: WritingDocPaths,
+		ctx: { chapterNum?: number; localNum?: number; activeVolId?: string; prevN?: number; nextN?: number }
+	): Promise<PromptSpec> {
+		const header = dp.vol ? "【本卷大纲】" : "【全书大纲】";
+		const whole: PromptSpec = dp.vol
+			? { file: dp.vol.outline, header, stripHeading: true, transform: stripForeshadowMarks, group: "chapter" }
+			: { file: dp.book.globalOutline, header, stripHeading: true, transform: stripForeshadowMarks, group: "chapter" };
+		const cur = dp.vol ? (ctx.localNum ?? 0) : (ctx.chapterNum ?? 0);
+		if (!cur || cur < 1) return whole; // 章号不可知（导出预览等边界）→ 保持原行为
+		const nonNeg = (v: unknown, dflt: number): number => {
+			const n = Math.floor(Number(v ?? dflt));
+			return Number.isFinite(n) && n >= 0 ? n : dflt;
+		};
+		const prevN = nonNeg(ctx.prevN, 3);
+		const nextN = nonNeg(ctx.nextN, 3);
+		if (dp.vol && !ctx.activeVolId) return whole; // 卷模式但卷 id 缺失 → 不切片，回退整份
+		let raw = "";
+		try {
+			raw = dp.vol ? await this.manager.readVolumeOutline(storyName, ctx.activeVolId ?? "") : await this.manager.readGlobalOutline(storyName);
+		} catch {
+			return whole; // 读盘失败 → 交回装配器按 file 读（缺失即缺失）
+		}
+		if (!raw.trim()) return whole;
+		const sliced = sliceVolOutlineChapters(raw, Math.max(1, cur - prevN), cur + nextN).trim();
+		if (!sliced) return { text: "", header, transform: stripForeshadowMarks, group: "chapter" }; // 前后窗口都为 0 且无卷设计 → 不注入大纲块
+		if (sliced === raw.trim()) return whole; // 窗口覆盖整份大纲（书很短）→ 走 file spec，清洗口径与其余文档一致
+		const span = [prevN > 0 ? `前 ${prevN} 章` : "", nextN > 0 ? `后 ${nextN} 章` : ""].filter(Boolean).join("、");
+		const note = `（本节选仅含当前章${span || "（窗口为 0）"}的大纲与卷级前言，其余章节已省略）`;
+		return { text: `${note}\n\n${sliced}`, header, transform: stripForeshadowMarks, group: "chapter" };
+	}
+
 	/** v0.2.24+ 提示词文件装配改造：写作上下文三层文档组串（bookDocs/volDocs/chapterDocs）——specs 按 loadWritingData 解析出的 data.docPaths 声明，
 	 *  块措辞/清洗管线逐字对齐旧基线渲染：书级＝世界观.md（stripHeading:false，旧 fullText 含 H1）＋书级人物关系（cleanRelationshipsDoc 自带剥注释+剥 H1，故 stripComments:false）；
 	 *  卷级＝卷大纲（剥 H1＋stripForeshadowMarks）＋卷人物关系；章级按旧注入顺序＝本章大纲（剥 H1＋stripForeshadowMarks，注入开关＝skipChapterOutline）→人物→场景→本章人物关系。
 	 *  章级人物/场景旧口径只剥 `# 第N章` 题行、模板 `# 人物`/`# 场景` 标题保留，故不设 stripHeading。
 	 *  旧跨层人物关系逐行去重（章>卷>书）随结构化渲染退役——现仅装配器整块去重（先到先赢＋同文跳过），已定稿取舍 */
-	private async assembleWritingDocGroups(storyName: string, data: { docPaths: WritingDocPaths }, opts?: { skipChapterOutline?: boolean; phaseIdx?: number }): Promise<{ bookDocs: string; volDocs: string; chapterDocs: string }> {
+	private async assembleWritingDocGroups(
+		storyName: string,
+		data: { docPaths: WritingDocPaths; chapterNum?: number; localNum?: number; activeVolId?: string; prevN?: number; nextN?: number },
+		opts?: { skipChapterOutline?: boolean; phaseIdx?: number }
+	): Promise<{ bookDocs: string; volDocs: string; chapterDocs: string }> {
 		const dp = data.docPaths;
-		// v0.2.25+：spec 带引用文档 key——按本阶段（默认 3＝编写文章）ref_docs 清单过滤；用户自选 file: 条目并入书级组注入
+		// v0.4.3+：大纲块＝前后 N 章大纲节选（见 writingOutlineSpec）；v0.2.25+：spec 带引用文档 key——按本阶段（默认 3＝编写文章）ref_docs 清单过滤；用户自选 file: 条目并入书级组注入
+		const outlineSpec = await this.writingOutlineSpec(storyName, dp, data);
 		const pairs: Array<{ key: string; spec: PromptSpec }> = [
 			{ key: "worldview", spec: { file: dp.book.world, header: HDR_WORLD, stripHeading: false, group: "book" } },
 			{ key: "timeline", spec: { text: await this.manager.mergedTimelineText(storyName), header: "【时间线】", group: "book" } }, // v0.3.3+ 三层合并时间轴（阶段 4 下拉目录可手动添加、默认不注入）；归书级组、无有效条目＝空块不注入
 			{ key: "book_relations", spec: { file: dp.book.bookRelationships, header: HDR_BOOK_REL, stripComments: false, transform: cleanRelationshipsDoc, group: "book" } },
 			...(dp.vol ? [
-				{ key: "vol_outline", spec: { file: dp.vol.outline, header: "【本卷大纲】", stripHeading: true, transform: stripForeshadowMarks, group: "vol" } },
+				{ key: "vol_outline", spec: outlineSpec }, // v0.4.3+：本卷大纲 → 前后 N 章节选（header/group 由 writingOutlineSpec 决定）
 				{ key: "vol_relations", spec: { file: dp.vol.relationships, header: HDR_VOL_REL, stripComments: false, transform: cleanRelationshipsDoc, group: "vol" } },
 			] : [
 				// 平铺模式（无卷）：vol_outline 槽位映射书级《大纲.md》＝【全书大纲】——平铺书没有卷大纲，写作上下文不能一份大纲都没有（提示词的大纲措辞按实际注入块门控）
-				{ key: "vol_outline", spec: { file: dp.book.globalOutline, header: "【全书大纲】", stripHeading: true, transform: stripForeshadowMarks, group: "book" } },
+				{ key: "vol_outline", spec: outlineSpec }, // v0.4.3+：全书大纲 → 前后 N 章节选
 			]),
 			{ key: "chapter_outline", spec: { file: dp.chapter.outline, header: "【本章大纲】", stripHeading: true, transform: stripForeshadowMarks, skip: !!opts?.skipChapterOutline, group: "chapter" } },
 			{ key: "characters", spec: { file: dp.chapter.characters, header: "【本章人物设定】", group: "chapter" } },
@@ -7593,7 +7691,7 @@ class ArticleWriterSettingTab extends PluginSettingTab {
 			rerender();
 		};
 
-		container.createDiv({ cls: "aw-refdocs-desc", text: "装配该阶段提示词时注入的引用文档。可删除、添加、调整顺序——序号即装配顺序，排在前面的先组装进提示词。新增文档可来自 vault 中的 Markdown 文件，也可添加技能文件（工作目录 SKILLS/ 下的 Markdown，写作技巧类短文档；「编写文章」阶段的技能注入系统提示词；双击技能行可在编辑器中打开编辑）。未做任何改动时使用该阶段的默认清单。" });
+		container.createDiv({ cls: "aw-refdocs-desc", text: "装配该阶段提示词时注入的引用文档。可删除、添加、调整顺序——序号即装配顺序，排在前面的先组装进提示词（鼠标可直接拖拽行调整位置，拖到目标行上半＝插到它前面、下半＝插到它后面；触屏用行内 ↑/↓ 按钮）。新增文档可来自 vault 中的 Markdown 文件，也可添加技能文件（工作目录 SKILLS/ 下的 Markdown，写作技巧类短文档；「编写文章」阶段的技能注入系统提示词；双击技能行可在编辑器中打开编辑）。未做任何改动时使用该阶段的默认清单。「编写文章」阶段的大纲条目只注入当前章前 N 章与后 N 章的节选（N 取设置页的前文/后续参考章数，书级 next_chapters 优先）。" });
 
 		const list = container.createDiv({ cls: "aw-refdocs-list" });
 		const saved = phs[phaseIdx].ref_docs;
@@ -7606,6 +7704,16 @@ class ArticleWriterSettingTab extends PluginSettingTab {
 			const arr = [...keys];
 			[arr[i], arr[j]] = [arr[j], arr[i]];
 			commit(arr);
+		};
+		// v0.4.3+：鼠标拖拽调整顺序（HTML5 drag & drop）——拖到目标行的上/下半即插到其前/后；
+		// 触屏端不支持 HTML5 拖拽，行内 ↑/↓ 按钮保留作为移动端替代（与拖拽同源 commit，落盘口径一致）
+		let dragFrom: number | null = null;
+		const clearDropMarks = (): void => {
+			list.querySelectorAll(".aw-refdocs-row").forEach((el) => el.removeClass("is-dragging", "is-drop-before", "is-drop-after"));
+		};
+		const dropBefore = (ev: DragEvent, el: HTMLElement): boolean => { // 指针落在行上半＝插到该行之前
+			const r = el.getBoundingClientRect();
+			return ev.clientY < r.top + r.height / 2;
 		};
 		const used = new Set<string>();
 		keys.forEach((key, i) => {
@@ -7634,6 +7742,42 @@ class ArticleWriterSettingTab extends PluginSettingTab {
 			down.onclick = () => move(i, i + 1);
 			const del = row.createEl("button", { cls: "aw-refdocs-del", text: "删除" });
 			del.onclick = () => commit(keys.filter((_, j) => j !== i));
+			// v0.4.3+ 拖拽排序：整行可拖（按钮上的拖拽让位给点击），拖起行半透明、目标行上/下缘显示插入线
+			row.addClass("is-draggable");
+			row.setAttr("draggable", "true");
+			row.addEventListener("dragstart", (ev) => {
+				if (ev.target instanceof HTMLElement && ev.target.closest("button")) { ev.preventDefault(); return; }
+				dragFrom = i;
+				row.addClass("is-dragging");
+				ev.dataTransfer?.setData("text/plain", String(i)); // Firefox 需 setData 才会启动拖拽
+				if (ev.dataTransfer) ev.dataTransfer.effectAllowed = "move";
+			});
+			row.addEventListener("dragend", () => { dragFrom = null; clearDropMarks(); });
+			row.addEventListener("dragover", (ev) => {
+				if (dragFrom == null || dragFrom === i) return;
+				ev.preventDefault(); // 必须阻止默认才允许 drop
+				if (ev.dataTransfer) ev.dataTransfer.dropEffect = "move";
+				const before = dropBefore(ev, row);
+				row.toggleClass("is-drop-before", before);
+				row.toggleClass("is-drop-after", !before);
+			});
+			row.addEventListener("dragleave", (ev) => { // 行内子元素间移动不触发撤离标记
+				if (ev.relatedTarget instanceof Node && row.contains(ev.relatedTarget)) return;
+				row.removeClass("is-drop-before", "is-drop-after");
+			});
+			row.addEventListener("drop", (ev) => {
+				ev.preventDefault();
+				const from = dragFrom;
+				dragFrom = null;
+				clearDropMarks();
+				if (from == null || from === i) return;
+				const to = dropBefore(ev, row) ? i : i + 1; // 目标插入位置（原数组口径，0..len）
+				if (to === from || to === from + 1) return; // 原地不动
+				const arr = [...keys];
+				const moved = arr.splice(from, 1)[0];
+				arr.splice(to > from ? to - 1 : to, 0, moved);
+				commit(arr);
+			});
 		});
 
 		// 添加内置引用文档：下拉中只列出尚未在清单中的本阶段内置文档。
@@ -7696,10 +7840,14 @@ class ArticleWriterSettingTab extends PluginSettingTab {
 		defs.push({ name: "工作目录（work_dir）", desc: "写小说的文件夹（vault 内已有文件夹）。首次使用任何命令时会自动弹出选择器让你选定；以后建书/建章/打开文档等全部在该目录下操作。每个小说是其下一个子文件夹：故事状态.md、大纲.md、第NN章-标题/章节.md 等", control: { key: "workDir", type: "text", placeholder: "首次使用时自动选择" } });
 		defs.push({ name: "重新选择工作目录…", desc: "弹出文件夹选择器切换 work_dir（同「选择工作目录」命令）", action: () => void this.plugin.pickWorkDir(false) });
 		defs.push({ name: "创建后自动打开文档", desc: "新建小说/章节后立即在标签页中打开对应正文或大纲", control: { key: "autoOpenOnCreate", type: "toggle" } });
-		defs.push({ name: "前文参考章数 prevN", desc: "写作命令生成提示词时注入【前文内容】的最近 N 章（每章取 AI 摘要、缺失自动生成；0=不注入前文）。留空=默认 3。卷模式下窗口限本卷，不再拉取他卷章节细节", control: { key: "prevChapters", type: "text", placeholder: "默认 3" } });
+		defs.push({ name: "前文参考章数 prevN", desc: "写作命令生成提示词时注入【前文内容】的最近 N 章（每章取 AI 摘要、缺失自动生成；0=不注入前文）。留空=默认 3。卷模式下窗口限本卷，不再拉取他卷章节细节。v0.4.3+：编写文章阶段的大纲块也按本值取当前章之前 N 章的大纲节选", control: { key: "prevChapters", type: "text", placeholder: "默认 3" } });
+		defs.push({ name: "后续参考章数 nextN", desc: "v0.4.3+：编写文章阶段的大纲块只注入当前章前后若干章的节选（不再注入整卷/全书大纲）——前 N 章取「前文参考章数 prevN」、后 N 章取本项（0=不注入后章）。留空=默认 3。本书《故事状态.md》的 next_chapters 显式设置时优先于本项", control: { key: "nextChapters", type: "text", placeholder: "默认 3" } });
 		defs.push({ name: "注入整卷《卷摘要》", desc: "开启后写作上下文额外包含当前卷完整《卷摘要》，跨卷缺口另以各前卷《卷摘要》填充（含触发 LLM 重建）；关闭=严格只注入最近 N 章（对齐 Python 原版语义，默认关）", control: { key: "includeVolumeSummary", type: "toggle" } });
 
-		const llmNameMap = cfgs.reduce<Record<string, string>>((m, c) => { m[c.name] = c.name; return m; }, {}); // ES2019 同名 API 的低版本等价写法：构造 name→name 恒等映射
+		const c = this.conf();
+		const llmNameMap = filterEnabledLlmConfigs(cfgs).reduce<Record<string, string>>((m, item) => { m[item.name] = item.name; return m; }, {}); // ES2019 同名 API 的低版本等价写法：构造 name→name 恒等映射
+		const effectiveChatModel = selectEnabledLlmName(cfgs, c.chat_model || c.active_llm);
+		if (effectiveChatModel && c.chat_model !== effectiveChatModel) c.chat_model = effectiveChatModel;
 
 		// v0.2.22+：写作阶段模型配置（五阶段独立模型，tab 页管理）
 		const phases = this.conf().writing_phases ?? [];
@@ -7742,7 +7890,8 @@ class ArticleWriterSettingTab extends PluginSettingTab {
 							const phs = this.conf().writing_phases ?? [];
 							if (!phs[idx]) phs[idx] = { name: "" };
 							phs[idx].llm_config_name = drop.value || undefined;
-							void this.plugin.saveData(this.plugin.settings);
+							void this.plugin.saveSettings();
+							this.update();
 						});
 						// v0.3.4+：原「身份加强 | 引用文档」内层子标签已随身份加强 Skill 化收敛——阶段页只剩引用文档清单，直接渲染
 						this.renderRefDocs(container.createDiv({ cls: "aw-phase-subtabs-content" }), idx);
@@ -7806,7 +7955,9 @@ class ArticleWriterSettingTab extends PluginSettingTab {
 		Object.entries(llmNameMap).forEach(([k, v]) => chatDrop.createEl("option", { value: k, text: v }));
 		const names = Object.keys(llmNameMap);
 		const cur = c.chat_model || c.active_llm;
-		chatDrop.value = cur && names.includes(cur) ? cur : (names[0] ?? "");
+		const next = selectEnabledLlmName(this.conf().llm_configs ?? [], cur);
+		if (next && c.chat_model !== next) c.chat_model = next;
+		chatDrop.value = next && names.includes(next) ? next : (names[0] ?? "");
 		chatDrop.addEventListener("change", () => { c.chat_model = chatDrop.value || undefined; this.plugin.syncChatModelSelect(); save(); }); // 改对话框模型 → 已打开的 LLM 对话框下拉同步跟随
 		container.createDiv({ cls: "aw-llm-desc", text: "LLM 对话窗口下拉默认选中的模型；写作命令按阶段映射独立选择，不受此影响" });
 		container.createDiv({ cls: "aw-llm-row" }).createSpan({ cls: "aw-llm-label", text: "写作系统提示词 system_prompt" });
@@ -7828,7 +7979,7 @@ class ArticleWriterSettingTab extends PluginSettingTab {
 	/** LLM 配置 tab · 模型配置页 · 列表形态：每份配置一行（名称 + 模型/地址摘要），点击进入详情页；「＋ 新建配置」创建后直接跳进其详情页 */
 	private renderLlmConfigList(container: HTMLElement, rerender: () => void): void {
 		const cfgs = this.conf().llm_configs ?? [];
-		container.createDiv({ cls: "aw-llm-desc", text: "点击下方配置可编辑其详细设置；第一个配置是阶段映射与对话框的回落默认" });
+		container.createDiv({ cls: "aw-llm-desc", text: "点击下方配置可编辑其详细设置；第一个配置是阶段映射与对话框的回落默认；禁用后会从写作阶段和对话框可选项中隐藏" });
 		const addBtn = container.createEl("button", { cls: "aw-llm-add", text: "＋ 新建配置" });
 		addBtn.onclick = () => void this.addLlmConfig();
 		if (cfgs.length === 0) {
@@ -7837,11 +7988,37 @@ class ArticleWriterSettingTab extends PluginSettingTab {
 		}
 		const listEl = container.createDiv({ cls: "aw-llm-list" });
 		cfgs.forEach((cfg, i) => {
-			const row = listEl.createDiv({ cls: "aw-llm-item" });
-			row.createSpan({ cls: "aw-llm-item-name", text: cfg.name });
-			row.createSpan({ cls: "aw-llm-item-meta", text: `${cfg.model_name || "（未填模型名）"} · ${cfg.base_url || "（未填地址）"}` });
-			row.createSpan({ cls: "aw-llm-item-open", text: "配置 ›" });
-			row.onclick = () => { this.llmCfgDetail = i; rerender(); };
+			const disabled = !isLlmConfigEnabled(cfg);
+			const row = listEl.createDiv({ cls: "aw-llm-item" + (disabled ? " is-disabled" : "") });
+			const content = row.createDiv({ cls: "aw-llm-item-main" });
+			content.createSpan({ cls: "aw-llm-item-name", text: cfg.name });
+			content.createSpan({ cls: "aw-llm-item-meta", text: cfg.model_name || "（未填模型名）" });
+			if (disabled) content.createSpan({ cls: "aw-llm-item-state", text: "已禁用" });
+			const actions = row.createDiv({ cls: "aw-llm-item-actions" });
+			const toggleBtn = actions.createEl("button", { cls: "aw-llm-toggle", text: disabled ? "启用" : "禁用" });
+			toggleBtn.onclick = (event) => {
+				event.stopPropagation();
+				void (async () => {
+					const conf = this.conf();
+					const nextEnabled = toggleLlmConfigEnabled(cfg);
+					setLlmConfigEnabled(conf, cfg, nextEnabled);
+					await this.plugin.saveSettings();
+					this.plugin.syncChatModelSelect();
+					this.update();
+					rerender();
+				})();
+			};
+			const delBtn = actions.createEl("button", { cls: "aw-llm-del", text: "删除" });
+			delBtn.onclick = (event) => {
+				event.stopPropagation();
+				void (async () => {
+					const ok = await new Promise<boolean>((resolve) => {
+						new ConfirmModal(this.app, "删除模型配置", `确认删除模型配置「${cfg.name}」吗？删除后会清除其写作阶段绑定，并从可用模型列表中移除。`, "删除", () => resolve(true), () => resolve(false)).open();
+					});
+					if (ok) this.removeLlmConfig(i);
+				})();
+			};
+			row.onclick = disabled ? null : () => { this.llmCfgDetail = i; rerender(); };
 		});
 	}
 
@@ -7851,6 +8028,7 @@ class ArticleWriterSettingTab extends PluginSettingTab {
 		const cfg = (c.llm_configs ?? [])[i];
 		if (!cfg) return;
 		const save = () => void this.plugin.saveSettings();
+		const disabled = !isLlmConfigEnabled(cfg);
 		const backBtn = container.createEl("button", { cls: "aw-llm-back", text: "← 返回模型配置列表" });
 		backBtn.onclick = () => { this.llmCfgDetail = null; rerender(); };
 		const textRow = (label: string, desc: string, placeholder: string, get: () => string, set: (v: string) => void): HTMLInputElement => {
@@ -7858,10 +8036,14 @@ class ArticleWriterSettingTab extends PluginSettingTab {
 			row.createSpan({ cls: "aw-llm-label", text: label });
 			const input = row.createEl("input", { cls: "aw-llm-input", type: "text", placeholder });
 			input.value = get();
+			input.disabled = disabled;
 			input.addEventListener("change", () => set(input.value));
 			if (desc) container.createDiv({ cls: "aw-llm-desc", text: desc });
 			return input;
 		};
+		const providerType = normalizeLlmProvider(cfg.provider);
+		const visibleFields = getVisibleLlmFields(providerType);
+		const showField = (field: "base_url" | "model_name" | "api_key" | "temperature" | "max_tokens" | "top_p" | "repeat_penalty" | "reasoning_effort" | "thinking") => visibleFields.includes(field);
 		// 名称：空名/重名不保存（输入框回落原值）；改名同步 active_llm、写作阶段引用、对话框下拉（返回列表时重渲染即见新名）
 		const nameInput = textRow("名称 name", "配置显示名，同步更新写作阶段引用", "配置名称", () => cfg.name, (v) => {
 			const trimmed = v.trim();
@@ -7873,47 +8055,80 @@ class ArticleWriterSettingTab extends PluginSettingTab {
 			this.plugin.syncChatModelSelect();
 			save();
 		});
+		const providerRow = container.createDiv({ cls: "aw-llm-row" });
+		providerRow.createSpan({ cls: "aw-llm-label", text: "模型类型 provider" });
+		const providerDrop = providerRow.createEl("select", { cls: "aw-llm-select" });
+		providerDrop.disabled = disabled;
+		const providerOptions: Record<string, string> = { "openai-compatible": "OpenAI 兼容", deepseek: "DeepSeek", qwen: "Qwen" };
+		Object.entries(providerOptions).forEach(([k, v]) => providerDrop.createEl("option", { value: k, text: v }));
+		providerDrop.value = providerType;
+		providerDrop.addEventListener("change", () => {
+			const next = normalizeLlmProvider(providerDrop.value);
+			cfg.provider = next;
+			if (!cfg.base_url) cfg.base_url = defaultBaseUrlForProvider(next);
+			save();
+			rerender();
+		});
+		container.createDiv({ cls: "aw-llm-desc", text: "按模型类型显示必要参数，屏蔽与当前端点无关的高级字段" });
 		const testRow = container.createDiv({ cls: "aw-llm-row" });
 		testRow.createSpan({ cls: "aw-llm-label", text: "连通性测试" });
 		const testBtn = testRow.createEl("button", { text: "测试连接" });
+		testBtn.disabled = disabled;
 		testBtn.onclick = () => void this.plugin.runLlmTest(cfg);
 		container.createDiv({ cls: "aw-llm-desc", text: "对该配置执行 GET /models 连通性测试并弹通知（列出可用模型）" });
-		textRow("温度 temperature", "", "如 0.8", () => cfg.temperature == null ? "" : String(cfg.temperature), (v) => { const n = Number(v); cfg.temperature = v.trim() !== "" && !Number.isNaN(n) ? n : undefined; save(); });
-		textRow("最大 token max_tokens", "", "如 65535", () => cfg.max_tokens == null ? "" : String(cfg.max_tokens), (v) => { const n = Number(v); cfg.max_tokens = v.trim() !== "" && !Number.isNaN(n) ? n : undefined; save(); });
-		textRow("服务地址 base_url", "如 http://localhost:8509 或 https://api.deepseek.com（已含 /vN 不重复拼接）", "http://localhost:8509", () => cfg.base_url ?? "", (v) => { cfg.base_url = v.trim() || undefined; save(); });
-		textRow("模型 model_name", "本地服务可留空（用其已加载模型）", "留空用服务端已加载模型", () => cfg.model_name ?? "", (v) => { cfg.model_name = v.trim() || undefined; save(); });
-		textRow("API Key api_key", "明文存于插件数据目录 data.json", "留空=不发送鉴权头", () => cfg.api_key ?? "", (v) => { cfg.api_key = v.trim() || undefined; save(); });
+		if (showField("temperature")) textRow("温度 temperature", "", "如 0.8", () => cfg.temperature == null ? "" : String(cfg.temperature), (v) => { const n = Number(v); cfg.temperature = v.trim() !== "" && !Number.isNaN(n) ? n : undefined; save(); });
+		if (showField("max_tokens")) textRow("最大 token max_tokens", "", "如 65535", () => cfg.max_tokens == null ? "" : String(cfg.max_tokens), (v) => { const n = Number(v); cfg.max_tokens = v.trim() !== "" && !Number.isNaN(n) ? n : undefined; save(); });
+		if (showField("base_url")) textRow("服务地址 base_url", "如 http://localhost:8509 或 https://api.deepseek.com（已含 /vN 不重复拼接）", defaultBaseUrlForProvider(providerType) || "http://localhost:8509", () => cfg.base_url ?? "", (v) => { cfg.base_url = v.trim() || undefined; save(); });
+		if (showField("model_name")) textRow("模型 model_name", "本地服务可留空（用其已加载模型）", "留空用服务端已加载模型", () => cfg.model_name ?? "", (v) => { cfg.model_name = v.trim() || undefined; save(); });
+		if (showField("api_key")) textRow("API Key api_key", "明文存于插件数据目录 data.json", "留空=不发送鉴权头", () => cfg.api_key ?? "", (v) => { cfg.api_key = v.trim() || undefined; save(); });
+		if (showField("top_p")) textRow("Top P top_p", "", "如 0.9", () => cfg.top_p == null ? "" : String(cfg.top_p), (v) => { const n = Number(v); cfg.top_p = v.trim() !== "" && !Number.isNaN(n) ? n : undefined; save(); });
+		if (showField("repeat_penalty")) textRow("重复惩罚 repeat_penalty", "", "如 1.1", () => cfg.repeat_penalty == null ? "" : String(cfg.repeat_penalty), (v) => { const n = Number(v); cfg.repeat_penalty = v.trim() !== "" && !Number.isNaN(n) ? n : undefined; save(); });
 		// v0.2.21+：多值字段用下拉框；存量值不在标准集时动态并入选项（标「（存量值）」）防丢失
-		const effortOptions: Record<string, string> = { "": "留空（不发送）", none: "none（关思考）", low: "low", medium: "medium", high: "high", max: "max" };
-		const effortCur = (cfg.reasoning_effort ?? "").trim();
-		if (effortCur && !Object.prototype.hasOwnProperty.call(effortOptions, effortCur)) effortOptions[effortCur] = `${effortCur}（存量值）`;
-		const effortRow = container.createDiv({ cls: "aw-llm-row" });
-		effortRow.createSpan({ cls: "aw-llm-label", text: "推理强度 reasoning_effort" });
-		const effortDrop = effortRow.createEl("select", { cls: "aw-llm-select" });
-		Object.entries(effortOptions).forEach(([k, v]) => effortDrop.createEl("option", { value: k, text: v }));
-		effortDrop.value = effortCur;
-		effortDrop.addEventListener("change", () => { cfg.reasoning_effort = effortDrop.value || undefined; save(); });
-		container.createDiv({ cls: "aw-llm-desc", text: "随每次请求发送（兼容端点支持时生效）。思考型本地模型（llama-server + Qwen 模板）默认开思考会耗尽输出预算导致正文为空，选 none 可关思考；OpenAI o 系列原生支持" });
-		const thinkOptions: Record<string, string> = { "": "留空（跟随服务端默认）", on: "on（开思考）", off: "off（关思考）" };
-		const thinkCur = (cfg.thinking ?? "").trim();
-		if (thinkCur && !Object.prototype.hasOwnProperty.call(thinkOptions, thinkCur)) thinkOptions[thinkCur] = `${thinkCur}（存量值）`;
-		const thinkRow = container.createDiv({ cls: "aw-llm-row" });
-		thinkRow.createSpan({ cls: "aw-llm-label", text: "思考模式 thinking" });
-		const thinkDrop = thinkRow.createEl("select", { cls: "aw-llm-select" });
-		Object.entries(thinkOptions).forEach(([k, v]) => thinkDrop.createEl("option", { value: k, text: v }));
-		thinkDrop.value = thinkCur;
-		thinkDrop.addEventListener("change", () => { cfg.thinking = thinkDrop.value || undefined; save(); });
-		container.createDiv({ cls: "aw-llm-desc", text: "仅 DeepSeek 端点生效：off=不思考，更快更省 token；留空=跟随服务端默认（deepseek-flash 默认开思考）" });
+		if (showField("reasoning_effort")) {
+			const effortOptions: Record<string, string> = { "": "留空（不发送）", none: "none（关思考）", low: "low", medium: "medium", high: "high", max: "max" };
+			const effortCur = (cfg.reasoning_effort ?? "").trim();
+			if (effortCur && !Object.prototype.hasOwnProperty.call(effortOptions, effortCur)) effortOptions[effortCur] = `${effortCur}（存量值）`;
+			const effortRow = container.createDiv({ cls: "aw-llm-row" });
+			effortRow.createSpan({ cls: "aw-llm-label", text: "推理强度 reasoning_effort" });
+			const effortDrop = effortRow.createEl("select", { cls: "aw-llm-select" });
+			effortDrop.disabled = disabled;
+			Object.entries(effortOptions).forEach(([k, v]) => effortDrop.createEl("option", { value: k, text: v }));
+			effortDrop.value = effortCur;
+			effortDrop.addEventListener("change", () => { cfg.reasoning_effort = effortDrop.value || undefined; save(); });
+			container.createDiv({ cls: "aw-llm-desc", text: "随每次请求发送（兼容端点支持时生效）。思考型本地模型（llama-server + Qwen 模板）默认开思考会耗尽输出预算导致正文为空，选 none 可关思考；OpenAI o 系列原生支持" });
+		}
+		if (showField("thinking")) {
+			const thinkOptions: Record<string, string> = { "": "留空（跟随服务端默认）", on: "on（开思考）", off: "off（关思考）" };
+			const thinkCur = (cfg.thinking ?? "").trim();
+			if (thinkCur && !Object.prototype.hasOwnProperty.call(thinkOptions, thinkCur)) thinkOptions[thinkCur] = `${thinkCur}（存量值）`;
+			const thinkRow = container.createDiv({ cls: "aw-llm-row" });
+			thinkRow.createSpan({ cls: "aw-llm-label", text: "思考模式 thinking" });
+			const thinkDrop = thinkRow.createEl("select", { cls: "aw-llm-select" });
+			thinkDrop.disabled = disabled;
+			Object.entries(thinkOptions).forEach(([k, v]) => thinkDrop.createEl("option", { value: k, text: v }));
+			thinkDrop.value = thinkCur;
+			thinkDrop.addEventListener("change", () => { cfg.thinking = thinkDrop.value || undefined; save(); });
+			container.createDiv({ cls: "aw-llm-desc", text: "仅 DeepSeek 端点生效：off=不思考，更快更省 token；留空=跟随服务端默认（deepseek-flash 默认开思考）" });
+		}
 		const actions = container.createDiv({ cls: "aw-llm-actions" });
+		const toggleBtn = actions.createEl("button", { text: disabled ? "启用配置" : "禁用配置" });
+		toggleBtn.onclick = () => {
+			void (async () => {
+				const nextEnabled = toggleLlmConfigEnabled(cfg);
+				setLlmConfigEnabled(c, cfg, nextEnabled);
+				await this.plugin.saveSettings();
+				this.plugin.syncChatModelSelect();
+				this.update();
+				rerender();
+			})();
+		};
 		const upBtn = actions.createEl("button", { text: "↑ 上移" });
-		upBtn.disabled = i === 0;
+		upBtn.disabled = i === 0 || disabled;
 		upBtn.onclick = () => this.reorderLlmConfigs(i, i - 1);
 		const downBtn = actions.createEl("button", { text: "下移 ↓" });
-		downBtn.disabled = i >= (c.llm_configs ?? []).length - 1;
+		downBtn.disabled = i >= (c.llm_configs ?? []).length - 1 || disabled;
 		downBtn.onclick = () => this.reorderLlmConfigs(i, i + 1);
-		const delBtn = actions.createEl("button", { cls: "aw-llm-del", text: "删除配置" });
-		delBtn.onclick = () => void this.removeLlmConfig(i);
-		container.createDiv({ cls: "aw-llm-desc", text: "上移/下移调整列表顺序（第一个配置是阶段映射与对话框的回落默认）；删除配置若被写作阶段引用则自动清空对应阶段的 llm_config_name" });
+		container.createDiv({ cls: "aw-llm-desc", text: "上移/下移调整列表顺序（第一个配置是阶段映射与对话框的回落默认）；禁用后会隐藏于写作阶段模型列表与对话框下拉；删除动作在列表行末尾处理" });
 	}
 
 	getControlValue(key: string): unknown {
@@ -7921,6 +8136,7 @@ class ArticleWriterSettingTab extends PluginSettingTab {
 		if (key === "workDir") return s.workDir ?? "";
 		if (key === "autoOpenOnCreate") return !!s.autoOpenOnCreate;
 		if (key === "prevChapters") return s.prevChapters == null ? "" : String(s.prevChapters); // v0.1.4+：空=按内置默认 3
+		if (key === "nextChapters") return s.nextChapters == null ? "" : String(s.nextChapters); // v0.4.3+：空=按内置默认 3
 		if (key === "includeVolumeSummary") return !!s.includeVolumeSummary; // v0.1.4+：卷摘要注入开关（缺省=false）
 		// v0.3.4+：写作阶段模型配置（仅剩 llm_config_name 走 setControlValue；identity_boost 已 Skill 化）
 		const phaseCfgMatch = key.match(/^writing_phases\.(\d+)\.(llm_config_name)$/);
@@ -7956,6 +8172,12 @@ class ArticleWriterSettingTab extends PluginSettingTab {
 			await this.plugin.saveSettings();
 			return;
 		}
+		if (key === "nextChapters") { // v0.4.3+：非负整数；留空/非法=清除回落内置默认 3（与 prevChapters 同口径）
+			const n = Number(str);
+			s.nextChapters = str.trim() !== "" && !Number.isNaN(n) && n >= 0 ? Math.floor(n) : undefined;
+			await this.plugin.saveSettings();
+			return;
+		}
 		if (key === "includeVolumeSummary") { // v0.1.4+：布尔开关，关闭存 false（缺省即关）
 			s.includeVolumeSummary = value === true;
 			await this.plugin.saveSettings();
@@ -7982,7 +8204,7 @@ class ArticleWriterSettingTab extends PluginSettingTab {
 		let i = cfgs.length + 1;
 		let name = `config-${i}`;
 		while (cfgs.some((x) => x.name === name)) { i++; name = `config-${i}`; }
-		cfgs.push({ name, provider: "openai", api_key: "", base_url: "", model_name: "", temperature: 0.8, max_tokens: 65535, top_p: 0.9, repeat_penalty: 1.1, thinking: "", reasoning_effort: "high", openai_extras: [], api_style: "" });
+		cfgs.push({ name, enabled: true, provider: "openai-compatible", api_key: "", base_url: "", model_name: "", temperature: 0.8, max_tokens: 65535, top_p: 0.9, repeat_penalty: 1.1, thinking: "", reasoning_effort: "none", openai_extras: [], api_style: "" });
 		if (!conf.active_llm) conf.active_llm = name;
 		await this.plugin.saveSettings();
 		this.plugin.syncChatModelSelect();
@@ -7997,7 +8219,8 @@ class ArticleWriterSettingTab extends PluginSettingTab {
 			const conf = this.conf();
 			const cfgs = conf.llm_configs ?? [];
 			const removed = cfgs.splice(i, 1)[0];
-			if (removed && conf.active_llm === removed.name) conf.active_llm = cfgs[0]?.name; // 删激活项则回落到第一个（可能为 undefined=空列表）
+			if (removed && conf.active_llm === removed.name) conf.active_llm = (conf.llm_configs ?? []).find((cfg) => isLlmConfigEnabled(cfg) && cfg.name !== removed.name)?.name ?? (conf.llm_configs ?? [])[0]?.name;
+			if (removed && conf.chat_model === removed.name) conf.chat_model = (conf.llm_configs ?? []).find((cfg) => isLlmConfigEnabled(cfg) && cfg.name !== removed.name)?.name ?? undefined;
 			// 清理 writing_phases 中对被删配置的引用
 			if (removed) {
 				const phases = conf.writing_phases ?? [];

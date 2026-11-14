@@ -1074,16 +1074,6 @@
 	color: var(--text-faint);
 }
 
-/* 「有内容但无有效条目」提示行里的文档标签：可点击打开对应文件检查格式（不用 text-decoration——Obsidian 1.11.4 对 dotted 等值仅部分支持，lint 报警） */
-.aw-tl-unparsed {
-	cursor: pointer;
-	color: var(--text-normal);
-}
-
-.aw-tl-unparsed:hover {
-	color: var(--interactive-accent);
-	font-weight: bold;
-}
 
 /* 纵向时间轴条目列表：左侧连续竖线 + 节点圆点，条目自上而下按时间点升序排列。
    --tl-indent＝一个轮廓深度的宽度（行缩进/圆点列间距/导引线列间距/肘形接线宽度共用）；--tl-guide-start＝第 1 层（depth 1）圆点列的横坐标（item 坐标系）——两值联动，改缩进只改 --tl-indent */
@@ -1950,6 +1940,7 @@
 }
 .aw-llm-actions {
 	display: flex;
+	justify-content: flex-end;
 	gap: 8px;
 	margin-top: 12px;
 }
@@ -1972,6 +1963,7 @@
 .aw-llm-item {
 	display: flex;
 	align-items: center;
+	justify-content: space-between;
 	gap: 10px;
 	padding: 10px 12px;
 	border: 1px solid var(--background-modifier-border);
@@ -1980,6 +1972,18 @@
 }
 .aw-llm-item:hover {
 	background: var(--background-modifier-hover);
+}
+.aw-llm-item.is-disabled {
+	background: var(--background-secondary);
+	border-color: var(--background-modifier-border);
+	opacity: 0.9;
+}
+.aw-llm-item-main {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	flex: 1 1 auto;
+	min-width: 0;
 }
 .aw-llm-item-name {
 	flex: 0 0 auto;
@@ -1994,6 +1998,19 @@
 	white-space: nowrap;
 	font-size: var(--font-ui-smaller);
 	color: var(--text-muted);
+}
+.aw-llm-item-state {
+	font-size: var(--font-ui-smaller);
+	font-weight: var(--font-semibold);
+	color: var(--text-error);
+	white-space: nowrap;
+}
+.aw-llm-item-actions {
+	display: flex;
+	align-items: center;
+	justify-content: flex-end;
+	gap: 8px;
+	margin-left: auto;
 }
 .aw-llm-item-open {
 	flex: 0 0 auto;
@@ -2032,6 +2049,20 @@
 	box-sizing: border-box; /* 行宽含内距，手机端不被 padding 顶出屏幕 */
 	max-width: 100%;
 	min-width: 0; /* 行内长文本按 flex 规则收缩（label 省略号兜底），不撑宽父容器 */
+}
+/* v0.4.3+：引用文档行拖拽排序（鼠标拖整行；触屏仍用行内 ↑/↓ 按钮）——拖起行半透明、目标行上/下缘画插入线 */
+.aw-refdocs-row.is-draggable {
+	cursor: grab;
+}
+.aw-refdocs-row.is-dragging {
+	opacity: 0.4;
+	cursor: grabbing;
+}
+.aw-refdocs-row.is-drop-before {
+	box-shadow: inset 0 2px 0 var(--interactive-accent); /* 内阴影做插入线：不改变边框宽度，行高不抖 */
+}
+.aw-refdocs-row.is-drop-after {
+	box-shadow: inset 0 -2px 0 var(--interactive-accent);
 }
 .aw-refdocs-lock {
 	flex: 0 0 auto;

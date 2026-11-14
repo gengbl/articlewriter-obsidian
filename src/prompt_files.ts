@@ -85,6 +85,7 @@ export async function assemblePromptFiles(reader: PromptFileReader, specs: Promp
 		}
 		let text = (raw ?? "").trim() || (spec.fallback ?? "").trim() || (spec.text ?? "").trim();
 		if (!text) continue;
+		// 剥注释只作用于 file 条目（读原文）；text 是调用方已算好的内联块（书籍信息/卷列表/张力规则/时间线等），一律原样保留
 		if (spec.file && spec.stripComments !== false) text = stripComments(text);
 		if (spec.file && spec.stripHeading) text = stripLeadingHeadings(text);
 		if (spec.transform) text = spec.transform(text);

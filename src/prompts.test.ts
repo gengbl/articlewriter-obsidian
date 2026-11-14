@@ -1,7 +1,15 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
+import { DEFAULT_SKILLS } from "./skills_default";
 import { buildBookOutlineExtendPrompt, buildBookOutlineGenPrompt, buildChapterPrompt, buildContinuePrompt, buildRewritePrompt, buildVolOutlineChapterPrompt, buildChapterRefFixPrompt, CHAPTER_REF_BAN, findChapterRefLeaks, findChapterRefSentences, fixChapterRefs, parseChapterWithSummary } from "./prompts";
+
+test("default seeded skills preserve every opt-in skill extracted from hardcoded prompts", () => {
+	assert.ok(DEFAULT_SKILLS["编写类型与格式规则"], "story type skill must be seeded by default");
+	assert.ok(DEFAULT_SKILLS["章节写作任务"], "chapter task skill must be seeded by default");
+	assert.match(DEFAULT_SKILLS["编写类型与格式规则"] ?? "", /【编写类型确认】/);
+	assert.match(DEFAULT_SKILLS["章节写作任务"] ?? "", /请创作本章内容/);
+});
 
 test("strictCurrentOutlineOnly keeps the prompt anchored to the current volume outline only", () => {
 	const prompt = buildVolOutlineChapterPrompt({
@@ -123,6 +131,29 @@ test("buildChapterPrompt appends summary protocol only when withSummary is set",
 	assert.match(withTail, /<\/SUMMARY> 收尾/);
 	const withoutTail = buildChapterPrompt(base).prompt;
 	assert.doesNotMatch(withoutTail, /<SUMMARY>/);
+});
+
+test("writing rules and chapter task are skill-gated and only appear when injected", () => {
+	const base = {
+		chapterNum: 1,
+		chapterLabel: "第1章",
+		chapterKey: "1",
+		chapterOutlineRaw: "主角进入学院。",
+		context: "上下文",
+		wordRange: [2000, 3000] as [number, number],
+		prevOutlines: [],
+	};
+	const defaultPrompt = buildChapterPrompt(base).prompt;
+	assert.doesNotMatch(defaultPrompt, /【编写类型确认】/);
+	assert.doesNotMatch(defaultPrompt, /请创作本章内容/);
+
+	const injected = buildChapterPrompt({
+		...base,
+		storyTypeSkillBlock: "【技能 · 编写类型与格式规则】\n【编写类型确认】本小说编写类型为「网文小说」，请严格按该类型输出。",
+		taskSkillBlock: "【技能 · 章节写作任务】\n请创作本章内容，要求：按大纲执行。",
+	}).prompt;
+	assert.match(injected, /【编写类型确认】/);
+	assert.match(injected, /请创作本章内容/);
 });
 
 test("buildContinuePrompt appends summary protocol only when withSummary is set", () => {

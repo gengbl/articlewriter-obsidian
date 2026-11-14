@@ -181,6 +181,8 @@ export interface StoryManagerOptions {
 	onStateChanged?: () => void;
 	/** v0.1.4+：写作提示词「前文内容」窗口章数 N（data.json settings.prevChapters；缺省/未注入时按 CLI 默认 3）。卷模式下窗口限本卷、跨卷缺口以各前卷《卷摘要》填充 */
 	getPrevChapters?: () => number;
+	/** v0.4.3+：写作提示词「后续参考」窗口章数 N（data.json settings.nextChapters，缺省 3、0=不注入后章）；本书《故事状态.md》next_chapters 显式设置时优先。当前消费方＝编写文章阶段的大纲节选（前 N／后 N 章） */
+	getNextChapters?: () => number;
 	/** v0.1.4+：是否把整卷《卷摘要》/跨卷前卷摘要注入写作上下文（data.json settings.includeVolumeSummary，缺省=false 关闭——默认严格只按 prevN 注入单章摘要，与 CLI 语义一致；开启后恢复三层上下文的卷级 digest 行为） */
 	includeVolumeSummary?: () => boolean;
 	/** v0.1.4+：LLM 生成单章摘要（对齐 CLI _summarize_chapter）——上下文组装时发现缺失/过期摘要即经此延迟生成并落盘；无可用配置或失败返回 null（调用方回退原文预览，不阻断写作）。卷摘要重建前会先对本卷全部成员章确保新鲜摘要 */
@@ -207,6 +209,7 @@ export class StoryManager {
 	private getStoryRoot: () => string;
 	private onStateChanged?: () => void;
 	private getPrevChapters?: () => number; // v0.1.4+：前文窗口章数（data.json 可配，缺省 3）
+	private getNextChapters?: () => number; // v0.4.3+：后续参考章数（data.json 可配，缺省 3）
 	private includeVolumeSummary?: () => boolean; // v0.1.4+：卷级摘要注入开关（默认关）
 	private generateChapterSummary?: (input: { storyName: string; chapterKey: string; label: string; sourceText: string; viaOutline: boolean }) => Promise<string | null>;
 	private generateVolumeSummary?: (input: { storyName: string; volId: string; volumeName: string; chapters: Array<{ key: string; label: string; title: string; summary: string }> }) => Promise<string | null>;
@@ -217,6 +220,7 @@ export class StoryManager {
 		this.getStoryRoot = opts.getStoryRoot;
 		this.onStateChanged = opts.onStateChanged;
 		this.getPrevChapters = opts.getPrevChapters;
+		this.getNextChapters = opts.getNextChapters;
 		this.includeVolumeSummary = opts.includeVolumeSummary;
 		this.generateChapterSummary = opts.generateChapterSummary;
 		this.generateVolumeSummary = opts.generateVolumeSummary;
@@ -3676,7 +3680,7 @@ private emptyState(storyName: string): StoryState {
 			/** v0.2.23+ 只读导出场景（/export-ai-prompts）：与 ensureSummaries=false 联用，摘要缺失时把该占位文本填入对应槽位（窗口章摘要/本卷摘要/前卷摘要）而非留空——导出文档据此明示「此处有摘要、尚未生成」；运行时写作命令不传 */
 			missingSummaryPlaceholder?: string;
 		}
-	): Promise<import("./prompts").WritingContextInput & { savedForeshadows: number; docPaths: WritingDocPaths }> {
+	): Promise<import("./prompts").WritingContextInput & { savedForeshadows: number; docPaths: WritingDocPaths; nextN: number }> {
 		const state = await this.validatedState(storyName);
 		const ordered = await this.listChapters(storyName); // 阅读序：「书稿/」直属在前 + 各卷按《卷.md》order、组内本地号升序
 		const idx = ordered.findIndex((c) => c.key === chapterKey);
@@ -3708,6 +3712,10 @@ private emptyState(storyName: string): StoryState {
 		// v0.2.x+：本书级覆盖——故事状态.md frontmatter 的 prev_chapters 显式设置时优先于全局设置
 		const rawPrevN = state.prev_chapters != null ? Number(state.prev_chapters) : Number(this.getPrevChapters?.() ?? 3);
 		const prevN = Number.isFinite(rawPrevN) && rawPrevN >= 0 ? Math.floor(rawPrevN) : 3;
+		// v0.4.3+：后续参考章数 N（同口径：书级 next_chapters 显式设置优先，否则 DATA.json settings.nextChapters，缺省 3）
+		// 当前消费方＝编写文章阶段的大纲节选（assembleWritingDocGroups 按 prevN/nextN 只取当前章前后若干章），不参与摘要生成
+		const rawNextN = state.next_chapters != null ? Number(state.next_chapters) : Number(this.getNextChapters?.() ?? 3);
+		const nextN = Number.isFinite(rawNextN) && rawNextN >= 0 ? Math.floor(rawNextN) : 3;
 		let startIdx = Math.max(0, idx - prevN);
 		while (ch.vol && startIdx < idx && parseChKey(ordered[startIdx].key).vol !== ch.vol) startIdx++; // 卷模式跳过落在其他容器的头部
 		const prevChapters: PrevChapterRef[] = [];
@@ -3814,6 +3822,7 @@ private emptyState(storyName: string): StoryState {
 			prevChapters,
 			summaries,
 			prevN,
+			nextN, // v0.4.3+：后续参考章数（编写文章阶段大纲节选用）
 			scenes: Object.values(await this.loadAllScenes(storyName)),
 			docPaths: {
 				book: { world: `${desk}/世界观.md`, globalOutline: `${desk}/大纲.md`, bookRelationships: bookRelationshipsPath },
