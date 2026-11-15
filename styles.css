@@ -306,11 +306,12 @@
 	line-height: 1.6; /* 「小说状态」信息区行距加大，比侧栏默认 1.3 更宽松 */
 }
 
-/* 「小说状态」标题行（可折叠）：caret + 「小说状态」标签，同「案头资料」「书稿」小节标题的点整行开合交互 */
+/* 「小说状态」标题行（可折叠）：caret + 前导图标 + 「小说状态」标签，同「案头资料」「书稿」小节标题的点整行开合交互 */
 .aw-st-status-head {
 	cursor: pointer;
 	display: flex;
 	align-items: center;
+	gap: 4px;
 	font-weight: 600;
 	color: var(--text-normal);
 	border-radius: 4px;
@@ -346,30 +347,27 @@
 	margin-top: 2px;
 }
 
-/* 文件行与主面板正文同色（不用链接蓝），仅悬停时加背景块提示可点 */
+/* 文件行与主面板正文同色（不用链接蓝），仅悬停时加背景块提示可点；v0.4.3+ 行首带 file-text 图标，flex 承载对齐 */
 .aw-st-file {
 	cursor: pointer;
 	padding: 2px 8px;
 	border-radius: 4px;
+	display: flex;
+	align-items: center;
+	gap: 4px;
 }
 
 .aw-st-file:hover {
 	background: var(--background-modifier-hover);
 }
 
-/* 案头资料中的文件夹行：图标前缀 + caret + 文件夹名；点行/箭头展开收起直属文件列表（v0.2.23+，默认折叠），右键提供新建/删除 */
+/* 案头资料中的文件夹行：caret + SVG 文件夹图标（v0.4.3+ 经 setIcon 渲染，替代旧「📁」emoji 占位，开合时 folder/folder-open 切换）+ 文件夹名；点行/箭头展开收起直属文件列表（v0.2.23+，默认折叠），右键提供新建/删除 */
 .aw-st-folder {
 	padding: 2px 8px;
 	display: flex;
 	align-items: center;
 	gap: 4px;
 	cursor: pointer;
-}
-
-.aw-st-folder::before {
-	content: "📁";
-	font-size: 13px;
-	line-height: 1;
 }
 
 .aw-st-chap-block + .aw-st-chap-block {
@@ -406,13 +404,10 @@
 	border-left: 2px solid var(--background-modifier-border);
 }
 .aw-st-kids .aw-st-file {
-	padding-left: 20px;
+	padding-left: 8px; /* v0.4.3+：与文件夹行 .aw-st-folder 左 padding 取齐；配合行首隐形 caret 占位，叶子行图标/文字与「有子节点」行严格同层 */
 }
 
-/* 反向口径（v0.1.8+）：不参与写作提示词生成的文件行以主题强调色（--text-accent）显示、随用户主题适配；参与提示词的标准模板文档保持侧栏默认弱化灰正常显示（悬停 title 说明由视图侧设置） */
-.aw-st-npdoc {
-	color: var(--text-accent);
-}
+/* 反向口径（v0.1.8+；**v0.4.3+ 改统一着色**）：不参与写作提示词生成的文件行不再着主题强调色——写字台全部树节点统一用标准模板文档那种默认色（继承面板正文色），参与/不参与仅靠悬停 title「不参与写作提示词生成」区分；.aw-st-npdoc 类仍由视图挂上，留作用户自定义 CSS 的挂钩 */
 
 /* 新建文档单弹窗（NewFilePickerModal）顶部原生输入框：强制占满整行，与下方模板列表同宽对齐 */
 .aw-newdoc-input {
@@ -505,6 +500,22 @@
 .aw-st-caret.is-off {
 	opacity: 0.45;
 	cursor: default;
+}
+
+/* 叶子行隐形 caret 占位（v0.4.3+）：空 span 仅占盒子（宽/间距同真 caret），不出光标提示 */
+.aw-st-caret-ph {
+	cursor: default;
+}
+
+/* 写字台树节点前导图标（v0.4.3+）：SVG 随所在行字号缩放（1em）、flex 行内垂直居中；颜色不做覆盖、一律继承所在节点文字色——v0.4.3+ 统一着色后全树天然一种颜色 */
+.aw-st-icon {
+	display: inline-flex;
+	align-self: center;
+	flex-shrink: 0;
+}
+.aw-st-icon svg {
+	width: 1em;
+	height: 1em;
 }
 
 /* 状态页右键快捷菜单 */
@@ -1074,16 +1085,6 @@
 	color: var(--text-faint);
 }
 
-/* 「有内容但无有效条目」提示行里的文档标签：可点击打开对应文件检查格式（不用 text-decoration——Obsidian 1.11.4 对 dotted 等值仅部分支持，lint 报警） */
-.aw-tl-unparsed {
-	cursor: pointer;
-	color: var(--text-normal);
-}
-
-.aw-tl-unparsed:hover {
-	color: var(--interactive-accent);
-	font-weight: bold;
-}
 
 /* 纵向时间轴条目列表：左侧连续竖线 + 节点圆点，条目自上而下按时间点升序排列。
    --tl-indent＝一个轮廓深度的宽度（行缩进/圆点列间距/导引线列间距/肘形接线宽度共用）；--tl-guide-start＝第 1 层（depth 1）圆点列的横坐标（item 坐标系）——两值联动，改缩进只改 --tl-indent */
@@ -1815,6 +1816,7 @@
 	display: flex;
 	gap: var(--size-2-2);
 	flex-wrap: wrap;
+	flex-shrink: 0; /* v0.4.3+：固定在面板底部，不随正文滚动 */
 }
 
 /* 导出 AI 提示词功能点选择弹窗：按钮行 */
@@ -1852,15 +1854,20 @@
 	   显示模式下 pre 中文长文本会把它撑满，编辑模式下 textarea 固有宽度窄导致整体收缩、右侧大片空白；
 	   显式 width:100% 让两种模式都占满整行 */
 	width: 100%;
+	min-width: 0; /* flex item 允许收缩到父宽（手机窄屏不横向溢出） */
+	box-sizing: border-box; /* width:100% 含左右 padding：否则内容区比父容器宽 32px，手机端整体横向溢出 */
 	display: block;
 }
 .aw-phase-tabs-header {
 	display: flex;
+	flex-wrap: wrap; /* 手机窄屏：tab 按钮总宽超容器时整块换行（按钮内文字不断行），不再挤出屏幕 */
 	gap: 4px;
 	border-bottom: 1px solid var(--background-modifier-border);
 	margin-bottom: 12px;
 }
 .aw-phase-tab-btn {
+	max-width: 100%; /* 单个长标签也不撑破容器 */
+	white-space: nowrap; /* 换行粒度=整个按钮，避免标签内部折断 */
 	padding: 6px 12px;
 	background: transparent;
 	border: none;
@@ -1945,6 +1952,7 @@
 }
 .aw-llm-actions {
 	display: flex;
+	justify-content: flex-end;
 	gap: 8px;
 	margin-top: 12px;
 }
@@ -1967,6 +1975,7 @@
 .aw-llm-item {
 	display: flex;
 	align-items: center;
+	justify-content: space-between;
 	gap: 10px;
 	padding: 10px 12px;
 	border: 1px solid var(--background-modifier-border);
@@ -1975,6 +1984,18 @@
 }
 .aw-llm-item:hover {
 	background: var(--background-modifier-hover);
+}
+.aw-llm-item.is-disabled {
+	background: var(--background-secondary);
+	border-color: var(--background-modifier-border);
+	opacity: 0.9;
+}
+.aw-llm-item-main {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	flex: 1 1 auto;
+	min-width: 0;
 }
 .aw-llm-item-name {
 	flex: 0 0 auto;
@@ -1989,6 +2010,19 @@
 	white-space: nowrap;
 	font-size: var(--font-ui-smaller);
 	color: var(--text-muted);
+}
+.aw-llm-item-state {
+	font-size: var(--font-ui-smaller);
+	font-weight: var(--font-semibold);
+	color: var(--text-error);
+	white-space: nowrap;
+}
+.aw-llm-item-actions {
+	display: flex;
+	align-items: center;
+	justify-content: flex-end;
+	gap: 8px;
+	margin-left: auto;
 }
 .aw-llm-item-open {
 	flex: 0 0 auto;
@@ -2009,6 +2043,7 @@
 	flex-direction: column;
 	gap: 4px;
 	margin-bottom: 10px;
+	min-width: 0; /* 手机上清单宽度跟随父容器，不被单行内容撑宽 */
 }
 .aw-refdocs-empty {
 	font-size: var(--font-ui-smaller);
@@ -2023,6 +2058,23 @@
 	border: 1px solid var(--background-modifier-border);
 	border-radius: var(--radius-s);
 	background: var(--background-secondary);
+	box-sizing: border-box; /* 行宽含内距，手机端不被 padding 顶出屏幕 */
+	max-width: 100%;
+	min-width: 0; /* 行内长文本按 flex 规则收缩（label 省略号兜底），不撑宽父容器 */
+}
+/* v0.4.3+：引用文档行拖拽排序（鼠标拖整行；触屏仍用行内 ↑/↓ 按钮）——拖起行半透明、目标行上/下缘画插入线 */
+.aw-refdocs-row.is-draggable {
+	cursor: grab;
+}
+.aw-refdocs-row.is-dragging {
+	opacity: 0.4;
+	cursor: grabbing;
+}
+.aw-refdocs-row.is-drop-before {
+	box-shadow: inset 0 2px 0 var(--interactive-accent); /* 内阴影做插入线：不改变边框宽度，行高不抖 */
+}
+.aw-refdocs-row.is-drop-after {
+	box-shadow: inset 0 -2px 0 var(--interactive-accent);
 }
 .aw-refdocs-lock {
 	flex: 0 0 auto;
@@ -2062,12 +2114,15 @@
 }
 .aw-refdocs-addrow {
 	display: flex;
+	flex-wrap: wrap; /* 手机窄屏：下拉与「添加引用文档」按钮放不下时按钮整块换行 */
 	align-items: center;
 	gap: 8px;
 	margin-bottom: 8px;
+	min-width: 0;
 }
 .aw-refdocs-select {
-	flex: 1 1 auto;
+	flex: 1 1 160px; /* 基线 160px：剩余宽度不足时换行而不是压缩到不可用/撑破容器 */
+	max-width: 100%;
 	min-width: 0;
 	height: 24px;
 	min-height: 24px;
@@ -2122,4 +2177,9 @@
    !important 防主题 flex 规则复活；类名带 aw- 前缀避免污染全局与其它插件 */
 .aw-hide {
 	display: none !important;
+}
+
+/* v0.4.3+ 技能选择弹窗：文件夹层级前缀弱化显示 */
+.aw-skill-dir {
+	color: var(--text-muted);
 }

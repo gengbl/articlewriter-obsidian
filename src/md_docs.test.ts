@@ -10,6 +10,7 @@ import {
 	parseTimelineHeading,
 	parseTimelines,
 	rewriteTimelineEntryTime,
+	sliceVolOutlineChapters,
 	timelineGenFormatOk,
 	updateTimelineBlock,
 	type TimelineEntryInput,
@@ -201,4 +202,49 @@ void test("timelineGenFormatOk: point headings pass; non-point bodies and fenced
 	assert.equal(timelineGenFormatOk("# 时间线\n```text\n## 120 围栏里的不算\n```\n"), false);
 	assert.equal(timelineGenFormatOk("## 120-06-15 黑市陷阱\n- 事件：甲\n"), true);
 	assert.equal(timelineGenFormatOk(""), false);
+});
+
+// v0.4.3+：编写文章阶段「前后 N 章大纲节选」切片——前言恒保留、窗口外章块丢弃、标记行原样保留
+void test("sliceVolOutlineChapters：按章号窗口取块，前言恒保留，章标记行与围栏内容逐字保留", () => {
+	const outline = [
+		"# 第一卷 风起 卷大纲",
+		"",
+		"## 卷设计",
+		"本卷从低谷走向反击，止于初次正面交锋。",
+		"",
+		"## 第1章 开局",
+		"主角失业。",
+		"",
+		"## 第2章 相遇",
+		"雨夜相遇。",
+		"",
+		"## 第3章 交锋",
+		"```text",
+		"第9章 围栏里的不算标记",
+		"```",
+		"",
+		"## 第4章 低潮",
+		"计划失败。",
+	].join("\n");
+	assert.equal(
+		sliceVolOutlineChapters(outline, 2, 3),
+		[
+			"# 第一卷 风起 卷大纲",
+			"",
+			"## 卷设计",
+			"本卷从低谷走向反击，止于初次正面交锋。",
+			"",
+			"## 第2章 相遇",
+			"雨夜相遇。",
+			"",
+			"## 第3章 交锋",
+			"```text",
+			"第9章 围栏里的不算标记",
+			"```",
+		].join("\n"),
+		"窗口 [2,3]：保留前言与第 2/3 章块，第 1/4 章丢弃，围栏内「第9章」不被当作标记",
+	);
+	assert.equal(sliceVolOutlineChapters(outline, 1, 4), outline.trim(), "窗口覆盖全书 → 与原文等价（调用方据此回退整份）");
+	assert.equal(sliceVolOutlineChapters(outline, 9, 12), "# 第一卷 风起 卷大纲\n\n## 卷设计\n本卷从低谷走向反击，止于初次正面交锋。", "窗口无章块 → 只剩前言");
+	assert.equal(sliceVolOutlineChapters("## 第1章 甲\n内容\n", 2, 3), "", "无前言且窗口无章块 → 空串");
 });

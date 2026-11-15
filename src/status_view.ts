@@ -1,4 +1,4 @@
-import { ItemView, TFile, WorkspaceLeaf } from "obsidian";
+import { ItemView, TFile, WorkspaceLeaf, setIcon } from "obsidian";
 import { formatLocalDateTime } from "./story_types";
 import { PROMPT_DOCS_CHAPTER, PROMPT_DOCS_ROOT, PROMPT_DOCS_VOLUME } from "./prompts";
 
@@ -97,6 +97,7 @@ export interface StatusSnapshot {
 export type StatusAction =
 	| { kind: "new-story" }
 	| { kind: "rename-story"; name: string } // 书籍列表标题行右键「改名」：改书名（状态文档 title + 顶层目录同步改名 + 大纲起始标题行）
+	| { kind: "edit-story-meta"; story: string } // 书籍列表标题行右键「修改题材/编写类型…」：下拉来自 SKILLS/题材、SKILLS/编写类型
 	| { kind: "delete-story"; name: string }
 	| { kind: "new-chapter"; story: string; volId?: string } // volId=卷节点右键建章：直接落该卷实体目录并设为当前卷；缺省走当前卷
 	| { kind: "create-volume"; story: string } // 新建卷（名称+描述两问，语义对齐 /volume add），建成即设当前卷
@@ -204,6 +205,16 @@ export class StatusView extends ItemView {
 		});
 	}
 
+	/** 树节点前导图标（v0.4.3+）：统一挂 .aw-st-icon 容器（尺寸/对齐见 styles.css）；SVG 颜色继承所在行文字色（v0.4.3+ 统一着色口径、全树天然一种颜色） */
+	private addIcon(parent: HTMLElement, name: string): void {
+		setIcon(parent.createSpan({ cls: "aw-st-icon" }), name);
+	}
+
+	/** 叶子行（无子节点）的隐形 caret 占位（v0.4.3+）：占与真 caret 完全相同的盒子（宽 1em+0.35em），使同层「有子节点」与「无子节点」节点的前导图标/文字严格对齐（典型：案头资料组文件行 vs 文件夹行） */
+	private addCaretPh(parent: HTMLElement): void {
+		parent.createSpan({ cls: "aw-st-caret aw-st-caret-ph" });
+	}
+
 	/** 某目录下「新建」类右键项（标签不带位置提示；文章级与章节级之间用横线隔开；不含任何删除——删除只挂在被点中的条目自身）。volId=该条目所在卷（新建章节落该卷；缺省走当前卷/书根） */
 	private createItems(story: string, key: string | null, volId?: string): Array<{ label: string; run: () => void } | { sep: true }> {
 		return [
@@ -261,6 +272,7 @@ export class StatusView extends ItemView {
 		const statBox = this.topEl.createDiv({ cls: "aw-st-status" + (statusOpen ? "" : " is-collapsed") });
 		const statusHead = statBox.createDiv({ cls: "aw-st-status-head" });
 		statusHead.createSpan({ text: statusOpen ? "▾" : "▸", cls: "aw-st-caret" }); // 纯视觉指示符，状态随 open 切换
+		this.addIcon(statusHead, "gauge");
 		statusHead.appendText("小说状态");
 		statusHead.addEventListener("click", () => {
 			this.toggleCollapse(statusKey); // 折叠/展开是纯展示态：本地重渲染不读盘
@@ -288,6 +300,7 @@ export class StatusView extends ItemView {
 				arr.push(
 					{ sep: true },
 					{ label: `改名「${active.name}」…`, run: () => this.runStatusAction({ kind: "rename-story", name: active.name }) }, // 修改书籍名称：状态文档 title + 顶层目录同步改名
+					{ label: "修改题材/编写类型…", run: () => this.runStatusAction({ kind: "edit-story-meta", story: active.name }) }, // v0.4.3+：下拉来自 SKILLS/题材、SKILLS/编写类型
 					{ sep: true },
 					{ label: `删除小说「${active.name}」`, danger: true, run: () => this.runStatusAction({ kind: "delete-story", name: active.name }) }
 				);
@@ -310,7 +323,7 @@ export class StatusView extends ItemView {
 				const cur = snap.stories.find((x) => x.active)?.name;
 				if (name && name !== cur) void this.doSwitchStory(name);
 			});
-		});
+		}, "library");
 		if (storyBody) {
 			this.treeEl.appendChild(storyBody); // 标题行留在固定头部，组内树体移入可滚动区域
 			if (!snap.stories.length) {
@@ -360,7 +373,7 @@ export class StatusView extends ItemView {
 				{ sep: true },
 				{ label: "新建资料…", run: () => this.runStatusAction({ kind: "new-file", story: d.storyName, key: null }) },
 			];
-			const gBody = this.sectionHead(parent, `案头资料（${String(d.globalFiles.length + d.globalFolders.length)}）`, `gdocs:${d.storyName}`, (e) => this.showContextMenu(e, gItems()));
+			const gBody = this.sectionHead(parent, `案头资料（${String(d.globalFiles.length + d.globalFolders.length)}）`, `gdocs:${d.storyName}`, (e) => this.showContextMenu(e, gItems()), undefined, "archive");
 			if (gBody) {
 				gBody.addClass("aw-st-kids"); // 展开后文件列表带左侧指示线
 				gBody.addEventListener("contextmenu", (e) => {
@@ -393,8 +406,7 @@ export class StatusView extends ItemView {
 				{ label: "连续编写", run: () => this.runStatusAction({ kind: "write-consecutive", story: d.storyName }) }, // 全书语义：从当前章起按阅读序逐章推进（与命令面板同义）
 				{ label: "补全大纲资料…", run: () => this.runStatusAction({ kind: "complete-outline-docs", story: d.storyName }) }, // 大纲/策划指南/世界观/人物关系 缺失者按模板补建（已存在不覆盖）
 				{ label: "导出书稿…", run: () => this.runStatusAction({ kind: "export-story", story: d.storyName }) }, // 全部/所选范围章节《章节.md》正文合一 MD，有卷模式带卷号+卷名标题行
-			]),
-		);
+			]), undefined, "feather");
 		if (!chBody) return;
 		chBody.addClass("aw-st-kids"); // 与「案头资料」同款：子节点（卷/平铺章）整体缩进并带左侧指示线，体现与标题的包含关系
 		if (!d.chapters.length && !d.volumes.length && !d.prologueFiles.length) {
@@ -454,6 +466,7 @@ export class StatusView extends ItemView {
 			this.toggleCollapse(key);
 			this.rerenderLocal();
 		});
+		this.addIcon(row, "layers");
 		row.appendText(`第${seq}卷 · ${v.name}${chs.length ? `（${String(chs.length)}章）` : ""}`);
 		if (isActiveStory) {
 			// 行尾 Radio：选中即激活该卷（设 current_volume 并跳到其最后一章），与章节 Radio 同款互斥组
@@ -489,6 +502,7 @@ export class StatusView extends ItemView {
 		const open = !this.collapsed.has(key);
 		const head = parent.createDiv({ cls: "aw-st-chap" }); // 命名头直接复用章节名行同款类（同一显示风格，不重复定义样式）；整行可点击开合
 		head.createSpan({ text: open ? "▾" : "▸", cls: "aw-st-caret" }); // 纯视觉指示符，状态随 open 切换
+		this.addIcon(head, "file-stack");
 		head.appendText(`文档（${String(docs.length)}）`); // v0.1.3+：与前导 caret(自带 margin-right:0.35em)后紧跟文本，写法同章节名行(.aw-st-chap)，保证标签左缘与其完全一致
 		head.addEventListener("click", () => { // v0.1.3+：鼠标点整行即展开/收起本组文档列表（与所在卷的开合互不影响）
 			this.toggleCollapse(key);
@@ -506,8 +520,10 @@ export class StatusView extends ItemView {
 		const list = parent.createDiv({ cls: "aw-st-kids" }); // v0.1.3+：再嵌一层 .aw-st-kids，让文档行的对齐/缩进与「章节名下的文档」完全一致
 		for (const f of docs) {
 			const el = list.createDiv({ cls: "aw-st-file" });
-			el.setText(f.name);
-			if (!PROMPT_DOCS_VOLUME.has(volumeLogicalBase(f.name, volName))) { // 反向口径：不参与写作提示词的卷级文件着强调色，标准模板文档正常显示（悬停有说明）；新格式卷文件按逻辑基名比对
+			this.addCaretPh(el);
+			this.addIcon(el, "file-text");
+			el.appendText(f.name);
+			if (!PROMPT_DOCS_VOLUME.has(volumeLogicalBase(f.name, volName))) { // 反向口径（v0.4.3+ 统一着色、不再以颜色区分）：不参与写作提示词的卷级文件仅加悬停 title 说明，.aw-st-npdoc 保留作自定义 CSS 挂钩；新格式卷文件按逻辑基名比对
 				el.addClass("aw-st-npdoc");
 				el.setAttribute("title", "不参与写作提示词生成");
 			}
@@ -547,6 +563,7 @@ export class StatusView extends ItemView {
 		});
 		const head = block.createDiv({ cls: "aw-st-chap" }); // 命名头复用章节名行同款类（同一显示风格，不重复定义样式）；整行可点击开合
 		head.createSpan({ text: open ? "▾" : "▸", cls: "aw-st-caret" });
+		this.addIcon(head, "quote");
 		head.appendText(`引言（${String(docs.length)}）`);
 		head.addEventListener("click", () => {
 			this.toggleCollapse(key);
@@ -560,7 +577,9 @@ export class StatusView extends ItemView {
 		const list = block.createDiv({ cls: "aw-st-kids" }); // 缩进 + 左侧指示线，与卷文档下的文件行对齐
 		for (const f of docs) {
 			const el = list.createDiv({ cls: "aw-st-file" });
-			el.setText(f.name);
+			this.addCaretPh(el);
+			this.addIcon(el, "file-text");
+			el.appendText(f.name);
 			el.addEventListener("click", (e) => {
 				e.stopPropagation(); // 点文件不触发所在引言行的开合
 				void this.openFile(f.path);
@@ -585,6 +604,7 @@ export class StatusView extends ItemView {
 			e.stopPropagation(); // 点箭头只展开/折叠文件列表，不激活章节
 			this.toggleChapFiles(key, open, c.files.length > 0);
 		});
+		this.addIcon(row, "scroll-text");
 		row.appendText(`第${String(c.num).padStart(2, "0")}章 ${c.title}`); // 本地号展示；激活态仅用灰底+选中Radio标识
 		row.createSpan({ text: `${c.words.toLocaleString()}字`, cls: "aw-dim" });
 		// RadioButton 放在行尾右对齐：选中它才激活该章（写回 current_chapter）；点它不触发行的树状开合
@@ -631,10 +651,11 @@ export class StatusView extends ItemView {
 		this.rerenderLocal();
 	}
 
-	/** 可折叠小节标题行：点击整行切换展开/折叠；onContext 提供时为标题行挂右键菜单（stopPropagation 不落到面板兜底菜单）；返回子项容器（已折叠时返回 null，调用方跳过构建） */
-	private sectionHead(parent: HTMLElement, label: string, key: string, onContext?: (e: MouseEvent) => void, afterLabel?: (head: HTMLElement) => void): HTMLElement | null {
+	/** 可折叠小节标题行：点击整行切换展开/折叠；onContext 提供时为标题行挂右键菜单（stopPropagation 不落到面板兜底菜单）；icon 提供时在 caret 后渲染前导图标；返回子项容器（已折叠时返回 null，调用方跳过构建） */
+	private sectionHead(parent: HTMLElement, label: string, key: string, onContext?: (e: MouseEvent) => void, afterLabel?: (head: HTMLElement) => void, icon?: string): HTMLElement | null {
 		const head = parent.createDiv({ cls: key === "stories" ? "aw-st-section-head aw-st-section" : "aw-st-vol aw-st-subsection" }); // 「书籍列表」为顶层分组（分隔线样式）；「案头资料」「书稿」小节标题直接复用卷名行同款类 .aw-st-vol（同一显示风格），仅留 .aw-st-subsection 作纵向间距
 		head.createSpan({ text: this.collapsed.has(key) ? "▸" : "▾", cls: "aw-st-caret" });
+		if (icon) this.addIcon(head, icon);
 		head.appendText(label);
 		if (afterLabel) afterLabel(head);
 		head.addEventListener("click", () => {
@@ -657,11 +678,13 @@ export class StatusView extends ItemView {
 
 	private appendFileRow(parent: HTMLElement, f: StatusFileEntry, ctx?: { story: string; key: string | null; folder?: string; title?: string }): void {
 		const el = parent.createDiv({ cls: "aw-st-file" });
-		el.setText(f.name);
+		this.addCaretPh(el);
+		this.addIcon(el, "file-text");
+		el.appendText(f.name);
 		const promptDoc = ctx == null ? true : (ctx.key == null
 			? (ctx.folder != null ? false : PROMPT_DOCS_ROOT.has(f.name)) // 书根：资料文档名不前缀；文件夹内文件不参与写作提示词注入（loadWritingData 只按固定路径读顶层）
 			: PROMPT_DOCS_CHAPTER.has(chapterLogicalBase(f.name, ctx.folder ?? "", ctx.title ?? "")));
-		if (ctx && !promptDoc) { // 反向口径：书根（案头资料）/章节目录中不参与写作提示词的文件着强调色，标准模板文档正常显示（悬停有说明）；章节文件按新格式逻辑基名比对
+		if (ctx && !promptDoc) { // 反向口径（v0.4.3+ 统一着色、不再以颜色区分）：书根（案头资料）/章节目录中不参与写作提示词的文件仅加悬停 title 说明，.aw-st-npdoc 保留作自定义 CSS 挂钩；章节文件按新格式逻辑基名比对
 			el.addClass("aw-st-npdoc");
 			el.setAttribute("title", "不参与写作提示词生成");
 		}
@@ -689,6 +712,7 @@ export class StatusView extends ItemView {
 			e.stopPropagation(); // 点箭头只展开/折叠文件列表
 			this.toggleChapFiles(key, open, files.length > 0);
 		});
+		this.addIcon(el, open && files.length ? "folder-open" : "folder");
 		el.appendText(folder.name);
 		el.addEventListener("click", () => {
 			this.toggleChapFiles(key, open, files.length > 0); // 点行同样开合（与箭头共用）；文件夹无激活语义，开合即全部点击动作

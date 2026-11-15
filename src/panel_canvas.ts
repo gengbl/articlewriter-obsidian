@@ -16,6 +16,9 @@ export interface CanvasPanelOptions {
 	zoomLabelTitle?: string; // 倍率标签悬停提示
 	min?: number;
 	max?: number;
+	/** v0.4.3+：画布容器尺寸变化（拖侧栏 / 分屏 / 窗口缩放 / 移动端抽屉）回调——CanvasPanel 已先 apply() 重算画布尺寸，
+	 *  调用方在此按新宽度重渲染内容（宽度变化会改变换行、层级列坐标等）；缺省＝只重算画布尺寸不重渲染内容 */
+	onResize?: () => void;
 }
 
 /** 缩放/平移画布：Ctrl|Shift＋滚轮以鼠标位置为不动点缩放（普通滚轮不拦截、走原生滚动）、左键按住拖动平移（驱动容器滚动位置）、倍率标签点击复位；拖拽后的紧随 click/dblclick 自动吞掉（平移与条目拖拽两种来源） */
@@ -27,12 +30,16 @@ export class CanvasPanel {
 	private zoomLevel = 1; // 缩放倍率（重渲染不清零——筛选切换后视野保持）
 	private zoomLbl: HTMLElement | null = null; // 头部倍率标签（==100% 时隐藏，点击复位）
 	private suppressClickUntil = 0; // 条目拖拽结束后需吞掉紧随 click/dblclick 的时间戳上限
+	private resizeObs: ResizeObserver | null = null; // v0.4.3+：画布容器尺寸观察器（撑满布局后宽度变化即重算尺寸）
+	private resizeTimer: number | null = null; // 尺寸变化防抖定时器（连续拖动只处理最后一帧）
+	private lastBoxW = 0; // 上次处理时的容器宽（宽度真变化才回调 onResize 重渲染内容）
 
 	constructor(parent: HTMLElement, private readonly opts: CanvasPanelOptions) {
 		this.bodyEl = parent.createDiv({ cls: opts.bodyCls });
 		this.sizerEl = this.bodyEl.createDiv({ cls: opts.sizerCls });
 		this.zoomEl = this.sizerEl.createDiv({ cls: opts.zoomCls });
 		this.setupCanvas();
+		this.watchResize(); // v0.4.3+：容器尺寸变化（拖侧栏/分屏/窗口缩放）→ 重算画布尺寸并按需回调视图重渲染
 	}
 
 	get zoom(): number {
@@ -71,6 +78,37 @@ export class CanvasPanel {
 		const pct = Math.round(this.zoomLevel * 100);
 		this.zoomLbl.setText(`${pct}%`);
 		this.zoomLbl.toggleClass("is-hidden", pct === 100); // toggle class 替代直接设 style.display
+	}
+
+	/** v0.4.3+：观察画布容器尺寸（面板拖宽/分屏/窗口缩放/移动端抽屉开合）——ResizeObserver 比 ItemView.onResize 可靠（后者在部分分屏场景不触发） */
+	private watchResize(): void {
+		if (typeof ResizeObserver === "undefined") return; // 环境无观察器：退回视图自身 onResize 兜底
+		this.resizeObs = new ResizeObserver(() => this.onBoxResize());
+		this.resizeObs.observe(this.bodyEl);
+	}
+
+	/** 尺寸变化处理：防抖 120ms（连续拖侧栏只算最后一帧）→ 先 apply() 对齐画布尺寸，宽度真变化再回调视图重渲染内容 */
+	private onBoxResize(): void {
+		if (this.resizeTimer != null) window.clearTimeout(this.resizeTimer);
+		this.resizeTimer = window.setTimeout(() => {
+			this.resizeTimer = null;
+			const w = this.bodyEl.clientWidth;
+			if (w <= 0) return; // 面板未展开/布局未就绪（观察器首帧常见 0 宽）
+			const widthChanged = w !== this.lastBoxW;
+			this.lastBoxW = w;
+			this.apply(); // zoomEl 布局宽 / sizer 内容×缩放 / 滚动限位都依赖容器宽高，必须先重算
+			if (widthChanged) this.opts.onResize?.(); // 宽度变化才需要重渲染内容（纯高度变化 apply 已足够）
+		}, 120);
+	}
+
+	/** 视图关闭时调用：断开尺寸观察器并清防抖定时器（观察器会持有已移除的 DOM 引用） */
+	dispose(): void {
+		this.resizeObs?.disconnect();
+		this.resizeObs = null;
+		if (this.resizeTimer != null) {
+			window.clearTimeout(this.resizeTimer);
+			this.resizeTimer = null;
+		}
 	}
 
 	/** 画布交互（建 UI 时挂一次，元素常驻不随 render 重建） */

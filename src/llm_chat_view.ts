@@ -1,5 +1,5 @@
 import { ItemView, Notice, TFile, TFolder, WorkspaceLeaf } from "obsidian";
-import type { LlmConfigDoc, PluginConfig } from "./plugin_config";
+import { filterEnabledLlmConfigs, type LlmConfigDoc, type PluginConfig, selectEnabledLlmName } from "./plugin_config";
 import { chatStream, describeLlmError, normalizeBaseURL } from "./llm_client";
 import type { Message } from "./llm_client";
 import { SaveReplyModal } from "./modals";
@@ -172,11 +172,13 @@ export class LlmChatView extends ItemView {
 	refreshModels(): void {
 		if (!this.built) return;
 		const conf = this.getConf();
-		this.cfgs = (conf?.llm_configs ?? []).length ? (conf!.llm_configs as LlmConfigDoc[]) : [{} as LlmConfigDoc];
+		const enabledCfgs = filterEnabledLlmConfigs(conf?.llm_configs ?? []);
+		this.cfgs = enabledCfgs.length ? enabledCfgs : [{} as LlmConfigDoc];
 		let idx = 0;
 		const want = conf?.chat_model || conf?.active_llm;
-		if (want) {
-			const i = this.cfgs.findIndex((c) => c.name === want);
+		const preferred = selectEnabledLlmName(conf?.llm_configs ?? [], want);
+		if (preferred) {
+			const i = this.cfgs.findIndex((c) => c.name === preferred);
 			if (i >= 0) idx = i;
 		}
 		this.activeIdx = idx;

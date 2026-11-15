@@ -26,16 +26,14 @@
 | 文档 | 覆盖范围 |
 | --- | --- |
 | [agents/command-reference.md](./agents/command-reference.md) | 各命令语义/参数/坑位速查表、移动语义陷阱（updateScene/updateCharacter） |
-| **等待命令**[agents/code-structure.md](./agents/code-structure.md) | 源码物理结构横切地图：构建产物链、src/ 模块职责与行数、依赖分层、main.ts 内部区块定位、根目录遗留文件、已知重复与债务 |
-| **等待命令**[agents/process-rules.md](./agents/process-rules.md) | 任务收尾：工作完成后更新写回约定、验证要求 |
+
 
 ## 推送指南（GitHub 镜像，强制）
 
 每次提交并推送代码/文档后，**等待用户指令**把改动同步到 GitHub 镜像并在该目录内推送：
 
-1. 把本次改动的文件逐一拷入 `/home/fosky/workspace/articlewriter-obsidian-git/`（GitHub 镜像 `gengbl/articlewriter-obsidian` 的本地克隆；历史为工作树拷贝式独立提交、非主仓 clone，不能直接 push 同一对象）。
-2. **所有 git 操作都在 `/home/fosky/workspace/articlewriter-obsidian-git` 里执行**：`git add <显式列出>` + **与主仓同消息** commit + `git push origin main`（SSH remote `git@github.com:gengbl/articlewriter-obsidian.git`）。
-3. 发布日在 GitHub 镜像打标签并推送：**无 v 前缀**（`0.0.12`）。推新 tag 即触发 `.github/workflows/release.yml`——CI 从源码重建、attestation 签名并自动创建/更新 GitHub Release（资产 = `main.js` / `manifest.json` / `styles.css` 三个散文件；不上传 zip）。tag 触发的运行取**打 tag 那一刻**的 workflow 文件，改过 CI 须确保改动已包含在被 tag 的 commit 中。
+1. **所有 git 操作都在 `/home/fosky/workspace/articlewriter-obsidian` 里执行**：`git add <显式列出>`+ `git push origin main`（SSH remote `git@github.com:gengbl/articlewriter-obsidian.git`）。
+2. 发布日在 GitHub 镜像打标签并推送：**无 v 前缀**（`0.0.12`）。推新 tag 即触发 `.github/workflows/release.yml`——CI 从源码重建、attestation 签名并自动创建/更新 GitHub Release（资产 = `main.js` / `manifest.json` / `styles.css` 三个散文件；不上传 zip）。tag 触发的运行取**打 tag 那一刻**的 workflow 文件，改过 CI 须确保改动已包含在被 tag 的 commit 中。
 
 手动回落方案等细节见 [agents/l3-build-deploy.md](./agents/l3-build-deploy.md)「GitHub 镜像同步（强制）」与 [RELEASE.md](./RELEASE.md)。
 
@@ -46,7 +44,7 @@
 1. **版本号 bump**：`manifest.json` version = 目标版本；提交消息约定 `vX.Y.Z：<中文功能摘要>`。
 2. **发布门禁**（全部通过才继续）：`npm run build`（tsc 零错误）→ `node --check release/main.js` → `npm run lint`（四类 no-unsafe-* 零违规）→ 检查新增/修改行无冗余类型断言。
 3. **打 zip**：`cd release && zip ../articlewriter-v<版本>.zip *`（release/ 恰含 main.js / manifest.json / styles.css 三文件），记下字节数（`stat -c %s`）。
-4. **GitHub 镜像推送 + tag**：把改动文件拷入 `/home/fosky/workspace/articlewriter-obsidian-git/`，同消息 commit + `push origin main`；**tag `vX.Y.Z` 打在版本号 bump 那个 commit 上**再推送（不指 HEAD）——CI 自动从源码重建、attestation 签名并创建/更新 GitHub Release（仅三个散文件、不传 zip）；等 workflow completed/success 再继续。
+4. **GitHub 镜像推送 + tag**：commit + `push origin main`；**tag `vX.Y.Z` 打在版本号 bump 那个 commit 上**再推送（不指 HEAD）——CI 自动从源码重建、attestation 签名并创建/更新 GitHub Release（仅三个散文件、不传 zip）；等 workflow completed/success 再继续。
 5. **GitHub Release 资产核验**：确认 Release 恰为三个散文件且与本地尺寸一致。
 6. **tag 后 CHANGELOG 条目**：CHANGELOG.md 末尾追加「CHANGELOG：追加 vX.Y.Z 发布条目」一行（＋相关文档写回）→ commit+push；该提交落在被 tag 的 commit **之后**。
 7. **部署 vault**：`release/` 三文件覆盖复制到 `/home/fosky/workspace/geng_bl/.obsidian/plugins/articlewriter/`，md5 核对 main.js 一致；Obsidian 内重载插件生效。

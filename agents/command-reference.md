@@ -4,7 +4,8 @@
 | --- | --- |
 | `set-work-dir` | 选择工作目录；0 本书提示先建书、唯一一本直接加载、多本提示用切换命令 |
 | `switch-story` | 列出全部小说（含各章数/当前章、◀ 当前标记），选中设为当前并弹出该书状态 |
-| `new-story` | 标题+题材+编写类型三问，建书与全套模板文档（v0.3.6+：题材类型改四题材下拉——玄幻仙侠/科幻/历史武侠/都市现实，与 SKILLS/ 四题材技法技能同源；弹窗表单挂 `aw-form-compact` 控件占满行宽） |
+| `new-story` | 标题+题材+编写类型三问，建书与全套模板文档（v0.4.3+：题材下拉读 `SKILLS/题材/`、编写类型下拉读 `SKILLS/编写类型/`，均保留手输自定义；目录为空时回落旧四题材/四类型；弹窗表单挂 `aw-form-compact` 控件占满行宽） |
+| `edit-story-meta` | **修改小说信息**（v0.4.3+）：当前小说的题材/编写类型两个下拉分别读 `SKILLS/题材/`、`SKILLS/编写类型/`（可手输自定义），保存只改《故事状态.md》`genre` / `writing_style` 并刷新写字台/人物关系面板；入口＝命令面板 + 写字台「书籍列表」标题行右键「修改题材/编写类型…」（StatusAction `edit-story-meta`） |
 | `new-chapter` / `list-chapters` | 建章后自动激活；列表选择打开正文并切当前章 |
 | `insert-chapter` | 在当前激活章（无则先选参照章）之前/之后插入新空章节：**v0.0.15 起编号在容器内**——仅参照章所在容器（卷/书根）中 ≥插入位的各章整体 +1（**降序单遍顺延：最高号章先移、目标位必空、无临时槽——中断只留断档、不留大号幽灵章**；**全部改名走真实文件系统层 adapter.rename+adapter.exists 逐步强校验（不走会滞后的元数据索引），源目录按复合键定位带原始 FS 兜底，检测到重复号残留目录立即中止；开始前 assertSnapshotCoversDisk 校验快照覆盖磁盘全部章节目录、索引滞后即拒绝启动**——防顺延目标撞上未入快照的存活章），同步重写各章文档「第N章」/「章节：N」引用与伏笔.md（引用为复合键语义、跨卷同号不再歧义）；插入位是断档空位时直接落位不挪动他人；完成后 current_chapter 指向新章（manager.insertChapter）。注：v0.1.4+ 起 listChapters 把磁盘上存在的章节目录一律视为存活章节（无「章节.md」的空正文章照常列出、可被写作命令补写正文） |
 | `next-chapter` / `prev-chapter` | 无当前章时 next→第一章、prev→最后一章；到边界提示不切 |
@@ -39,7 +40,7 @@
 | `pack-volume` | 选卷→该卷实体目录下全部章节（按位置判归属，入口先过 ensureVolumeLayout 门禁保证位置==归属）正文合一 MD；无章报错提示先「按卷整理目录」归位；默认输出 `<书名>-<卷名>-合集.md`；管理卷菜单亦有同款项。**写字台面板卷节点右键已改为「导出…」**（StatusAction export-volume）：只问范围〔留空/all=该卷全章、区间/列表按卷内本地号〕、不问输出路径且不支持自定义文件名——经 manager.packStory 以 forcedVolId 锁定本卷（与导出书稿共用装配引擎，文件首行带「# 第N卷 · 卷名」标题行），默认名 `<书名>-<卷名>-范围.md`——**不再与本命令同义**（本命令固定整卷+`-合集`命名） |
 | `rescan-story` | 从现有 MD 重建故事状态.md（只初始化，不切小说不改 work_dir） |
 | `update-state-doc` | 轻量同步故事状态.md frontmatter（`manager.syncStateDoc`）：chapters 镜像按 listChapters 磁盘现扫补缺删多、刷新 title/volume/words（words 走 stripAiWordMarks+countPureWords 同 /scan 口径，卷归属以目录位置为准）＋recomputeTotalWords＋悬空 current_chapter（回退阅读序末章）/current_volume 校正；saveState 语义正文与书级参数原样保留，不 ensureLayout、不补建模板文档、不改《章节信息》——重活仍走 rescan-story |
-| `state-complete` | 补全故事状态可用参数（升级旧故事状态文档）：检测 frontmatter 缺失的书级提示词组装选项 `prev_chapters`（非负整数输入、预填全局生效值）/`include_volume_summary`（确认框=开/取消=关）/`word_range`（v0.3.5+ 字数区间，弹窗接受「4000-5000」「4000~5000」「4000 5000」），逐项询问后经 saveState 显式补写（正文与其余键原样保留）；三项均已设置仅提示已齐全不写盘，Esc 取消不落盘；旧版 story_state.json 载体顺带迁移为 MD |
+| `state-complete` | 补全故事状态可用参数（升级旧故事状态文档）：检测 frontmatter 缺失的书级提示词组装选项 `prev_chapters`/`next_chapters`（v0.4.3+ 后续参考章数，两者共用 `promptWindowChaptersInput`：非负整数输入、0=该方向不注入、预填全局生效值 `effectivePrevN()`/`effectiveNextN()`）/`include_volume_summary`（确认框=开/取消=关）/`word_range`（v0.3.5+ 字数区间，弹窗接受「4000-5000」「4000~5000」「4000 5000」），逐项询问后经 saveState 显式补写（正文与其余键原样保留）；四项均已设置仅提示已齐全不写盘，Esc 取消不落盘；旧版 story_state.json 载体顺带迁移为 MD |
 | `set-word-range` | **设置本章字数区间**（v0.3.5+）：弹窗预填当前生效值（接受「4000-5000」「4000~5000」「4000 5000」），写入当前书《故事状态.md》frontmatter `word_range: [lo,hi]`；正文生成提示词（创作/续写/重写/润色/去AI味等）字数要求按 `wordRangeOf(state)` 生效值执行、超上限 `warnWordLimit` 提示；未设置回落 `WORD_RANGE_DEFAULT`＝[4000,5000]（state_doc.ts）——取代旧三层写作指南 `<!-- 字数配置:… -->` 注释（已随体系废弃） |
 | `set-style` | 切换编写类型 writing_style（预设或自定义），持久化到 state |
 | ~~写作指南命令族~~ | ~~`agents-view`/`agents-edit`/`generate-writing-guide`/`regenerate-system-guide`/`generate-writing-guide-summary`~~：**v0.3.5+ 三层写作指南体系整体废弃**——5 个命令注册全部删除，各层 `WRITING_GUIDE.md`（小说级/用户级/系统级）、`写作指南汇总.md`、插件数据目录 `guide-types/` 启动时由 `purgeWritingGuideArtifacts`（main.ts onload）自动清理进回收站/删除；字数配置改走 `set-word-range` 命令（见上行），题材要点改走 `SKILLS/` 四题材技能（玄幻仙侠/都市现实/科幻/历史武侠，随 ensureSkillsFiles 播种） |
