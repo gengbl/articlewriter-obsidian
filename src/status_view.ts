@@ -97,6 +97,7 @@ export interface StatusSnapshot {
 export type StatusAction =
 	| { kind: "new-story" }
 	| { kind: "rename-story"; name: string } // 书籍列表标题行右键「改名」：改书名（状态文档 title + 顶层目录同步改名 + 大纲起始标题行）
+	| { kind: "edit-story-meta"; story: string } // 书籍列表标题行右键「修改题材/编写类型…」：下拉来自 SKILLS/题材、SKILLS/编写类型
 	| { kind: "delete-story"; name: string }
 	| { kind: "new-chapter"; story: string; volId?: string } // volId=卷节点右键建章：直接落该卷实体目录并设为当前卷；缺省走当前卷
 	| { kind: "create-volume"; story: string } // 新建卷（名称+描述两问，语义对齐 /volume add），建成即设当前卷
@@ -288,6 +289,7 @@ export class StatusView extends ItemView {
 				arr.push(
 					{ sep: true },
 					{ label: `改名「${active.name}」…`, run: () => this.runStatusAction({ kind: "rename-story", name: active.name }) }, // 修改书籍名称：状态文档 title + 顶层目录同步改名
+					{ label: "修改题材/编写类型…", run: () => this.runStatusAction({ kind: "edit-story-meta", story: active.name }) }, // v0.4.3+：下拉来自 SKILLS/题材、SKILLS/编写类型
 					{ sep: true },
 					{ label: `删除小说「${active.name}」`, danger: true, run: () => this.runStatusAction({ kind: "delete-story", name: active.name }) }
 				);

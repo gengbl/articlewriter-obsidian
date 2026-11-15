@@ -2,7 +2,7 @@ import { App, Modal, Notice, SuggestModal, Setting, TFile, TFolder, ToggleCompon
 import { PIPELINE_STAGES, type StageId } from "./pipeline"; // v0.3.0+：AutoBookModal 起始节点下拉（pipeline.ts 纯数据、不 import obsidian，无循环依赖）
 import { parseTimelineTime } from "./md_docs"; // v0.3.3+：EventEditModal 时间点校验（md_docs 纯数据模块，无循环依赖）
 import { type BookSkillPhase } from "./state_doc"; // v0.3.4+：BookSkillPhaseModal 阶段键（state_doc 纯数据模块，无循环依赖）
-import { GENRE_SKILL_NAMES } from "./skills_default"; // v0.3.6+：NewStoryModal 题材下拉（skills_default 纯数据模块，无 import，无循环依赖）
+import { GENRE_SKILL_NAMES } from "./skills_default"; // v0.3.6+：NewStoryModal 旧四题材回落；v0.4.3+ skills_default 会派生题材/编写类型目录技能（story_types 为单向依赖）
 
 /** 文本输入框；提交回调收到值（空串视为取消）。可选 hint：渲染在标题与输入框之间的说明文字（支持 \n 多行，样式 .aw-prompt-hint）；可选 initial：预填初始值（光标置于末尾）；
  *  multiline（v0.3.7+）：5 行 textarea 占满整行（去无标签行的定宽 info 列＋.aw-prompt-textarea 宽度 100%＋aw-ta-rows 去全局 min-height）＋右对齐「确定/取消」按钮行；回车换行、Ctrl/Cmd+回车或点「确定」提交 */
@@ -155,16 +155,24 @@ const PRESET_GENRES = GENRE_SKILL_NAMES.map((n) => n.replace(/写法$/, ""));
 export class NewStoryModal extends Modal {
 	private submitted = false;
 
-	constructor(app: App, private onSubmit: (input: NewStoryInput) => void | Promise<void>, private onCancel?: () => void) {
+	constructor(
+		app: App,
+		private onSubmit: (input: NewStoryInput) => void | Promise<void>,
+		private onCancel?: () => void,
+		private genreOptions: string[] = PRESET_GENRES,
+		private styleOptions: string[] = PRESET_STYLES
+	) {
 		super(app);
 	}
 
 	onOpen(): void {
 		this.contentEl.createEl("h3", { text: "创建新小说" });
 		this.contentEl.addClass("aw-form-compact"); // label 定宽 + 控件占满剩余空间（styles.css .aw-form-compact，同 MultiFieldModal 等）
+		const genres = this.genreOptions.length ? this.genreOptions : PRESET_GENRES;
+		const styles = this.styleOptions.length ? this.styleOptions : PRESET_STYLES;
 		let title = "";
-		let genre = PRESET_GENRES[0]; // 默认四题材首项（玄幻仙侠）
-		let style = "网文小说";
+		let genre = genres[0]; // 默认题材目录首项（题材技能文件夹为空时回落旧四题材）
+		let style = styles[0] || "网文小说";
 
 		new Setting(this.contentEl).setName("标题").addText((text) => {
 			text.setPlaceholder("书名");
@@ -172,13 +180,13 @@ export class NewStoryModal extends Modal {
 			text.inputEl.focus();
 		});
 		new Setting(this.contentEl).setName("题材类型").addDropdown((drop) => {
-			for (const g of PRESET_GENRES) drop.addOption(g, g); // 四题材与 SKILLS/ 技法技能同源（GENRE_SKILL_NAMES 剥「写法」）
+			for (const g of genres) drop.addOption(g, g); // v0.4.3+：来自 SKILLS/题材/ 目录（缺失时回落旧四题材）
 			drop.setValue(genre).onChange((v) => (genre = v));
 		});
 		new Setting(this.contentEl)
 			.setName("编写类型")
 			.addDropdown((drop) => {
-				for (const s of PRESET_STYLES) drop.addOption(s, s);
+				for (const s of styles) drop.addOption(s, s); // v0.4.3+：来自 SKILLS/编写类型/ 目录（缺失时回落旧四类型）
 				drop.setValue(style).onChange((v) => (style = v));
 			})
 			.addText((text) => {
@@ -192,6 +200,67 @@ export class NewStoryModal extends Modal {
 				this.submitted = true;
 				this.close();
 				await this.onSubmit({ title: title.trim(), genre: genre.trim() || "网文小说", style: style.trim() || "网文小说" });
+			})
+		);
+	}
+
+	override onClose(): void {
+		this.contentEl.empty();
+		if (!this.submitted && this.onCancel) this.onCancel();
+	}
+}
+
+export interface StoryMetaInput {
+	genre: string;
+	style: string;
+}
+
+/** v0.4.3+ 修改现有小说信息：题材/编写类型下拉均来自系统技能目录（题材/、编写类型/），并保留手输自定义值。 */
+export class StoryMetaModal extends Modal {
+	private submitted = false;
+
+	constructor(
+		app: App,
+		private currentGenre: string,
+		private currentStyle: string,
+		private genreOptions: string[],
+		private styleOptions: string[],
+		private onSubmit: (input: StoryMetaInput) => void | Promise<void>,
+		private onCancel?: () => void
+	) {
+		super(app);
+	}
+
+	onOpen(): void {
+		this.contentEl.createEl("h3", { text: "修改小说信息" });
+		this.contentEl.addClass("aw-form-compact");
+		const genres = this.genreOptions.slice();
+		const styles = this.styleOptions.slice();
+		// 当前值不在目录里（旧数据/自定义值）也要能显示：临时补进下拉，避免 setValue 丢失
+		if (this.currentGenre && !genres.includes(this.currentGenre)) genres.unshift(this.currentGenre);
+		if (this.currentStyle && !styles.includes(this.currentStyle)) styles.unshift(this.currentStyle);
+		let genre = this.currentGenre || genres[0] || "网文小说";
+		let style = this.currentStyle || styles[0] || "网文小说";
+
+		new Setting(this.contentEl).setName("题材类型").addDropdown((drop) => {
+			for (const g of genres) drop.addOption(g, g);
+			drop.setValue(genre).onChange((v) => (genre = v));
+		}).addText((text) => {
+			text.setPlaceholder("或输入自定义题材");
+			text.onChange((v) => { if (v.trim()) genre = v.trim(); });
+		});
+		new Setting(this.contentEl).setName("编写类型").addDropdown((drop) => {
+			for (const s of styles) drop.addOption(s, s);
+			drop.setValue(style).onChange((v) => (style = v));
+		}).addText((text) => {
+			text.setPlaceholder("或输入自定义类型名");
+			text.onChange((v) => { if (v.trim()) style = v.trim(); });
+		});
+		new Setting(this.contentEl).addButton((btn) =>
+			btn.setButtonText("保存").setCta().onClick(async () => {
+				this.submitted = true;
+				this.close();
+				await this.onSubmit({ genre: genre.trim() || "网文小说", style: style.trim() || "网文小说" });
 			})
 		);
 	}
@@ -766,7 +835,7 @@ export class VaultFilePickerModal extends SuggestModal<TFile> {
 
 /** 技能文件选择器（引用文档配置框「添加技能」，v0.3.0+）：按基名模糊搜索 SKILLS/ 下的技能（名单由调用方打开弹窗前异步加载），选中即添加为 skill:<基名> */
 export class SkillPickerModal extends SuggestModal<string> {
-	constructor(app: App, private names: string[], private onPick: (name: string) => void, placeholder = "选择技能（SKILLS/*.md，按名称模糊搜索）…") {
+	constructor(app: App, private names: string[], private onPick: (name: string) => void, placeholder = "选择技能（SKILLS/ 下，含文件夹，按名称模糊搜索）…") {
 		super(app);
 		this.inputEl.placeholder = placeholder;
 	}
@@ -776,8 +845,15 @@ export class SkillPickerModal extends SuggestModal<string> {
 		return this.names.filter((n) => !q || n.toLowerCase().includes(q)).slice(0, 200);
 	}
 
+	/** v0.4.3+：按 SKILLS/ 文件夹层次显示——`题材/玄幻仙侠` 渲染为灰色「题材 / 」+「玄幻仙侠」 */
 	renderSuggestion(name: string, el: HTMLElement): void {
-		el.setText(name);
+		const slash = name.lastIndexOf("/");
+		if (slash < 0) {
+			el.setText(name);
+			return;
+		}
+		el.createSpan({ cls: "aw-skill-dir", text: `${name.slice(0, slash)} / ` });
+		el.createSpan({ text: name.slice(slash + 1) });
 	}
 
 	onChooseSuggestion(name: string): void {

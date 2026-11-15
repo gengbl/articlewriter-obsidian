@@ -7,6 +7,12 @@ export type Message = OpenAI.ChatCompletionMessageParam;
 export const DEFAULT_SYSTEM_PROMPT =
 	"你是一个网络小说作者，写的是给人看的故事，不是范文。文风自然平实，多用常见词，避免华丽形容词堆砌。请根据用户的需求创作小说章节。注意：1.保持故事连贯性 2.人物性格一致 3.情节合理推进4.适当使用描写和对话 5.每章结尾自然收束";
 
+/** v0.4.3+：SKILLS/系统提示词/默认写作身份.md 的运行时覆盖；空串=回落 DEFAULT_SYSTEM_PROMPT */
+let defaultSystemPromptOverride = "";
+export function setDefaultSystemPromptOverride(text: string): void {
+	defaultSystemPromptOverride = (text || "").trim();
+}
+
 /**
  * LLM 调用层（OpenAI 兼容标准接口）——对齐 Python articlewriter 的 llm_client.py。
  * 用官方 openai SDK；baseURL 指向任意 OpenAI 兼容端点即可适配 DeepSeek / DashScope(千问) / Ollama / LM Studio / llama.cpp 等。
@@ -212,7 +218,7 @@ export async function testConnection(cfg: LlmConfigDoc): Promise<LlmTestResult> 
  */
 export function assembleSystemPrompt(customSp?: string, baseSp?: string): string {
 	const b = (baseSp || "").trim();
-	const sp = (customSp && customSp.trim()) || (b ? b : DEFAULT_SYSTEM_PROMPT);
+	const sp = (customSp && customSp.trim()) || (b ? b : (defaultSystemPromptOverride || DEFAULT_SYSTEM_PROMPT));
 	// v0.3.4+：原第 4 参 identityBoost（末尾附【身份加强】块）已移除——身份加强 Skill 化，经技能通道（【技能 · 身份加强·<阶段名>】）注入
 	return sp;
 }

@@ -51,7 +51,7 @@ export class GenProgressView extends ItemView implements WritingStreamSink {
 	private reasoningEl?: HTMLElement; // 思考过程展示区（思考型模型；默认隐藏，首个思考增量到达时显示）
 	private reasoningText = "";
 	private statusEl?: HTMLElement;
-	private footerEl?: HTMLElement;
+	private footerEl!: HTMLElement; // v0.4.3+：固定底部按钮区，由 buildUI 创建
 	private streamEls: HTMLElement[] = []; // 当前流式小节创建的元素，下一轮 beginStream 时移除（日志行保留为历史）
 	// ---- v0.2.x+ 生成计时 ----
 	private streamStartedAt = 0; // 本轮流式会话起点（beginStream 记录；含空结果/格式校验重试与去AI味后处理，直到 finish/fail/finishAuto 收尾）
@@ -118,6 +118,8 @@ export class GenProgressView extends ItemView implements WritingStreamSink {
 		const root = parent.createDiv({ cls: "aw-gen-view" });
 		root.createDiv({ text: "生成过程", cls: "aw-gen-title" });
 		this.bodyEl = root.createDiv({ cls: "aw-gen-body" });
+		// v0.4.3+：按钮区固定在面板底部（不随正文滚动）；默认隐藏，进入流式/收尾时显示
+		this.footerEl = root.createDiv({ cls: "aw-gen-footer hidden" });
 		// v0.3.0+：不再注册 document 级 Esc 停止生成——Esc 无处不在（快速切换器/命令面板/编辑器），实测误伤流式生成；停止只经「停止生成」按钮/「停止全自动写书」命令
 	}
 
@@ -173,8 +175,9 @@ export class GenProgressView extends ItemView implements WritingStreamSink {
 		this.reasoningEl.addClass("hidden"); // 非思考模型无增量，保持隐藏（Obsidian 内置 .hidden 类，勿直接赋 style）
 		this.preEl = this.bodyEl.createDiv({ cls: "aw-stream-pre" });
 		this.statusEl = this.bodyEl.createDiv({ cls: "aw-dim aw-gen-status" });
-		this.footerEl = this.bodyEl.createDiv({ cls: "aw-gen-footer" });
-		this.streamEls.push(head, this.reasoningEl, this.preEl, this.statusEl, this.footerEl);
+		this.streamEls.push(head, this.reasoningEl, this.preEl, this.statusEl);
+		this.footerEl.empty();
+		this.setFooterVisible(true);
 		new Setting(this.footerEl).addButton((b) => b.setButtonText("停止生成").onClick(() => this.abortStream()));
 		this.updateStatus();
 		this.scrollBottom();
@@ -224,8 +227,9 @@ export class GenProgressView extends ItemView implements WritingStreamSink {
 		this.streamState = "done";
 		this.statusOverride = ""; // v0.2.x+ 清除「正在去除 AI 常用词…」等临时态，完成行显示总用时
 		this.updateStatus();
-		if (this.footerEl) this.footerEl.empty();
-		new Setting(this.footerEl!).addButton(
+		this.footerEl.empty();
+		this.setFooterVisible(true);
+		new Setting(this.footerEl).addButton(
 			(b) => b.setButtonText("保存").setCta().onClick(() => this.end(true))
 		).addButton((b) => b.setButtonText("不保存").onClick(() => this.end(false)));
 		this.scrollBottom();
@@ -239,8 +243,9 @@ export class GenProgressView extends ItemView implements WritingStreamSink {
 			this.statusEl.setText(`生成失败：${message}（用时 ${formatElapsedMs(Date.now() - this.streamStartedAt)}）`);
 			this.statusEl.classList.remove("aw-dim");
 		}
-		if (this.footerEl) this.footerEl.empty();
-		new Setting(this.footerEl!).addButton((b) => b.setButtonText("关闭").onClick(() => this.end(false)));
+		this.footerEl.empty();
+		this.setFooterVisible(true);
+		new Setting(this.footerEl).addButton((b) => b.setButtonText("关闭").onClick(() => this.end(false)));
 		this.scrollBottom();
 	}
 
@@ -252,7 +257,8 @@ export class GenProgressView extends ItemView implements WritingStreamSink {
 		this.resolveDone?.(true);
 		this.streamState = "idle";
 		this.stopTimer();
-		if (this.footerEl) this.footerEl.empty();
+		this.footerEl.empty();
+		this.setFooterVisible(false);
 		this.appendLine(`${message ?? "✓ 已自动保存"}（${elapsedLabel} ${formatElapsedMs(Date.now() - this.streamStartedAt)}）`, "ok");
 	}
 
@@ -267,6 +273,13 @@ export class GenProgressView extends ItemView implements WritingStreamSink {
 		if (this.submitted) return;
 		if (this.streamState === "streaming") this.ctrl.abort();
 		else if (this.streamState === "done") this.end(false);
+	}
+
+	/** 底部按钮区显隐：无按钮时隐藏，避免固定区占位 */
+	private setFooterVisible(show: boolean): void {
+		if (!this.footerEl) return;
+		if (show) this.footerEl.removeClass("hidden");
+		else this.footerEl.addClass("hidden");
 	}
 
 	private abortStream(): void {
@@ -284,7 +297,8 @@ export class GenProgressView extends ItemView implements WritingStreamSink {
 		this.stopTimer();
 		this.statusOverride = "已停止"; // 防任何残余 updateStatus 把定格文案刷回计时文案
 		if (this.statusEl) this.statusEl.setText(`已停止生成（用时 ${formatElapsedMs(Date.now() - this.streamStartedAt)}），本章正文未保存`);
-		if (this.footerEl) this.footerEl.empty();
+		this.footerEl.empty();
+		this.setFooterVisible(false);
 	}
 
 	/** 会话收尾（保存/放弃/失败关闭）：resolve done，正文保留展示，按钮区换成结果行 */
@@ -293,7 +307,8 @@ export class GenProgressView extends ItemView implements WritingStreamSink {
 		this.submitted = true;
 		this.resolveDone?.(keep);
 		this.streamState = "idle";
-		if (this.footerEl) this.footerEl.empty();
+		this.footerEl.empty();
+		this.setFooterVisible(false);
 		this.appendLine(keep ? "✓ 已保存" : "— 未保存 —", keep ? "ok" : "div");
 	}
 

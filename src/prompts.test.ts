@@ -2,13 +2,28 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { DEFAULT_SKILLS } from "./skills_default";
-import { buildBookOutlineExtendPrompt, buildBookOutlineGenPrompt, buildChapterPrompt, buildContinuePrompt, buildRewritePrompt, buildVolOutlineChapterPrompt, buildChapterRefFixPrompt, CHAPTER_REF_BAN, findChapterRefLeaks, findChapterRefSentences, fixChapterRefs, parseChapterWithSummary } from "./prompts";
+import { buildBookOutlineExtendPrompt, buildBookOutlineGenPrompt, buildChapterPrompt, buildContinuePrompt, buildRewritePrompt, buildStoryTypeSystemPrompt, buildVolOutlineChapterPrompt, buildChapterRefFixPrompt, CHAPTER_REF_BAN, findChapterRefLeaks, findChapterRefSentences, fixChapterRefs, parseChapterWithSummary } from "./prompts";
 
 test("default seeded skills preserve every opt-in skill extracted from hardcoded prompts", () => {
 	assert.ok(DEFAULT_SKILLS["编写类型与格式规则"], "story type skill must be seeded by default");
-	assert.ok(DEFAULT_SKILLS["章节写作任务"], "chapter task skill must be seeded by default");
+	assert.ok(DEFAULT_SKILLS["章节创作"], "chapter task skill must be seeded by default");
 	assert.match(DEFAULT_SKILLS["编写类型与格式规则"] ?? "", /【编写类型确认】/);
-	assert.match(DEFAULT_SKILLS["章节写作任务"] ?? "", /请创作本章内容/);
+	assert.match(DEFAULT_SKILLS["章节创作"] ?? "", /若大纲含「升级反转」/);
+	assert.match(DEFAULT_SKILLS["章节创作"] ?? "", /^3\. /m);
+	assert.match(DEFAULT_SKILLS["章节创作"] ?? "", /^13\. /m);
+});
+
+test("genre / writing-style skill folders are seeded and override the hardcoded type template", () => {
+	assert.ok(DEFAULT_SKILLS["题材/玄幻仙侠"], "genre folder skill must be seeded");
+	assert.ok(DEFAULT_SKILLS["编写类型/网文小说"], "writing-style folder skill must be seeded");
+	const prompt = buildStoryTypeSystemPrompt({
+		storyType: "网文小说",
+		storyTypeSkillBlock: "【编写类型 · 网文小说】\nSKILL_TYPE",
+		genreSkillBlock: "【题材 · 玄幻仙侠】\nSKILL_GENRE",
+	});
+	assert.match(prompt, /SKILL_TYPE/);
+	assert.match(prompt, /SKILL_GENRE/);
+	assert.doesNotMatch(prompt, /请严格按网络小说的格式与风格创作/, "skill block should replace the hardcoded STORY_TYPES template");
 });
 
 test("strictCurrentOutlineOnly keeps the prompt anchored to the current volume outline only", () => {
@@ -145,15 +160,17 @@ test("writing rules and chapter task are skill-gated and only appear when inject
 	};
 	const defaultPrompt = buildChapterPrompt(base).prompt;
 	assert.doesNotMatch(defaultPrompt, /【编写类型确认】/);
-	assert.doesNotMatch(defaultPrompt, /请创作本章内容/);
+	assert.doesNotMatch(defaultPrompt, /4\. 若大纲含「升级反转」/); // 未选章节创作时不回落内置 3–13
+	assert.doesNotMatch(defaultPrompt, /^3\. /m);
 
 	const injected = buildChapterPrompt({
 		...base,
 		storyTypeSkillBlock: "【技能 · 编写类型与格式规则】\n【编写类型确认】本小说编写类型为「网文小说」，请严格按该类型输出。",
-		taskSkillBlock: "【技能 · 章节写作任务】\n请创作本章内容，要求：按大纲执行。",
+		taskSkillBlock: "4. 自定义静态要求：只替换 4–12 条",
 	}).prompt;
 	assert.match(injected, /【编写类型确认】/);
-	assert.match(injected, /请创作本章内容/);
+	assert.match(injected, /4\. 自定义静态要求/);
+	assert.doesNotMatch(injected, /5\. 每个场景有明确的目标与障碍/);
 });
 
 test("buildContinuePrompt appends summary protocol only when withSummary is set", () => {
@@ -275,7 +292,7 @@ test("fixChapterRefs is a no-op when no chapter refs are found", async () => {
 });
 
 test("writing prompts all carry the chapter-ref ban clause", () => {
-	const chapter = buildChapterPrompt({
+	const chapterInput = {
 		chapterNum: 1,
 		chapterLabel: "第1章",
 		chapterKey: "1",
@@ -283,8 +300,11 @@ test("writing prompts all carry the chapter-ref ban clause", () => {
 		context: "上下文",
 		wordRange: [2000, 3000] as [number, number],
 		prevOutlines: [],
-	}).prompt;
-	assert.ok(chapter.includes(CHAPTER_REF_BAN));
+	};
+	const chapter = buildChapterPrompt(chapterInput).prompt;
+	assert.ok(!chapter.includes(CHAPTER_REF_BAN), "未选择章节创作时不应回落内置 3–13（含第 13 条禁令）");
+	const chapterWithTask = buildChapterPrompt({ ...chapterInput, taskSkillBlock: DEFAULT_SKILLS["章节创作"] }).prompt;
+	assert.ok(chapterWithTask.includes(CHAPTER_REF_BAN));
 	const continued = buildContinuePrompt({
 		chapterNum: 1,
 		chapterLabel: "第1章",

@@ -1805,6 +1805,7 @@
 	display: flex;
 	gap: var(--size-2-2);
 	flex-wrap: wrap;
+	flex-shrink: 0; /* v0.4.3+：固定在面板底部，不随正文滚动 */
 }
 
 /* 导出 AI 提示词功能点选择弹窗：按钮行 */
@@ -2165,4 +2166,9 @@
    !important 防主题 flex 规则复活；类名带 aw- 前缀避免污染全局与其它插件 */
 .aw-hide {
 	display: none !important;
+}
+
+/* v0.4.3+ 技能选择弹窗：文件夹层级前缀弱化显示 */
+.aw-skill-dir {
+	color: var(--text-muted);
 }

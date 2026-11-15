@@ -29,6 +29,29 @@
 - **注入位置＝系统技能之后**：阶段 0–3 经 `orderRefDocSpecs` opts（`bookSkillDir`/`bookSkillNames`）把本书技能（`bookSkillSpecsFromDir` 生成的【技能 · 名称】spec）追加在引用文档数组**末尾**（**v0.3.5+** 旧「guideKey unshift 之后」挂位已随写作指南体系废弃）；固定 specs 装配（时间线生成 `buildTimelineInput`）同样在尾部追加同一 helper 结果。编写文章阶段（`PHASE_WRITING`）`writerSystemPrompt` 的 skillsBlock＝系统技能块＋书籍技能块拼接。同样受 skipSkills 防双份注入规则约束（上下文装配恒 skipSkills:true）。
 - **删除技能**：直接删 `案头资料/Skill/<名>.md` 文件即可；`loadBookSkillsBlock` 读不到文件就跳过，`book_skills` 里的残留引用自动忽略（`deleteSkillFile` 程序化删除路径仍会同步清各阶段数组引用）。
 
+## 题材 / 编写类型技能目录（v0.4.3+）
+
+- **目录结构**：`<work_dir>/SKILLS/题材/<题材名>.md`（对应《故事状态.md》`genre`）、`<work_dir>/SKILLS/编写类型/<编写类型名>.md`（对应 `writing_style`）。两目录技能**自动加载**，无需在引用文档清单手动 opt-in；其余技能仍按原规则平铺并 opt-in。
+- **播种**：`DEFAULT_SKILLS` 在模块加载时由既有平铺题材技能派生 `题材/<名>`（去掉「写法」后缀）、由 `STORY_TYPES` 派生 `编写类型/<名>`；`ensureSkillsFiles` 遇到含 `/` 的键会先 `ensureFolders` 建子目录。题材目录技能若发现旧平铺技能（如 `玄幻仙侠写法.md`）存在，优先沿用旧文件正文（只替换起始标题行），保留用户定制；文件缺失才写内置默认。
+- **自动加载**：`writerSystemPrompt` 读取当前书 `genre` 与传入的 `writing_style`，分别经 `loadFolderSkillBlock("题材", genre)` / `loadFolderSkillBlock("编写类型", style)` 装配成【题材 · X】/【编写类型 · X】块，传给 `buildStoryTypeSystemPrompt`；编写类型技能块非空时**替代** `STORY_TYPES` 硬编码模板，题材块排在其后。技能文件缺失时回落原 `getStoryTypeGuide`（自定义类型仍走 `CUSTOM_TYPE_TEMPLATE`）。
+- **编辑下拉**：新建小说弹窗与「修改小说信息」命令（`edit-story-meta` / 写字台书籍列表标题行右键）分别用 `listFolderSkillNames("题材")` / `listFolderSkillNames("编写类型")` 生成下拉，并保留手输自定义值；目录为空时回落旧四题材/四类型。
+- **设置页选择**：v0.4.3+「添加技能…」改为递归列出 `SKILLS/` 全部技能（含子目录，按相对名如 `题材/玄幻仙侠` 保存），`SkillPickerModal` 以「文件夹 / 技能名」层次渲染、可按全路径搜索；选中后仍写 `skill:<相对名>`，装配经 `skillPath(name)` 正确读取子目录文件。**组装去重**：`loadSkillsBlock(PHASE_WRITING, exclude)` 会跳过当前 `genre`/`writing_style` 对应的两个自动加载技能，避免用户手动再加一次造成重复注入；其余非当前值的目录技能仍可手动注入。
+
+## 系统提示词覆盖技能（v0.4.3+）
+
+- `SKILLS/系统提示词/<名称>.md` 覆盖内置 system 消息，共 9 个：默认写作身份 / 人物场景分析 / 章摘要 / 卷摘要 / 卷大纲生成 / 书级大纲生成 / 时间线生成 / 世界观生成 / 错别字检测。
+- 播种：`main.ts` 的 `SYSTEM_PROMPT_SKILLS` 以既有常量为种子；`ensureSkillsFiles` 在系统提示词目录内仅缺失才写、不覆盖用户修改。
+- 加载：`refreshPromptSkillOverrides()` 读盘（剥注释/标题）进 `promptSkillOverrides` 缓存，`promptSkill(name, fallback)` 同步取用；`默认写作身份` 另经 `llm_client.setDefaultSystemPromptOverride()` 覆盖全局默认。文件变更由 vault modify/create（含重命名）事件即时刷新，缺失/空回落常量。
+- 与阶段技能的区别：系统提示词覆盖是**内部机制、自动生效**，不出现在设置页「添加技能…」清单；阶段技能仍走 `skill:` opt-in。
+- 只覆盖 system 消息，不改用户 prompt 的解析协议（摘要/错别字/JSON 等仍由代码确定性校验）。
+
+## 正文创作静态要求（v0.4.3+）
+
+- 平铺技能 `SKILLS/章节创作.md` 提供「创作本章正文」的第 3–13 条静态要求；`{{outline_ref_clause}}`/`{{chapter_ref_ban}}` 由 `buildChapterPrompt` 替换为当前大纲引用与章节号禁令。1/2 条（大纲约束/字数）与末尾输出/摘要协议仍由代码动态生成。
+- **用户选择**：`main.ts loadSelectedTaskSkill()` 只在「编写文章」阶段 ref_docs 含 `skill:章节创作`（优先）或旧版 `skill:章节写作任务` 时读取该技能传 `taskSkillBlock`；都没选/文件缺失/为空时**不回落内置 3–13 条**（只保留动态 1/2 与输出/摘要协议）。点击设置页「添加技能…」选中「章节创作」后才生效。
+- `writerSystemPrompt` 的 `loadSkillsBlock` 排除 `章节创作` 与 `章节写作任务`，避免与阶段技能重复注入。
+- 旧 `章节写作任务.md`（4–12 条）保留兼容：选中时保留动态第 3 条与第 13 条。编辑技能文件即改变静态要求，动态字数/位置/摘要协议不受影响。
+
 ## 引用索引（相关文档）
 
 | 层 | 文件 | 承载内容 |

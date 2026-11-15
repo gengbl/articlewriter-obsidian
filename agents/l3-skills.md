@@ -46,6 +46,32 @@
 3. **防双份注入同规则**：编写文章阶段（PHASE_WRITING）正文族上下文装配恒 `skipSkills: true` 且不传 bookSkill opts，书籍技能只经 writerSystemPrompt→skillsBlock 进 system prompt 一次。
 4. `deskDocsPath` 依赖书布局（案头资料 文件夹名可随旧格式迁移），bookSkillsDir 只经它拼路径，不要硬编码「案头资料」。
 
+## 题材 / 编写类型技能目录（v0.4.3+）
+
+| 位置 | 内容 |
+| --- | --- |
+| `src/skills_default.ts` | `DEFAULT_SKILLS` 定义后派生两组目录键：`题材/<题材名>`（来源＝既有平铺题材技能，`GENRE_FLAT_SKILL_SOURCES` 映射去「写法」后缀）、`编写类型/<编写类型名>`（来源＝`STORY_TYPES[style][2]`）。导出 `GENRE_SKILL_FOLDER="题材"`、`WRITING_STYLE_SKILL_FOLDER="编写类型"`、`GENRE_FLAT_SKILL_SOURCES`。新增/修改内置题材或编写类型模板后，播种与下拉自动跟随；`DEFAULT_SKILLS` 现共 39 个（原 29＋新提取 2＋目录 8）。 |
+| `src/main.ts` `ensureSkillsFiles()` | 遍历 `DEFAULT_SKILLS` 时对含 `/` 的键先 `ensureFolders(父目录)`；`题材/<genre>` 若对应旧平铺技能文件存在，读取其正文并只替换起始 `# 标题` 行为 `# <genre>`，保留用户定制；否则写内置默认。仍仅缺失才写、不覆盖。 |
+| `src/main.ts` `loadFolderSkillBlock(folder,name)` / `listFolderSkillNames(folder)` | 前者经 `loadSkillsBlockFrom([{name: folder/name, file: skillPath(folder/name), header: "【folder · name】"}])` 读盘（`loadSkillsBlockFrom` v0.4.3+ 支持每项自定义 `header`）；后者 `adapter.list(SKILLS/<folder>)` 取 `.md` 基名 zh 排序，目录缺失返回空数组。 |
+| `src/main.ts` `writerSystemPrompt()` | v0.4.3+：`storyName` 存在时 `manager.loadState` 取 `genre`；`styleSkill=loadFolderSkillBlock("编写类型", writingStyle)`、`genreSkill=loadFolderSkillBlock("题材", genre)`，经 `buildStoryTypeSystemPrompt({ storyTypeSkillBlock, genreSkillBlock })` 注入。11 个正文命令调用点签名不变。 |
+| `src/prompts.ts` `StoryTypePromptInput` / `buildStoryTypeSystemPrompt` | 新增 `storyTypeSkillBlock?`（非空时替代 `getStoryTypeGuide` 的 STORY_TYPES/CUSTOM 模板）与 `genreSkillBlock?`（排在类型块后、phase 技能块前）。技能缺失时行为与旧版一致。 |
+| `src/modals.ts` `NewStoryModal` / `StoryMetaModal` | `NewStoryModal` 构造新增 `genreOptions`/`styleOptions`（`cmdNewStory` → `pickNewStoryInput` 先 `ensureSkillsFiles` 再 `listFolderSkillNames` 传入；空则回落 `PRESET_GENRES`/`PRESET_STYLES`）。`StoryMetaModal`＝修改现有书信息：两个下拉 + 手输自定义，提交 `{genre,style}`；当前值不在目录时临时插入下拉防 setValue 丢失。 |
+| `src/main.ts` `cmdEditStoryMeta()` / `pickStoryMetaInput()` | 命令 `edit-story-meta` + 写字台 `StatusAction edit-story-meta`；读 `validatedState` → 弹 `StoryMetaModal` → 只改 `state.genre` / `state.writing_style` → `manager.saveState`，刷新写字台与人物关系面板。 |
+| 设置页递归选择（v0.4.3+） | `main.ts listAllSkillNames()` 递归 `adapter.list(SKILLS/)`，返回相对基名（`题材/玄幻仙侠`、`编写类型/网文小说`、平铺名…）；`renderRefDocs` 的「添加技能…」改用它并按已有 `skill:` 去重；`SkillPickerModal.getSuggestions` 按全路径模糊匹配，`renderSuggestion` 把最后一个 `/` 前的前缀渲染为 `.aw-skill-dir`（styles.css 弱化色）。选中仍 commit `skill:<相对名>`，`skillPath`/`promptReader` 的 skillsPrefix 分支天然支持子目录。**去重**：`loadSkillsBlock(phaseIdx, exclude)` 新增可选排除名单，`writerSystemPrompt` 传入当前 genre/style 对应的 `题材/<值>`、`编写类型/<值>`，防止手动添加与自动加载双份。 |
+| 陷阱 | 目录技能与平铺技能的读写通道相同（vault adapter，绕 manager）；`skillPath` 支持带 `/` 的相对名。设置页「添加技能…」当前只列平铺一层，目录技能不重复列出（自动加载）。若用户手改了旧平铺题材技能，新目录文件已存在时不会再次同步——以目录文件为准。 |
+
+## 系统提示词覆盖技能（v0.4.3+）
+
+| 位置 | 内容 |
+| --- | --- |
+| `src/main.ts` `SYSTEM_PROMPT_SKILLS` | 名称 → 内置常量：默认写作身份（`llm_client.DEFAULT_SYSTEM_PROMPT`）、人物场景分析（`CAST_ANALYZE_SYSTEM_PROMPT`）、章摘要/卷摘要、卷大纲生成/书级大纲生成、时间线生成、世界观生成、错别字检测。 |
+| `src/main.ts` `ensureSkillsFiles()` | 播种 `SKILLS/系统提示词/<名称>.md`（仅缺失才写；`ensureFolders` 建目录），随后 `refreshPromptSkillOverrides()`。 |
+| `src/main.ts` `refreshPromptSkillOverrides()` / `promptSkill(name, fallback)` | 读盘 `stripHeading(stripComments())` 进 `promptSkillOverrides`；`默认写作身份` 同步 `setDefaultSystemPromptOverride()`；空/缺失回落内置常量。vault `modify/create/rename` 命中 `/SKILLS/系统提示词/` 时即时刷新。 |
+| `src/llm_client.ts` `setDefaultSystemPromptOverride()` | 全局默认 system prompt 覆盖（`assembleSystemPrompt` 优先：customSp > settings.system_prompt > 覆盖 > `DEFAULT_SYSTEM_PROMPT`）。 |
+| `src/main.ts` 调用点 | 8 个命令常量改经 `this.promptSkill(...)` 取；导出 AI 提示词预览与运行时同口径。设置页「添加技能…」过滤 `系统提示词/` 前缀（内部机制不参与阶段清单）。 |
+| 注意 | 9 个文件只覆盖 system 消息，不包含动态上下文/字数/摘要协议；其余用户 prompt 的硬编码要求模板仍由 `prompts.ts` 构建（下一批）。 |
+| 正文创作静态要求（v0.4.3+） | `buildChapterPrompt` 拆分：1/2（大纲约束/字数）与末尾输出/摘要协议仍代码生成；3–13 由 `input.taskSkillBlock` 提供，`{{outline_ref_clause}}`/`{{chapter_ref_ban}}` 由代码替换；**未选/缺失/为空时不回落内置 3–13**（无任务技能即只输出 1/2 + 输出协议）。`main.ts loadSelectedTaskSkill()` 仅当「编写文章」阶段 ref_docs 含 `skill:章节创作`（优先）或 `skill:章节写作任务` 时读取并传 `taskSkillBlock`；`loadSkillsBlock` 排除两者防双份。旧 `章节写作任务`（4–12）兼容：保留动态 3 与 13。 |
+
 ## 数据格式（系统级）
 
 - ref_docs 条目三形态：内置 key（`book_info` 等）｜`file:<vault 路径>`｜`skill:<技能名>`（v0.3.0+）。

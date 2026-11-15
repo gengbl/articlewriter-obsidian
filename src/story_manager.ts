@@ -3719,11 +3719,14 @@ private emptyState(storyName: string): StoryState {
 		let startIdx = Math.max(0, idx - prevN);
 		while (ch.vol && startIdx < idx && parseChKey(ordered[startIdx].key).vol !== ch.vol) startIdx++; // 卷模式跳过落在其他容器的头部
 		const prevChapters: PrevChapterRef[] = [];
-		for (let i = startIdx; i < idx; i++) {
-			const meta = ordered[i];
-			const src = await this.chapterSummarySource(storyName, meta.key); // 正文优先；无正文回落大纲作来源（预览即大纲文本）
-			if (!src) continue;
-			prevChapters.push({ key: meta.key, num: i + 1, label: labelOf(meta.key), title: state.chapters[meta.key]?.title || meta.title, content: src.text });
+		// v0.4.3+：use_summaries=false 时不组装【前文内容】窗口（既不注入摘要也不注入原文预览）
+		if (state.use_summaries !== false) {
+			for (let i = startIdx; i < idx; i++) {
+				const meta = ordered[i];
+				const src = await this.chapterSummarySource(storyName, meta.key); // 正文优先；无正文回落大纲作来源（预览即大纲文本）
+				if (!src) continue;
+				prevChapters.push({ key: meta.key, num: i + 1, label: labelOf(meta.key), title: state.chapters[meta.key]?.title || meta.title, content: src.text });
+			}
 		}
 
 		// v0.1.4+：窗口章缺失/过期摘要经注入 LLM 自动生成并落盘（对齐 CLI get_previous_summaries 自动补全语义）；includeCurrentSummary 路径同覆盖当前章。

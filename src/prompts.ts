@@ -496,6 +496,8 @@ export interface StoryTypePromptInput {
 	storyType?: string;
 	title?: string;
 	charNames?: Array<string | null>;
+	storyTypeSkillBlock?: string; // v0.4.3+：编写类型技能（SKILLS/编写类型/<writing_style>.md）；非空时替代内置 STORY_TYPES 模板
+	genreSkillBlock?: string; // v0.4.3+：题材技能（SKILLS/题材/<genre>.md），自动随 genre 注入
 	skillsBlock?: string; // v0.3.6+：bannedData/【禁用词】注入块已随禁用词 Skill 化移除——词表经阶段 3 技能块（skillsBlock）注入
 }
 
@@ -504,9 +506,12 @@ export interface StoryTypePromptInput {
  */
 export function buildStoryTypeSystemPrompt(input: StoryTypePromptInput): string {
 	const storyType = storyTypeOf(input.storyType);
-	const block = getStoryTypeGuide(storyType, input.title || "", input.charNames);
+	const skillBlock = (input.storyTypeSkillBlock || "").trim();
+	const block = skillBlock || getStoryTypeGuide(storyType, input.title || "", input.charNames);
 	const parts: string[] = [];
 	if (block) parts.push(block);
+	const genreBlock = (input.genreSkillBlock || "").trim();
+	if (genreBlock) parts.push(genreBlock);
 	if (input.skillsBlock) parts.push(input.skillsBlock);
 	if (!parts.length) return "";
 	return parts.join("\n\n");
@@ -796,27 +801,32 @@ export function buildChapterPrompt(input: ChapterPromptInput): { prompt: string;
 	// v0.2.25+ 引用文档配置框：vol_outline 可被移出阶段 3 清单——「参照【大纲】」措辞按上下文中实际注入的大纲块门控（卷模式＝【本卷大纲】、平铺模式＝【全书大纲】、无块＝泛指）
 	const outlineBlock = outlineBlockNameOf(input.context);
 	const req3 = `3. 先判断本章在卷结构中的位置与功能（铺垫/升级/反转/高潮/收束${outlineBlock ? `——参照【${outlineBlock}】${outlineBlock === "本卷大纲" ? "及其【卷设计】" : ""}` : ""}），强度与叙事重心与之匹配：反转前的章节持续加压，反转章必须把转折写成具体场景，反转后的章节体现主角状态变化\n`;
-	const taskSkill = (input.taskSkillBlock || "").trim();
-	if (taskSkill) {
-		parts.push(taskSkill);
+	// v0.4.3+：第 3–13 条静态要求可由 SKILLS/章节创作.md 提供（用户选择后传入 taskSkillBlock）；
+	// 第 1/2 条（大纲约束、字数）与输出/摘要协议仍由代码动态生成；未选 3–13 条技能时不回落内置要求。
+	const outlineRefClause = outlineBlock ? `——参照【${outlineBlock}】${outlineBlock === "本卷大纲" ? "及其【卷设计】" : ""}` : "";
+	const taskSkill = (input.taskSkillBlock || "")
+		.trim()
+		.replace(/\{\{outline_ref_clause\}\}/g, outlineRefClause)
+		.replace(/\{\{chapter_ref_ban\}\}/g, CHAPTER_REF_BAN);
+	const taskHas3 = /(^|\n)\s*3[.、]/.test(taskSkill);
+	const taskHas13 = /(^|\n)\s*13[.、]/.test(taskSkill);
+	let staticRequirements: string;
+	if (!taskSkill) {
+		staticRequirements = ""; // 未选 3–13 条技能：保持未选，不回落内置要求
+	} else if (taskHas3) {
+		// 新技能：3–13 条整体替换；缺 13 时补协议条
+		staticRequirements = (taskHas13 ? taskSkill : `${taskSkill}\n13. ${CHAPTER_REF_BAN}`).replace(/\s+$/, "");
 	} else {
-		parts.push(
-			"\n请按以下要求创作本章正文：" +
-			`\n1. 严格按【章节大纲】及上方【大纲约束】执行：要点全部写到、顺序遵循、不偏离主线、不添加大段无关情节\n` +
-			`2. 总字数严格控制在${wordHigh}字以内（目标${wordLow}-${wordHigh}字）：不足${wordLow}字继续充实，达到${wordHigh}字必须收尾，严禁超限\n` +
-			req3 +
-			"4. 若大纲含「升级反转」「人物变化」「章末钩子」条目，必须写成具体的场景、转折或变化，不得一笔带过；章节结尾以本章情节的自然终点收束——大纲给出「章末钩子」时落在钩子的悬念点上，未给时不强求爆点，但禁止以总结段或感悟段收尾\n" +
-			"5. 每个场景有明确的目标与障碍；对话承载冲突或信息增量，不写寒暄注水；关键转折用动作、对话和细节演出来，不用叙述概括\n" +
-			"6. 人物的行动与决定只能依赖其在前文中已知悉的信息，不得使用其不可能知道的信息；配角按其自身目标与逻辑行动，不做主角的工具\n" +
-			"7. 章内场景之间以「因此/但是」因果衔接，而非按时间顺序排列；主角的目标、认知或关系较章初至少推进一步（除非大纲明确说明）\n" +
-			"8. 若本章大纲明确要求埋设或回收某伏笔，必须具体写出；不要主动提及与之无关的未完成伏笔\n" +
-			"9. 与前后文保持连贯，人物性格一致\n" +
-			"10. 文风自然平实，画面感来自具体细节，避免华丽形容词堆砌\n" +
-			"11. 不要使用常见的比喻（如\"像……一样\"\"如……般\"\"仿佛……\"），表达方式要普通，能直说就直说\n" +
-			"12. 通顺与逻辑优先于一切风格手法：每句话成分完整、语序正常，读一遍就懂；每个行动都有动机和缘由，前后信息不断链——不得为追求风格写出病句、乱序或逻辑断裂的段落\n" +
-			`13. ${CHAPTER_REF_BAN}\n\n请直接输出正文内容，不要包含任何标题或额外说明` + (input.withSummary ? "（末尾要求的摘要块除外）。" + summaryTailInstruction("本章正文") : "。")
-		);
+		// 兼容旧版「章节写作任务」（仅 4–12 条）：保留动态第 3 条与第 13 条
+		staticRequirements = `${req3}${taskSkill}${taskHas13 ? "" : `\n13. ${CHAPTER_REF_BAN}`}`.replace(/\s+$/, "");
 	}
+	parts.push(
+		"\n请按以下要求创作本章正文：" +
+		`\n1. 严格按【章节大纲】及上方【大纲约束】执行：要点全部写到、顺序遵循、不偏离主线、不添加大段无关情节\n` +
+		`\n2. 总字数严格控制在${wordHigh}字以内（目标${wordLow}-${wordHigh}字）：不足${wordLow}字继续充实，达到${wordHigh}字必须收尾，严禁超限\n` +
+		(staticRequirements ? staticRequirements + "\n\n" : "") +
+		"请直接输出正文内容，不要包含任何标题或额外说明" + (input.withSummary ? "（末尾要求的摘要块除外）。" + summaryTailInstruction("本章正文") : "。")
+	);
 	return { prompt: parts.join("\n"), foreshadows: prepared.foreshadows };
 }
 
