@@ -1547,12 +1547,14 @@ export class EventEditModal extends AwModal {
 	onOpen(): void {
 		this.contentEl.addClass("aw-form-compact"); // 多字段表单统一紧凑行距（同 MultiFieldModal）
 		this.contentEl.createEl("h3", { text: this.title });
-		let timeText = "";
+		// 字段初始值必须直接取自 initialValues——文本框 setValue 不触发 onChange：
+		// 用户没碰过的字段只靠 onChange 回填会恒为空串（编辑态点保存＝「时间点无效」弹窗关不上、未触碰字段被清空）
+		let timeText = (this.initialValues?.timeText ?? "").trim();
 		let timeErr: HTMLElement | null = null;
-		let title = "";
-		let done = false;
-		let event = "";
-		let impact = "";
+		let title = this.initialValues?.title ?? "";
+		let done = this.initialValues?.done ?? false;
+		let event = this.initialValues?.event ?? "";
+		let impact = this.initialValues?.impact ?? "";
 		new Setting(this.contentEl).setName("时间点").addText((t) => {
 			t.setPlaceholder("如 120 / 120-06 / 120-06-15");
 			t.setValue(this.initialValues?.timeText ?? "");

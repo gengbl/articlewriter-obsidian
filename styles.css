@@ -1111,7 +1111,7 @@
 	--tl-indent: 22px;
 	--tl-guide-start: 12px;
 	position: relative;
-	margin: 4px 0 6px 5px;
+	margin: 4px 0 6px 10px; /* v0.4.4+：左边距 5→10——has-kids 圆点靶心外环 hover×1.4 后最左伸到 list 坐标 −13.3（一级大点），原 5px 会被画布左缘挡掉几个像素（深度 0 行尤其明显），留出净空 */
 	padding-left: 14px;
 }
 
@@ -1122,7 +1122,8 @@
 	top: 4px;
 	bottom: 4px;
 	width: 2px;
-	background: var(--background-modifier-border);
+	border-radius: 2px; /* 主轴圆头端点 */
+	background: linear-gradient(to bottom, transparent 0, var(--background-modifier-border) 12px calc(100% - 12px), transparent 100%); /* 两端渐隐（v0.4.4+ 美化）：主轴收放于首末条目附近，不再被生硬截断 */
 }
 
 .aw-tl-item {
@@ -1189,6 +1190,8 @@
 	border-radius: 50%;
 	color: var(--tl-lv-color, var(--h2-color, var(--interactive-accent)));
 	background: currentColor;
+	box-shadow: 0 0 0 2px var(--background-secondary); /* v0.4.4+ 美化：底色光晕环——圆点压在主轴/导引线上也干净跳出，与线不糊成一团 */
+	transition: transform 0.15s ease;
 }
 
 /* 级别色变量（v0.3.3+ caret 同色需求收敛的单一来源）：＝同级标题色 --hN-color，供圆点与折叠标识 caret 共用；二级不定义、走使用处 --tl-lv-color 的缺省链（--h2-color→interactive-accent；下列回落值与旧 lv-N .aw-tl-dot 内联配色逐一相同） */
@@ -1197,22 +1200,34 @@
 .aw-tl-item.lv-4 { --tl-lv-color: var(--h4-color, var(--color-yellow)); }
 .aw-tl-item.lv-5 { --tl-lv-color: var(--h5-color, var(--text-faint)); }
 
-/* 有子事件的圆点可点击切换折叠状态 */
+/* 有子事件的圆点可点击切换折叠状态；悬停放大一档作可点反馈（v0.4.4+ 美化）。
+   v0.4.4+ 追加：底色光晕环外再描一圈级别色细外环（＝一级靶心同款语言）——读作「此行有子事件、可点折叠」；一级 has-kids 走 .lv-1 规则的同值 box-shadow，不冲突 */
 .aw-tl-dot.has-kids {
 	cursor: pointer;
+	box-shadow: 0 0 0 2px var(--background-secondary), 0 0 0 3.5px currentColor;
 }
 
-/* 可折叠标识（▾＝展开中 / ▸＝已折叠）：排在时间徽章之后、随其后流动——一眼看出哪行有子事件、当前折叠与否；点击与圆点同一切换（timeline_view renderRow）。字号再大一半（0.85em→1.3em）、颜色＝级别色 --tl-lv-color（与本级圆点同色成组，见 .aw-tl-dot 段；占位宽 1.2em 随字号等比缩放） */
+.aw-tl-dot.has-kids:hover {
+	transform: translateX(-50%) scale(1.4);
+}
+
+/* 可折叠标识（▾＝展开中 / ▸＝已折叠）：排在时间徽章之前（圆点→caret→徽章）、随其后流动——一眼看出哪行有子事件、当前折叠与否；点击与圆点同一切换（timeline_view renderRow）。字号再大一半（0.85em→1.3em）、颜色＝级别色 --tl-lv-color（与本级圆点同色成组，见 .aw-tl-dot 段；占位宽 1.2em 随字号等比缩放） */
 .aw-tl-caret {
 	display: inline-block;
 	width: 1.2em;
+	margin-left: -12px; /* 现为首个行内元素：与时间徽章同一口径的 -12px 拉回，caret 左缘紧贴本行深度列圆点圆心右 2px */
 	margin-right: 2px;
 	text-align: center;
-	font-size: 1.3em;
+	font-size: calc(1.3em + 2px); /* 再大两像素（v0.4.4+）：在原 1.3em 基础上加 2px，em 基准随行字号缩放、加数是绝对量 */
 	line-height: 1;
 	color: var(--tl-lv-color, var(--h2-color, var(--interactive-accent))); /* ＝本级圆点颜色 */
 	cursor: pointer;
 	user-select: none;
+}
+
+/* caret 在前时徽章不再二次拉回（否则会咬进 caret）；无 caret 的行维持 .aw-tl-time 原 -12px 拉回 */
+.aw-tl-caret + .aw-tl-time {
+	margin-left: 0;
 }
 
 .aw-tl-caret:hover {
@@ -1260,9 +1275,14 @@
 	opacity: 0.55;
 }
 
-/* 时间比例留白块（高度由代码按天设置）：position:relative 供通高导引线挂接——空白里层级通道不断（留白＝流逝时间，通道＝结构从属） */
+/* 时间比例留白块（高度由代码按天设置）：position:relative 供通高导引线挂接——空白里层级通道不断（留白＝流逝时间，通道＝结构从属）。
+   v0.4.4+ 美化「时间标尺」：沿主轴右侧每 24 布局 px（≈5 天）伸出一格 5px 细刻度——留白不再是一整块空白，流逝的时间可以「数格子」；随画布缩放等比变化 */
 .aw-tl-spacer {
 	position: relative;
+	background-image: linear-gradient(to bottom, var(--background-modifier-border) 0 1px, transparent 1px);
+	background-repeat: repeat-y;
+	background-size: 5px 24px;
+	background-position: -9px 11px; /* x 起点＝主轴右缘（块坐标 −9），刻度向外伸 5px；相位 11px 与各行圆点圆心线同高 */
 }
 
 /* 按事件级别区分（标题深度 #=一级 … ######=六级，lv-5 覆盖 ≥5 级）：圆点尺寸 + 颜色（＝同级标题色 --hN-color）+ 正文强调。
@@ -1272,6 +1292,7 @@
 	top: 5px;
 	width: 12px;
 	height: 12px;
+	box-shadow: 0 0 0 2px var(--background-secondary), 0 0 0 3.5px currentColor; /* v0.4.4+ 美化：主线一级事件＝靶心——光晕环外再描一圈细外环，顶层大事件更醒目 */
 }
 
 .aw-tl-item.lv-3 .aw-tl-dot {
@@ -1321,9 +1342,36 @@
 	height: 36px;
 }
 
+/* 跳跃区间内主轴改虚线（v0.4.4+ 美化）：::before 先用面板底色盖住通高实线段（面板底＝侧栏 background-secondary，与 .aw-tl-time 不透明徽章同一口径），::after 再画等宽虚线段——「这段日历时间被压缩了」沿轴一眼可读 */
+.aw-tl-skip::before {
+	content: "";
+	position: absolute;
+	left: -13px; /* 主轴占 list 坐标 x3–5＝块坐标 −11..−9，左右各多盖 2px 防露边 */
+	width: 8px;
+	top: 0;
+	bottom: 0;
+	background: var(--background-secondary);
+}
+
+.aw-tl-skip::after {
+	content: "";
+	position: absolute;
+	left: -11px;
+	width: 2px;
+	top: 2px;
+	bottom: 2px;
+	background: repeating-linear-gradient(to bottom, var(--background-modifier-border) 0 4px, transparent 4px 9px);
+}
+
+/* 跳跃标签胶囊（v0.4.4+ 美化）：虚线描边呼应跳跃语义，底色盖过背后穿行的层级导引线 */
 .aw-tl-skiplbl {
+	padding: 1px 10px;
 	font-size: 0.75em;
+	letter-spacing: 0.08em;
 	color: var(--text-faint);
+	border: 1px dashed var(--background-modifier-border);
+	border-radius: 999px;
+	background: var(--background-secondary);
 }
 
 /* 时间点徽章（任意数字；等宽数字避免不同长度跳动）：紧贴圆点右后侧——负 margin 从内容缩进（padding-left 基线 14px）左拉 12px，徽章左缘落在本行深度列圆点圆心右侧 2px 内（圆心线＝--tl-d×--tl-indent−10px），大圆点（一级 12px）压住徽章左端盖住其左边框，读作「该圆点＝此时间点」一体化；徽章不透明背景顺带盖过其后穿过的子列短桩竖线（列 d+1），短桩自圆点下缘 top:17px 起、与徽章基本不冲突 */
@@ -1331,14 +1379,14 @@
 	display: inline-block;
 	margin-left: -12px; /* 徽章左缘＝item 坐标 −12px＝圆点圆心右 2px（见上注释）；不能改为缩小 .aw-tl-item 的 padding-left 基线——块级内容（evwrap 等）会穿过子列短桩竖线 */
 	margin-right: 6px;
-	padding: 0 6px;
+	padding: 0 8px;
 	font-size: 0.9em;
 	font-weight: 600;
 	font-variant-numeric: tabular-nums;
 	color: var(--text-normal);
 	background: var(--background-secondary);
-	border: 1px solid var(--background-modifier-border);
-	border-radius: 4px;
+	border: 1px solid var(--tl-lv-color, var(--h2-color, var(--interactive-accent))); /* v0.4.4+ 美化：描边＝本级圆点颜色——与 .aw-tl-dot 的 color 同一回退链（二级无 --tl-lv-color 时也走 --h2-color→主题强调色，绝不回落成几乎看不见的中性边框色），徽章与圆点永远同色成组 */
+	border-radius: 999px; /* v0.4.4+ 美化：胶囊形，与人物/关联 chip 同一语言 */
 }
 
 /* 涉及人物 chips */
@@ -1350,9 +1398,9 @@
 }
 
 .aw-tl-char {
-	padding: 0 5px;
+	padding: 0 7px;
 	font-size: 0.85em;
-	border-radius: 3px;
+	border-radius: 999px; /* v0.4.4+ 美化：胶囊 chip，与时间徽章/关联 chip 同一语言 */
 	background: var(--background-modifier-hover);
 	color: var(--text-muted);
 }
@@ -1375,15 +1423,25 @@
 	color: var(--text-normal);
 }
 
-/* 「✓ 已完成」徽章（仅 done=true 渲染；与拖动徽章同款框、绿色弱一档） */
+/* 分级与状态的语言（v0.4.4+ 美化）：一级主线事件名再大一档；已完成条目名弱化一档（:has 不被旧内核支持时整条规则自动忽略，退化为仅徽章标示） */
+.aw-tl-item.lv-1 .aw-tl-name {
+	font-size: 1.05em;
+}
+
+.aw-tl-item:has(.aw-tl-done) .aw-tl-name {
+	color: var(--text-muted);
+}
+
+/* 「✓ 已完成」徽章（仅 done=true 渲染；与时间徽章同形胶囊）：描边/文字统一走 --color-green（Obsidian 主题绿，不再硬编码十六进制），底衬一抹极淡绿——整行「已办妥」的语感（配套：条目名弱化见 .aw-tl-item:has(.aw-tl-done)） */
 .aw-tl-done {
 	display: inline-block;
 	margin-right: 6px;
-	padding: 0 4px;
+	padding: 0 8px;
 	font-size: 0.78em;
 	color: var(--color-green, #22c55e);
 	border: 1px solid var(--color-green, #22c55e);
-	border-radius: 4px;
+	border-radius: 999px;
+	background: color-mix(in srgb, var(--color-green, #22c55e) 12%, transparent); /* 不支持 color-mix 的旧内核忽略本行，退化为纯描边徽章 */
 }
 
 /* 影响行（- 影响： 字段）：比事件正文弱化一档 */
@@ -1410,10 +1468,10 @@
 
 .aw-tl-rel {
 	display: inline-block;
-	padding: 0 6px;
+	padding: 0 7px;
 	font-size: 0.8em;
 	border: 1px solid var(--interactive-accent);
-	border-radius: 3px;
+	border-radius: 999px; /* v0.4.4+ 美化：胶囊 chip */
 	color: var(--interactive-accent);
 	cursor: pointer;
 }

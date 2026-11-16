@@ -394,14 +394,14 @@ export class TimelineView extends ItemView {
 			setTooltip(item, row.desc, { classes: ["aw-tl-tip"] });
 			setTooltip(dot, row.desc, { classes: ["aw-tl-tip"] });
 		}
-		item.createSpan({ text: timelineTimeText(row), cls: "aw-tl-time" }); // 时间徽章紧跟圆点：负 margin 从内容缩进拉回圆点右后侧（几何见 styles.css .aw-tl-time），读作「该圆点＝此时间点」
 		if (hasKids) {
-			const caret = item.createSpan({ text: this.collapsedIds.has(row.id) ? "▸" : "▾", cls: "aw-tl-caret" }); // 可折叠标识：▾＝展开中 / ▸＝已折叠，排在时间徽章之后、点击与圆点同一切换
+			const caret = item.createSpan({ text: this.collapsedIds.has(row.id) ? "▸" : "▾", cls: "aw-tl-caret" }); // 可折叠标识：▾＝展开中 / ▸＝已折叠，排在时间徽章之前（圆点→caret→徽章）、点击与圆点同一切换
 			setTooltip(caret, this.collapsedIds.has(row.id) ? `已折叠 ${String(this.descendantCount(node))} 条子事件，点击展开` : "有子事件，点击折叠");
 			caret.addEventListener("click", (ev: MouseEvent) => { ev.stopPropagation(); toggleKids(); });
 			caret.addEventListener("pointerdown", (ev: PointerEvent) => ev.stopPropagation()); // caret 不进入拖动改时手势
 			caret.addEventListener("dblclick", (ev: MouseEvent) => ev.stopPropagation());
 		}
+		item.createSpan({ text: timelineTimeText(row), cls: "aw-tl-time" }); // 时间徽章紧跟圆点：负 margin 从内容缩进拉回圆点右后侧（几何见 styles.css .aw-tl-time），读作「该圆点＝此时间点」；前有 caret 时由兄弟选择器免掉拉回（.aw-tl-caret + .aw-tl-time）
 		if (row.title) item.createSpan({ text: row.title, cls: "aw-tl-name" }); // 事件名（旧「纯时间点」标题无名 → 不渲染）
 		if (row.done) item.createSpan({ text: "✓ 已完成", cls: "aw-tl-done" });
 		if (row.sourceLabel) item.createSpan({ text: row.sourceLabel, cls: "aw-dim aw-tl-src" });
