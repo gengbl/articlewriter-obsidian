@@ -108,7 +108,7 @@ export function parseDeaiLedgerDoc(md: string): DeaiLedger | null {
 	let cur: DeaiLedgerEntry | null = null;
 	let inSentences = false;
 	for (const raw of lines) {
-		const line = raw.trimEnd();
+		const line = raw.replace(/\s+$/, ""); // 不用 String.prototype.trimEnd（ES2019）：tsconfig lib ≤ ES2018，社区 lint 会把它判成 any 并级联报 unsafe-*
 		const head = /^##\s*(⏳|✓|✋)\s*(?:待统一改写|已统一改写|未清洗)\s*·\s*(.+?)（命中\s*(\d+)\s*处）\s*$/.exec(line.trim());
 		if (head) {
 			if (cur) l.entries.push(cur);

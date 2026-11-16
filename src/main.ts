@@ -2802,11 +2802,11 @@ async cmdRenameChapterFile(): Promise<void> {
 		for (const old of LEGACY_WRITING_TASK_SKILL_NAMES) await this.trashSkillByPath(this.skillPath(old)); // 清理与迁移独立：即便无需迁移（新文件已存在）也清旧文件
 	}
 
-	/** v0.4.3+ 技能文件退役共用：vault 路径存在 TFile 则移入回收站、否则 adapter.remove；清理失败静默保留文件、下次启动再试（retireSysPromptSkill 与写作任务技能合并共用） */
+	/** v0.4.3+ 技能文件退役共用：vault 路径存在 TFile 则移入回收站（`fileManager.trashFile`＝尊重用户删除偏好）、否则 adapter.remove；清理失败静默保留文件、下次启动再试（retireSysPromptSkill 与写作任务技能合并共用） */
 	private async trashSkillByPath(p: string): Promise<void> {
 		try {
 			const tf = this.app.vault.getAbstractFileByPath(p);
-			if (tf instanceof TFile) { await this.app.vault.trash(tf, true); return; }
+			if (tf instanceof TFile) { await this.app.fileManager.trashFile(tf); return; }
 			if (await this.app.vault.adapter.exists(p)) await this.app.vault.adapter.remove(p);
 		} catch { /* 清理失败保留文件，下次启动再试 */ }
 	}

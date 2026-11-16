@@ -39,7 +39,7 @@ test("strictCurrentOutlineOnly keeps the prompt anchored to the current volume o
 	assert.doesNotMatch(prompt, /【全书大纲】/);
 	assert.doesNotMatch(prompt, /【前一卷卷大纲 · 仅参考】/);
 	assert.doesNotMatch(prompt, /【目标卷现有大纲 · /);
-	assert.match(prompt, /本轮拆分必须严格以\【当前大纲来源\】这一份当前卷大纲为唯一依据/);
+	assert.match(prompt, /本轮拆分必须严格以【当前大纲来源】这一份当前卷大纲为唯一依据/);
 	assert.match(prompt, /当前卷大纲/);
 	// v0.4.3+ 前缀缓存友好排序：上下文在前、指令压后（逐章变化的内容排在末尾才可复用上下文稳定段）
 	assert.ok(prompt.indexOf("【当前大纲来源（本次拆分/写作依据）】") < prompt.indexOf("生成「第2卷」"));

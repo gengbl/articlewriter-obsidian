@@ -2202,9 +2202,12 @@
 }
 /* v0.4.1+ 弹窗 Setting 行整行显隐（规模模式互斥 / 一句话设定按起始节点）：核心 app.css 没有 .hide 类规则（app.asar 全文无 .hide{…}），
    toggleClass("hide") 挂上也没有任何样式——曾导致显隐完全不生效。故自带 .aw-hide，挂在 Setting.settingEl 上即整行不渲染。
-   !important 防主题 flex 规则复活；类名带 aw- 前缀避免污染全局与其它插件 */
-.aw-hide {
-	display: none !important;
+   类名带 aw- 前缀避免污染全局与其它插件。不用 !important（CSS lint 要求以选择器优先级压制）：
+   settingEl 恒带 .setting-item，插件样式在主题样式之后加载，故补 `.setting-item.aw-hide`/`.modal .aw-hide`（0,2,0）压过主题的 .setting-item{display:flex} */
+.aw-hide,
+.setting-item.aw-hide,
+.modal .aw-hide {
+	display: none;
 }
 
 /* v0.4.3+ 技能选择弹窗：文件夹层级前缀弱化显示 */

@@ -50,7 +50,7 @@ export function inspirationDate(d: Date = new Date()): string {
 
 /** 灵感名清洗：压平空白、去掉会破坏标题/链接的字符（#、[[]]、|、制表），剥掉用户顺手写上的「· 日期」尾巴，限长 40 字。空串→「未命名」 */
 export function normalizeInspirationName(raw: string): string {
-	let s = (raw || "").replace(/[#\[\]|]/g, " ").replace(/\s+/g, " ").trim();
+	let s = (raw || "").replace(/[[\]|#]/g, " ").replace(/\s+/g, " ").trim();
 	s = s.replace(new RegExp(`${HEADING_DATE_SEP}\\d{4}-\\d{2}-\\d{2}$`), "").replace(/[·・-]+$/, "").trim();
 	if (s.length > 40) s = s.slice(0, 40).trim();
 	return s || DEFAULT_INSPIRATION_NAME;
