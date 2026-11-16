@@ -3,10 +3,21 @@ import { PIPELINE_STAGES, type StageId } from "./pipeline"; // v0.3.0+：AutoBoo
 import { parseTimelineTime } from "./md_docs"; // v0.3.3+：EventEditModal 时间点校验（md_docs 纯数据模块，无循环依赖）
 import { type BookSkillPhase } from "./state_doc"; // v0.3.4+：BookSkillPhaseModal 阶段键（state_doc 纯数据模块，无循环依赖）
 import { GENRE_SKILL_NAMES } from "./skills_default"; // v0.3.6+：NewStoryModal 旧四题材回落；v0.4.3+ skills_default 会派生题材/编写类型目录技能（story_types 为单向依赖）
+import { INSPIRATION_SKILL_NAME, inspirationMatches, inspirationPreview, type InspirationBlock } from "./inspiration"; // v0.4.3+ 灵感工具包弹窗（inspiration.ts 纯解析/渲染、不 import obsidian，无循环依赖）
+
+/** v0.4.3+ 本插件弹窗统一基类：构造期给 contentEl 挂 `.aw-form` 作用域类（styles.css）——
+ *  弹窗内 Setting 行标签一律左对齐、输入框/下拉框吃满标签之外的剩余整行宽度。
+ *  挂在构造函数而非 onOpen：现有子类普遍覆写 onOpen 且不调用 super.onOpen()，构造期挂类对全部子类恒生效。 */
+export class AwModal extends Modal {
+	constructor(app: App) {
+		super(app);
+		this.contentEl.addClass("aw-form");
+	}
+}
 
 /** 文本输入框；提交回调收到值（空串视为取消）。可选 hint：渲染在标题与输入框之间的说明文字（支持 \n 多行，样式 .aw-prompt-hint）；可选 initial：预填初始值（光标置于末尾）；
  *  multiline（v0.3.7+）：5 行 textarea 占满整行（去无标签行的定宽 info 列＋.aw-prompt-textarea 宽度 100%＋aw-ta-rows 去全局 min-height）＋右对齐「确定/取消」按钮行；回车换行、Ctrl/Cmd+回车或点「确定」提交 */
-export class TextInputModal extends Modal {
+export class TextInputModal extends AwModal {
 	private submitted = false;
 
 	constructor(
@@ -86,7 +97,7 @@ export class TextInputModal extends Modal {
 }
 
 /** 新建文档单弹窗（v0.1.8+）：单一视图——顶部全宽输入框（内部占位提示「自定义文件名…」），中部为该容器标准模板文档行（均可点击选中：名称回填进输入框并标记 is-selected；已存在项保留置灰样式仅作提示、同样可选中），**CTA「确定」按钮位于整个弹窗最底部**（手机端可点按确认、回车同效）。全程只弹一次窗 */
-export class NewFilePickerModal extends Modal {
+export class NewFilePickerModal extends AwModal {
 	private submitted = false;
 
 	constructor(
@@ -152,7 +163,7 @@ const PRESET_STYLES = ["网文小说", "剧本", "普通小说", "散文随笔"]
 const PRESET_GENRES = GENRE_SKILL_NAMES.map((n) => n.replace(/写法$/, ""));
 
 /** 新书创建：标题 / 题材类型（四题材下拉，与 SKILLS 技法技能同源） / 编写类型（对齐 Python /new 三项询问） */
-export class NewStoryModal extends Modal {
+export class NewStoryModal extends AwModal {
 	private submitted = false;
 
 	constructor(
@@ -216,7 +227,7 @@ export interface StoryMetaInput {
 }
 
 /** v0.4.3+ 修改现有小说信息：题材/编写类型下拉均来自系统技能目录（题材/、编写类型/），并保留手输自定义值。 */
-export class StoryMetaModal extends Modal {
+export class StoryMetaModal extends AwModal {
 	private submitted = false;
 
 	constructor(
@@ -402,7 +413,7 @@ export interface AutoBookInput {
 	overwrite: boolean; // true=已有世界观/策划指南/书级大纲也重新生成（覆盖）；false=已有即跳过
 }
 
-export class AutoBookModal extends Modal {
+export class AutoBookModal extends AwModal {
 	private submitted = false;
 
 	constructor(
@@ -478,7 +489,7 @@ export interface AutoBookConfigInput {
 /** v0.4.1+ 「配置全自动建书」弹窗：预填当前书《故事状态.md》里的 auto_book＋use_volumes＋one_line，
  *  保存即整体写回（见 main.ts saveAutoBookConfig）。规模模式可切换（决定写回的 use_volumes 与生效的规模参数组）；
  *  一句话设定允许留空（＝不改动 one_line），保存不校验 premise；参数校验与 AutoBookModal 同一套规则 */
-export class AutoBookConfigModal extends Modal {
+export class AutoBookConfigModal extends AwModal {
 	constructor(
 		app: App,
 		private init: {
@@ -551,7 +562,7 @@ export class AutoBookConfigModal extends Modal {
 
 /** v0.3.1+（v0.4.1+ 起用于「全自动写书」）执行范围确认弹窗（按书配置参数齐全时弹出）：预填 auto_book 里的 start/end 节点，
  *  允许临时调整起始/停止节点后再开跑；确认即回调 (startAt, endAt)，取消＝不执行 */
-export class SkillRangeModal extends Modal {
+export class SkillRangeModal extends AwModal {
 	constructor(
 		app: App,
 		private bookTitle: string,
@@ -584,7 +595,7 @@ export class SkillRangeModal extends Modal {
 }
 
 /** 批量新建卷：手动把卷名逐个加入列表（可上移/下移/删除），确定后按列表顺序依次创建；不连环弹框 */
-export class VolumeBatchCreateModal extends Modal {
+export class VolumeBatchCreateModal extends AwModal {
 	private submitted = false;
 	private pending: string[] = [];
 	private listEl: HTMLElement | null = null;
@@ -814,13 +825,14 @@ export class VaultFilePickerModal extends SuggestModal<TFile> {
 	constructor(app: App, private onPick: (path: string) => void) {
 		super(app);
 		this.inputEl.placeholder = "选择 vault 内的 Markdown 文档（按路径模糊搜索）…";
+		this.limit = Number.MAX_SAFE_INTEGER; // v0.4.3+ 放开显示上限（父类默认只显前 100 条）：候选显示全部匹配文档
 	}
 
 	getSuggestions(query: string): TFile[] {
 		const all = this.app.vault.getMarkdownFiles();
 		const q = query.trim().toLowerCase();
 		const hit = q ? all.filter((f) => f.path.toLowerCase().includes(q)) : all;
-		return hit.sort((a, b) => a.path.localeCompare(b.path)).slice(0, 200);
+		return hit.sort((a, b) => a.path.localeCompare(b.path)); // v0.4.3+ 不再截断（此前只列前 200）
 	}
 
 	renderSuggestion(file: TFile, el: HTMLElement): void {
@@ -838,11 +850,12 @@ export class SkillPickerModal extends SuggestModal<string> {
 	constructor(app: App, private names: string[], private onPick: (name: string) => void, placeholder = "选择技能（SKILLS/ 下，含文件夹，按名称模糊搜索）…") {
 		super(app);
 		this.inputEl.placeholder = placeholder;
+		this.limit = Number.MAX_SAFE_INTEGER; // v0.4.3+ 放开显示上限（同 VaultFilePickerModal）
 	}
 
 	getSuggestions(query: string): string[] {
 		const q = query.trim().toLowerCase();
-		return this.names.filter((n) => !q || n.toLowerCase().includes(q)).slice(0, 200);
+		return this.names.filter((n) => !q || n.toLowerCase().includes(q)); // v0.4.3+ 不再截断（此前只列前 200）
 	}
 
 	/** v0.4.3+：按 SKILLS/ 文件夹层次显示——`题材/玄幻仙侠` 渲染为灰色「题材 / 」+「玄幻仙侠」 */
@@ -872,7 +885,7 @@ export interface ActionItem {
 }
 
 /** 可点击的动作列表；回车选择高亮项，Esc 取消 */
-export class ActionMenuModal extends Modal {
+export class ActionMenuModal extends AwModal {
 	private submitted = false;
 	private selected = 0;
 	private onKeydown?: (e: KeyboardEvent) => void; // 打开期间挂 document(捕获)，焦点不在 contentEl 内也能响应↑↓/回车/Esc
@@ -959,7 +972,7 @@ export class ActionMenuModal extends Modal {
 
 // ---------- 多行文本输入（场景正文/世界观历史/大纲追加等）----------
 
-export class TextAreaPrompt extends Modal {
+export class TextAreaPrompt extends AwModal {
 	private submitted = false;
 
 	constructor(
@@ -1006,7 +1019,7 @@ export interface PanelLine {
 }
 
 /** 展示多行预格式化文本；点击任意处或 Esc 关闭 */
-export class TextPanelModal extends Modal {
+export class TextPanelModal extends AwModal {
 	constructor(app: App, private title: string, private lines: Array<string | PanelLine>) {
 		super(app);
 	}
@@ -1041,7 +1054,7 @@ export interface FieldDef {
 }
 
 /** 多个单行文本字段的表单；提交回调收到 {key: value} */
-export class MultiFieldModal extends Modal {
+export class MultiFieldModal extends AwModal {
 	private submitted = false;
 
 	constructor(
@@ -1112,7 +1125,7 @@ export interface AddCharacterResult {
  * 关系区初始为空，点「+ 添加关系」在下方新增一行（关系对象下拉 = 该级别范围内人物优先 + 全书其余人物、关系类型下拉 = 预设类型），
  * 每行可单独删除、可加多行；底部「确定」提交（姓名为空不提交）。关系条目由调用方写入同层级《人物关系.md》。
  */
-export class AddCharacterModal extends Modal {
+export class AddCharacterModal extends AwModal {
 	private submitted = false;
 	private name = "";
 	private fields: Record<string, string> = {};
@@ -1246,7 +1259,7 @@ export interface SaveReplyResult {
 }
 
 /** 对话回复保存到文件：输入目标路径（vault 相对；无扩展名自动补 .md，缺失父目录由调用方逐级创建）；目标已存在时红色警示且须勾选「覆盖」才可保存；可选「保存后打开文件」（默认开）。纯 UI，落盘动作由调用方回调执行 */
-export class SaveReplyModal extends Modal {
+export class SaveReplyModal extends AwModal {
 	private submitted = false;
 	private inputEl!: HTMLInputElement;
 	private warnEl!: HTMLElement;
@@ -1338,7 +1351,7 @@ export class SaveReplyModal extends Modal {
 
 // ---------- 确认框（删除等危险操作）----------
 
-export class ConfirmModal extends Modal {
+export class ConfirmModal extends AwModal {
 	private resolved = false;
 
 	constructor(
@@ -1377,7 +1390,7 @@ export class ConfirmModal extends Modal {
 // ---------- LLM 流式生成预览已并入统一生成过程面板（src/gen_progress_view.ts GenProgressView 的 WritingStreamSink 流式阶段），不再使用独立 Modal。
 
 /** 导出 AI 提示词功能点选择弹窗：checkbox 列表 + 全选/全不选按钮，提交回调返回选中标题数组（空数组视为取消） */
-export class ExportPromptsSelectModal extends Modal {
+export class ExportPromptsSelectModal extends AwModal {
 	private submitted = false;
 	private selected = new Set<string>();
 
@@ -1516,7 +1529,7 @@ const makeMultiSelect = (
  * initialValues 预填（编辑=节点现值；新增=空）；charOptions/relatedOptions 为人物/关联下拉候选（面板注入：人物来自三层《人物.md》，关联为既有事件名、已排除自身）。
  * 事件名允许留空（＝旧「纯时间点」标题保持无名）；关闭弹窗即放弃（onCancel）。
  */
-export class EventEditModal extends Modal {
+export class EventEditModal extends AwModal {
 	private submitted = false;
 
 	constructor(
@@ -1612,7 +1625,7 @@ export interface SkillEditResult {
  * editing=null 为新建（名称可填、保存位置默认书籍级）；编辑态名称只读（保存回原路径，防 故事状态.md book_skills 引用悬空），
  * 改「保存位置」提交＝另存另一级同名下（调用方负责写新删旧）。名称非法（空 / 含文件名非法字符 / 以 .md 结尾）时内联报错、不关闭弹窗。
  */
-export class SkillEditModal extends Modal {
+export class SkillEditModal extends AwModal {
 	private submitted = false;
 
 	constructor(
@@ -1689,7 +1702,7 @@ export class SkillEditModal extends Modal {
  * 书籍技能阶段配置弹窗（v0.3.4+）：四个阶段（0–3）各一节下拉多选（候选＝本书 案头资料/Skill/ 技能名），
  * 保存回 故事状态.md book_skills（空阶段＝不写该键）。phases 标签由调用方按 settings.llm.writing_phases 显示名传入。
  */
-export class BookSkillPhaseModal extends Modal {
+export class BookSkillPhaseModal extends AwModal {
 	private submitted = false;
 
 	constructor(
@@ -1749,5 +1762,122 @@ export class BookSkillPhaseModal extends Modal {
 	override onClose(): void {
 		this.contentEl.empty();
 		if (!this.submitted && this.onCancel) this.onCancel();
+	}
+}
+
+// ---------- v0.4.3+ 灵感工具包（书级《案头资料/灵感/灵感.md》内一条命令完成打开/定位/改名/删除/新增）----------
+
+/** 弹窗各动作的落盘侧实现（main.ts 提供）：openBlock/openDoc/newBlock/renameBlock/editTemplate 会先关弹窗再执行（要让位给编辑器或下一个弹窗），deleteBlock 留在弹窗内并回填最新列表 */
+export interface InspirationKitHandlers {
+	openBlock: (b: InspirationBlock) => void | Promise<void>;
+	renameBlock: (b: InspirationBlock) => void | Promise<void>;
+	deleteBlock: (b: InspirationBlock) => void | Promise<void>;
+	newBlock: () => void | Promise<void>;
+	openDoc: () => void | Promise<void>;
+	editTemplate: () => void | Promise<void>;
+}
+
+/**
+ * 灵感工具包弹窗：搜索框＋灵感块列表（每行「定位／改名／删除」）＋底部「新增灵感／打开灵感文件／编辑灵感模板」。
+ * 行本身＝定位（搜索框回车＝定位到当前过滤结果第一条）。增删改之后调 `setBlocks` 回填重新解析的结果——
+ * 每次写盘都会让旧的行号/块对象失效，调用方必须重新 `parseInspirationDoc` 再喂回来。
+ */
+export class InspirationKitModal extends AwModal {
+	private blocks: InspirationBlock[];
+	private keyword = "";
+	private closed = false;
+	private listEl: HTMLElement | null = null;
+	private countEl: HTMLElement | null = null;
+
+	constructor(
+		app: App,
+		private docLabel: string,
+		blocks: InspirationBlock[],
+		private h: InspirationKitHandlers
+	) {
+		super(app);
+		this.blocks = blocks;
+	}
+
+	/** 增删改后刷新（删除不关窗，留在列表里继续挑下一条） */
+	setBlocks(blocks: InspirationBlock[]): void {
+		this.blocks = blocks;
+		this.renderList();
+	}
+
+	onOpen(): void {
+		this.contentEl.createEl("h3", { text: "灵感工具包" });
+		this.countEl = this.contentEl.createDiv({ cls: "aw-dim aw-prompt-hint" });
+		const search = this.contentEl.createEl("input", { cls: "text-input aw-insp-search", type: "text" });
+		search.setAttr("placeholder", "搜索灵感（名字或正文）…");
+		search.addEventListener("input", () => {
+			this.keyword = search.value;
+			this.renderList();
+		});
+		search.addEventListener("keydown", (e) => {
+			if (e.key !== "Enter") return;
+			e.preventDefault();
+			const first = this.filtered()[0]; // 回车＝定位到当前过滤结果的第一条
+			if (first) void this.run(() => this.h.openBlock(first), true);
+		});
+		this.listEl = this.contentEl.createDiv({ cls: "aw-action-list aw-insp-list" });
+		this.renderList();
+		const btns = new Setting(this.contentEl)
+			.addButton((b) => b.setButtonText("新增灵感").setCta().onClick(() => void this.run(() => this.h.newBlock(), true)))
+			.addButton((b) => b.setButtonText("打开灵感文件").onClick(() => void this.run(() => this.h.openDoc(), true)))
+			.addButton((b) => b.setButtonText("编辑灵感模板").onClick(() => void this.run(() => this.h.editTemplate(), true)));
+		btns.settingEl.addClass("aw-btns-right");
+	}
+
+	private filtered(): InspirationBlock[] {
+		return this.blocks.filter((b) => inspirationMatches(b, this.keyword));
+	}
+
+	private renderList(): void {
+		if (!this.listEl) return;
+		const rows = this.filtered();
+		if (this.countEl) {
+			this.countEl.setText(`文件：${this.docLabel} · 共 ${String(this.blocks.length)} 条灵感${this.keyword.trim() ? ` · 命中 ${String(rows.length)} 条` : ""}；新增按 SKILLS/${INSPIRATION_SKILL_NAME}.md 在文末追加模板块`);
+		}
+		this.listEl.empty();
+		if (!this.blocks.length) {
+			this.listEl.createDiv({ text: "还没有灵感：点「新增灵感」会在文档末尾追加一个模板块，填完直接保存即可。", cls: "aw-dim" });
+			return;
+		}
+		if (!rows.length) {
+			this.listEl.createDiv({ text: "没有匹配的灵感（换个关键词，或清空搜索框看全部）。", cls: "aw-dim" });
+			return;
+		}
+		for (const b of rows) {
+			const row = this.listEl.createDiv({ cls: "aw-insp-row" });
+			row.addEventListener("click", (e) => {
+				if ((e.target as HTMLElement).closest("button")) return; // 按钮动作优先于行点击
+				void this.run(() => this.h.openBlock(b), true);
+			});
+			const txt = row.createDiv({ cls: "aw-insp-txt" });
+			txt.createDiv({ text: b.name || b.heading, cls: "aw-insp-name" });
+			const sub = txt.createDiv({ cls: "aw-insp-sub" });
+			if (b.date) sub.createSpan({ text: b.date, cls: "aw-insp-date" });
+			sub.createSpan({ text: inspirationPreview(b.body) || "（正文为空，待填充）", cls: "aw-dim" });
+			const btns = row.createDiv({ cls: "aw-insp-btns" });
+			btns.createEl("button", { text: "定位", cls: "aw-insp-btn" }).onclick = () => void this.run(() => this.h.openBlock(b), true);
+			btns.createEl("button", { text: "改名", cls: "aw-insp-btn" }).onclick = () => void this.run(() => this.h.renameBlock(b), true);
+			btns.createEl("button", { text: "删除", cls: "aw-insp-btn aw-insp-del" }).onclick = () => void this.run(() => this.h.deleteBlock(b), false);
+		}
+	}
+
+	/** closeFirst＝要去编辑器/下一个弹窗里干活的动作：先关本弹窗（模态遮罩让位）；删除不关，留在列表里继续挑 */
+	private async run(fn: () => void | Promise<void>, closeFirst: boolean): Promise<void> {
+		if (this.closed) return; // 已关窗＝不再排队执行（防连点重复打开编辑器/重复弹改名框）
+		if (closeFirst) {
+			this.closed = true;
+			this.close();
+		}
+		await fn();
+	}
+
+	override onClose(): void {
+		this.closed = true;
+		this.contentEl.empty();
 	}
 }

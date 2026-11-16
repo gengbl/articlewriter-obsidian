@@ -1,6 +1,7 @@
 import { ItemView, TFile, WorkspaceLeaf, setIcon } from "obsidian";
 import { formatLocalDateTime } from "./story_types";
 import { PROMPT_DOCS_CHAPTER, PROMPT_DOCS_ROOT, PROMPT_DOCS_VOLUME } from "./prompts";
+import { INSPIRATION_FOLDER_NAME } from "./inspiration"; // v0.4.3+：「案头资料/灵感」文件夹行的「灵感工具包…」入口（inspiration.ts 纯数据模块）
 
 const CH_SUFFIX_TO_BASE: Record<string, string> = { "大纲.md": "章节大纲.md", "信息.md": "章节信息.md", "人物.md": "人物.md", "人物关系.md": "人物关系.md", "场景.md": "场景.md" };
 const VOL_SUFFIX_TO_BASE: Record<string, string> = { "大纲.md": "卷大纲.md", "人物.md": "人物.md", "人物关系.md": "人物关系.md", "场景.md": "场景.md" };
@@ -120,9 +121,10 @@ export type StatusAction =
 	| { kind: "delete-folder"; path: string } // 案头资料文件夹行右键「删除」：整个文件夹移入回收站（先确认框）
 	| { kind: "new-volume-doc"; story: string; volId: string } // 卷节点 / 卷内「文档」分组右键：在该卷实体目录下新建 .md（语义同 new-file，落点为卷目录而非章节目录）
 	| { kind: "complete-volume-docs"; story: string; volId: string } // 卷内「文档」命名头右键「补全卷文档」：检查该卷下缺失的设定模板（卷大纲/人物/人物关系/场景/时间线五件套）并创建，已存在不覆盖
-	| { kind: "complete-root-docs"; story: string } // 案头资料节点右键「补全资料」：检查书根缺失的默认资料文件（大纲/策划指南/世界观/伏笔/笔记/人物/人物关系/场景/时间线/张力规则十件套）并按模板创建，已存在不覆盖
+	| { kind: "complete-root-docs"; story: string } // 案头资料节点右键「补全资料」：检查书根缺失的默认资料文件（大纲/策划指南/世界观/伏笔/笔记/人物/人物关系/场景/时间线九件套；张力规则已并入系统技能张力工具箱）并按模板创建，已存在不覆盖
 	| { kind: "skill-new"; story: string } // 案头资料节点右键「新建 Skill…」：打开新建技能弹窗（预填格式模板，保存只落盘不进配置），与命令面板同义
 	| { kind: "book-skill-phases"; story: string } // 案头资料节点右键「书籍 Skill 阶段配置…」：直达四阶段选用配置（写 故事状态.md book_skills），与命令面板同义
+	| { kind: "inspiration-kit"; story: string } // v0.4.3+ 案头资料标题行／「灵感」文件夹行右键「灵感工具包…」：打开该书的《案头资料/灵感/灵感.md》工具包弹窗（打开/定位/改名/删除/新增灵感块）
 	| { kind: "complete-outline-docs"; story: string } // 「书稿」小节标题右键「补全大纲资料…」：检查参与大纲生成的四件资料（大纲/策划指南/世界观/人物关系）并按模板补缺，已存在不覆盖
 	| { kind: "new-prologue"; story: string } // 「书稿」标题行右键「新建引言…」：书根建「引言」文件夹 + 正文《引言.md》（幂等；已存在仅提示）
 	| { kind: "delete-prologue"; story: string } // 引言节点右键「删除引言」：整个「引言」文件夹移入回收站（先确认框）
@@ -365,11 +367,12 @@ export class StatusView extends ItemView {
 	/** 「案头资料」「书稿」两个小节；isActive=该书是否为当前激活小说（仅其下章节/卷可被 Radio 选中激活）。书稿小节按归属卷渲染为树节点（卷名行 + 缩进章节），未归属章节平铺兜底 */
 	private renderStorySections(parent: HTMLElement, d: StatusDetail, isActive: boolean): void {
 		if (d.globalFiles.length || d.globalFolders.length) {
-			// 案头资料分组：标题行与组内空白右键=「补全资料」（书根默认资料十件套补缺、已存在不覆盖）+「新建资料…」（v0.1.6+：不再提供新建章节/新建卷——建章在书稿具体章节/卷节点上、建卷在书籍列表标题行或书稿小节标题）
+			// 案头资料分组：标题行与组内空白右键=「补全资料」（书根默认资料九件套补缺、已存在不覆盖）+「新建资料…」（v0.1.6+：不再提供新建章节/新建卷——建章在书稿具体章节/卷节点上、建卷在书籍列表标题行或书稿小节标题）
 			const gItems = (): Array<{ label: string; run: () => void } | { sep: true }> => [
 				{ label: "补全资料", run: () => this.runStatusAction({ kind: "complete-root-docs", story: d.storyName }) }, // 检查缺失的默认资料文件并创建，已存在保留不覆盖
 				{ label: "新建 Skill…", run: () => this.runStatusAction({ kind: "skill-new", story: d.storyName }) }, // v0.3.4+：新建技能弹窗（案头资料/Skill/ 或 SKILLS/，预填格式模板；创建与配置解耦）
 				{ label: "书籍 Skill 阶段配置…", run: () => this.runStatusAction({ kind: "book-skill-phases", story: d.storyName }) }, // v0.3.4+：直达四阶段选用配置（写 故事状态.md book_skills）
+				{ label: "灵感工具包…", run: () => this.runStatusAction({ kind: "inspiration-kit", story: d.storyName }) }, // v0.4.3+：该书《案头资料/灵感/灵感.md》——打开/定位/改名/删除/新增灵感块
 				{ sep: true },
 				{ label: "新建资料…", run: () => this.runStatusAction({ kind: "new-file", story: d.storyName, key: null }) },
 			];
@@ -724,6 +727,8 @@ export class StatusView extends ItemView {
 		el.addEventListener("contextmenu", (e) => {
 			e.stopPropagation();
 			this.showContextMenu(e, [
+				// v0.4.3+：「案头资料/灵感」文件夹行专用入口——直接开该书灵感工具包（不必先切当前书）
+				...(folder.name === INSPIRATION_FOLDER_NAME ? [{ label: "灵感工具包…", run: () => this.runStatusAction({ kind: "inspiration-kit", story: storyName }) }] : []),
 				{ label: "新建文章…", run: () => this.runStatusAction({ kind: "new-file", story: storyName, key: null, folder: folder.path }) },
 				{ label: `删除「${folder.name}」`, danger: true, run: () => this.runStatusAction({ kind: "delete-folder", path: folder.path }) },
 			]);

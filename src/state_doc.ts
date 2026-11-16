@@ -51,6 +51,8 @@ export interface StoryState {
 	next_chapters?: number; // v0.4.3+：本书级「后续参考章数」（后文窗口章数 N，0=不注入后章）——编写文章阶段的大纲块按前 prev_chapters／后 next_chapters 只注入当前章前后若干章的大纲节选；显式设置时优先于全局 data.json settings.nextChapters
 	include_volume_summary?: boolean; // v0.2.x+：本书级「是否使用前卷摘要组织提示词」；显式设置时优先于全局 data.json settings.includeVolumeSummary模式（纯 书→章 扁平结构）、true=有卷模式；缺省时按是否含卷数据推断（存量有卷书判 true 防回归，新/扁平书默认 false）
 	word_range?: [number, number]; // v0.3.5+：本书级正文字数区间 [下限,上限]（取代旧 WRITING_GUIDE 指南「字数配置」注释）；显式配置时优先于全局默认 [4000,5000]，非法（下限≤0 或下限>上限）按未配置处理
+	ai_expand_chapter_outline?: boolean; // v0.4.3+：从大纲生成章节时是否让 AI 扩展章大纲——true=拆出的各章段落经 LLM 扩写成完整《章节大纲》（长度≈该章正文目标字数 1/4）后落盘；false=直接写入拆分原文；缺省（未写）=true
+	ai_outline_cast?: boolean; // v0.4.3+：大纲阶段（生成卷大纲 / 从大纲生成章节）是否抽取人物与人物关系并按出现范围分层写入《人物.md》《人物关系.md》；缺省（未写）=true
 	one_line?: string; // v0.3.0+：全自动流水线（auto-book）的一句话设定——/auto-book 弹窗填入后持久化，「生成世界观」命令读取作 premise；仅显式设置时写回
 	auto_book?: AutoBookConfig; // v0.4.1+：全自动建书配置（执行范围＋规模参数）——旧「案头资料/自动建书.md」技能文档合并进状态文档；仅显式配置时写回
 	book_skills?: Record<BookSkillPhase, string[]>; // v0.3.4+：本书选用的书籍级技能（技能名数组，读 <书>/案头资料/Skill/<名>.md）。键=阶段 key（BOOK_SKILL_PHASE_KEYS）；仅显式配置时写回
@@ -254,7 +256,7 @@ export function parseStateDoc(
 	const extraKeys = new Set([
 		"version", "title", "genre", "writing_style", "current_chapter", "current_scene",
 		"current_volume", "total_words", "use_summaries", "use_volumes", "chapters", "created_at", "updated_at",
-		"prev_chapters", "next_chapters", "include_volume_summary", "word_range", "one_line", "auto_book", "book_skills",
+		"prev_chapters", "next_chapters", "include_volume_summary", "word_range", "ai_expand_chapter_outline", "ai_outline_cast", "one_line", "auto_book", "book_skills",
 	]);
 	const extra: Record<string, unknown> = {};
 	for (const [k, v] of Object.entries(o)) if (!extraKeys.has(k)) extra[k] = v;
@@ -278,6 +280,8 @@ export function parseStateDoc(
 			next_chapters: normalizeNonNegInt(o.next_chapters),
 			include_volume_summary: typeof o.include_volume_summary === "boolean" ? o.include_volume_summary : undefined,
 			word_range: normalizeWordRange(o.word_range), // v0.3.5+：书级字数区间（非法/未设置为 undefined，消费方回落 WORD_RANGE_DEFAULT）
+			ai_expand_chapter_outline: typeof o.ai_expand_chapter_outline === "boolean" ? o.ai_expand_chapter_outline : undefined, // v0.4.3+：是否 AI 扩展章大纲（缺省 undefined＝按开处理）
+			ai_outline_cast: typeof o.ai_outline_cast === "boolean" ? o.ai_outline_cast : undefined, // v0.4.3+：大纲阶段是否抽取人物/关系并分层写入（缺省 undefined＝按开处理）
 			one_line: asStr(o.one_line).trim() || undefined, // v0.3.0+：一句话设定（空串视为未设置）
 			auto_book: normalizeAutoBook(o.auto_book), // v0.4.1+：全自动建书配置（非法/空结构视为未配置）
 			book_skills: normalizeBookSkills(o.book_skills), // v0.3.4+：书籍技能阶段配置（非法/空结构视为未配置）
@@ -310,6 +314,8 @@ export function formatStateDoc(
 	if (state.next_chapters != null) o["next_chapters"] = state.next_chapters; // v0.4.3+：书级后 N 章（未配置不写，走全局 settings.nextChapters）
 	if (state.include_volume_summary != null) o["include_volume_summary"] = state.include_volume_summary;
 	if (state.word_range) o["word_range"] = [state.word_range[0], state.word_range[1]]; // v0.3.5+：书级字数区间（YAML 数组写回；未配置不写）
+	if (state.ai_expand_chapter_outline != null) o["ai_expand_chapter_outline"] = state.ai_expand_chapter_outline; // v0.4.3+：是否 AI 扩展章大纲（未显式设置不写，缺省按开）
+	if (state.ai_outline_cast != null) o["ai_outline_cast"] = state.ai_outline_cast; // v0.4.3+：大纲阶段是否抽取人物/关系（未显式设置不写，缺省按开）
 	if (state.one_line) o["one_line"] = state.one_line; // v0.3.0+：一句话设定（auto-book），仅非空时写回
 	// v0.4.1+：全自动建书配置——仅含有效条目时写回，按固定键序（start/end/chapters/volumes/chapter_counts/overwrite）
 	if (state.auto_book) {

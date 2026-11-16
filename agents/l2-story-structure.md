@@ -6,13 +6,13 @@
 
 ## 行为约定
 
-- **物理布局（v0.2.22+）**：书内分两个系统容器——`案头资料/`（书级文档十件套 + 用户自建资料/文件夹）与 `书稿/`（`引言/`、章节目录、有卷模式下的 `<卷名>/` 卷目录）；卷目录直属文档统一收进 `<卷名>/文档/`（裸基名）。平铺（无卷）模式**不建** `书稿/文档/`。系统文件（`故事状态.md`/`story_state.json`/`AI提示词/`/`_backup/`/`卷.md`）留书根不动（`ROOT_SYSTEM_NAMES`；**v0.3.5+** 旧书根 `WRITING_GUIDE.md`/`写作指南汇总.md` 已随写作指南体系废弃、存量启动时自动清理）。详见 [l3-state-and-volumes.md](./l3-state-and-volumes.md)「目录树」。
+- **物理布局（v0.2.22+）**：书内分两个系统容器——`案头资料/`（书级文档九件套 + 用户自建资料/文件夹；v0.4.3+ 张力规则移出清单，旧《张力规则.md》留在原处不再注入）与 `书稿/`（`引言/`、章节目录、有卷模式下的 `<卷名>/` 卷目录）；卷目录直属文档统一收进 `<卷名>/文档/`（裸基名）。平铺（无卷）模式**不建** `书稿/文档/`。系统文件（`故事状态.md`/`story_state.json`/`AI提示词/`/`_backup/`/`卷.md`）留书根不动（`ROOT_SYSTEM_NAMES`；**v0.3.5+** 旧书根 `WRITING_GUIDE.md`/`写作指南汇总.md` 已随写作指南体系废弃、存量启动时自动清理）。详见 [l3-state-and-volumes.md](./l3-state-and-volumes.md)「目录树」。
 - **旧格式自动迁移**：首次触达旧布局书籍时自动把书根散落文档搬入 `案头资料/`、`引言/`→`书稿/引言/`、卷目录→`书稿/<卷名>/`（直属文档归 `文档/`）、书根章节目录→`书稿/`；幂等可重跑，失败不缓存下次重试——详见 [l3-state-and-volumes.md](./l3-state-and-volumes.md)「旧布局自动迁移」。
 - **位置即归属与编号事实**：章节物理存放于「`书稿/` + 各卷实体目录」，目录名里的 N 是该容器内的本地章号；一切代码内部标识用复合键（根域 `"N"` / 卷域 `"volId:N"`），顺序逻辑一律基于阅读序 ordinal——详见 [l3-state-and-volumes.md](./l3-state-and-volumes.md)「章节身份模型」。
 - **卷名唯一且作为目录名**；「引言」为保留名（与书稿引言文件夹物理冲突）。
 - **新书默认无卷模式**（`use_volumes=false`）；`/volume off` 是破坏性拍平（含卷残留文件 salvage 回 `案头资料/`）。
 - **切换书籍检测到平面残留 → 强制自动整理、不可跳过**，失败置 `flatBlocked` 锁定该书结构操作。
-- **「补全故事状态可用参数」（`state-complete`）升级旧故事状态文档**：把 frontmatter 缺失的书级提示词组装选项（`prev_chapters`/`next_chapters`（v0.4.3+）/`include_volume_summary`/`word_range`）逐项询问（预填当前全局生效值）后显式补写；均已显式设置仅提示不写盘，Esc 取消不落盘；详见 [l3-state-and-volumes.md](./l3-state-and-volumes.md)。
+- **「补全故事状态可用参数」（`state-complete`）升级旧故事状态文档**：把 frontmatter 缺失的书级提示词组装选项（`prev_chapters`/`next_chapters`（v0.4.3+）/`include_volume_summary`/`word_range`/`ai_expand_chapter_outline`（v0.4.3+：从大纲生成章节时是否 AI 扩展章大纲，缺省开）/`ai_outline_cast`（v0.4.3+：大纲阶段是否随手抽人物/关系并按出现范围分层写入三层文档，缺省开））逐项询问（预填当前全局生效值）后显式补写；均已显式设置仅提示不写盘，Esc 取消不落盘；详见 [l3-state-and-volumes.md](./l3-state-and-volumes.md)。
 - 删除一律走回收站（`trashFile`），角色改名先备份 `_backup/` 再替换。
 - 建章/建卷/建书自动播种标准模板文档（缺失补建、绝不覆盖用户内容），模板清单与格式见 [l3-md-docs-parsing.md](./l3-md-docs-parsing.md)。
 

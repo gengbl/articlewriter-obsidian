@@ -7,11 +7,8 @@ export type Message = OpenAI.ChatCompletionMessageParam;
 export const DEFAULT_SYSTEM_PROMPT =
 	"你是一个网络小说作者，写的是给人看的故事，不是范文。文风自然平实，多用常见词，避免华丽形容词堆砌。请根据用户的需求创作小说章节。注意：1.保持故事连贯性 2.人物性格一致 3.情节合理推进4.适当使用描写和对话 5.每章结尾自然收束";
 
-/** v0.4.3+：SKILLS/系统提示词/默认写作身份.md 的运行时覆盖；空串=回落 DEFAULT_SYSTEM_PROMPT */
-let defaultSystemPromptOverride = "";
-export function setDefaultSystemPromptOverride(text: string): void {
-	defaultSystemPromptOverride = (text || "").trim();
-}
+// v0.4.3+：原「SKILLS/系统提示词/默认写作身份.md → defaultSystemPromptOverride」运行时覆盖已退役——
+// 全局 system_prompt 配置亦已删除（不再使用）：无命令级 system 时一律回落下方 DEFAULT_SYSTEM_PROMPT，可按需经技能通道加强身份。
 
 /**
  * LLM 调用层（OpenAI 兼容标准接口）——对齐 Python articlewriter 的 llm_client.py。
@@ -109,6 +106,21 @@ function sanitizeMessages(messages: Message[]): Message[] {
 		console.warn(`[articlewriter] 提示词含非法字符（孤立代理码元），已在发送前清洗 ${String(hit)} 条消息——这类字符会让 fetch 直接抛 "Failed to fetch"。附近片段：${sample || "(无法取样)"}`);
 	}
 	return out;
+}
+
+/**
+ * v0.4.3+ 格式/合法性纠错重试的会话续轮消息（重试站点共用：章节正文格式重试、文章转剧本重试、时间线重生成、逐章人物分析 JSON 重试）。
+ * **不要**把纠错注记拼在原 user 消息末尾、也不要换个开头重发——两种形状都会让上一次请求算好的整段 K/V 作废
+ * （实测换头重试 reused=0、整段原文重新 prefill 1.5s）。改成「上次输出」作 assistant 轮 +「纠错注记」作新一轮 user 消息追加：
+ * 会话前缀与首请求逐字相同 → 引擎按前缀匹配整段复用（实测 reused=3009 read=49 383ms，对比首次同构 1922ms），连上次输出本身的 K/V 也一并接上。
+ * 上次输出为空时退化为只追加注记轮（同样复用）。对云端端点无副作用：只是普通多轮消息，不含任何 strata_* 私有字段。
+ */
+export function retryTurnMessages(sysMsg: Message, prompt: string, prevOutput: string, note: string): Message[] {
+	const msgs: Message[] = [sysMsg, { role: "user", content: prompt }];
+	const bad = (prevOutput || "").trim();
+	if (bad) msgs.push({ role: "assistant", content: bad });
+	msgs.push({ role: "user", content: note.trim() });
+	return msgs;
 }
 
 /** chat completions 请求体（兼容端点透传任意附加字段；model 为空时序列化自动省略） */
@@ -213,12 +225,12 @@ export async function testConnection(cfg: LlmConfigDoc): Promise<LlmTestResult> 
 
 /**
  * 组装最终 system prompt（对齐 Python llm_client.generate 的解析链 + _apply_agents）：
- * customSp（编写类型格式块等命令级提示）> baseSp（设置文档全局 system_prompt）> DEFAULT_SYSTEM_PROMPT。
+ * customSp（编写类型格式块等命令级提示）> baseSp（命令自带 system 常量）> DEFAULT_SYSTEM_PROMPT。
  * v0.3.5+：旧第 2 参 guideText（三层 WRITING_GUIDE 合并原文、追加【创作规范】段）已随写作指南体系废弃。
  */
 export function assembleSystemPrompt(customSp?: string, baseSp?: string): string {
 	const b = (baseSp || "").trim();
-	const sp = (customSp && customSp.trim()) || (b ? b : (defaultSystemPromptOverride || DEFAULT_SYSTEM_PROMPT));
+	const sp = (customSp && customSp.trim()) || (b ? b : DEFAULT_SYSTEM_PROMPT);
 	// v0.3.4+：原第 4 参 identityBoost（末尾附【身份加强】块）已移除——身份加强 Skill 化，经技能通道（【技能 · 身份加强·<阶段名>】）注入
 	return sp;
 }
@@ -270,10 +282,50 @@ function emptyBodyReason(finishReason: string | null | undefined): string {
 	return "思考未结束即达到 max_tokens 上限，或思考块未正常闭合。可尝试：调大该请求 max_tokens、换非思考模型，或在设置页将 reasoning_effort 设为 none 关闭思考（本地 llama-server + Qwen 模板实测有效）";
 }
 
+/** v0.4.3+ 前缀缓存复用读数（观测口径）：本地 Strata serve / llama.cpp 兼容端点在补全响应里带
+ *  `timings:{cache_n, prompt_n}`——cache_n＝本次直接从 KV 缓存取用、未重算的 prompt tokens，prompt_n＝真正 read 的 tokens；
+ *  **流式响应的最后一个 chunk 同样带**。无 timings 的端点回落 OpenAI 口径 `usage.prompt_tokens` ＋ `usage.prompt_tokens_details.cached_tokens`。
+ *  两条口径都没有（多数云端 API）→ undefined，调用方静默跳过。 */
+export interface CacheStats {
+	reused: number; // KV 缓存命中、未重算的 prompt tokens
+	prompt: number; // 本次 prompt 总 tokens（reused ＋ read）
+}
+
+function finiteNum(v: unknown): number | undefined {
+	return typeof v === "number" && Number.isFinite(v) ? v : undefined;
+}
+
+/** 从补全响应对象（非流式响应或流式 chunk）提取缓存读数；端点未给读数时 undefined */
+export function readCacheStats(src: unknown): CacheStats | undefined {
+	if (!src || typeof src !== "object") return undefined;
+	const o = src as {
+		timings?: { cache_n?: unknown; prompt_n?: unknown };
+		usage?: { prompt_tokens?: unknown; prompt_tokens_details?: { cached_tokens?: unknown } };
+	};
+	const reused = finiteNum(o.timings?.cache_n) ?? finiteNum(o.usage?.prompt_tokens_details?.cached_tokens);
+	if (reused == null) return undefined;
+	const total = finiteNum(o.usage?.prompt_tokens) ?? reused + (finiteNum(o.timings?.prompt_n) ?? 0);
+	return { reused, prompt: Math.max(total, reused) };
+}
+
+/** 一行读数文案（生成面板状态行与 console 日志共用，同一措辞便于对照 Strata 面板的「已复用」） */
+export function cacheStatsText(s: CacheStats): string {
+	const pct = s.prompt > 0 ? Math.round((s.reused / s.prompt) * 100) : 0;
+	return `前缀缓存复用 ${String(s.reused)}/${String(s.prompt)} tokens（${String(pct)}%）`;
+}
+
+/** 出请求级缓存诊断日志（读数缺失时静默）；返回读数供 UI 侧展示 */
+function reportCacheStats(where: string, src: unknown): CacheStats | undefined {
+	const s = readCacheStats(src);
+	if (s) console.debug(`[articlewriter] ${where} ${cacheStatsText(s)}`);
+	return s;
+}
+
 /** 非流式补全，返回完整文本 */
 export async function chatCompletion(cfg: LlmConfigDoc, messages: Message[], extra?: Record<string, unknown>, signal?: AbortSignal): Promise<string> {
 	const client = createClient(cfg, GENERATE_TIMEOUT_MS); // 非流式也可能长（摘要/去AI味整段重写），同用放宽值
 	const r = await client.chat.completions.create(buildParams(cfg, messages, false, extra) as OpenAI.ChatCompletionCreateParamsNonStreaming, { signal });
+	reportCacheStats("非流式请求", r); // v0.4.3+ 前缀缓存复用读数（本地 serve 带 timings；云端无该字段则静默）
 	const choice = r.choices?.[0];
 	const msg = choice?.message as { content?: string | null; reasoning_content?: string } | undefined;
 	const content = msg?.content;
@@ -297,7 +349,9 @@ export async function chatCompletion(cfg: LlmConfigDoc, messages: Message[], ext
  * 都会表现为空结果且无从诊断。故并行经 onReasoning（可选）透出思考增量；流结束正文为空但思考非空时
  * 抛针对性错误（消息刻意不含「输出为空/未返回内容」，避免被调用方按普通空结果重试白等）。
  * onFinish（可选）在流正常结束后回调一次，携带最后一个 finish_reason（"length"＝被 max_tokens 截断、
- * "stop"＝自然结束、null＝端点未给出）——供调用方判断是否需要自动续写，不改变返回值语义。 */
+ * "stop"＝自然结束、null＝端点未给出）——供调用方判断是否需要自动续写，不改变返回值语义。
+ * onCache（可选）在流结束后回调一次前缀缓存读数（v0.4.3+，端点在最后一个 chunk 带 timings 才有值）——
+ * 生成面板据此在状态行显示「前缀缓存复用 x/y」，核对 pin 是否命中，不必再切到服务端面板看。 */
 export async function chatStream(
 	cfg: LlmConfigDoc,
 	messages: Message[],
@@ -305,14 +359,18 @@ export async function chatStream(
 	extra?: Record<string, unknown>,
 	signal?: AbortSignal,
 	onReasoning?: (text: string) => void,
-	onFinish?: (reason: string | null) => void
+	onFinish?: (reason: string | null) => void,
+	onCache?: (stats: CacheStats) => void
 ): Promise<string> {
 	const client = createClient(cfg, GENERATE_TIMEOUT_MS); // 流式放宽超时（默认 60s 会掐断长章节生成）
 	const stream = await client.chat.completions.create(buildParams(cfg, messages, true, extra) as OpenAI.ChatCompletionCreateParamsStreaming, { signal });
 	let full = "";
 	let reasoning = "";
 	let finishReason: string | null | undefined;
+	let cache: CacheStats | undefined; // 取最后一个带读数的 chunk（服务端在末尾 chunk 才给 timings）
 	for await (const chunk of stream) {
+		const cs = readCacheStats(chunk);
+		if (cs) cache = cs;
 		const choice = chunk.choices?.[0];
 		if (choice?.finish_reason) finishReason = choice.finish_reason; // 记录最后一个非空值：正文为空时区分「预算耗尽」与「思考未闭合」
 		const delta = choice?.delta?.content ?? "";
@@ -325,6 +383,10 @@ export async function chatStream(
 			reasoning += rDelta;
 			onReasoning?.(rDelta);
 		}
+	}
+	if (cache) {
+		console.debug(`[articlewriter] 流式请求 ${cacheStatsText(cache)}`);
+		onCache?.(cache); // 面板状态行展示（同一措辞）
 	}
 	onFinish?.(finishReason ?? null); // 流正常结束（含空正文）时透出 finish_reason，供截断检测/自动续写
 	if (!full.trim()) {

@@ -17,11 +17,24 @@
 - **跨章名归一辅助**：每章提示词注入「已知人名/场景 id」累积清单（含运行前从磁盘三层文档播种的存量条目），帮助 LLM 跨章使用同一名字。
 - **空章跳过**：正文为空的章直接跳过并在汇总中列出，不发起 LLM 调用。
 
+## 大纲阶段增量抽取（v0.4.3+，`outline_cast.ts`）
+
+大纲生成流程（`生成卷大纲` 的四个入口 + `从卷大纲生成章节`）在每生成一章时顺带抽人物/关系：**与章大纲扩展同一次 LLM 调用**——提示词末尾要求在大纲正文后输出分隔行 `===人物关系附录===` + 严格 JSON（`{characters, relationships}`），代码经 `splitOutlineCastAppendix` 剥离附录、正文照常写《章节大纲.md》或卷大纲，随后 `OutlineCastTracker.ingest(chapterKey, cast)` 给出写盘计划并整层重写有变化的层。
+
+- **只抽人物与关系，不抽场景**（大纲阶段没有足够场景信息，场景仍由 `/analyze-cast` 读正文补齐）。
+- **定层口径沿用本模块 span 规则**，但信息只来自「本轮已出现的章 + 盘上已有条目所在层」——没有全量分析窗口，因此**只升不降**：书级既有条目永不回退；卷级既有 + 单章出现不回退到章级；≥2 容器→书级、单容器 ≥2 章→卷级（书根→书级）、仅 1 章→章级。
+- **合并语义**同本模块：字段现有非空优先、缺项补新、`abilities` 并集；同名跨层副本全部移除、以新定层为唯一落点。
+- **关系增量**：盘上既有关系（含用户手写）**保持原层不动**；仅本运行内新建的关系（`autoRel` 集合）允许随跨章出现提升层。
+- **目标层不存在则跳过**：卷大纲生成阶段章节目录通常未创建 → 章级落点记为 skipped（保留出现记录），后续拆章阶段先 `ensureChapterAt` 再 `tracker.registerChapter(key)` 补注册空层，随后 ingest 才落章级。
+- **写盘失败不中断**：只 `console.warn`，大纲是主产物，人物/关系可后续 `/analyze-cast` 补齐。
+- **开关**：书级 `ai_outline_cast`（《故事状态.md》frontmatter，缺省＝开、写 `false` 关）。拆章路径的附录只在章大纲扩展调用里产生（`ai_expand_chapter_outline=false` 时不抽取）。
+
 ## 引用索引（相关文档）
 
 | 层 | 文件 | 承载内容 |
 | --- | --- | --- |
 | L3 | [l3-cast-analyzer.md](./l3-cast-analyzer.md) | cast_analyzer 纯模块 API、JSON 形状与解析容错、聚合/定层/写盘计划实现、story_manager 分层读写方法、main.ts 命令流程 |
+| L3 | [l3-outline-cast.md](./l3-outline-cast.md) | 大纲阶段增量分层的实现级说明（附录协议、OutlineCastTracker、定层/合并、逐章接入点） |
 | L2 | [l2-setting-entities.md](./l2-setting-entities.md) | 人物/场景字段口径（chapter vs chapter_num）、卷级落盘约定 |
 | L2 | [l2-llm-writing-commands.md](./l2-llm-writing-commands.md) | 「生成过程」面板流式语义（beginStream/reset/fail/finishAuto） |
 | L2 | [command-reference.md](./command-reference.md) | analyze-cast 命令速查行 |

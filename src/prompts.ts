@@ -17,6 +17,8 @@ import {
 	simplifyNegationContrast,
 } from "./banned_words";
 import { DEFAULT_STORY_TYPE, getStoryTypeGuide } from "./story_types";
+import { WRITING_TASK_SKILL_NAME } from "./plugin_config";
+import { outlineCastAppendixInstruction } from "./outline_cast";
 
 // ---------- 大纲详略标记（对应 writer.py OUTLINE_MARKERS / extract_outline_markers） ----------
 
@@ -564,11 +566,8 @@ export function validateStoryTypeFormat(content: string, writingStyle?: string):
 }
 
 export function formatRetryNote(writingStyle: string | undefined, reason: string): string {
-	return (
-		"\n\n【格式修正要求】\n" +
-		`你上次的输出不符合编写类型「${storyTypeOf(writingStyle)}」：${reason}\n` +
-		"请严格按照【编写类型】格式要求重新输出，不要重复上次的错误格式。"
-	);
+	// v0.4.3+：固定文案收 TASK_PROMPTS["格式修正-注记"]（SKILLS/系统提示词/ 盘上可编辑），类型/原因经 {{占位符}} 插值；首尾换行粘合留代码（覆盖加载会 trim）
+	return "\n\n" + ptT("格式修正-注记", { story_type: storyTypeOf(writingStyle), reason });
 }
 
 // ---------- 描写风格指南开关（对应 writer.py _desc_style_guide） ----------
@@ -747,6 +746,26 @@ function outlineBlockNameOf(context: string | undefined): "" | "本卷大纲" | 
 	return "";
 }
 
+/** v0.4.3+ 正文字数目标（统一措辞事实源）：以区间中值 ((word_low+word_high)/2) 字为宜，可上下浮动 20%（flLow/flHigh 为浮动界）。
+ *  消费方：buildChapterPrompt 主清单第 2 条、buildRewritePrompt 引导语、applyWordRangeVars 的 {{word_range}} 展开、main.ts warnWordLimit（提醒阈值＝浮动上界）。 */
+export function wordTargetHint(wordRange: [number, number]): { mid: number; flLow: number; flHigh: number } {
+	const [lo, hi] = wordRange;
+	const mid = Math.round((lo + hi) / 2);
+	return { mid, flLow: Math.round(mid * 0.8), flHigh: Math.round(mid * 1.2) };
+}
+
+/** v0.4.3+ 技能文本字数占位符：`{{word_low}}`/`{{word_high}}`/`{{word_range}}` 装配时按书级《故事状态.md》word_range 插值（未配置回落 WORD_RANGE_DEFAULT）。
+ *  生效范围：阶段 4 正文族——writerSystemPrompt 的全部技能块（身份加强/题材/编写类型/书籍技能）＋write/continue/rewrite 的 taskSkill/storyTypeSkill 块；
+ *  其余流程不插值（技能文件里的占位符只在正文族被读到才有意义）。调用方传 wordRangeOf(state)。{{word_range}} 展开按 wordTargetHint 口径（以中值为宜、可上下浮动20%）。 */
+export function applyWordRangeVars(text: string, wordRange: [number, number]): string {
+	const [lo, hi] = wordRange;
+	const { mid } = wordTargetHint(wordRange);
+	return text
+		.replace(/\{\{word_low\}\}/g, String(lo))
+		.replace(/\{\{word_high\}\}/g, String(hi))
+		.replace(/\{\{word_range\}\}/g, `${lo}-${hi}字（以${String(mid)}字为宜，可上下浮动20%）`);
+}
+
 export interface ChapterPromptInput {
 	chapterNum: number; // v0.0.15：阅读序位置（ordinal）
 	chapterLabel?: string; // 目标章展示名（含卷前缀），缺省「第N章」
@@ -763,16 +782,33 @@ export interface ChapterPromptInput {
 	withSummary?: boolean; // v0.2.21+：要求同响应末尾输出 <SUMMARY> 摘要块（插件确定性解析后分别落盘）
 }
 
+/** v0.4.3+ 写作族共用上下文头（唯一事实源）：/write、/continue、/rewrite 三个 builder 的 user 消息都以这一行开头，
+ *  同一章先写→再续写→再重写、或相邻章连续写作时可复用同一段「书籍/卷级稳定上下文」前缀；改措辞只需改这里 */
+const WRITING_CONTEXT_HEAD = "以下是写作上下文：";
+
+/** v0.4.3+ 后处理请求（去AI味等）的前缀复用包装：把刚发章节生成时用的那段写作上下文**原样**前置到本请求，
+ *  让「章节生成 → 去AI味 → 下一章生成」这条链上每个请求都以同一段上下文开头。
+ *  动机：本地引擎的 K/V 复用只认「当前 slot 那份会话的公共前缀」，而章间插入的清洗请求（原文＋待改句、与写作提示词
+ *  毫无公共前缀）会把上一章的会话覆盖掉；引擎的 conversation-cache 停放额度又常被判定 `skip parking`（预算/槽位不足），
+ *  于是整轮逐章请求 reused 全 0。带同一段前缀后，清洗请求自己就落在同一条前缀上，下一章紧接着继续复用，不必依赖停放。
+ *  **只给回环端点用**（门禁在 main.ts autoCleanAi 的 isLoopbackBaseUrl）：云端按输入 token 计费，多带整段上下文纯属花钱。 */
+export const SHARED_PREFIX_TASK_NOTE = "【下面是要处理的任务，与上面的上下文无关：不要改写、不要复述上面的上下文】";
+
+export function withSharedContextPrefix(context: string, taskPrompt: string): string {
+	return `\n${WRITING_CONTEXT_HEAD}\n${context}\n\n${SHARED_PREFIX_TASK_NOTE}\n${taskPrompt}`;
+}
+
 export function buildChapterPrompt(input: ChapterPromptInput): { prompt: string; foreshadows: ForeshadowItem[] } {
 	const prepared = prepareOutlineForPrompt(input.chapterOutlineRaw || "", input.chapterKey);
 	const chapterOutline = prepared.cleaned;
 	const label = (input.chapterLabel || `第${input.chapterNum}章`).trim();
 	const [wordLow, wordHigh] = input.wordRange;
+	const { mid: wordTarget, flLow: wordFlLow, flHigh: wordFlHigh } = wordTargetHint([wordLow, wordHigh]); // 字数要求口径：以中值为宜、可上下浮动20%（见 wordTargetHint）
 	const parts: string[] = [];
 	// v0.3.8+ 前缀缓存友好排序：【写作上下文】整块提到 user 消息最前（书级/卷级稳定文档在前、易变块在其后），
 	// 「请创作第N章＋章节大纲＋约束＋用户要求」等逐章必变内容与其后的要求清单全部压到末尾——相邻章节请求可复用「上下文稳定段」整段前缀；
 	// 任务指令后置同样符合「指令压轴」惯例，不削弱约束效力
-	parts.push(`\n以下是写作上下文：\n${input.context}`);
+	parts.push(`\n${WRITING_CONTEXT_HEAD}\n${input.context}`);
 	parts.push(`\n请创作${label}`);
 	if (chapterOutline) {
 		parts.push(`章节大纲：${chapterOutline}`);
@@ -800,30 +836,37 @@ export function buildChapterPrompt(input: ChapterPromptInput): { prompt: string;
 	// v0.2.11+：要求清单升级为故事情节设计工艺版——卷内位置意识/结构化大纲字段落地/章末钩子/场景工艺/知识状态/章内因果链/伏笔条款（替代原泛化的「情节合理推进」「章节结尾自然收束」）；v0.2.12+ 第4条章末收束改为「自然终点＋有大纲钩子才落钩子」（原「必须落在钩子悬念点、禁平静收尾」过刚），并新增第12条「通顺与逻辑优先」兜底（原11条工艺项）
 	// v0.2.25+ 引用文档配置框：vol_outline 可被移出阶段 3 清单——「参照【大纲】」措辞按上下文中实际注入的大纲块门控（卷模式＝【本卷大纲】、平铺模式＝【全书大纲】、无块＝泛指）
 	const outlineBlock = outlineBlockNameOf(input.context);
-	const req3 = `3. 先判断本章在卷结构中的位置与功能（铺垫/升级/反转/高潮/收束${outlineBlock ? `——参照【${outlineBlock}】${outlineBlock === "本卷大纲" ? "及其【卷设计】" : ""}` : ""}），强度与叙事重心与之匹配：反转前的章节持续加压，反转章必须把转折写成具体场景，反转后的章节体现主角状态变化\n`;
-	// v0.4.3+：第 3–13 条静态要求可由 SKILLS/章节创作.md 提供（用户选择后传入 taskSkillBlock）；
-	// 第 1/2 条（大纲约束、字数）与输出/摘要协议仍由代码动态生成；未选 3–13 条技能时不回落内置要求。
-	const outlineRefClause = outlineBlock ? `——参照【${outlineBlock}】${outlineBlock === "本卷大纲" ? "及其【卷设计】" : ""}` : "";
-	const taskSkill = (input.taskSkillBlock || "")
-		.trim()
-		.replace(/\{\{outline_ref_clause\}\}/g, outlineRefClause)
-		.replace(/\{\{chapter_ref_ban\}\}/g, CHAPTER_REF_BAN);
-	const taskHas3 = /(^|\n)\s*3[.、]/.test(taskSkill);
-	const taskHas13 = /(^|\n)\s*13[.、]/.test(taskSkill);
+	// v0.4.3+ 章节写作指导只含固定文字条文（旧「章节写作任务」「章节创作」已合并为这一份）：**单独装配**——
+	// 主清单＝1/2（大纲约束、字数）＋3 章节号引用禁令（代码生成；卷结构定位条款已按要求移除、不再注入），技能条文另起【章节写作指导】编号列表、序号从 1 开始（不与主清单混排）；
+	// 条文仍含旧占位符（{{outline_ref_clause}}/{{chapter_ref_ban}}，存量未迁移）的行跳过。未选任务技能时不回落内置要求（只有代码 1/2 条＋输出/摘要协议）。
+	const outlineRefClause = outlineBlock ? `——参照【${outlineBlock}】${outlineBlock === "本卷大纲" ? "及其【卷设计】" : ""}` : ""; // 仅用于旧散文形态兜底里的 {{outline_ref_clause}} 替换
+	const taskRaw = (input.taskSkillBlock || "").trim();
+	// 条文切分：按「行首编号」开新条（多行条文归同一条）；仍含两动态占位符或禁令原文的行＝旧动态条款残留，跳过
+	const taskFixed: string[] = [];
+	for (const chunk of taskRaw.split(/\r?\n(?=\s*\d+[.、]\s)/)) {
+		const m = /^\s*\d+[.、]\s*([\s\S]+)$/.exec(chunk.trim());
+		if (!m) continue;
+		const item = m[1].trim();
+		if (!item || item.includes("{{outline_ref_clause}}") || item.includes("{{chapter_ref_ban}}") || item.includes(CHAPTER_REF_BAN)) continue;
+		taskFixed.push(applyWordRangeVars(item, [wordLow, wordHigh]));
+	}
 	let staticRequirements: string;
-	if (!taskSkill) {
-		staticRequirements = ""; // 未选 3–13 条技能：保持未选，不回落内置要求
-	} else if (taskHas3) {
-		// 新技能：3–13 条整体替换；缺 13 时补协议条
-		staticRequirements = (taskHas13 ? taskSkill : `${taskSkill}\n13. ${CHAPTER_REF_BAN}`).replace(/\s+$/, "");
+	if (!taskRaw) {
+		staticRequirements = ""; // 未选任务技能：保持未选，不回落内置要求
+	} else if (taskFixed.length) {
+		// 单独装配：主清单补第 3 条（章节号引用禁令），固定条文另起【章节写作指导】块、序号从 1 重排
+		staticRequirements = `3. ${CHAPTER_REF_BAN}\n\n【${WRITING_TASK_SKILL_NAME}】\n` + taskFixed.map((t, i) => `${i + 1}. ${t}`).join("\n");
 	} else {
-		// 兼容旧版「章节写作任务」（仅 4–12 条）：保留动态第 3 条与第 13 条
-		staticRequirements = `${req3}${taskSkill}${taskHas13 ? "" : `\n13. ${CHAPTER_REF_BAN}`}`.replace(/\s+$/, "");
+		// 兜底：技能文本不是编号条文形态（用户写成散文等）——原文注入（旧占位符仍替换），缺章节号禁令则补在尾
+		const legacy = applyWordRangeVars(taskRaw
+			.replace(/\{\{outline_ref_clause\}\}/g, outlineRefClause)
+			.replace(/\{\{chapter_ref_ban\}\}/g, CHAPTER_REF_BAN), [wordLow, wordHigh]);
+		staticRequirements = `${legacy}${legacy.includes(CHAPTER_REF_BAN) ? "" : `\n${CHAPTER_REF_BAN}`}`.replace(/\s+$/, "");
 	}
 	parts.push(
 		"\n请按以下要求创作本章正文：" +
 		`\n1. 严格按【章节大纲】及上方【大纲约束】执行：要点全部写到、顺序遵循、不偏离主线、不添加大段无关情节\n` +
-		`\n2. 总字数严格控制在${wordHigh}字以内（目标${wordLow}-${wordHigh}字）：不足${wordLow}字继续充实，达到${wordHigh}字必须收尾，严禁超限\n` +
+		`\n2. 总字数以${String(wordTarget)}字为宜（区间中值），可上下浮动20%（约${String(wordFlLow)}-${String(wordFlHigh)}字）\n` +
 		(staticRequirements ? staticRequirements + "\n\n" : "") +
 		"请直接输出正文内容，不要包含任何标题或额外说明" + (input.withSummary ? "（末尾要求的摘要块除外）。" + summaryTailInstruction("本章正文") : "。")
 	);
@@ -862,13 +905,15 @@ export function buildContinuePrompt(input: ContinuePromptInput): { prompt: strin
 	const outlineRef = outlineBlock ? `【${outlineBlock}】` : "大纲";
 	const prevBlock = buildPrevOutlinesBlock(input.prevOutlines || []);
 	const descGuide = descStyleGuide(input.descStyle);
-	const storyTypeSkill = (input.storyTypeSkillBlock || "").trim();
-	const taskSkill = (input.taskSkillBlock || "").trim();
+	const storyTypeSkill = applyWordRangeVars((input.storyTypeSkillBlock || "").trim(), input.wordRange); // v0.4.3+：字数占位符按书级 word_range 插值
+	const taskSkill = applyWordRangeVars((input.taskSkillBlock || "").trim(), input.wordRange);
 	const tail1000 = (input.existingContent || "").slice(-1000);
 	const [wordLow, wordHigh] = input.wordRange;
 	// v0.3.8+ 前缀缓存友好排序：写作上下文块提到最前（其内部已按稳定→易变排序），带章号的引导语与逐章/逐次易变段全部压后，
 	// 同一章多次续写及相邻章续写请求都能复用「上下文稳定段」整段前缀
+	// v0.4.3+ 上下文头与 /write、/rewrite 逐字统一（WRITING_CONTEXT_HEAD）——跨命令也能复用稳定前缀
 	const prompt = `
+${WRITING_CONTEXT_HEAD}
 ${input.context}
 
 ${storyTypeSkill ? storyTypeSkill : ""}
@@ -953,13 +998,13 @@ export const VOL_OUTLINE_GEN_SYSTEM_PROMPT = `你是资深小说策划，擅长�
 3. 转变——卷末主角的目标、认知或关系必须较卷初发生实质变化，且变化由其在压力下的选择驱动，而非纯外部事件。
 4. 新意——先想这个剧情最可预测的版本，再在 1–2 个关键处刻意打破它；所有反转须在前文埋过伏笔（回收），禁止机械降神。`;
 
-/** v0.2.24+ 提示词文件装配改造：上下文块（书籍信息/张力规则/世界观/策划规范/大纲/人物关系/卷列表等）改由调用方经 assemblePromptFiles 装配为组串传入 */
+/** v0.2.24+ 提示词文件装配改造：上下文块（书籍信息/世界观/策划规范/大纲/人物关系/卷列表等，含引用清单里的 【技能 · …】 块）改由调用方经 assemblePromptFiles 装配为组串传入 */
 export interface VolOutlineGenInput {
 	targetVolumeName: string; // 目标卷名（首句「为「X」生成」用）
 	chapterCount: number; // 目标章数（恰好 N 章）
 	strictCurrentOutlineOnly?: boolean; // v0.2.x+：强制本次拆分仅依赖当前卷大纲，不允许把全书大纲/前卷线索当成拆分依据（调用方据此决定 specs skip）
 	hasPlanningGuide?: boolean; // v0.2.25+ 引用文档配置框：组串含【策划规范】块——驱动提示词【策划规范】措辞（无块改泛指、不悬空引用）
-	contextDocs?: string; // 调用方装配的上下文块串（【书籍信息】→【张力规则】→【世界观设定】→【策划规范】→【当前大纲来源】→【全书大纲】→【书籍/本卷人物关系】→【卷列表 · 阅读序】→【前一卷卷大纲 · 仅参考】）
+	contextDocs?: string; // 调用方装配的上下文块串（【书籍信息】→【世界观设定】→【策划规范】→【当前大纲来源】→【全书大纲】→【书籍/本卷人物关系】→【卷列表 · 阅读序】→【前一卷卷大纲 · 仅参考】；引用清单技能块（默认含【技能 · 张力工具箱】）按其位置注入）
 }
 
 /** v0.2.24+ 把调用方经 assemblePromptFiles 装配的上下文组串追加进 prompt 分段（trim 后非空才追加，前置换行对齐旧 contextParts 各块口径） */
@@ -998,8 +1043,11 @@ export function buildVolOutlineDesignPrompt(input: VolOutlineGenInput): string {
 	];
 	reqs.push(outlineClosingClause("本卷", n, "卷末须解决本卷核心冲突、完成主角转变、回收最大反转")); // v0.2.x+：按给定章节号自然收束——与平铺书级大纲收束条款同骨架
 	reqs.push("只输出大纲正文本身，不要解释、前言说明或代码块包裹");
-	const parts: string[] = [`请根据下面的书籍设定，为「${input.targetVolumeName}」（共 ${n} 章）生成【卷设计】段。\n\n要求：\n${reqs.map((r, i) => `${i + 1}. ${r}`).join("\n")}`];
+	const parts: string[] = [];
+	// v0.4.3+ 前缀缓存友好排序（全族统一口径）：共享上下文整块在最前——设计步与紧随其后的第 1..N 章提示词
+	// 都以同一份上下文开头，设计段攒下的 KV 前缀可被各章整段复用（旧实现指令在前，设计步与章节步之间零复用）
 	pushContextDocs(parts, input.contextDocs);
+	parts.push(`\n请根据上面的书籍设定，为「${input.targetVolumeName}」（共 ${n} 章）生成【卷设计】段。\n\n要求：\n${reqs.map((r, i) => `${i + 1}. ${r}`).join("\n")}`);
 	return parts.join("\n");
 }
 
@@ -1039,12 +1087,68 @@ export function buildVolOutlineChapterPrompt(input: VolOutlineChapterInput): str
 	);
 	if (num === n) reqs.push("本章为本卷末章：主线须在此自然收束结尾——解决本卷核心冲突、完成主角转变、回收最大反转；章末不得留下新的悬念或续集钩子"); // v0.2.x+：按给定章节号自然收束——末章即收束章
 	reqs.push("只输出大纲正文本身，不要解释、前言说明或代码块包裹");
-	const parts: string[] = [`${supplement ? "补全" : "生成"}「${input.targetVolumeName}」（共 ${n} 章）的第 ${num} 章章节小节。\n\n要求：\n${reqs.map((r, i) => `${i + 1}. ${r}`).join("\n")}`];
+	const parts: string[] = [];
+	// v0.4.3+ 前缀缓存友好排序（与 buildChapterPrompt v0.3.8+ 同口径）：共享上下文（书籍信息/世界观/策划规范/
+	// 当前大纲来源等，跨章不变）压最前，本轮【卷设计】与已生成章节紧随其后，最后才是指令与要求清单——
+	// 相邻章请求的公共前缀可覆盖「上下文＋卷设计＋已生成章节」整段，逐章必变的只剩末尾指令
 	pushContextDocs(parts, input.contextDocs);
 	const design = (input.volumeDesign ?? "").trim();
 	if (design) parts.push(`\n【卷设计 · 本轮】\n${design}`);
 	const soFar = (input.generatedSoFar ?? "").trim();
 	if (soFar) parts.push(`\n【已生成章节 · 本轮】\n${soFar}`);
+	parts.push(`\n${supplement ? "补全" : "生成"}「${input.targetVolumeName}」（共 ${n} 章）的第 ${num} 章章节小节。\n\n要求：\n${reqs.map((r, i) => `${i + 1}. ${r}`).join("\n")}`);
+	return parts.join("\n");
+}
+
+// ---------- v0.4.3+ 章大纲扩展（/vol-outline-to-chapters 拆章后逐章扩写） ----------
+
+/** v0.4.3+ 章大纲扩展系统提示词默认值（专属技能 `SKILLS/系统提示词/章大纲编写.md` 可整体覆盖，见 main.ts SYSTEM_PROMPT_SKILLS/promptSkill）。 */
+export const CHAPTER_OUTLINE_EXPAND_SYSTEM_PROMPT = `你是资深小说策划编辑，擅长把卷大纲里的单章粗线条段落扩写成可直接指导正文写作的详细章节大纲。
+你产出的每份章大纲都要满足五条硬标准：
+1. 忠实——不改变原段落的事件主线、人物与结局走向；只补充过程细节（场景、动作意图、冲突阻力、转折方式），不得新增重大情节，不得引入与上下文矛盾的设定或人物。
+2. 具体——每条情节要点都是能直接写成正文的场景：谁、在哪、想做什么、遇到什么阻碍、如何转折。
+3. 因果——要点之间以「因此/但是」推进，不按时间顺序「然后」罗列；禁止巧合推动剧情。
+4. 落地——结尾落到具体画面或悬念，写清本章结束时主角的处境、认知或关系变化；有章末钩子要求时落在钩子上。
+5. 克制——只输出大纲正文（本章目标/情节要点/结尾三项），不写解释、不重复章标题、不写成正文片段。`;
+
+/** v0.4.3+ 章大纲扩展输入：以卷大纲拆出的单章段落为输入，输出可直接指导写作的完整章大纲（长度≈该章正文目标字数的 1/4） */
+export interface ChapterOutlineExpandInput {
+	chapterNum: number;
+	chapterTitle?: string; // 章标题（拆章标记带标题时）；空＝只按章号称呼
+	outlineText: string; // 卷大纲中该章的原始段落（本次扩写唯一依据，已由调用方清洗）
+	chapterWords: number; // 本章正文目标字数（word_range 中值）
+	targetWords: number; // 目标大纲字数（＝chapterWords / 4）
+	contextDocs?: string; // 调用方经 assemblePromptFiles 装配的上下文块串（书籍信息/世界观/策划规范/当前章原文段落/人物关系等）
+	prevOutlines?: string; // 已扩写的相邻前章大纲（衔接参考，最多取最近 2 章）
+	castAppendix?: boolean; // v0.4.3+：末尾追加人物/关系 JSON 附录要求（大纲阶段按出现范围分层写《人物.md》《人物关系.md》）
+	knownNames?: string[]; // v0.4.3+：已知规范人名（盘上三层 + 本轮已抽取），附录要求里约束跨章同名
+}
+
+/** v0.4.3+ 章大纲扩展 prompt：忠实原段落＋场景级要点＋因果推进＋目标篇幅（章正文目标字数的 1/4） */
+export function buildChapterOutlineExpandPrompt(input: ChapterOutlineExpandInput): string {
+	const num = input.chapterNum;
+	const title = (input.chapterTitle ?? "").trim();
+	const name = title ? `第${num}章《${title}》` : `第${num}章`;
+	const reqs: string[] = [
+		"忠实原文：事件主线、人物与结局走向一字不改；只补细节——场景、人物动机、冲突阻力、转折方式；不得新增重大情节或与上下文矛盾的设定",
+		"结构固定三项：`- 本章目标：`（一句话，写清主角本章要达成什么、为何现在必须达成）、`- 情节要点：`（3–6 条，每条一个具体场景：谁在哪、要做什么、遇到什么阻碍、如何转折）、`- 结尾：`（本章结束时的具体画面或悬念，写清主角处境/认知/关系的变化）",
+		"因果推进：情节要点之间以「因此/但是」连接，不按时间顺序罗列；每条要点都要能直接写成正文场景，不写空泛概括",
+		"篇幅：全文约 " + String(input.targetWords) + " 字（本章正文目标约 " + String(input.chapterWords) + " 字，章大纲长度取其 1/4），不要明显超出",
+		"衔接：接住前章结尾的处境，并为后续章节留下明确的推进空间；涉及角色/场景可用 <> 标记标注（<角色：张三、李四> <场景：山洞、擂台>）",
+		"只输出大纲正文：不要重复章标题、不要解释、不要代码块包裹",
+	];
+	const parts: string[] = [];
+	// v0.4.3+ 前缀缓存友好排序（与 buildChapterPrompt v0.3.8+ 同口径）：共享上下文整块提到最前、
+	// 「请把第N章段落扩写成…＋要求清单」压后——相邻章的扩展请求可复用上下文稳定段（此前指令在最前，
+	// 章号/标题/字数一变前缀即分叉，服务端几乎复用不到任何上下文）；逐章必变的前章大纲与附录要求继续压尾。
+	pushContextDocs(parts, input.contextDocs);
+	const outline = (input.outlineText ?? "").trim();
+	// 兜底：上下文若因阶段引用清单配置（用户改过阶段 3 清单）缺少【当前大纲来源】块，本段原文必须仍然送达模型
+	if (outline && !(input.contextDocs ?? "").includes(outline)) parts.push(`\n【本章原始段落 · 待扩写】\n${outline}`);
+	parts.push(`\n请把上面这段卷大纲里${name}的段落，扩写成可直接指导正文写作的完整《章节大纲》。\n\n要求：\n${reqs.map((r, i) => `${i + 1}. ${r}`).join("\n")}`);
+	const prev = (input.prevOutlines ?? "").trim();
+	if (prev) parts.push(`\n【前文已定稿的相邻章大纲（衔接参考，不要重复其中内容）】\n${prev}`);
+	if (input.castAppendix) parts.push(`\n${outlineCastAppendixInstruction(input.knownNames ?? [])}`);
 	return parts.join("\n");
 }
 
@@ -1066,7 +1170,7 @@ export interface BookOutlineGenInput {
 	hasPlanningGuide?: boolean; // 组串含【策划规范】块——驱动策划约束要求行
 	hasBookRelationships?: boolean; // 组串含【书籍人物关系】块——驱动人物关系要求行
 	hasVolRelationships?: boolean; // 组串含【本卷人物关系】块——驱动卷内关系基线要求行
-	contextDocs?: string; // 调用方装配的上下文块串（【书籍信息】→【张力规则】→【世界观设定】→【策划规范】→【书籍人物关系】→【本卷人物关系】→【卷列表 · 阅读序】）
+	contextDocs?: string; // 调用方装配的上下文块串（【书籍信息】→【世界观设定】（＋清单技能块）→【策划规范】→【书籍人物关系】→【本卷人物关系】→【卷列表 · 阅读序】）
 }
 
 /** v0.2.x+「生成书籍大纲」prompt：依据全局设定（世界观＋策划指南）生成书级《大纲.md》。两种输出形态：
@@ -1105,8 +1209,11 @@ export function buildBookOutlineGenPrompt(input: BookOutlineGenInput): string {
 	reqs.push("不得违背世界观设定（世界规则 / 势力 / 力量体系）");
 	reqs.push("只输出大纲正文本身，不要解释、前言说明或代码块包裹");
 
-	const parts: string[] = [`${input.flatMode ? `请根据下面的书籍设定，生成一份恰好 ${n} 章的书级大纲。` : `请根据下面的书籍设定，为本书生成一份书级大纲：按卷划分事件与情节${v > 0 ? `，恰好 ${v} 卷` : ""}。`}\n\n要求：\n${reqs.map((r, i) => `${i + 1}. ${r}`).join("\n")}`];
+	const parts: string[] = [];
+	// v0.4.3+ 前缀缓存友好排序（全族统一口径）：上下文在前、指令压后——首轮与后续各轮续写/各段章节提示词
+	// 都以同一份上下文开头，公共前缀可覆盖整段书籍设定（旧实现首行带章数/卷数，逐轮分叉）
 	pushContextDocs(parts, input.contextDocs);
+	parts.push(`\n${input.flatMode ? `请根据上面的书籍设定，生成一份恰好 ${n} 章的书级大纲。` : `请根据上面的书籍设定，为本书生成一份书级大纲：按卷划分事件与情节${v > 0 ? `，恰好 ${v} 卷` : ""}。`}\n\n要求：\n${reqs.map((r, i) => `${i + 1}. ${r}`).join("\n")}`);
 	return parts.join("\n");
 }
 
@@ -1132,12 +1239,16 @@ export function buildBookOutlineContinuePrompt(input: BookOutlineContinueInput):
 		"张力松紧交替，不连续堆叠高强度章；只输出大纲正文本身",
 	];
 	if (to === total) reqs.push(`这是全书最后一段：故事须在恰好第 ${String(total)} 章自然收束结尾——末章须完成主线闭合（主角最终状态、最大反转回收），不得留下新的悬念或续集钩子`); // v0.2.x+：按给定章节号自然收束
-	const parts: string[] = [`请继续为本书生成书级大纲的指定章节区间。\n\n要求：\n${reqs.map((r, i) => `${i + 1}. ${r}`).join("\n")}`];
+	const parts: string[] = [];
+	// v0.4.3+ 前缀缓存友好排序：上下文 → 【全书设计】→ 【已生成章节·末尾衔接】(逐轮变化) → 指令压尾。
+	// 该 prompt 在同一本书里按 10 章一段反复调用，此前首行就带 from/to 章号，导致每轮前缀在第 10 个字符前后即分叉、
+	// 上下文完全复用不到；现在每轮的公共前缀＝整段上下文＋全书设计
 	pushContextDocs(parts, input.contextDocs);
 	const design = (input.bookDesign ?? "").trim();
 	if (design) parts.push(`\n【全书设计 · 沿用（必须遵循）】\n${design}`);
 	const prev = (input.previousChapters ?? "").trim();
 	if (prev) parts.push(`\n【已生成章节 · 末尾衔接参考】\n${prev}`);
+	parts.push(`\n请继续为本书生成书级大纲的指定章节区间。\n\n要求：\n${reqs.map((r, i) => `${i + 1}. ${r}`).join("\n")}`);
 	return parts.join("\n");
 }
 
@@ -1164,18 +1275,20 @@ export function buildBookOutlineExtendPrompt(input: BookOutlineExtendInput): str
 		"反套路：反派/阻碍按其自身目标与逻辑行动，不是主角的道具；主角的挫折须源于其自身选择或性格缺陷，而非纯运气差",
 		"只输出大纲正文本身，不要解释、前言说明或代码块包裹",
 	];
-	const parts: string[] = [`请基于本书现有大纲进度继续生成：只追加第 ${String(from)} 卷至第 ${String(to)} 卷的新卷小节与更新后的结局。\n\n要求：\n${reqs.map((r, i) => `${i + 1}. ${r}`).join("\n")}`];
+	const parts: string[] = [];
+	// v0.4.3+ 前缀缓存友好排序：上下文在前、指令压后（与书级大纲生成/续写同口径，便于「继续生成」复用首次生成的上下文前缀）
 	pushContextDocs(parts, input.contextDocs);
+	parts.push(`\n请基于本书现有大纲进度继续生成：只追加第 ${String(from)} 卷至第 ${String(to)} 卷的新卷小节与更新后的结局。\n\n要求：\n${reqs.map((r, i) => `${i + 1}. ${r}`).join("\n")}`);
 	return parts.join("\n");
 }
 
 // ---------- v0.2.13+ 策划指南 (/planning-guide；书级《策划指南.md》，大纲类命令的既定规划约束) ----------
 
-/** v0.2.24+ 提示词文件装配改造：上下文块（书籍信息/张力规则/世界观/全书大纲/卷列表）改由调用方经 assemblePromptFiles 装配为组串传入；
+/** v0.2.24+ 提示词文件装配改造：上下文块（书籍信息/世界观/全书大纲/卷列表＋清单技能块）改由调用方经 assemblePromptFiles 装配为组串传入；
  * 「仅世界观生成」（/planning-guide-worldview）无全书大纲/卷列表条目即对应块缺失 */
 export interface PlanningGuideInput {
 	bookTitle: string; // 书名（首句「为「X」生成」用）
-	contextDocs?: string; // 调用方装配的上下文块串（【书籍信息】→【张力规则】→【世界观设定】→【全书大纲】→【卷列表 · 阅读序】）
+	contextDocs?: string; // 调用方装配的上下文块串（【书籍信息】→【世界观设定】（＋清单技能块）→【全书大纲】→【卷列表 · 阅读序】）
 	volumeCount?: number; // v0.2.25+ 分卷规划：本书计划卷数（弹窗输入，预填现有卷数）；>0 时生成要求恰好 N 卷按卷组织，undefined/0＝未指定（配合 volumeMode 走「按需分卷」软要求）
 	volumeMode?: boolean; // v0.4.x+ 分卷模式（use_volumes≠false）：未给卷数（取消弹窗）时也附「按需分卷」按卷组织要求——分卷模式恒带分卷信息
 	noVolumes?: boolean; // v0.4.x+ 无卷模式（《故事状态.md》use_volumes=false）：按卷要求缺失时附带禁卷强提示，与 volumeCount>0 互斥
@@ -1237,8 +1350,10 @@ export function buildPlanningGuidePrompt(input: PlanningGuideInput): string {
 
 	reqs.push("只输出策划指南正文本身（上述十个 H2 节），不要输出 H1 标题、解释、前言说明或代码块包裹");
 
-	const parts: string[] = [`请根据下面的书籍设定，为「${input.bookTitle}」生成一份《策划指南》。\n\n它是后续书级/卷级大纲生成的既定规划约束，大纲生成时必须遵循、不得违背。\n\n要求：\n${reqs.map((r, i) => `${i + 1}. ${r}`).join("\n")}`];
+	const parts: string[] = [];
+	// v0.4.3+ 前缀缓存友好排序：上下文在前、指令压后——与《策划指南》续写轮次共用同一段书籍设定前缀
 	pushContextDocs(parts, input.contextDocs);
+	parts.push(`\n请根据上面的书籍设定，为「${input.bookTitle}」生成一份《策划指南》。\n\n它是后续书级/卷级大纲生成的既定规划约束，大纲生成时必须遵循、不得违背。\n\n要求：\n${reqs.map((r, i) => `${i + 1}. ${r}`).join("\n")}`);
 	return parts.join("\n");
 }
 
@@ -1260,9 +1375,12 @@ export function buildPlanningGuideContinuePrompt(input: PlanningGuideInput, exis
 	const detailSections = missing.length ? PLANNING_GUIDE_SECTIONS.filter((s) => missing.includes(`${s.no}、${s.title}`)) : PLANNING_GUIDE_SECTIONS;
 	reqs.push(`各节写作要求（只针对尚缺/未写完的节）：\n${detailSections.map((s) => `## ${s.no}、${s.title}\n${s.req}`).join("\n\n")}`);
 	reqs.push("只输出续写正文本身");
-	const parts: string[] = [`《策划指南》上一次生成因长度限制被截断。请基于下面的书籍设定与【已生成部分】，从截断处继续把《策划指南》写完整。\n\n它是后续书级/卷级大纲生成的既定规划约束，大纲生成时必须遵循、不得违背。\n\n要求：\n${reqs.map((r, i) => `${i + 1}. ${r}`).join("\n")}`];
+	const parts: string[] = [];
+	// v0.4.3+ 前缀缓存友好排序：上下文 → 【已生成部分】(逐轮增长) → 指令压尾。续写最多 10 轮，
+	// 此前首行即指令、上下文居中，每轮前缀都从第 1 个字符分叉；现在每轮公共前缀＝整段上下文
 	pushContextDocs(parts, input.contextDocs);
 	parts.push(`\n【已生成部分 · 从截断处继续，勿重复】\n${(existing || "").trim()}`);
+	parts.push(`\n《策划指南》上一次生成因长度限制被截断。请基于上面的书籍设定与【已生成部分】，从截断处继续把《策划指南》写完整。\n\n它是后续书级/卷级大纲生成的既定规划约束，大纲生成时必须遵循、不得违背。\n\n要求：\n${reqs.map((r, i) => `${i + 1}. ${r}`).join("\n")}`);
 	return parts.join("\n");
 }
 
@@ -1272,23 +1390,25 @@ export const TIMELINE_GEN_SYSTEM_PROMPT = "你是资深小说策划兼时间线�
 
 export interface TimelineGenInput {
 	bookTitle: string;
-	contextDocs: string; // 调用方装配的上下文块串（【书籍信息】→【张力规则】→【世界观设定】，固定三+1块、不受引用文档配置框过滤）
+	contextDocs: string; // 调用方装配的上下文块串（【书籍信息】→【技能 · 张力工具箱】→【世界观设定】，固定三块、不受引用文档配置框过滤）
 }
 
 export function buildTimelineGenPrompt(input: TimelineGenInput): string {
-	const parts: string[] = [`请根据下面的书籍设定，为「${input.bookTitle}」生成一份《时间线》（全书事件时间轴）。\n\n它是全书主线事件按时间点排出的时间轴，后续《策划指南》与书级/卷级大纲都将以此为基础展开；时间线面板会以它做可视化与编辑（增删改节点、标记完成、沿关联跳转）。\n\n格式是硬性要求，必须严格照下面规定输出，违反任何一条都算失败输出：\n1. 首行为 H1 标题「# 时间线」，其下按时间点先后顺序列出全书主要事件（建议 10–20 条），须覆盖：开篇激励事件、关键转折、中段最大反转、最终高潮、结局落点\n2. 每个事件写成一个标题块：标题行＝「## 时间点 事件名」，时间点必填，取纯数字纪年（如 120）或 年-月（120-03）或 年-月-日（120-06-15）；纪年基准自选一个并在整份文档内保持一致，前史与背景事件用更早年份（如 -129-06）；事件名 4–12 个字，禁止在同行用「——」或冒号内联简述。其下字段行必须写成与时间线面板完全一致的事件格式，取值写在同行：「- 人物：」「- 事件：」「- 描述：」「- 影响：」「- 关联：」——人物/事件/描述/影响 四行对每条事件都必备；「- 描述：」写比「- 事件：」更详细的原因、经过与关键细节（时间线面板悬停时显示），不得与事件行同句照抄；「- 关联：」列出与该事件有因果承接的其他事件的事件名（须是本文档内出现过的标题名，顿号分隔，确实没有关联才可整行省略）；禁止写「- 完成：」行——那是面板勾选完成后才出现的标记。完整示例（只示范格式，不要照抄内容）：\n# 时间线\n## 120-06-15 黑市陷阱\n- 人物：程野、姜叙\n- 事件：程野为查明真相进入灰区购买未过滤的记忆片段，卖家递来的线索实则是定位器\n- 描述：灰区市场在守序者巡逻周期的盲区开市，姜叙的渠道递来的片段被人做过手脚，程野买完才察觉信号在反向发射\n- 影响：守序者的监控网络锁定程野行踪，他被列为重点监视对象\n## 120-06-20 雨夜出逃\n- 人物：程野\n- 事件：守序者上门抓捕，程野借姜叙提供的下水道图脱身\n- 描述：抓捕出动封街的三个小组，程野利用换岗间隙从检修井离开，代价是丢掉公开身份的全部证件\n- 影响：程野转入地下，原有人际与资源暂时失联\n- 关联：黑市陷阱\n3. 禁止的输出形态（每一条都不允许出现）：「1.」「2.」「3.」这类编号清单行；标题行之外的裸事件行；「- 完成：」行；字段名写成「- 人物 :」或取值另起一行的字段；标题行只有时间点没有事件名、或只有事件名没有时间点；把简述写进标题行；前言说明；代码块包裹\n4. 层级用标题深度表达：## ＝大事件；其下 ### ＝小事件（大事件的阶段性构成）；再下 #### ＝旁支事件（支线/配角反应/暗线）。只在确有分级必要时才用 ###／####，不为凑层级而拆；各级一律用第 2 条的「时间点＋事件名」标题行＋字段行格式\n5. 时间点须与因果顺序一致：承接前因的事件，时间点不得早于它所承接的事件；子事件的时间点落在其父事件的时间范围内\n6. 事件之间须有因果承接（因此/但是），禁止靠巧合推动剧情\n7. 赌注与代价随时间轴逐步抬升，张力有松有紧；最大反转落在中段附近、高潮落在后段（用时间点与相对位置表述，不指定具体章号）\n8. 事件必须与世界观设定兼容，不得违背其硬规则；人物的行动与决定只依赖其当时已知悉的信息\n9. 只输出《时间线》正文本身（从「# 时间线」开始），不要输出任何别的内容`];
+	const instruction = `请根据上面的书籍设定，为「${input.bookTitle}」生成一份《时间线》（全书事件时间轴）。\n\n它是全书主线事件按时间点排出的时间轴，后续《策划指南》与书级/卷级大纲都将以此为基础展开；时间线面板会以它做可视化与编辑（增删改节点、标记完成、沿关联跳转）。\n\n格式是硬性要求，必须严格照下面规定输出，违反任何一条都算失败输出：\n1. 首行为 H1 标题「# 时间线」，其下按时间点先后顺序列出全书主要事件（建议 10–20 条），须覆盖：开篇激励事件、关键转折、中段最大反转、最终高潮、结局落点\n2. 每个事件写成一个标题块：标题行＝「## 时间点 事件名」，时间点必填，取纯数字纪年（如 120）或 年-月（120-03）或 年-月-日（120-06-15）；纪年基准自选一个并在整份文档内保持一致，前史与背景事件用更早年份（如 -129-06）；事件名 4–12 个字，禁止在同行用「——」或冒号内联简述。其下字段行必须写成与时间线面板完全一致的事件格式，取值写在同行：「- 人物：」「- 事件：」「- 描述：」「- 影响：」「- 关联：」——人物/事件/描述/影响 四行对每条事件都必备；「- 描述：」写比「- 事件：」更详细的原因、经过与关键细节（时间线面板悬停时显示），不得与事件行同句照抄；「- 关联：」列出与该事件有因果承接的其他事件的事件名（须是本文档内出现过的标题名，顿号分隔，确实没有关联才可整行省略）；禁止写「- 完成：」行——那是面板勾选完成后才出现的标记。完整示例（只示范格式，不要照抄内容）：\n# 时间线\n## 120-06-15 黑市陷阱\n- 人物：程野、姜叙\n- 事件：程野为查明真相进入灰区购买未过滤的记忆片段，卖家递来的线索实则是定位器\n- 描述：灰区市场在守序者巡逻周期的盲区开市，姜叙的渠道递来的片段被人做过手脚，程野买完才察觉信号在反向发射\n- 影响：守序者的监控网络锁定程野行踪，他被列为重点监视对象\n## 120-06-20 雨夜出逃\n- 人物：程野\n- 事件：守序者上门抓捕，程野借姜叙提供的下水道图脱身\n- 描述：抓捕出动封街的三个小组，程野利用换岗间隙从检修井离开，代价是丢掉公开身份的全部证件\n- 影响：程野转入地下，原有人际与资源暂时失联\n- 关联：黑市陷阱\n3. 禁止的输出形态（每一条都不允许出现）：「1.」「2.」「3.」这类编号清单行；标题行之外的裸事件行；「- 完成：」行；字段名写成「- 人物 :」或取值另起一行的字段；标题行只有时间点没有事件名、或只有事件名没有时间点；把简述写进标题行；前言说明；代码块包裹\n4. 层级用标题深度表达：## ＝大事件；其下 ### ＝小事件（大事件的阶段性构成）；再下 #### ＝旁支事件（支线/配角反应/暗线）。只在确有分级必要时才用 ###／####，不为凑层级而拆；各级一律用第 2 条的「时间点＋事件名」标题行＋字段行格式\n5. 时间点须与因果顺序一致：承接前因的事件，时间点不得早于它所承接的事件；子事件的时间点落在其父事件的时间范围内\n6. 事件之间须有因果承接（因此/但是），禁止靠巧合推动剧情\n7. 赌注与代价随时间轴逐步抬升，张力有松有紧；最大反转落在中段附近、高潮落在后段（用时间点与相对位置表述，不指定具体章号）\n8. 事件必须与世界观设定兼容，不得违背其硬规则；人物的行动与决定只依赖其当时已知悉的信息\n9. 只输出《时间线》正文本身（从「# 时间线」开始），不要输出任何别的内容`;
+	const parts: string[] = [];
+	// v0.4.3+ 前缀缓存友好排序：上下文在前、格式硬要求压后（口径统一，便于后续同书请求复用书籍设定前缀）
 	pushContextDocs(parts, input.contextDocs);
+	parts.push(`\n${instruction}`);
 	return parts.join("\n");
 }
 
 // ---------- v0.3.0+ 世界观生成（auto-book 流水线首阶段：新命令「生成世界观」→ 书级《案头资料/世界观.md》） ----------
 
-export const WORLDVIEW_GEN_SYSTEM_PROMPT = "你是资深小说世界观设计师，擅长把一句话设定扩写为自洽、可供全书创作引用的世界观设定文档。";
 
 export interface WorldviewGenInput {
 	bookTitle: string;
 	premise: string; // 一句话设定（核心输入：state.one_line，弹窗可改）
-	contextDocs?: string; // 调用方装配的上下文块串（【书籍信息】→【张力规则】，经引用文档配置框过滤）
+	contextDocs?: string; // 调用方装配的上下文块串（【书籍信息】＋清单技能块（默认【技能 · 张力工具箱】【技能 · 世界观生成框架】），经引用文档配置框过滤）
 }
 
 /** 世界观生成 prompt：以一句话设定为种子生成书级《世界观.md》——固定 H2 小节、首行 H1；
@@ -1301,8 +1421,10 @@ export function buildWorldviewGenPrompt(input: WorldviewGenInput): string {
 		"只写设定本身，不写情节大纲、不写章节规划、不复述一句话设定之外的既有剧情",
 		"首行为 H1 标题「# 世界观」，各节用 H2；只输出世界观文档正文本身，不要解释、前言说明或代码块包裹",
 	];
-	const parts: string[] = [`请根据下面的一句话设定与书籍信息，为「${input.bookTitle}」生成一份《世界观》。\n\n它是后续《时间线》《策划指南》、书级/卷级大纲与全部章节写作的既定事实约束，必须自洽、具体、无内部矛盾。\n\n要求：\n${reqs.map((r, i) => `${i + 1}. ${r}`).join("\n")}`];
+	const parts: string[] = [];
+	// v0.4.3+ 前缀缓存友好排序：上下文在前（书籍信息＋清单技能块）、「以一句话设定为种子」等指令压后
 	pushContextDocs(parts, input.contextDocs);
+	parts.push(`\n请根据上面的一句话设定与书籍信息，为「${input.bookTitle}」生成一份《世界观》。\n\n它是后续《时间线》《策划指南》、书级/卷级大纲与全部章节写作的既定事实约束，必须自洽、具体、无内部矛盾。\n\n要求：\n${reqs.map((r, i) => `${i + 1}. ${r}`).join("\n")}`);
 	return parts.join("\n");
 }
 
@@ -1377,15 +1499,18 @@ export function buildRewritePrompt(input: RewritePromptInput): string {
 	const oldContent = input.oldContent || "";
 	const summaryBlock = oldContent ? `【本章摘要】\n${input.currentSummary || "（无）"}` : "（本章暂无内容）";
 	const oldContentBlock = oldContent ? `【原章节内容（仅作为参考起点）】\n${oldContent.slice(0, 4500)}` : "";
-	const storyTypeSkill = (input.storyTypeSkillBlock || "").trim();
-	const taskSkill = (input.taskSkillBlock || "").trim();
+	const storyTypeSkill = applyWordRangeVars((input.storyTypeSkillBlock || "").trim(), input.wordRange); // v0.4.3+：字数占位符按书级 word_range 插值
+	const taskSkill = applyWordRangeVars((input.taskSkillBlock || "").trim(), input.wordRange);
 	const [wordLow, wordHigh] = input.wordRange;
+	const { mid: wordTarget, flLow: wordFlLow, flHigh: wordFlHigh } = wordTargetHint([wordLow, wordHigh]); // 同 buildChapterPrompt 字数口径（中值为宜、上下浮动20%）
+	// v0.4.3+ 前缀缓存友好排序（与 /write、/continue 同口径）：【写作上下文】整块提到最前、上下文头逐字统一，
+	// 编写类型技能、章节大纲桥、本章摘要、原文与重写要求全部压后——同一章先写后改、或相邻章连续处理可复用稳定前缀
 	return `
+${WRITING_CONTEXT_HEAD}
+${input.context}
+
 ${storyTypeSkill ? storyTypeSkill : ""}
 ${taskSkill ? taskSkill : "这是 /rewrite 命令——**重构改写**当前章节。你可以大幅调整情节走向、结构安排和叙事方式，与原内容可以完全不同。\n\n请重写" + label + "。"}
-
-【写作上下文】
-${input.context}
 
 ${bridge || "（暂无章节大纲）"}
 
@@ -1395,7 +1520,7 @@ ${oldContentBlock}
 
 ${input.userInstruction ? `【重写要求】${input.userInstruction}` : "请严格按本章大纲创作：大纲中的情节要点必须全部保留并逐一呈现，不得遗漏；在不偏离大纲走向的前提下，可自由调整表达与结构，不必受原文限制。"}
 
-请创作本章正文，总字数严格控制在${wordHigh}字以内（目标${wordLow}-${wordHigh}字）：不足${wordLow}字继续充实细节；接近${wordHigh}字必须精简收尾，严禁超过${wordHigh}字。要求：
+请创作本章正文，总字数以${String(wordTarget)}字为宜（区间中值），可上下浮动20%（约${String(wordFlLow)}-${String(wordFlHigh)}字）。要求：
 - **如果用户有具体重写方向**：严格遵循其指示（如"改为反派视角""增加反转""压缩节奏"等），可完全改变情节走向
 - **如果没有特殊要求**：基于大纲自由发挥，但尽量与原文风格一致
 - **必须保留的**：角色性格一致性、本章大纲约束（大纲要点不得遗漏）、与前文/后文的衔接逻辑
@@ -1421,17 +1546,14 @@ export interface ReviewPromptInput {
 export function buildReviewPrompt(input: ReviewPromptInput): string {
 	const bridge = buildOutlineBridgeBlock(input.bridge || {});
 	const label = (input.chapterLabel || `第${input.chapterNum}章`).trim();
-	return `请以全局视角审阅小说${label}，找出其中不合逻辑之处与剧情问题。
-
-【写作上下文（含本卷与本章大纲、角色设定、前文摘要、世界观）】
-${input.context}
-
-${bridge || "（暂无章节大纲）"}
-
-【本章全文】
-${(input.chapterContent || "").slice(0, 6000)}
-
-${input.userInstruction ? `【重点审阅要求】${input.userInstruction}` : ""}
+	// v0.4.3+ 前缀缓存友好排序（与写作族同口径）：【写作上下文】整块提到最前——章名、大纲桥、本章全文、
+	// 重点审阅要求与报告结构全部压后；此前首句就是「请以全局视角审阅小说第N章」，与相邻次请求的公共前缀只有十几个字
+	const parts: string[] = [`\n以下是审阅上下文：\n${input.context}`];
+	parts.push(`\n${bridge || "（暂无章节大纲）"}`);
+	const body = (input.chapterContent || "").slice(0, 6000);
+	if (body) parts.push(`\n【本章全文】\n${body}`);
+	parts.push(`\n请以全局视角审阅小说${label}，找出其中不合逻辑之处与剧情问题。` +
+		(input.userInstruction ? `\n\n【重点审阅要求】${input.userInstruction}` : "") + `
 
 请输出审阅报告，包含以下部分：
 1. **本章概述**：本章讲了什么，在全局中的位置与作用（一两句话）
@@ -1440,7 +1562,8 @@ ${input.userInstruction ? `【重点审阅要求】${input.userInstruction}` : "
 4. **人物一致性**：性格、能力、动机是否与角色设定及前文一致
 5. **建议**：针对每个问题给出具体修改建议
 
-要求：只做分析和建议，不重写正文；以清晰的 Markdown 列表输出。`;
+要求：只做分析和建议，不重写正文；以清晰的 Markdown 列表输出。`);
+	return parts.join("\n");
 }
 
 // ---------- /polish 润色提示词（对应 writer.py polish_chapter 的 f-string） ----------
@@ -1761,3 +1884,42 @@ export function applyTypoMarks(
 	out += marked.slice(cursor);
 	return { text: out, list };
 }
+
+
+// ---------- v0.4.3+ 任务指令盘上覆盖（5 条纯硬编码固定文本 → SKILLS/系统提示词/<名>.md，缺失/空回落内置） ----------
+// 仅收「与故事状态/当前章/卷状态无关」的固定文案；动态插值与换行粘合留代码，条目内 {{占位符}} 由 ptT 运行时替换（请勿改名删除）。
+const taskPromptOverrides = new Map<string, string>();
+
+/** 由 main.ts refreshPromptSkillOverrides 注入盘上覆盖（trim 后空值不注入＝回落内置） */
+export function setTaskPromptOverrides(next: Record<string, string>): void {
+	taskPromptOverrides.clear();
+	for (const [k, v] of Object.entries(next || {})) if (v) taskPromptOverrides.set(k, v);
+}
+
+/** 取任务指令文本：盘上覆盖优先，缺失/为空回落 TASK_PROMPTS 内置 */
+export function pt(name: string): string {
+	return taskPromptOverrides.get(name) || TASK_PROMPTS[name] || "";
+}
+
+/** ptT：取文本后做 {{占位符}} 字符串插值（数值自动转串） */
+export function ptT(name: string, vars?: Record<string, string | number>): string {
+	let t = pt(name);
+	if (vars) {
+		for (const [k, v] of Object.entries(vars)) t = t.split(`{{${k}}}`).join(String(v));
+	}
+	return t;
+}
+
+// 定义在文件最末：上方 formatRetryNote 等运行期引用，模块加载期不触发 TDZ
+export const TASK_PROMPTS: Record<string, string> = {
+	"剧本转换-改写要求":
+		"将下面这篇文章改写成严格 screenplay 版本，保留原文核心情节与人物关系，但全部转成剧本体。\n\n硬性要求：\n\n1. 只输出剧本正文，不要解释、不要说明、不要前后备注，不得出现小说章节标题或总结语。\n\n2. 全部环境描写、人物情绪、心理状态、背景信息都要改写成可见动作、音效、光线、表情、现场反应。\n\n3. 使用标准 screenplay 结构：INT./EXT. / CUT TO: / FADE IN: / CONTINUOUS / INTERCUT 等场景头与转场。\n\n4. 角色名单独成一行，下一行写台词；允许极短括号动作标注。\n\n5. 不能写成小说叙述句式，如‘他想、她觉得、忽然、顿时、心里、内心、作者写道’。\n\n6. 以脚本的方式表达所有内容，保留原有主线和关键冲突。",
+	"剧本转换-重写指令":
+		"上一版并未符合严格 screenplay 格式，请重新严格重写。\n\n校验反馈：{{reason}}\n\n必须输出真实剧本，而不是小说正文。",
+	"对话助手身份":
+		"你是一个友好的写作助手。请用简体中文自然、简洁地回答用户的问题；若问题与当前小说相关，请结合提供的【小说上下文】回答；若提供了【对话历史】，请结合历史理解语境与指代（如'他/它/刚才/后来'），回答与之前的内容保持连贯，不要重复已说过的内容；若问题与写作、小说或创作相关，请按直白平实、避免 AI 腔的文风作答，不要编造上下文中没有的设定；思考完成后请直接在正文输出完整回答，不要把回答只放在思考过程里；如果用户的问题与小说创作无关，就正常回答，不要编造小说内容。",
+	"时间线-格式修正注记":
+		"【格式修正要求】你上次的输出不符合规定的时间线格式：标题块标题行必须写成「## 时间点 事件名」（时间点如 120 / 120-06-15，其后接事件名），其下「- 人物：」「- 事件：」「- 描述：」「- 影响：」「- 关联：」字段行按事件格式写（人物/事件/描述/影响 每条必备、取值写在同行；- 关联： 列本文档内相关事件的事件名、无关联可省；禁止「- 完成：」行）。请整体重新输出：正文从「# 时间线」开始，禁止编号清单行与裸事件行。",
+	"格式修正-注记":
+		"【格式修正要求】\n你上次的输出不符合编写类型「{{story_type}}」：{{reason}}\n请严格按照【编写类型】格式要求重新输出，不要重复上次的错误格式。",
+};

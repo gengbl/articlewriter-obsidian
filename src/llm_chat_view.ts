@@ -339,7 +339,7 @@ export class LlmChatView extends ItemView {
 		if (query.includes("[") || query.includes("]")) return this.hideRefPopup(); // 手动补全 [[ ]]：不再弹提示，避免插入后重复触发
 		const all = this.app.vault.getFiles().map((f) => f.path).filter((p) => !/(^|\/)_resources\//.test(p)).sort(); // 排除 _resources 资源目录，不占候选位
 		const q = query.trim().toLowerCase();
-		const hits = (q ? all.filter((p) => p.toLowerCase().includes(q)) : all).slice(0, 200);
+		const hits = q ? all.filter((p) => p.toLowerCase().includes(q)) : all; // v0.4.3+ 不再截断：候选显示全部匹配文档（此前只列前 200）
 		if (!hits.length) return this.hideRefPopup();
 		this.refPaths = hits;
 		this.refIdx = 0;

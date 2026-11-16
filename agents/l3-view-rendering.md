@@ -21,5 +21,6 @@
 ## 通用约定
 
 - 统一「submitted/resolved 标志」模式：先置位再 `close()`，`onClose` 里未提交才触发 onCancel，防止 Esc 与按钮双触发。新 Modal 必须照抄该模式。
+- **统一基类 `AwModal`（v0.4.3+，`src/modals.ts` 导出）**：本插件所有 `extends Modal` 的弹窗一律 `extends AwModal`（modals.ts 19 个 + main.ts `StatusModal`；`SuggestModal`/`FuzzySuggestModal` 系列不是表单、保持原样）。基类构造函数给 `contentEl` 挂 `.aw-form` 作用域类——**挂在构造函数而非 `onOpen`**：现有子类普遍覆写 `onOpen` 且不调用 `super.onOpen()`，构造期挂类对全部子类恒生效。新写弹窗直接继承 `AwModal`，不要再用裸 `Modal`（main.ts 的 obsidian import 已移除 `Modal`）。CSS 口径见 [l3-settings-page.md](./l3-settings-page.md)「统一表单布局」。
 - **常驻 ItemView 渲染陷阱（规范原文，各视图文档均引用本条）**：本环境 Obsidian 对已注册视图不调用 `getEmptyStateElement()`（返回游离节点会整片空白），UI 必须在 `onOpen()` 里建进框架创建的 `this.contentEl`（内置日历等视图同款做法）；本地 patch dts 中 `ItemView.onClose` 签名是 `Promise<void>` 需声明 async；实例方法须实现 `getViewType()`/`getDisplayText()`/`getIcon()`，开文件用 `leaf.openFile(TFile)`（本 dts 无 setFile）。
 - 文案风格：中文提示、错误带前缀（如「删除失败：…」）、成功 Notice 6–8s。

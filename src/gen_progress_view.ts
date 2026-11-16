@@ -21,6 +21,7 @@ export interface WritingStreamSink {
 	finish(): void;
 	fail(message: string): void;
 	markStopped?(): void; // v0.4.x+ 可选：命令侧按 signal.aborted 终止流程后定格面板（计时/状态行/按钮），停止在去AI味等后处理阶段同样可见
+	noteCache?(note: string): void; // v0.4.x+ 可选：本轮请求的前缀缓存读数文案（llm_client.cacheStatsText 产出），状态行/自动保存行尾追加，便于核对 pin 是否命中
 }
 
 /** 统一生成过程面板（自定义 ItemView，可停靠任意区域、重载保留位置）。双阶段复用同一实例：
@@ -57,6 +58,7 @@ export class GenProgressView extends ItemView implements WritingStreamSink {
 	private streamStartedAt = 0; // 本轮流式会话起点（beginStream 记录；含空结果/格式校验重试与去AI味后处理，直到 finish/fail/finishAuto 收尾）
 	private timer?: number; // 流式中每秒刷新状态行「已用时」的定时器（离开 streaming 态自停）
 	private statusOverride = ""; // 临时状态文案（连接重试退避/去AI味等 setStatus 注入），非空时计时器不覆盖
+	private cacheNote = ""; // v0.4.3+ 本轮请求的前缀缓存读数文案（noteCache 注入，beginStream 清空）；done 状态行与 finishAuto 日志行尾追加
 
 	constructor(leaf: WorkspaceLeaf) {
 		super(leaf);
@@ -168,6 +170,7 @@ export class GenProgressView extends ItemView implements WritingStreamSink {
 		this.streamState = "streaming";
 		this.reasoningText = "";
 		this.statusOverride = "";
+		this.cacheNote = ""; // v0.4.3+ 每轮流式小节重新计数（上一轮读数不留存到本轮状态行）
 		this.streamStartedAt = Date.now(); // v0.2.x+ 计时起点（含后续重试/去AI味，直到本轮收尾）
 		this.startTimer();
 		const head = this.bodyEl.createDiv({ cls: "aw-gen-line aw-gen-div", text: `—— ${this.stamp()} · ${title} ——` });
@@ -222,6 +225,14 @@ export class GenProgressView extends ItemView implements WritingStreamSink {
 		if (this.statusEl) this.statusEl.setText(text);
 	}
 
+	/** v0.4.3+ 前缀缓存读数（写作命令侧由 llm_client 的响应 timings 喂入，见 main.ts streamOnce）：
+	 *  只作诊断展示、不参与任何判定——本地 Strata serve 才有 timings，云端端点不注入、面板如常无此后缀 */
+	noteCache(note: string): void {
+		if (this.streamState === "idle" || this.submitted) return;
+		this.cacheNote = note;
+		this.updateStatus();
+	}
+
 	finish(): void {
 		if (this.submitted || this.streamState !== "streaming") return;
 		this.streamState = "done";
@@ -259,7 +270,7 @@ export class GenProgressView extends ItemView implements WritingStreamSink {
 		this.stopTimer();
 		this.footerEl.empty();
 		this.setFooterVisible(false);
-		this.appendLine(`${message ?? "✓ 已自动保存"}（${elapsedLabel} ${formatElapsedMs(Date.now() - this.streamStartedAt)}）`, "ok");
+		this.appendLine(`${message ?? "✓ 已自动保存"}（${elapsedLabel} ${formatElapsedMs(Date.now() - this.streamStartedAt)}${this.cacheNote ? `，${this.cacheNote}` : ""}）`, "ok");
 	}
 
 	/** v0.3.0+ auto-book 流水线免交互：finish() 之后（done 态、等待「保存/不保存」）自动等价点「保存」。
@@ -320,7 +331,7 @@ export class GenProgressView extends ItemView implements WritingStreamSink {
 			if (this.fullText.trim()) this.statusEl.setText(`生成中…（已 ${String(this.fullText.length)} 字，${elapsed}，点「停止生成」可中断）`);
 			else if (this.reasoningText.trim()) this.statusEl.setText(`模型思考中…（思考已 ${String(this.reasoningText.length)} 字，正文未开始，${elapsed}，点「停止生成」可中断）`);
 			else this.statusEl.setText(`等待模型输出…（${elapsed}）`);
-		} else if (this.streamState === "done") this.statusEl.setText(`完成（共 ${String(this.fullText.length)} 字，${elapsed}），请选择是否保存。`);
+		} else if (this.streamState === "done") this.statusEl.setText(`完成（共 ${String(this.fullText.length)} 字，${elapsed}${this.cacheNote ? `，${this.cacheNote}` : ""}），请选择是否保存。`);
 	}
 
 	private scrollBottom(): void {

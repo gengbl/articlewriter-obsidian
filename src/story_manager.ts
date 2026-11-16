@@ -11,7 +11,6 @@ import {
 } from "./state_doc";
 export type { ChapterMeta, StoryState } from "./state_doc";
 import type { ChapterMeta, StoryState } from "./state_doc";
-import { DEFAULT_TENSION_RULES } from "./tension_rules_default";
 import {
 	CHAPTER_BODY_TEMPLATE,
 	CHAPTER_CHARACTERS_TEMPLATE,
@@ -47,7 +46,7 @@ export const CHAPTER_DIR_RE = /^第(\d{1,6})章-(.+)$/;
 /** 引言实体目录名（位于 `书稿/` 下；保留名——卷名不得占用，避免与引言文件夹物理冲突） */
 export const PROLOGUE_DIR_NAME = "引言";
 
-/** 案头资料目录名（书级参考资料：十件套 + 用户自建文件；写字台「案头资料」小节展示其内容 ∪ 书根剩余项） */
+/** 案头资料目录名（书级参考资料：九件套 + 用户自建文件（张力规则已并入系统技能张力工具箱）；写字台「案头资料」小节展示其内容 ∪ 书根剩余项） */
 export const DESK_DOCS_DIR_NAME = "案头资料";
 
 /** 书稿目录名（容纳引言目录、章节目录与卷目录） */
@@ -259,7 +258,7 @@ export class StoryManager {
 		return `${this.storyPath(storyName)}/${MANUSCRIPT_DIR_NAME}`;
 	}
 
-	/** 案头资料目录（书级参考资料：十件套 + 用户自建文件） */
+	/** 案头资料目录（书级参考资料：九件套 + 用户自建文件（张力规则已并入系统技能张力工具箱）） */
 	deskDocsPath(storyName: string): string {
 		return `${this.storyPath(storyName)}/${DESK_DOCS_DIR_NAME}`;
 	}
@@ -305,7 +304,7 @@ export class StoryManager {
 	/**
 	 * 布局收口：确保该书处于新物理结构（案头资料/ + 书稿/）。
 	 * 探测轻量：①「案头资料/」已存在 → 视为已迁移直接返回；②否则 adapter.list(书根) 一次调用本地判定——
-	 * 存在任何非隐藏、非系统项（引言/、章节目录、卷目录、九件套或用户自建文件/文件夹）即触发迁移。
+	 * 存在任何非隐藏、非系统项（引言/、章节目录、卷目录、默认资料文件或用户自建文件/文件夹）即触发迁移。
 	 * force=true 绕过 layoutChecked 缓存（/scan 修复入口用）。migrating 防重入；迁移失败不写缓存（下次重试）。
 	 */
 	private async ensureLayout(storyName: string, force = false): Promise<void> {
@@ -343,7 +342,7 @@ export class StoryManager {
 	/**
 	 * 旧格式 → 新物理结构一次性迁移引擎（幂等、可重跑）：
 	 * ① 卷目录（书根）→ 整体 rename 到 书稿/<卷>/（章节目录随迁），再建「文档/」子目录并把卷直属 TFile 移入（legacy 前缀名归一裸基名）；
-	 * ② 引言/ → 书稿/引言/；③ 书根章节目录 → 书稿/；④ 书根其余非系统项（九件套 + 用户文件/文件夹）→ 案头资料/。
+	 * ② 引言/ → 书稿/引言/；③ 书根章节目录 → 书稿/；④ 书根其余非系统项（默认资料文件 + 用户文件/文件夹）→ 案头资料/。
 	 * 系统项（故事状态.md / story_state.json / AI提示词/ / _backup/ / 卷.md）留书根；隐藏点文件跳过不搬。
 	 * 冲突按 Obsidian 惯例加 ` (N)` 后缀；目标文件夹已存在时 mergeMoveFolder 逐子项合并后清源。全程 vault.rename/createFolder 直操，不经 writeDoc。
 	 */
@@ -615,7 +614,7 @@ export class StoryManager {
 			updated_at: nowIso(),
 		};
 		await this.vault.createFolder(base);
-		for (const [fname, tpl] of this.rootDocTemplates(title)) await this.ensureDoc(`${this.deskDocsPath(name)}/${fname}`, tpl); // 默认资料十件套 → 「案头资料/」（与 ensureRootDocs 同一清单来源）
+		for (const [fname, tpl] of this.rootDocTemplates(title)) await this.ensureDoc(`${this.deskDocsPath(name)}/${fname}`, tpl); // 默认资料九件套 → 「案头资料/」（与 ensureRootDocs 同一清单来源）
 		await this.ensureDoc(`${base}/卷.md`, VOLUME_TEMPLATE); // 系统管理的《卷.md》留书根
 		await this.ensurePrologue(name).catch(() => {}); // 引言播种（best-effort：失败不影响建书主流程）
 		await this.saveState(name, state);
@@ -757,7 +756,8 @@ export class StoryManager {
 		return created;
 	}
 
-	/** 「案头资料/」默认资料十件套模板清单（建书播种 / 写字台「补全资料」同一来源；《故事状态.md》与系统管理的《卷.md》不在其内）。《策划指南》参与大纲生成（空模板，首次大纲生成前自动 AI 生成内容）；《时间线》为可选手写参考资料、不参与提示词注入；《张力规则.md》内置默认播种（DEFAULT_TENSION_RULES），生成书级/卷级大纲与策划指南时注入、每书可独立编辑 */
+	/** 「案头资料/」默认资料九件套模板清单（建书播种 / 写字台「补全资料」同一来源；《故事状态.md》与系统管理的《卷.md》不在其内）。《策划指南》参与大纲生成（空模板，首次大纲生成前自动 AI 生成内容）；《时间线》为可选手写参考资料、不参与提示词注入。
+	 *  v0.4.3+ 张力规则并入张力工具箱：《张力规则.md》移出清单（不再播种、不再自动注入；盘上旧文件保留、用户可自行删除或改经引用清单 file: 条目引用），张力手法唯一载体＝系统技能 `SKILLS/张力工具箱.md` */
 	private rootDocTemplates(title: string): Array<[string, string]> {
 		return [
 			["大纲.md", outlineTemplate(title)],
@@ -769,7 +769,6 @@ export class StoryManager {
 			["人物关系.md", CHAPTER_RELATIONSHIPS_TEMPLATE],
 			["场景.md", CHAPTER_SCENES_TEMPLATE],
 			["时间线.md", timelineTemplate(`${title.trim() || "未命名小说"} 时间线`)],
-			["张力规则.md", DEFAULT_TENSION_RULES],
 		];
 	}
 
@@ -2396,19 +2395,51 @@ private emptyState(storyName: string): StoryState {
 		await this.saveScenesFile(storyName, 0, entries, null);
 	}
 
-	/** 读全部三层《人物关系.md》（书级 + 每卷 + 每章）合并为条目列表，供跨层去重；文件缺失的层跳过 */
-	async readAllRelationshipEntries(storyName: string): Promise<doc.RelationshipEntry[]> {
-		const out: doc.RelationshipEntry[] = [];
+	/** v0.4.3+：读三层《人物关系.md》为独立的层（书级 + 每卷 + 每章，文件缺失为空层），供大纲阶段关系分层提升使用 */
+	async loadRelationshipLayerDocs(storyName: string): Promise<Array<{ ref: CastLayerRef; entries: doc.RelationshipEntry[] }>> {
+		const out: Array<{ ref: CastLayerRef; entries: doc.RelationshipEntry[] }> = [];
 		const base = this.deskDocsPath(storyName); // 书级《人物关系》在「案头资料/」
 		let bookText = await this.readDoc(`${base}/人物关系.md`);
 		if (!bookText.trim()) bookText = await this.readDoc(`${base}/角色关系.md`); // 旧别名兜底（与写作上下文同口径）
-		out.push(...doc.parseRelationships(bookText));
-		for (const vol of Object.values(await this.loadVolumes(storyName))) {
-			out.push(...doc.parseRelationships(await this.readDoc(this.resolveVolumeDocPath(this.volumeDirPath(storyName, vol), vol.name, "人物关系.md"))));
+		out.push({ ref: { scope: "book" }, entries: doc.parseRelationships(bookText) });
+		for (const [volId, vol] of Object.entries(await this.loadVolumes(storyName))) {
+			out.push({
+				ref: { scope: "volume", volId },
+				entries: doc.parseRelationships(await this.readDoc(this.resolveVolumeDocPath(this.volumeDirPath(storyName, vol), vol.name, "人物关系.md"))),
+			});
 		}
 		for (const ch of await this.listChapters(storyName)) {
-			out.push(...doc.parseRelationships(await this.readDoc(this.resolveChapterDocPath(`${ch.dir.path}/人物关系.md`))));
+			out.push({ ref: { scope: "chapter", chapterKey: ch.key }, entries: doc.parseRelationships(await this.readDoc(this.resolveChapterDocPath(`${ch.dir.path}/人物关系.md`))) });
 		}
+		return out;
+	}
+
+	/** 把一层《人物关系.md》整体写回（供大纲阶段关系分层提升；空列表写回仅剩标题） */
+	async saveRelationshipLayer(storyName: string, ref: CastLayerRef, entries: doc.RelationshipEntry[]): Promise<void> {
+		let path = "";
+		if (ref.scope === "book") {
+			path = `${this.deskDocsPath(storyName)}/人物关系.md`;
+		} else if (ref.scope === "volume") {
+			const volId = String(ref.volId ?? "").trim();
+			if (!volId) throw new Error("缺少卷 id，无法写入卷级人物关系");
+			const vol = (await this.loadVolumes(storyName))[volId];
+			if (!vol) throw new Error(`卷不存在：${volId}`);
+			await this.ensureVolumeFolder(storyName, vol);
+			path = this.resolveVolumeDocPath(this.volumeDirPath(storyName, vol), vol.name, "人物关系.md");
+		} else {
+			const key = String(ref.chapterKey ?? "").trim();
+			if (!key) throw new Error("缺少章节键，无法写入章级人物关系");
+			const ch = await this.chapterDirOf(storyName, key);
+			if (!ch) throw new Error(`章节不存在：${key}`);
+			path = this.resolveChapterDocPath(`${ch.dir.path}/人物关系.md`);
+		}
+		await this.writeDoc(path, doc.formatRelationships(entries));
+	}
+
+	/** 读全部三层《人物关系.md》（书级 + 每卷 + 每章）合并为条目列表，供跨层去重；文件缺失的层跳过 */
+	async readAllRelationshipEntries(storyName: string): Promise<doc.RelationshipEntry[]> {
+		const out: doc.RelationshipEntry[] = [];
+		for (const layer of await this.loadRelationshipLayerDocs(storyName)) out.push(...layer.entries);
 		return out;
 	}
 

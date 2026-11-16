@@ -51,13 +51,27 @@ export interface CastChapterAnalysis {
 export const CAST_ANALYZE_SYSTEM_PROMPT =
 	"你是中文网络小说的人物与场景分析助手。你阅读章节正文，提取人物设定、场景描述与人物关系，严格以 JSON 对象输出。不输出任何解释、前后缀或代码围栏。";
 
+/** 逐章分析提示词里「逐章变化段」的起点（前缀缓存锚点口径，唯一事实源）：其前的任务说明＋JSON 模板＋要求清单
+ *  在一次运行内逐字不变，其后的规范名单/已有场景名（逐章增长）、章名与正文都在变——
+ *  锚点必须钉在这之前，钉在其后＝落在分叉点之后，后续章节复用不到任何东西。 */
+export const CAST_VARYING_HEAD = "\n- 若某人物已收录在以下规范名单中";
+
+/** 非法 JSON 重试的纠错文案（v0.4.3+）：经 `main.ts retryTurnMessages` 作**新一轮 user 消息**追加（会话续轮），
+ *  不再拼回原提示词尾部——那样本章正文整段要重新 prefill。 */
+export const CAST_JSON_RETRY_NOTE = "你上一次的输出不是合法 JSON。请严格按上述格式只输出一个 JSON 对象，不要代码围栏、不要任何解释文字。";
+
+/** 稳定前缀字符数（无该标记时返回 0，调用方据此不钉锚点） */
+export function castStableChars(prompt: string): number {
+	const at = prompt.indexOf(CAST_VARYING_HEAD);
+	return at > 0 ? at : 0;
+}
+
 /** 逐章分析用户提示词：要求严格 JSON；knownNames/knownSceneIds 用于跨章名称归一 */
 export function buildCastChapterPrompt(opts: {
 	chapterLabel: string;
 	content: string;
 	knownNames: string[];
 	knownSceneIds: string[];
-	retryNote?: string;
 }): string {
 	const names = opts.knownNames.join("、");
 	const scenes = opts.knownSceneIds.join("、");
@@ -81,9 +95,8 @@ export function buildCastChapterPrompt(opts: {
 		"要求：\n" +
 		"- 只写正文中有明确依据的字段；无依据的字段整个省略（不要填空字符串或空数组，abilities/characters 除外——确无则给 []）。\n" +
 		"- name、scene_id、a、b 必填且非空。\n" +
-		`- 若某人物已收录在以下规范名单中，必须沿用同一名字：${names || "（暂无）"}\n` +
+		`${CAST_VARYING_HEAD}，必须沿用同一名字：${names || "（暂无）"}\n` +
 		`- 若某场景与以下已有场景名一致，必须沿用同一 scene_id：${scenes || "（暂无）"}\n` +
-		(opts.retryNote ? `\n${opts.retryNote}\n` : "") +
 		`\n章节：${opts.chapterLabel}\n正文：\n${opts.content}`
 	);
 }

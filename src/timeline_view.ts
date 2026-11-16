@@ -3,6 +3,7 @@ import { deleteTimelineBlock, insertTimelineBlock, parseTimelineHeading, parseTi
 import { ConfirmModal, EventEditModal, type EventEditResult } from "./modals"; // v0.3.3+ 合并大事件：面板承担原事件树面板的新增/编辑/删除/完成切换
 import { buildOutlineTree, countSubtree, type OutlineNode } from "./outline_tree"; // v0.3.1+：轮廓树算法与事件树面板共用
 import { CanvasPanel } from "./panel_canvas"; // v0.3.1+：缩放/平移画布设施与事件树面板共用
+import { revealEditorLine } from "./editor_nav"; // v0.4.3+：「在编辑器里定位到某一行」与灵感工具包/写字台共用
 
 /** 时间线条目所属层级（书根 / 卷 / 章） */
 export type TlScope = "book" | "volume" | "chapter";
@@ -762,9 +763,7 @@ export class TimelineView extends ItemView {
 					});
 				const idx = findIdx(true) >= 0 ? findIdx(true) : findIdx(false);
 				if (idx < 0) return;
-				const pos = { line: idx, ch: 0 };
-				ed.setCursor(pos);
-				ed.scrollIntoView({ from: pos, to: pos }, true); // center=true：定位行滚到视口中央
+				revealEditorLine(leaf, idx, [0]); // 定位动作共用（editor_nav）：本方法外层已按 [0,250] 重试，故这里只试一次
 			}, delay);
 		}
 	}

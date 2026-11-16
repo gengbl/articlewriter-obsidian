@@ -199,3 +199,32 @@ void test("next_chapters 清洗：负数/小数/字符串数字/缺键 → undef
 	assert.equal(ok.state?.next_chapters, 3);
 	assert.equal(ok.state?.prev_chapters, 2, "prev_chapters 收敛到同一清洗函数后行为不变");
 });
+
+void test("ai_expand_chapter_outline format→parse 往返；缺省不写；非布尔值视为未设置", () => {
+	// v0.4.3+：从大纲生成章节时是否 AI 扩展章大纲（缺省 undefined＝按开处理）
+	const st = baseState();
+	st.ai_expand_chapter_outline = false;
+	const text = formatStateDoc(st);
+	assert.match(text, /^ai_expand_chapter_outline: false$/m);
+	assert.equal(parseStateDoc(text).state?.ai_expand_chapter_outline, false);
+	const on = parseStateDoc("---\nai_expand_chapter_outline: true\n---\n");
+	assert.equal(on.state?.ai_expand_chapter_outline, true);
+	assert.ok(!formatStateDoc(baseState()).includes("ai_expand_chapter_outline"), "未配置不写（缺省＝开）");
+	const bad = parseStateDoc('---\nai_expand_chapter_outline: "yes"\n---\n');
+	assert.equal(bad.state?.ai_expand_chapter_outline, undefined);
+	assert.equal(bad.extra, undefined, "键在白名单内不落 extra");
+});
+
+void test("ai_outline_cast format→parse 往返；缺省不写；非布尔值视为未设置", () => {
+	// v0.4.3+：大纲阶段是否抽取人物/关系并分层写入（缺省 undefined＝按开处理）
+	const st = baseState();
+	st.ai_outline_cast = false;
+	const text = formatStateDoc(st);
+	assert.match(text, /^ai_outline_cast: false$/m);
+	assert.equal(parseStateDoc(text).state?.ai_outline_cast, false);
+	assert.equal(parseStateDoc("---\nai_outline_cast: true\n---\n").state?.ai_outline_cast, true);
+	assert.ok(!formatStateDoc(baseState()).includes("ai_outline_cast"), "未配置不写（缺省＝开）");
+	const bad = parseStateDoc('---\nai_outline_cast: "on"\n---\n');
+	assert.equal(bad.state?.ai_outline_cast, undefined);
+	assert.equal(bad.extra, undefined, "键在白名单内不落 extra");
+});

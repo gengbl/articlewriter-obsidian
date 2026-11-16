@@ -15,4 +15,4 @@
 | L3 | [l3-state-and-volumes.md](./l3-state-and-volumes.md) | 目录树/卷结构（时间线文档三层放置位置）、rescan 语义 |
 | L3 | [l3-view-rendering.md](./l3-view-rendering.md) | 常驻 ItemView 渲染陷阱、Modal 选型表（EventEditModal/ConfirmModal） |
 | L3 | [l3-main-ts-flow.md](./l3-main-ts-flow.md) | 新增命令标准流程、main.ts 通用辅助方法 |
-| L3 | [l3-prompt-assembly.md](./l3-prompt-assembly.md) | 三层合并时间轴作为【时间线】注入提示词（mergedTimelineText）、阶段 0 时间线自动生成（ensureTimeline） |
+| L3 | [l3-prompt-assembly.md](./l3-prompt-assembly.md) | 三层合并时间轴作为【时间线】注入提示词（mergedTimelineText）、策划指南前置时间线自动生成（ensureTimeline）与单独命令 `/timeline-generate`（共用 `runBookTimelineGen`） |

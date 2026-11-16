@@ -1479,6 +1479,48 @@
 	100% { box-shadow: 0 0 0 0 transparent; }
 }
 
+/* v0.4.3+ 统一表单布局（作用域 `.aw-form`：设置页容器由 getSettingDefinitions 挂类、所有本插件弹窗由 AwModal 基类挂类）：
+   标签一律左对齐，输入框/下拉框吃满「标签之外的剩余整行宽度」。
+   根因——Obsidian 核心 .setting-item-control 是 flex:0 0 60% ＋ justify-content:flex-end，控件只按内容宽度贴右、左侧留白；
+   这里把 control 改为占满剩余空间（flex:1 1 auto）并让 text/number/password/select/textarea 自身撑满（width:100% ＋ box-sizing）。
+   特异性 (0,2,0) 高于核心 (0,1,0)；已自排版的 .aw-setting-stack（一句话设定堆叠行，其 info/control 选择器 (0,3,0) 更高且写在后面）与
+   .aw-phase-tabs-setting（tab 区块，写在后面同特异性取胜）不受影响。
+   按钮不参与撑满：仅「按钮打头」的整行把按钮组顶到右缘（margin-left:auto 只给第一个按钮，多按钮仍挨在一起）。 */
+.aw-form .setting-item-info,
+.aw-form .setting-item-name,
+.aw-form .setting-item-desc {
+	text-align: left;
+}
+.aw-form .setting-item-info {
+	flex: 0 1 auto;
+	min-width: 0;
+}
+.aw-form .setting-item-control {
+	flex: 1 1 auto;
+	min-width: 0;
+	align-items: center;
+}
+.aw-form .setting-item-control input[type="text"],
+.aw-form .setting-item-control input[type="number"],
+.aw-form .setting-item-control input[type="password"],
+.aw-form .setting-item-control select,
+.aw-form .setting-item-control textarea {
+	flex: 1 1 auto;
+	width: 100%;
+	min-width: 0;
+	box-sizing: border-box;
+}
+.aw-form .setting-item-control button:first-child {
+	margin-left: auto;
+}
+/* 自定义行（非 Setting 渲染）同口径：标签列左对齐、控件列吃满剩余
+   （.aw-llm-row/.aw-phase-model-row 已是「标签左＋控件 flex:1」，此处只补默认左对齐，防主题右对齐继承） */
+.aw-form .aw-llm-label,
+.aw-form .aw-phase-model-label,
+.aw-form .aw-ev-msel-label {
+	text-align: left;
+}
+
 /* 多字段表单统一紧凑行距（MultiFieldModal「新增/编辑人物」等 + AddCharacterModal「添加人物」）：
    Obsidian .setting-item 默认 padding 0.75em≈12px 且带行间分隔线、input 高度约 32px，十几行叠加就非常占纵向空间；
    这里把 padding/分隔线/标签行高/控件高度一起压，并限定作用域不外溢到设置页与其它 Modal */
@@ -1941,15 +1983,6 @@
 	flex: 1 1 auto;
 	min-width: 0;
 }
-.aw-llm-textarea {
-	width: 100%;
-	resize: vertical;
-}
-.aw-llm-desc {
-	font-size: var(--font-ui-smaller);
-	color: var(--text-muted);
-	margin: 4px 0 8px;
-}
 .aw-llm-actions {
 	display: flex;
 	justify-content: flex-end;
@@ -2033,11 +2066,6 @@
 	margin-bottom: 8px;
 }
 /* 引用文档配置框（每阶段 ref_docs 清单） */
-.aw-refdocs-desc {
-	font-size: var(--font-ui-smaller);
-	color: var(--text-muted);
-	margin: 4px 0 8px;
-}
 .aw-refdocs-list {
 	display: flex;
 	flex-direction: column;
@@ -2182,4 +2210,81 @@
 /* v0.4.3+ 技能选择弹窗：文件夹层级前缀弱化显示 */
 .aw-skill-dir {
 	color: var(--text-muted);
+}
+
+/* ===== v0.4.3+ 灵感工具包弹窗（InspirationKitModal：搜索框 + 灵感块列表 + 底部动作）===== */
+
+/* 搜索框占满整行（原生 input，不经 Setting 布局，同 .aw-newdoc-input 的做法） */
+.aw-insp-search {
+	width: 100%;
+	box-sizing: border-box;
+	margin-bottom: 6px;
+}
+
+.aw-insp-list {
+	margin-bottom: 8px;
+}
+
+/* 一条灵感一行：左侧名字＋日期＋正文摘要，右侧「定位／改名／删除」；整行可点＝定位 */
+.aw-insp-row {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	padding: 3px 6px;
+	border-radius: 4px;
+	cursor: pointer;
+	text-align: left;
+}
+
+.aw-insp-row:hover {
+	background: var(--background-modifier-hover);
+}
+
+.aw-insp-txt {
+	flex: 1 1 auto;
+	min-width: 0;
+}
+
+.aw-insp-name {
+	font-weight: 600;
+	overflow: hidden;
+	white-space: nowrap;
+	text-overflow: ellipsis;
+}
+
+.aw-insp-sub {
+	display: flex;
+	gap: 6px;
+	min-width: 0;
+	font-size: var(--font-ui-smaller);
+}
+
+.aw-insp-date {
+	flex: 0 0 auto;
+	color: var(--text-muted);
+}
+
+.aw-insp-sub .aw-dim {
+	flex: 1 1 auto;
+	min-width: 0;
+	overflow: hidden;
+	white-space: nowrap;
+	text-overflow: ellipsis;
+}
+
+.aw-insp-btns {
+	flex: 0 0 auto;
+	display: flex;
+	gap: 4px;
+}
+
+.aw-insp-btn {
+	font-size: var(--font-ui-smaller);
+	padding: 2px 8px;
+	height: auto;
+}
+
+.aw-insp-btn.aw-insp-del:hover {
+	color: var(--text-error);
+	border-color: var(--text-error);
 }

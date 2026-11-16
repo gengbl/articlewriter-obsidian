@@ -116,7 +116,6 @@ export const IDENTITY_BOOST_SKILL_PREFIX = "身份加强·";
 /** 内置引用文档 key → 界面显示名（全阶段共用词表）。 */
 export const REF_DOC_LABELS: Record<string, string> = {
 	book_info: "小说基本信息（来自 故事状态.md：书名/题材/风格）",
-	tension_rules: "张力规则（张力规则.md）",
 	worldview: "世界观（世界观.md）",
 	timeline: "时间线（书/卷/章三层《时间线.md》合并时间轴）",
 	book_outline: "全书大纲（大纲.md）",
@@ -135,20 +134,20 @@ export const REF_DOC_LABELS: Record<string, string> = {
 
 /** 各阶段（0–4）可注入的内置引用文档目录（设置页下拉候选、按阶段裁剪）。 */
 export const PHASE_REF_DOC_CATALOGS: Record<string, string>[] = [
-	// 阶段 0 世界观生成（/worldview-generate）：世界观.md 是产出目标、不注入自身
-	{ book_info: REF_DOC_LABELS.book_info, tension_rules: REF_DOC_LABELS.tension_rules },
+	// 阶段 0 世界观生成（/worldview-generate）：世界观.md 是产出目标、不注入自身；张力/节奏手法走 skill:张力工具箱（v0.4.3+，默认清单已含，目录里没有内置文档项）
+	{ book_info: REF_DOC_LABELS.book_info },
 	// 阶段 1 策划方案生成（/planning-guide-worldview；自动生成策划指南/时间线前置链路）
-	{ book_info: REF_DOC_LABELS.book_info, tension_rules: REF_DOC_LABELS.tension_rules, worldview: REF_DOC_LABELS.worldview, timeline: REF_DOC_LABELS.timeline, book_outline: REF_DOC_LABELS.book_outline, vol_list: REF_DOC_LABELS.vol_list },
+	{ book_info: REF_DOC_LABELS.book_info, worldview: REF_DOC_LABELS.worldview, timeline: REF_DOC_LABELS.timeline, book_outline: REF_DOC_LABELS.book_outline, vol_list: REF_DOC_LABELS.vol_list },
 	// 阶段 2 书籍大纲和卷级大纲生成（/book-outline-generate /vol-outline-generate /book-outline-to-volumes）
 	{
-		book_info: REF_DOC_LABELS.book_info, tension_rules: REF_DOC_LABELS.tension_rules, worldview: REF_DOC_LABELS.worldview, timeline: REF_DOC_LABELS.timeline,
+		book_info: REF_DOC_LABELS.book_info, worldview: REF_DOC_LABELS.worldview, timeline: REF_DOC_LABELS.timeline,
 		planning_guide: REF_DOC_LABELS.planning_guide, outline_source: REF_DOC_LABELS.outline_source, book_outline: REF_DOC_LABELS.book_outline,
 		book_relations: REF_DOC_LABELS.book_relations, vol_relations: REF_DOC_LABELS.vol_relations, vol_list: REF_DOC_LABELS.vol_list,
 		prev_vol_outline: REF_DOC_LABELS.prev_vol_outline,
 	},
 	// 阶段 3 文章大纲生成（/vol-outline-to-chapters）
 	{
-		book_info: REF_DOC_LABELS.book_info, tension_rules: REF_DOC_LABELS.tension_rules, worldview: REF_DOC_LABELS.worldview, timeline: REF_DOC_LABELS.timeline,
+		book_info: REF_DOC_LABELS.book_info, worldview: REF_DOC_LABELS.worldview, timeline: REF_DOC_LABELS.timeline,
 		planning_guide: REF_DOC_LABELS.planning_guide, outline_source: REF_DOC_LABELS.outline_source, book_outline: REF_DOC_LABELS.book_outline,
 		book_relations: REF_DOC_LABELS.book_relations, vol_relations: REF_DOC_LABELS.vol_relations, vol_list: REF_DOC_LABELS.vol_list,
 		prev_vol_outline: REF_DOC_LABELS.prev_vol_outline,
@@ -168,22 +167,57 @@ export const BANNED_LIST_SKILL_NAME = "网文高频禁用词清单";
 /** 世界观生成方法论技能名（v0.3.7+：方法论种子随世界观阶段默认引用清单播种，内容对齐 prompts.buildWorldviewGenPrompt 的 H2 骨架与红线） */
 export const WORLDVIEW_FRAMEWORK_SKILL_NAME = "世界观生成框架";
 
-/** 各阶段（0–4）引用文档默认清单（初始化配置框；用户改动后以保存值为准）。 */
+/** 张力工具箱技能名（v0.4.3+ 张力规则并入张力工具箱：张力/节奏手法唯一载体＝系统技能 `SKILLS/张力工具箱.md`，
+ *  经各阶段引用清单的 `skill:` 条目注入；旧书级《案头资料/张力规则.md》与内置 key `tension_rules` 退役、不再自动注入） */
+export const TENSION_TOOLBOX_SKILL_NAME = "张力工具箱";
+
+/** 写作任务技能名（v0.4.3+ 「章节写作任务」「章节创作」两份合并为唯一一份＝系统技能 `SKILLS/章节写作指导.md`，
+ *  「编写文章」阶段清单选中后经 taskSkillBlock 注入第 3–13 条静态要求）；旧名仅存于迁移/清理逻辑 */
+export const WRITING_TASK_SKILL_NAME = "章节写作指导";
+export const LEGACY_WRITING_TASK_SKILL_NAMES: string[] = ["章节创作", "章节写作任务"];
+
+/** 存量引用清单（ref_docs / chat_ref_docs）内置 key 的静默迁移表（loadSettings 套用：保原位置、去重、落盘）：
+ *  events_list→timeline（v0.3.3+）、tension_rules→skill:张力工具箱（v0.4.3+ 张力规则并入张力工具箱）、
+ *  skill:章节创作 / skill:章节写作任务→skill:章节写作指导（v0.4.3+ 两技能合并；旧清单条目原位改写）。 */
+export const REF_DOC_KEY_RENAMES: Record<string, string> = {
+	events_list: "timeline",
+	tension_rules: `skill:${TENSION_TOOLBOX_SKILL_NAME}`,
+	[`skill:${LEGACY_WRITING_TASK_SKILL_NAMES[0]}`]: `skill:${WRITING_TASK_SKILL_NAME}`,
+	[`skill:${LEGACY_WRITING_TASK_SKILL_NAMES[1]}`]: `skill:${WRITING_TASK_SKILL_NAME}`,
+};
+
+/** 各阶段（0–4）引用文档默认清单（初始化配置框；用户改动后以保存值为准）。
+ *  v0.4.3+ 张力规则并入张力工具箱：阶段 0–3 原内置条目 `tension_rules` 改为 `skill:${TENSION_TOOLBOX_SKILL_NAME}`
+ *  （默认仍注入，只是载体换成系统技能文件；已保存过 ref_docs 的旧清单由 loadSettings 按 REF_DOC_KEY_RENAMES 原位改写）。 */
 export const PHASE_REF_DOC_DEFAULTS: string[][] = [
-	["book_info", "tension_rules", `skill:${WORLDVIEW_FRAMEWORK_SKILL_NAME}`], // 阶段 0 世界观生成默认含方法论技能（v0.3.7+；仅对从未保存过 ref_docs 的配置生效）
-	["book_info", "tension_rules", "worldview", "timeline"], // 阶段 1 默认含时间线（书级《时间线.md》无有效条目时自动生成后再继续策划指南；v0.3.3+ 替代旧大事件列表）
-	["book_info", "tension_rules", "worldview", "planning_guide"], // 阶段 2 默认只注入前四项；大纲来源/全书大纲/关系/卷列表/前卷大纲保留在下拉目录、可手动添加
-	["book_info", "tension_rules", "worldview", "planning_guide", "outline_source", "book_outline", "vol_list", "prev_vol_outline"], // 阶段 3 默认八项；书级/本卷人物关系保留在下拉目录、可手动添加
-	["worldview", "book_relations", "vol_outline", "vol_relations", "chapter_outline", "characters", "scenes", "chapter_relations", `skill:${BANNED_LIST_SKILL_NAME}`], // 阶段 4 默认含禁用词清单技能（v0.3.6+：替代旧【禁用词】专用注入块；仅对从未保存过 ref_docs 的配置生效，已定制清单的阶段需自行「添加技能…」）
+	["book_info", `skill:${IDENTITY_BOOST_SKILL_PREFIX}${WRITING_PHASE_LABELS[0]}`, `skill:${TENSION_TOOLBOX_SKILL_NAME}`, `skill:${WORLDVIEW_FRAMEWORK_SKILL_NAME}`], // 阶段 0 世界观生成默认含方法论技能（v0.3.7+）与身份加强技能（v0.4.3+：五阶段内置默认恒含 `skill:身份加强·<阶段名>`；仅对从未保存过 ref_docs 的配置生效）
+	["book_info", `skill:${IDENTITY_BOOST_SKILL_PREFIX}${WRITING_PHASE_LABELS[1]}`, `skill:${TENSION_TOOLBOX_SKILL_NAME}`, "worldview", "timeline"], // 阶段 1 默认含时间线（书级《时间线.md》无有效条目时自动生成后再继续策划指南；v0.3.3+ 替代旧大事件列表）
+	["book_info", `skill:${IDENTITY_BOOST_SKILL_PREFIX}${WRITING_PHASE_LABELS[2]}`, `skill:${TENSION_TOOLBOX_SKILL_NAME}`, "worldview", "planning_guide"], // 阶段 2 默认只注入前五项；大纲来源/全书大纲/关系/卷列表/前卷大纲保留在下拉目录、可手动添加
+	["book_info", `skill:${IDENTITY_BOOST_SKILL_PREFIX}${WRITING_PHASE_LABELS[3]}`, `skill:${TENSION_TOOLBOX_SKILL_NAME}`, "worldview", "planning_guide", "outline_source", "book_outline", "vol_list", "prev_vol_outline"], // 阶段 3 默认九项；书级/本卷人物关系保留在下拉目录、可手动添加
+	["worldview", "book_relations", "vol_outline", "vol_relations", "chapter_outline", "characters", "scenes", "chapter_relations", `skill:${IDENTITY_BOOST_SKILL_PREFIX}${WRITING_PHASE_LABELS[4]}`, `skill:${BANNED_LIST_SKILL_NAME}`], // 阶段 4 默认含禁用词清单技能（v0.3.6+：替代旧【禁用词】专用注入块）与身份加强技能（v0.4.3+；仅对从未保存过 ref_docs 的配置生效，已定制清单的阶段需自行「添加技能…」）
 ];
+
+/** 对话窗口可注入的内置引用文档目录（v0.4.3+：设置页对话配置框下拉候选，书级背景文档，写作上下文已含的标题/人物/场景/当前章不重复列）。 */
+export const CHAT_REF_DOC_CATALOG: Record<string, string> = {
+	book_info: REF_DOC_LABELS.book_info,
+	worldview: REF_DOC_LABELS.worldview,
+	timeline: REF_DOC_LABELS.timeline,
+	book_outline: REF_DOC_LABELS.book_outline,
+	planning_guide: REF_DOC_LABELS.planning_guide,
+	book_relations: REF_DOC_LABELS.book_relations,
+};
+
+/** 对话窗口引用文档默认清单（v0.4.3+）：恒空＝不追加额外内置文档，保持既有对话上下文行为不变；用户按需「添加引用文档／技能／vault 文档」自选。 */
+export const CHAT_REF_DOC_DEFAULTS: string[] = [];
 
 export interface PluginConfig {
 	version: 1;
 	active_llm?: string; // 兼容字段：旧版激活态，设置页不再暴露；仅作为对话框模型的回落（chat_model 留空时），不影响任何写作阶段
 	chat_model?: string; // 对话框使用的模型配置名（llm_configs[].name），留空=回落 active_llm
 	llm_configs?: LlmConfigDoc[];
-	system_prompt?: string; // 写作系统提示词（空=用内置默认）
+	// v0.4.3+：system_prompt 已废弃删除（写作系统提示词输入框退役，身份改经「对话助手身份」任务段与引用技能/文档装配）
 	desc_style?: string; // "normal" | "complete"
+	chat_ref_docs?: string[]; // v0.4.3+ 对话窗口引用文档清单（机制同阶段 ref_docs）：内置 key（见 CHAT_REF_DOC_CATALOG）或 "file:<vault 路径>" 或 "skill:<技能名>"；undefined/[]＝不追加额外文档
 	writing_phases?: WritingPhase[]; // 写作阶段模型配置（五阶段独立模型）
 }
 
@@ -213,7 +247,6 @@ export function buildDefaultLlmConf(): PluginConfig {
 			{ name: "deepseek", enabled: true, provider: "deepseek", api_key: "", base_url: "https://api.deepseek.com", model_name: "", ...base, openai_extras: [], api_style: "responses" },
 			{ name: "qwen-dashscope", enabled: true, provider: "qwen", api_key: "", base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1", model_name: "", ...base, openai_extras: [], api_style: "" },
 		],
-		system_prompt: "",
 		desc_style: "normal",
 		writing_phases: WRITING_PHASE_LABELS.map((name) => ({ name, llm_config_name: "" })), // v0.3.7+：由 WRITING_PHASE_LABELS 派生（世界观生成居首），防词源漂移
 	};
