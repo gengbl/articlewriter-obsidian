@@ -804,7 +804,8 @@
 .aw-rel-gline {
 	fill: none;
 	stroke: var(--text-muted);
-	stroke-width: 1.6;
+	stroke-width: 1.2;
+	stroke-opacity: 0.55; /* 默认半透明：几十条线叠在一起也不糊，悬停时才提亮到不透明 */
 }
 
 /* 透明加粗命中区：细线也好点中/悬停 */
@@ -816,7 +817,7 @@
 }
 
 .aw-rel-gedge.is-multi .aw-rel-gline {
-	stroke-width: 3;
+	stroke-width: 2.4; /* 同一对人物在多处登记：线画粗一档 */
 }
 
 .aw-rel-gedge.is-pending .aw-rel-gline {
@@ -825,7 +826,7 @@
 
 .aw-rel-gedge.is-ended .aw-rel-gline {
 	stroke-dasharray: 2 4;
-	opacity: 0.8;
+	stroke-opacity: 0.4; /* 已结束的关系更淡（不用 opacity，免得和默认半透明叠乘到看不清） */
 }
 
 .aw-rel-gedge.is-teach .aw-rel-gline {
@@ -860,7 +861,8 @@
 	stroke: #4f9b8e;
 }
 
-/* 节点：圆=角色、圆旁文字=角色名；孤立节点（只有单角色条目）用虚线边 */
+/* 节点：圆=角色、圆旁文字=角色名；孤立节点（只有单角色条目）用虚线边。
+   圆点大小与字号由 graph_layout 按连线数分级（枢纽最大），这里只管配色 */
 .aw-rel-gnode circle {
 	fill: var(--background-secondary);
 	stroke: var(--text-muted);
@@ -872,10 +874,26 @@
 	stroke-dasharray: 2 2;
 }
 
+/* 枢纽＝连线最多的人物（通常就是主角）：实心浅底＋描边更粗，一眼看出全图中心 */
+.aw-rel-gnode.is-hub circle {
+	fill: var(--text-muted);
+	stroke: var(--text-normal);
+	stroke-width: 2;
+}
+
+.aw-rel-gnode.is-hub .aw-rel-gname {
+	font-weight: 600;
+}
+
 .aw-rel-gname {
 	fill: var(--text-normal);
-	font-size: 11px;
+	font-size: 12px; /* 基础字号；实际每个节点按重要度由内联 font-size 覆盖（labelFontSize） */
 	pointer-events: none; /* 文字不抢命中区，点名字也算点节点 */
+	/* 描边光晕：线从名字底下穿过时也读得出字（paint-order 先描边后填字，比加背景块干净） */
+	paint-order: stroke;
+	stroke: var(--background-primary);
+	stroke-width: 3px;
+	stroke-linejoin: round;
 }
 
 /* 悬停高亮：命中的节点/连线提亮，其余整体淡出 */
@@ -886,7 +904,8 @@
 }
 
 .aw-rel-gedge.is-hot .aw-rel-gline {
-	stroke-width: 3.2;
+	stroke-width: 2.8;
+	stroke-opacity: 1; /* 淡出的其余线降到 0.18，这一条则完全不透明 */
 }
 
 .aw-rel-gnode.is-fade,

@@ -24,16 +24,17 @@ src/main.ts ──esbuild(bundle)──▶ release/main.js ──非生产构建
 | `prompts.ts` | 1763 | 各生成阶段提示词组装（纯函数，不触 Vault/LLM）：编写章节、大纲族、策划指南、人物分析、deai/查重/错字等；上下文入参收 `bookDocs/volDocs/chapterDocs` 预装配文档串 | `build*Prompt`、各 `*_SYSTEM_PROMPT`、`CleanReport`、`cleanRelationshipsDoc` |
 | `md_docs.ts` | 1115 | MD 文本解析/序列化：人物/场景/关系/伏笔/世界观字段级 parse↔format、章选解析、拆分卷大纲 | `CharacterDoc/SceneDoc/…`、`parse*/format*`、`splitVolOutlineByChapter`（v0.4.3+ 同族 `sliceVolOutlineChapters`：按章号窗口取块，供编写文章阶段前后 N 章大纲节选） |
 | `modals.ts` | 1883 | 通用弹窗库（26 个导出 Modal/SuggestModal，含 v0.4.3+ `InspirationKitModal` 灵感工具包弹窗） | `TextInputModal`、`ActionMenuModal`、`TextPanelModal`、`ConfirmModal`、`InspirationKitModal`… |
-| `relationship_view.ts` | 781 | 人物关系面板（ItemView，SVG 图＋列表） | `RelationshipView`、`RelSnapshot` |
+| `relationship_view.ts` | 795 | 人物关系面板（ItemView，SVG 图＋列表；v0.4.4+ 图表的节点坐标、分级与弧线 path 不再就地算，改调 `graph_layout.ts`） | `RelationshipView`、`RelSnapshot` |
 | `status_view.ts` | 806 | 「写字台」面板（ItemView，书/卷/章树＋动作分发；v0.4.3+ 案头资料右键「灵感工具包…」） | `StatusView`、`StatusAction`、`StatusSnapshot` |
 | `timeline_view.ts` | 771 | 时间线面板（ItemView；定位到文档行改走共用件 `editor_nav.revealEditorLine`） | `TimelineView`、`TlSnapshot` |
 | `story_types.ts` | 557 | 题材指南选取、大纲详略标记、MD5（摘要过期检测）、AI 词标记剥离 | `getStoryTypeGuide`、`md5`、`stripAiWordMarks` |
 | `cast_analyzer.ts` | 516 | `analyze-cast` 纯逻辑：逐章 JSON 聚合、span 定层、同名合并 | 聚合/定层函数 |
 | `outline_cast.ts` | ~290 | 大纲阶段人物/关系增量分层（v0.4.3+）：附录要求/拆分、`OutlineCastTracker` 逐章定层与增量写盘计划 | `OutlineCastTracker`、`splitOutlineCastAppendix`、`outlineCastAppendixInstruction` |
+| `graph_layout.ts` | 436 | 人物关系图（图表模式）纯几何＋纯排序（v0.4.4+，无 DOM/无 vault）：`nodeRadius`/`labelFontSize`（按连线数分级）、`hubOf`（连线最多者＝枢纽）、`adjacencyMap`、`chainOrder`（贪心邻接链、旋转到枢纽居首）、`forceLayout`（**默认布局**：退火式力导向→硬碰撞消解→以枢纽为锚点两轴摊满画布→枢纽挪回锚点（`alignShift`）→逐点夹进画布；`hubUp` 即「把主角向上提」）、`ringLayout(count,cx,cy,rx,ry,degrees)`（椭圆环，留作对照）、`edgeCurvePath(a,b)` 出 SVG path `d`＝**向上拱的二次贝塞尔弧**（控制点＝弦两法向里朝上（−y）的一支，凸出量夹 [12,50]＝弦长·0.18，并按上边界再夹 `bow ≤ 2·(my−TOP_PAD)`；端点按节点半径裁到圆周外并按对方圆周收口；竖直弦固定向右拱）、`curvePoint(d,t)` 弧上取点 | `forceLayout`、`edgeCurvePath`、`chainOrder`、`adjacencyMap`、`nodeRadius`、`labelFontSize` |
 | `llm_chat_view.ts` | 500 | 聊天面板（ItemView，流式、工具注入） | `LlmChatView` |
 | `banned_words.ts` | 291 | 禁用词清单解析（唯一事实源＝`SKILLS/网文高频禁用词清单.md`，v0.3.6+ Skill 化）、句式简化、AI 词检测标红（纯函数） | `BannedWordsData`、`findAiWordHits`（~~`buildBannedWordsBlock`/`buildMergedBannedBlock`~~ 专用注入函数已随 v0.3.6+ 禁用词 Skill 化删除、~~`stripGuideCategoryBlock`~~ 曾用于剥指南「禁用词」类目，已随 v0.3.5+ 写作指南体系整体废弃删除） |
 | `llm_client.ts` | 382 | OpenAI 兼容 chat/completions 封装（流式/非流式、错误装饰、前缀缓存读数） | `chatCompletion`、`chatStream`、`readCacheStats`/`cacheStatsText`、`LlmConfigDoc` 消费 |
-| `prompts.test.ts` 等 12 个 `*.test.ts` | 288 起 | 纯函数单测（node --test，`npm test` 的 entries 列表在 package.json）；v0.4.3+ 新增 `llm_client.test.ts`（缓存读数口径）、`cast_analyzer.test.ts`（逐章分析钉点落点）、`deai_ledger.test.ts`（AI 味清单渲染与状态回填）、`inspiration.test.ts`（灵感文档解析↔渲染/按行增删往返、CRLF 保住换行风格）。**新增测试文件必须同时加进 package.json 的 entries** | — |
+| `prompts.test.ts` 等 13 个 `*.test.ts` | 288 起 | 纯函数单测（node --test，`npm test` 的 entries 列表在 package.json）；v0.4.3+ 新增 `llm_client.test.ts`（缓存读数口径）、`cast_analyzer.test.ts`（逐章分析钉点落点）、`deai_ledger.test.ts`（AI 味清单渲染与状态回填）、`inspiration.test.ts`（灵感文档解析↔渲染/按行增删往返、CRLF 保住换行风格）；v0.4.4+ 新增 `graph_layout.test.ts`（力导向确定性／点全落在画布内／枢纽居首且摆到中心偏上／圆点互不重叠／弧一律向上拱且不越顶边／端点裁到圆周外与两圆重叠时不推过头／交换端点侧向一致）。**新增测试文件必须同时加进 package.json 的 entries** | — |
 | `gen_progress_view.ts` | 279 | 统一「生成过程」流式面板 | `GenProgressView`（implements `WritingStreamSink`） |
 | `state_doc.ts` | 200 | `状态.md` 文档 ↔ `StoryState` 序列化/解析、`chKey` 复合键 | `formatStateDoc/parseStateDoc`、`chKey/parseChKey` |
 | `inspiration.ts` | 203 | 灵感工具包（v0.4.3+）：书级《案头资料/灵感/灵感.md》**纯数据结构＋纯解析/渲染＋按行增删**（无 IO、不 import obsidian）：`InspirationBlock{heading,name,date,body,line,endLine}`、`parseInspirationDoc`（只按 `##` 切块、`###` 属块内）、`renderInspirationBody/Block`（模板→块：丢 H1 与注释、`#`/`##` 降为 `###`、替换 `{{name}}/{{date}}/{{time}}`）、`append/remove/renameInspirationBlock`、`inspirationPreview/inspirationMatches`、`normalizeInspirationName`、`inspirationDate`；写回保住原文件 eol | `parseInspirationDoc`、`renderInspirationBlock`、`INSPIRATION_DOC_NAME`、`INSPIRATION_FOLDER_NAME`、`INSPIRATION_SKILL_NAME` |
@@ -49,7 +50,7 @@ src/main.ts ──esbuild(bundle)──▶ release/main.js ──非生产构建
 ```
 L0 叶子（零内部依赖）: md_docs, state_doc, story_types, plugin_config, banned_words, inspiration, *_default, md.d.ts
 L1: llm_client(→plugin_config) · prompts(→md_docs,banned_words,story_types) · prompt_files(→md_docs) · cast_analyzer(→md_docs,state_doc) · editor_nav(→仅 obsidian)
-    视图: status_view(→prompts,story_types,inspiration) · relationship_view(→md_docs) · timeline_view(→md_docs,editor_nav)
+    视图: status_view(→prompts,story_types,inspiration) · relationship_view(→md_docs,graph_layout) · timeline_view(→md_docs,editor_nav)
     modals(→pipeline,md_docs,state_doc,skills_default,inspiration) · llm_chat_view(→llm_client,modals,plugin_config)
 L2: story_manager(→md_docs,state_doc,prompts,cast_analyzer,story_types)
 L3: main.ts(→其余全部)          prompts.test.ts(→prompts)
@@ -96,7 +97,7 @@ L3: main.ts(→其余全部)          prompts.test.ts(→prompts)
 
 ## 已知重复与债务（改动时顺手收敛，勿新增同类）
 
-- `clampNum` 两处重复：`relationship_view.ts:111`、`timeline_view.ts:46`。
+- `clampNum` 两处重复：`relationship_view.ts:118`、`timeline_view.ts:46`。
 - 章节后缀→基础名映射近似重复：`status_view.ts:5 CH_SUFFIX_TO_BASE` ≈ `story_manager.ts:103 CHAPTER_SUFFIX_TO_BASE`（键集略有出入，改命名规则两处都要查）。
 - `StatusModal`（main.ts:6780）与 `modals.TextPanelModal`（modals.ts:530）功能重复，新弹窗优先用后者。
 - `main.ts` 7946 行：命令实现与插件壳未分离；若拆分，第一刀候选是 export-ai-prompts（L6221–6794）与写作命令族（L3038–6220）下沉独立模块。

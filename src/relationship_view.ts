@@ -1,6 +1,8 @@
 import { ItemView, TFile, WorkspaceLeaf, setIcon } from "obsidian";
 import { relationshipStatusKind } from "./md_docs";
 import type { RelationshipEntry } from "./md_docs";
+import { adjacencyMap, edgeCurvePath, forceLayout, labelFontSize } from "./graph_layout";
+import type { GraphLayoutNode } from "./graph_layout";
 
 /** 关系所属层级（书根 / 卷 / 章） */
 export type RelScope = "book" | "volume" | "chapter";
@@ -106,6 +108,11 @@ const GRAPH_ZOOMS: number[] = [0.5, 0.75, 1, 1.25, 1.5, 2, 3];
 /** 图视图基准画布（viewBox 尺寸；缩放靠 CSS transform，不重算布局） */
 const GRAPH_BASE_W = 760;
 const GRAPH_BASE_H = 560;
+
+/** 力导向布局参数：pad＝四周留白（节点名要落在画布内），hubUp＝枢纽（连线最多的人物≈主角）从画布中心往上提的比例 */
+const GRAPH_FORCE_PAD = 58;
+const GRAPH_FORCE_ITERS = 340;
+const GRAPH_HUB_UP = 0.34;
 
 /** 数值限位（拖动平移的边界收敛用） */
 const clampNum = (v: number, lo: number, hi: number): number => (v < lo ? lo : v > hi ? hi : v);
@@ -428,8 +435,10 @@ export class RelationshipView extends ItemView {
 	}
 
 	/**
-	 * 图表主体：环形布局的节点连线图（筛选后节点集变化即重排）。
-	 * 悬停节点高亮其全部邻接、悬停连线只高亮该条；双击节点/连线在编辑器打开来源文档。
+	 * 图表主体：力导向布局的节点连线图（筛选后节点集变化即重排）。
+	 * 布局与分级全在 graph_layout.ts（`forceLayout` 出坐标：枢纽≈主角居中偏上、按连线数放大圆点与字号；`edgeCurvePath` 出弧线 path），
+	 * 本方法只负责建 SVG 与挂交互。悬停节点高亮其全部邻接、悬停连线只高亮该条；双击节点/连线在编辑器打开来源文档。
+	 * 节点按邻接链**倒序**绘制，让枢纽叠在最上层；邻接表 `graphAdj` 改由共用的 `adjacencyMap` 生成。
 	 * 布局与交互全本地计算（不读盘、不加依赖），沿用 `lastSnap` 重渲染。
 	 */
 	private renderGraph(snap: RelSnapshot): void {
@@ -455,6 +464,7 @@ export class RelationshipView extends ItemView {
 		summary.setText(
 			`角色 ${String(nodes.length)} 个 · 关系 ${String(edges.length)} 条` +
 				(q ? `（筛选自 ${String(snap.relCount)} 条）` : "") +
+				"；圆点／名字越大＝关系越多，关系最多的人物摆在中间偏上" +
 				"；单击节点在下方人物状态区查看该人物的设定信息（来自《人物.md》），双击节点/连线打开来源文档，滚轮缩放、拖动平移"
 		);
 
@@ -464,38 +474,33 @@ export class RelationshipView extends ItemView {
 		const H = GRAPH_BASE_H;
 		const cx = W / 2;
 		const cy = H / 2;
-		const R = Math.min(W, H) / 2 - 88; // 留出节点名文字的位置
 		const svg = mk("svg");
 		svg.setAttribute("class", "aw-rel-graph");
 		svg.setAttribute("viewBox", `0 0 ${String(W)} ${String(H)}`);
 		svg.setAttribute("preserveAspectRatio", "xMidYMid meet");
-		const pos = new Map<string, { x: number; y: number; r: number }>();
-		nodes.forEach((n, i) => {
-			const ang = (i / nodes.length) * Math.PI * 2 - Math.PI / 2;
-			pos.set(n.name, { x: cx + R * Math.cos(ang), y: cy + R * Math.sin(ang), r: 5 + Math.min(7, n.degree * 1.6) });
-		});
-		for (const e of edges) {
-			if (!this.graphAdj.has(e.a)) this.graphAdj.set(e.a, new Set());
-			if (!this.graphAdj.has(e.b)) this.graphAdj.set(e.b, new Set());
-			this.graphAdj.get(e.a)?.add(e.b);
-			this.graphAdj.get(e.b)?.add(e.a);
-		}
+		// 力导向布局（几何全在 graph_layout.ts）：枢纽≈主角居中偏上、至亲聚在身边、次要人物散到外圈
+		const layout = forceLayout(
+			nodes.map((n) => ({ name: n.name, degree: n.degree })),
+			edges.map((e) => ({ a: e.a, b: e.b, weight: e.count })),
+			{ width: W, height: H, pad: GRAPH_FORCE_PAD, iterations: GRAPH_FORCE_ITERS, hubUp: GRAPH_HUB_UP },
+		);
+		const pos = new Map<string, GraphLayoutNode>();
+		for (const p of layout) pos.set(p.name, p);
+		const hubName = layout.length ? layout[0].name : ""; // forceLayout 的第一位＝连线最多的人物
+		this.graphAdj = adjacencyMap(edges); // 悬停高亮用的邻接表（与排序同一份口径）
 		for (const e of edges) {
 			const pa = pos.get(e.a);
 			const pb = pos.get(e.b);
 			if (!pa || !pb) continue;
 			const g = mk("g");
 			g.setAttribute("class", `aw-rel-gedge ${relationshipTypeClass(e.type)} is-${e.kind}${e.count > 1 ? " is-multi" : ""}`);
-			const hit = mk("line"); // 透明加粗命中区：细线也易点中
+			const d = edgeCurvePath(pa, pb); // 向上拱的二次贝塞尔弧（见 graph_layout.ts）
+			const hit = mk("path"); // 透明加粗命中区：弧线也易点中
 			hit.setAttribute("class", "aw-rel-gedgehit");
-			const line = mk("line");
-			line.setAttribute("class", "aw-rel-gline");
-			for (const el of [hit, line]) {
-				el.setAttribute("x1", String(pa.x));
-				el.setAttribute("y1", String(pa.y));
-				el.setAttribute("x2", String(pb.x));
-				el.setAttribute("y2", String(pb.y));
-			}
+			hit.setAttribute("d", d);
+			const curve = mk("path");
+			curve.setAttribute("class", "aw-rel-gline"); // 类名沿用 gline（配色/线型/高亮规则全挂在它上面）
+			curve.setAttribute("d", d);
 			const tipLines: string[] = [
 				`${e.a} ↔ ${e.b}`,
 				`类型：${e.type || "未标注"}`,
@@ -506,7 +511,7 @@ export class RelationshipView extends ItemView {
 			if (e.desc) tipLines.push("", e.desc); // 描述独立成段，与元数据视觉分开
 			const tipText = tipLines.join("\n");
 			g.appendChild(hit);
-			g.appendChild(line);
+			g.appendChild(curve);
 			// 不用 SVG <title>（浏览器原生 tooltip 截断多行内容、desc 长就显示不全），改用自定义 HTML tip 浮层：position:fixed + 跟手 + 自适应换行
 			g.addEventListener("mouseenter", (ev: MouseEvent) => {
 				this.focusGraph(e.a, e.b);
@@ -521,21 +526,31 @@ export class RelationshipView extends ItemView {
 			svg.appendChild(g);
 			this.graphEdgeEls.push({ el: g, a: e.a, b: e.b });
 		}
-		for (const n of nodes) {
-			const p = pos.get(n.name);
-			if (!p) continue;
+		const byName = new Map<string, GraphNode>();
+		for (const n of nodes) byName.set(n.name, n);
+		// 按邻接链的**倒序**画节点：链首＝枢纽（连线最多的人物）最后画 → 叠在所有节点最上层，不被别人压住
+		for (let i = layout.length - 1; i >= 0; i--) {
+			const p = layout[i];
+			const n = byName.get(p.name);
+			if (!n) continue;
 			const g = mk("g");
-			g.setAttribute("class", "aw-rel-gnode" + (n.degree ? "" : " is-orphan") + (this.selectedChar === n.name ? " is-sel" : ""));
+			g.setAttribute(
+				"class",
+				"aw-rel-gnode" + (n.degree ? "" : " is-orphan") + (p.name === hubName ? " is-hub" : "") + (this.selectedChar === n.name ? " is-sel" : ""),
+			);
 			const dot = mk("circle");
 			dot.setAttribute("cx", String(p.x));
 			dot.setAttribute("cy", String(p.y));
 			dot.setAttribute("r", String(p.r));
-			const dir = p.x >= cx ? 1 : -1;
+			const fs = labelFontSize(n.degree); // 字号随重要度分级（枢纽最大）
 			const label = mk("text");
 			label.setAttribute("class", "aw-rel-gname");
-			label.setAttribute("x", String(p.x + dir * (p.r + 6)));
-			label.setAttribute("y", String(p.y + 4));
-			label.setAttribute("text-anchor", Math.abs(p.x - cx) < 26 ? "middle" : dir > 0 ? "start" : "end");
+			label.style.fontSize = `${String(fs)}px`;
+			const dir = p.x >= cx ? 1 : -1;
+			const stacked = Math.abs(p.x - cx) < 34; // 居中竖带上的节点（含枢纽）：名字放到上/下方，不压左右伸出的连线
+			label.setAttribute("x", String(stacked ? p.x : p.x + dir * (p.r + 6)));
+			label.setAttribute("y", String(stacked ? (p.y >= cy ? p.y + p.r + fs + 1 : p.y - p.r - 7) : p.y + fs * 0.36));
+			label.setAttribute("text-anchor", stacked ? "middle" : dir > 0 ? "start" : "end");
 			label.textContent = n.name.length > 8 ? `${n.name.slice(0, 7)}…` : n.name;
 			const tip = mk("title");
 			tip.textContent = `${n.name}：${String(n.degree)} 条关系\n双击打开来源文档：${n.sources[0]}`;
