@@ -33,7 +33,7 @@
 1. bump `manifest.json` version
 2. `npm run build` 重建（esbuild 自动拷入新版 manifest.json、styles.css；写作指南 WRITING_GUIDE.md 自本次起不再拷入 release/）+ `npm run lint` 必须零违规——四类 no-unsafe-* 任一命中即中止发布、修复后重跑
 3. **整体压缩 `release/` 全部文件**：`cd release && zip ../articlewriter-v<版本>.zip *`——release/ 现仅含 main.js / manifest.json / styles.css（不含 WRITING_GUIDE.md），直接整目录打包即可
-4. 提交打标签：`git add manifest.json …` → commit → `git push origin main` → `git tag v<版本> && git push origin v<版本>`（tag 打在版本号 bump commit 上，不指 HEAD）；随后按 l3-build-deploy「GitHub 镜像同步（强制）」把该 commit 同消息同步到镜像并推**无 v 前缀** tag `<版本>`——CI 自动重建、签名并创建 GitHub Release
+4. 提交打标签：`git add manifest.json …` → commit → `git push origin main` → **`git tag <版本>`（无 v 前缀，如 `0.4.5`）打在版本号 bump commit 上、不指 HEAD** → `git push origin <版本>`——CI 自动重建、签名并创建 GitHub Release。**主仓 push 即触发 release.yml**（v0.4.2+ 实测，无需再向 `articlewriter-obsidian-git` 镜像克隆同步，见 [agents/l3-build-deploy.md](./agents/l3-build-deploy.md)「GitHub 镜像同步（已停用于 v0.4.2+）」）；若 `git push` 因 `~/.ssh/config` 的 github.com `ProxyCommand` 失败，改用 `GIT_SSH_COMMAND="ssh -o ProxyCommand=none -o BatchMode=yes" git push …` 直连（2026-11-17 实测可用，勿改用户 ssh 配置）
 5. **验证**：确认 GitHub Release 存在且恰为三个散文件（main.js / manifest.json / styles.css）
 6. 需要修正已发布的资产时：Web UI 删除旧 Release 后重新上传
 
