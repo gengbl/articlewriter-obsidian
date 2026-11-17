@@ -174,6 +174,7 @@
 /* 固定头部：工作目录行 + 小说状态 + 「书籍列表」标题行（含下拉框），高度随内容自适应、不参与滚动 */
 .aw-st-top {
 	flex-shrink: 0;
+	overflow: visible; /* v0.4.6+：固定头部不裁剪前导图标 */
 }
 
 /* 可滚动树主体：全局文档 / 章节小节，仅此区域出现滚动条 */
@@ -298,7 +299,7 @@
 /* 已选中 + 悬停：内点转深红并放大到外圆的 90%（外环 14px → 内点≈12.6px，即 scale 1.575×8px 基值）；原 scale(2)=16px 超出外环过大 */
 .view-content .aw-status-view input.aw-st-radio:checked:hover::after { background: #f50202; transform: scale(1.575); }
 
-/* 「小说状态」区：位于工作目录横线之下、小说列表之上，底部再一条横线隔开 */
+/* 「小说状态 / 码字状态」合并区（v0.4.6+ Tab）：位于工作目录横线之下、小说列表之上，底部再一条横线隔开 */
 .aw-st-status {
 	padding-bottom: 6px;
 	margin-bottom: 6px;
@@ -306,7 +307,8 @@
 	line-height: 1.6; /* 「小说状态」信息区行距加大，比侧栏默认 1.3 更宽松 */
 }
 
-/* 「小说状态」标题行（可折叠）：caret + 前导图标 + 「小说状态」标签，同「案头资料」「书稿」小节标题的点整行开合交互 */
+/* 合并区标题行（可折叠）：caret + 两个 Tab 按钮（「小说状态」/「码字状态」），点空白处与 caret 同效、Tab 按钮自身 stopPropagation。
+   v0.4.6+：行内上下留 2px＋显式 overflow:visible，前导图标不再被行/祖先边缘切到下缘 */
 .aw-st-status-head {
 	cursor: pointer;
 	display: flex;
@@ -315,6 +317,8 @@
 	font-weight: 600;
 	color: var(--text-normal);
 	border-radius: 4px;
+	padding: 2px 0;
+	overflow: visible;
 	transition: background-color 0.1s;
 }
 .aw-st-status-head:hover {
@@ -507,15 +511,94 @@
 	cursor: default;
 }
 
-/* 写字台树节点前导图标（v0.4.3+）：SVG 随所在行字号缩放（1em）、flex 行内垂直居中；颜色不做覆盖、一律继承所在节点文字色——v0.4.3+ 统一着色后全树天然一种颜色 */
+/* 写字台树节点前导图标（v0.4.3+）：SVG 随所在行字号缩放（1em）、flex 行内垂直居中；颜色不做覆盖、一律继承所在节点文字色——v0.4.3+ 统一着色后全树天然一种颜色。
+   v0.4.6+ 防裁：图标盒子 line-height:0 且 `svg{display:block}`——去掉 inline 基线留白，盒子高度恰等于 SVG 高度，行/祖先任何 overflow 都无从切掉 SVG 下半；`flex:0 0 auto`＋overflow:visible 保证不被挤压、不被祖先裁切 */
 .aw-st-icon {
 	display: inline-flex;
 	align-self: center;
-	flex-shrink: 0;
+	flex: 0 0 auto;
+	line-height: 0;
+	overflow: visible;
 }
 .aw-st-icon svg {
 	width: 1em;
 	height: 1em;
+	display: block;
+	overflow: visible; /* v0.4.6+ 兜底防裁：个别 Lucide 字形描边居中压在 viewBox 边界上（2px 描边有一半画在视口外），SVG 默认裁剪会把那一半切掉；放开裁剪后随盒子一起外溢（最多 1px，行内不会互相压字） */
+}
+
+/* v0.4.6+ 「小说状态 / 码字状态」Tab 按钮：挂在合并区标题行内（caret 之后并排两个）。
+   必须重置 Obsidian 全局 button 样式（其默认带背景/边框/box-shadow/--font-ui-small 字号与固定高度），
+   故沿用本面板既有的 .view-content .aw-status-view 多重作用域把优先级压到核心规则之上；字号/行高 inherit 跟随所在行（= --nav-item-size） */
+.view-content .aw-status-view .aw-st-status-head .aw-st-tab-btn {
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
+	height: auto;
+	padding: 1px 6px;
+	border: 0;
+	border-radius: 4px;
+	background: transparent;
+	box-shadow: none;
+	font-size: inherit;
+	font-weight: inherit;
+	line-height: inherit;
+	color: var(--text-muted);
+	cursor: pointer;
+}
+.view-content .aw-status-view .aw-st-status-head .aw-st-tab-btn:hover {
+	background: var(--background-modifier-hover);
+	color: var(--text-normal);
+}
+
+/* 当前页：文字转正常色＋淡背景（与 hover 同底色，靠色深区分），图标同色继承 */
+.view-content .aw-status-view .aw-st-status-head .aw-st-tab-btn.is-active {
+	background: var(--background-modifier-hover);
+	color: var(--text-normal);
+}
+
+/* 「码字状态」Tab 正文（在 .aw-st-status 盒子内，行距与「小说状态」页同口径） */
+.aw-st-typing {
+	line-height: 1.5;
+	overflow: visible;
+}
+
+.aw-st-typing-row {
+	display: flex;
+	align-items: baseline;
+	gap: 6px;
+	padding: 1px 0;
+}
+.aw-st-typing-k {
+	flex: 0 0 auto;
+	min-width: 5.5em; /* 「写作总时长」最宽＝5 字：数值列上下对齐 */
+	color: var(--text-muted);
+}
+.aw-st-typing-v {
+	font-variant-numeric: tabular-nums;
+}
+.aw-st-typing-sub {
+	margin-left: 4px;
+	font-size: 0.85em;
+	color: var(--text-faint);
+}
+
+/* 页尾脚注：段长标记可点（＝打开该书《码字记录.md》），虚线下划线示意可点 */
+.aw-st-typing-foot {
+	display: flex;
+	align-items: baseline;
+	gap: 6px;
+	margin-top: 3px;
+	font-size: 0.85em;
+	color: var(--text-faint);
+}
+.aw-st-typing-unit {
+	color: var(--text-muted);
+	border-bottom: 1px dashed var(--background-modifier-border);
+	cursor: pointer;
+}
+.aw-st-typing-unit:hover {
+	color: var(--text-normal);
 }
 
 /* 状态页右键快捷菜单 */
@@ -1423,16 +1506,16 @@
 	color: var(--text-normal);
 }
 
-/* 分级与状态的语言（v0.4.4+ 美化）：一级主线事件名再大一档；已完成条目名弱化一档（:has 不被旧内核支持时整条规则自动忽略，退化为仅徽章标示） */
+/* 分级与状态的语言（v0.4.4+ 美化）：一级主线事件名再大一档；已完成条目名弱化一档（**不用 :has 选择器**——外部检查器判其大范围选择器失效有性能隐患，改由 renderRow 给 done 行挂 `is-tl-done-row` 类） */
 .aw-tl-item.lv-1 .aw-tl-name {
 	font-size: 1.05em;
 }
 
-.aw-tl-item:has(.aw-tl-done) .aw-tl-name {
+.aw-tl-item.is-tl-done-row .aw-tl-name {
 	color: var(--text-muted);
 }
 
-/* 「✓ 已完成」徽章（仅 done=true 渲染；与时间徽章同形胶囊）：描边/文字统一走 --color-green（Obsidian 主题绿，不再硬编码十六进制），底衬一抹极淡绿——整行「已办妥」的语感（配套：条目名弱化见 .aw-tl-item:has(.aw-tl-done)） */
+/* 「✓ 已完成」徽章（仅 done=true 渲染；与时间徽章同形胶囊）：描边/文字统一走 --color-green（Obsidian 主题绿，不再硬编码十六进制），底衬一抹极淡绿——整行「已办妥」的语感（配套：条目名弱化见 `.aw-tl-item.is-tl-done-row`） */
 .aw-tl-done {
 	display: inline-block;
 	margin-right: 6px;

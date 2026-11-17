@@ -2,6 +2,15 @@ import { ItemView, TFile, WorkspaceLeaf, setIcon } from "obsidian";
 import { formatLocalDateTime } from "./story_types";
 import { PROMPT_DOCS_CHAPTER, PROMPT_DOCS_ROOT, PROMPT_DOCS_VOLUME } from "./prompts";
 import { INSPIRATION_FOLDER_NAME } from "./inspiration"; // v0.4.3+：「案头资料/灵感」文件夹行的「灵感工具包…」入口（inspiration.ts 纯数据模块）
+import { durText } from "./typing_stats"; // v0.4.5+：写字台底部「写作状态」区复用打字统计纯模块的时长人读化（同一措辞口径）
+
+/** v0.4.5+ 「写作状态」区时间戳：今天内＝HH:MM，跨天＝MM-DD HH:MM */
+function fmtTypingStamp(ms: number, withDate: boolean): string {
+	const d = new Date(ms);
+	const p = (n: number): string => (n < 10 ? `0${String(n)}` : String(n));
+	const hm = `${p(d.getHours())}:${p(d.getMinutes())}`;
+	return withDate ? `${p(d.getMonth() + 1)}-${p(d.getDate())} ${hm}` : hm;
+}
 
 const CH_SUFFIX_TO_BASE: Record<string, string> = { "大纲.md": "章节大纲.md", "信息.md": "章节信息.md", "人物.md": "人物.md", "人物关系.md": "人物关系.md", "场景.md": "场景.md" };
 const VOL_SUFFIX_TO_BASE: Record<string, string> = { "大纲.md": "卷大纲.md", "人物.md": "人物.md", "人物关系.md": "人物关系.md", "场景.md": "场景.md" };
@@ -94,6 +103,35 @@ export interface StatusSnapshot {
 	details: Record<string, StatusDetail>;
 }
 
+/**
+ * v0.4.5+ 写字台「码字状态」Tab 数据（main.ts 打字统计侧算好后注入：本次会话累加＋《码字记录.md》全文汇总）；
+ * null=无法给出（无激活小说）。`started=false`=本次写作尚未开始（该会话内还没有第一次有效键入），本次各项显示占位
+ */
+export interface StatusTyping {
+	/** 本次是否已开始（＝该会话内是否已有第一次有效键入；写字台打开/切书/停笔超过段长都会结束本次） */
+	started: boolean;
+	/** 本次写作开始时刻（＝本次内第一次有效键入的时刻；epoch ms；未开始=0） */
+	sessionStartAt: number;
+	/** 本次码字总数（有效非空白字符，含尚未落盘的当前段） */
+	sessionChars: number;
+	/** 本次码字（活跃）时长：各已完成段（跨度−停顿）＋当前段写到此刻 */
+	sessionActiveMs: number;
+	/** 总时长＝此刻 − 本次开始（墙钟跨度） */
+	wallMs: number;
+	/** 本次平均码字速度（字/小时）；无字数或无活跃时长 → null（显示「—」） */
+	avgSpeed: number | null;
+	/** 本次会话内最近一个已完成段（无 → null） */
+	lastSeg: { start: number; end: number; chars: number; speed: number | null } | null;
+	/** 写作总时长＝《码字记录.md》全部段的活跃时长＋当前未落盘段（本书口径） */
+	totalActiveMs: number;
+	/** 本书累计字数＝《码字记录.md》全部段的净增字数＋当前未落盘段（与 totalActiveMs 同口径，不只读文件以免恒落后一个段长） */
+	totalChars: number;
+	/** 段长（分钟，设置项当前生效值） */
+	segmentMin: number;
+	/** 该书《码字记录.md》路径（点标题行打开） */
+	recordPath: string;
+}
+
 /** 状态页右键快捷菜单触发的写操作（由 main.ts handleStatusAction 执行，语义与对应命令一致） */
 export type StatusAction =
 	| { kind: "new-story" }
@@ -131,6 +169,7 @@ export type StatusAction =
 	| { kind: "new-prologue-doc"; story: string } // 引言节点 / 其文件行右键「新建引言内文档…」：在「引言」文件夹内新建 .md（仅自定义文件名）
 	| { kind: "complete-chapter-docs"; story: string; key: string } // 章节行右键「补全文档」：检查该章节目录缺失的标准模板文档（章节/章节大纲/人物/人物关系/场景/章节信息/时间线七件套）并按模板创建，已存在不覆盖
 	| { kind: "insert-chapter"; story: string; key: string; pos: "before" | "after" } // 章节行右键在其之前/之后插入新空章（本容器内后续号自动顺延）
+	| { kind: "open-typing-record" } // v0.4.5+ 底部「写作状态」标题行点击／右键：在编辑器打开该书《案头资料/码字记录.md》
 	| { kind: "llm-write" | "llm-continue" | "llm-polish"; story: string; key: string }; // 章节行右键调用 LLM 写作命令（先激活该书/章，再走对应命令交互流程）
 
 /**
@@ -146,12 +185,22 @@ export class StatusView extends ItemView {
 	private onSwitchStory: (name: string) => Promise<void>;
 	private onActivateChapter: (storyName: string, key: string) => Promise<string>;
 	private onAction: (a: StatusAction) => Promise<void>;
+	/** v0.4.5+ 「码字状态」Tab 数据源（打字统计会话快照）与「写字台打开/重开＝结束上次本次写作」通知回调 */
+	private getTyping: () => Promise<StatusTyping | null>;
+	private onDeskOpen: () => void;
 	private built = false;
 	private rootEl!: HTMLElement;
 	/** 固定头部区（工作目录行 + 小说状态 + 书籍列表标题行含下拉框）：不随滚动移动 */
 	private topEl!: HTMLElement;
 	/** 可滚动树主体区（案头资料 / 书稿小节）：仅此区域内部滚动 */
 	private treeEl!: HTMLElement;
+	/** v0.4.5+ 「小说状态 / 码字状态」Tab（会话内保持、不落盘；默认码字状态）。STATUS_TAB_KEY 为该区折叠键 */
+	private tab: "story" | "typing" = "typing";
+	/** 当前 Tab 页正文容器（render() 建立、renderTyping() 只写它；Tab=小说状态或区收起时为 null） */
+	private typingBox: HTMLElement | null = null;
+	private typingTimer: number | null = null;
+	private typingBusy = false;
+	private lastTyping: StatusTyping | null = null;
 	private busy = false;
 	/** 折叠状态（会话内保持，不落盘；各书小节/章节键均带书名前缀互不连动）：collapsed 键="stories"/"gdocs:<书名>"/"chapters:<书名>"（分组标题收起态）、"vol:<书名>:<卷ID>"（卷节点下章节列表收起态，默认展开），expanded 键="c:<书名>:<章号>"（章节文件列表，默认折叠）、"gf:<书名>:<文件夹路径>"（案头资料文件夹文件列表 v0.2.23+，默认折叠）。小说切换只走「书籍列表」标题行下拉框，组内仅渲染当前激活小说的小节 */
 	private collapsed = new Set<string>();
@@ -166,12 +215,14 @@ export class StatusView extends ItemView {
 		if (e.key === "Escape") this.closeMenu();
 	};
 
-	constructor(leaf: WorkspaceLeaf, getData: () => Promise<StatusSnapshot>, onSwitchStory: (name: string) => Promise<void>, onActivateChapter: (storyName: string, key: string) => Promise<string>, onAction: (a: StatusAction) => Promise<void>) {
+	constructor(leaf: WorkspaceLeaf, getData: () => Promise<StatusSnapshot>, onSwitchStory: (name: string) => Promise<void>, onActivateChapter: (storyName: string, key: string) => Promise<string>, onAction: (a: StatusAction) => Promise<void>, getTyping: () => Promise<StatusTyping | null>, onDeskOpen: () => void) {
 		super(leaf);
 		this.getData = getData;
 		this.onSwitchStory = onSwitchStory;
 		this.onActivateChapter = onActivateChapter;
 		this.onAction = onAction;
+		this.getTyping = getTyping;
+		this.onDeskOpen = onDeskOpen;
 	}
 
 	getViewType(): string {
@@ -188,17 +239,24 @@ export class StatusView extends ItemView {
 
 	async onOpen(): Promise<void> {
 		if (!this.built) this.buildUI(this.contentEl);
+		this.onDeskOpen(); // v0.4.5+：写字台打开/重开＝结束上一次「本次写作」（下次敲字重新锚定，见 main.ts endTypeSession/anchorTypeSession）
 		void this.refresh();
+		void this.refreshTyping();
+		if (this.typingTimer == null) this.typingTimer = this.registerInterval(window.setInterval(() => void this.refreshTyping(), 10_000)); // 时长/速度实时走动：只重绘底部区，不动树区（registerInterval 随组件卸载自动清）
 	}
 
 	async onClose(): Promise<void> {
 		this.closeMenu();
+		if (this.typingTimer != null) {
+			window.clearInterval(this.typingTimer);
+			this.typingTimer = null;
+		}
 	}
 
 	private buildUI(parent: HTMLElement): void {
 		this.built = true;
 		this.rootEl = parent.createDiv({ cls: "aw-status-view" }); // 「刷新」按钮随工作目录行在 render() 中创建
-		this.topEl = this.rootEl.createDiv({ cls: "aw-st-top" }); // 固定头部：工作目录行 / 小说状态 / 书籍列表标题行（含下拉框）
+		this.topEl = this.rootEl.createDiv({ cls: "aw-st-top" }); // 固定头部：工作目录行 / 「小说状态·码字状态」Tab 区 / 书籍列表标题行（含下拉框）
 		this.treeEl = this.rootEl.createDiv({ cls: "aw-st-tree" }); // 滚动主体：案头资料 / 书稿树，仅此区域内部滚动
 		// 小说级及以上的兜底菜单（面板空白处、无专属右键的区域）：仅「新建小说…」；删除只出现在被点中的具体条目上，各下层区域有自己的菜单并 stopPropagation
 		this.rootEl.addEventListener("contextmenu", (e) => {
@@ -250,6 +308,59 @@ export class StatusView extends ItemView {
 		else void this.refresh();
 	}
 
+	/**
+	 * v0.4.5+ 只重绘「码字状态」Tab 正文（不碰树区，避免打断滚动/重算字数）；
+	 * 触发源＝打开写字台、10 秒定时器、打字统计落盘后（main.ts 主动调）。
+	 * Tab 停在「小说状态」或该区收起时只缓存数据，切回 Tab／展开时由 render() 用缓存立即补画。
+	 */
+	async refreshTyping(): Promise<void> {
+		if (!this.built || this.typingBusy) return;
+		this.typingBusy = true;
+		try {
+			this.lastTyping = await this.getTyping();
+			this.renderTyping(this.lastTyping);
+		} catch {
+			this.renderTyping(null); // 读取失败只把该页退回占位态，不影响写字台其它部分
+		} finally {
+			this.typingBusy = false;
+		}
+	}
+
+	private renderTyping(t: StatusTyping | null): void {
+		const box = this.typingBox;
+		if (!box) return; // 当前 Tab 不是「码字状态」（或整区收起）：数据已缓存，等切回时再画
+		box.empty();
+		if (!t) {
+			box.createDiv({ text: "无法统计本次写作：尚未激活小说（用下方「书籍列表」标题行右侧的下拉框选择激活）。", cls: "aw-dim aw-st-hint" });
+			return;
+		}
+		// 本次尚未开始（懒锚定）：本次各项给占位，「写作总时长」仍按《码字记录.md》如实显示
+		if (!t.started) box.createDiv({ text: "本次未开始：在正文里敲下第一个字即开始计时（打开/重开写字台、切书、或停笔超过一个段长＝结束本次）。", cls: "aw-dim aw-st-hint" });
+		const row = (k: string, v: string, sub?: string): void => {
+			const r = box.createDiv({ cls: "aw-st-typing-row" });
+			r.createSpan({ text: k, cls: "aw-st-typing-k" });
+			const val = r.createSpan({ cls: "aw-st-typing-v" });
+			val.appendText(v);
+			if (sub) val.createSpan({ text: sub, cls: "aw-st-typing-sub" });
+		};
+		const dash = (v: string): string => (t.started ? v : "—"); // 未开始＝本次各值无意义，统一「—」
+		row("本次开始", t.started ? (new Date(t.sessionStartAt).toDateString() !== new Date().toDateString() ? fmtTypingStamp(t.sessionStartAt, true) : fmtTypingStamp(t.sessionStartAt, false)) : "未开始");
+		row("本次码字", dash(`${String(t.sessionChars)} 字`));
+		row("本次时长", dash(durText(t.sessionActiveMs)), "码字（不含停顿）");
+		row("总时长", dash(durText(t.wallMs)), "开始至现在");
+		row("码字速度", t.avgSpeed == null ? "—" : `${String(t.avgSpeed)} 字/小时`, t.lastSeg ? `最近段 ${t.lastSeg.speed == null ? "—" : String(t.lastSeg.speed)}` : "本次平均");
+		row("写作总时长", durText(t.totalActiveMs), `本书累计 ${String(t.totalChars)} 字`);
+		// 行尾脚注：段长标记（点击＝打开该书《案头资料/码字记录.md》，缺失先按表头创建）
+		const foot = box.createDiv({ cls: "aw-st-typing-foot" });
+		const chip = foot.createSpan({ text: `段长 ${String(t.segmentMin)} 分钟`, cls: "aw-st-typing-unit" });
+		chip.title = `打开《码字记录.md》（每 ${String(t.segmentMin)} 分钟一行的原始记录）\n${t.recordPath}`;
+		chip.addEventListener("click", (e) => {
+			e.stopPropagation();
+			void this.runStatusAction({ kind: "open-typing-record" });
+		});
+		foot.appendText("点击段长标记查看原始记录");
+	}
+
 	private render(snap: StatusSnapshot): void {
 		const savedScroll = this.treeEl.scrollTop; // 自动刷新重渲染后恢复树区滚动位置，不打断用户浏览
 		this.topEl.empty(); // 固定头部与工作目录行、小说状态、书籍列表标题行（含下拉框）
@@ -266,7 +377,8 @@ export class StatusView extends ItemView {
 			return;
 		}
 
-		// 「小说状态」区：仅展示当前激活书的概要信息行，与工作目录行、小说列表各以横线分隔；切书后随刷新更新；标题行可折叠/展开（与「案头资料」「书稿」小节同款开合）
+		// 「小说状态 / 码字状态」合并区（v0.4.5+）：一个标题行、两个 Tab 按钮（默认「码字状态」，切换会话内保持、不落盘）；
+		// 行首 caret 控制整区折叠/展开（与「案头资料」「书稿」小节同款开合），点 Tab 不触发折叠。与工作目录行、书籍列表各以横线分隔
 		const active = snap.stories.find((s) => s.active);
 		const ad = active ? snap.details[active.name] : undefined;
 		const statusKey = "status-info";
@@ -274,14 +386,35 @@ export class StatusView extends ItemView {
 		const statBox = this.topEl.createDiv({ cls: "aw-st-status" + (statusOpen ? "" : " is-collapsed") });
 		const statusHead = statBox.createDiv({ cls: "aw-st-status-head" });
 		statusHead.createSpan({ text: statusOpen ? "▾" : "▸", cls: "aw-st-caret" }); // 纯视觉指示符，状态随 open 切换
-		this.addIcon(statusHead, "gauge");
-		statusHead.appendText("小说状态");
 		statusHead.addEventListener("click", () => {
-			this.toggleCollapse(statusKey); // 折叠/展开是纯展示态：本地重渲染不读盘
+			this.toggleCollapse(statusKey); // 点标题行空白处/caret＝折叠展开（Tab 按钮自身 stopPropagation，不冲突）
 			this.rerenderLocal();
 		});
+		const tabBtn = (id: "story" | "typing", label: string, icon: string): void => {
+			const b = statusHead.createEl("button", { cls: "aw-st-tab-btn" + (this.tab === id ? " is-active" : "") });
+			this.addIcon(b, icon);
+			b.appendText(label);
+			b.addEventListener("click", (e) => {
+				e.stopPropagation(); // 点 Tab 不连带触发整区折叠
+				if (this.tab === id) { // 再点当前 Tab＝折叠/展开整区（与 caret 同效）
+					this.toggleCollapse(statusKey);
+					this.rerenderLocal();
+					return;
+				}
+				this.tab = id;
+				this.collapsed.delete(statusKey); // 切页顺带展开，避免切到空白
+				this.rerenderLocal(); // 本地重渲染不读盘：只换 Tab 正文
+				if (id === "typing") void this.refreshTyping(); // 切回码字页立刻取最新（时长/速度可能已走动）
+			});
+		};
+		tabBtn("story", "小说状态", "book-open");
+		tabBtn("typing", "码字状态", "feather");
+		this.typingBox = null; // 每次重渲染都重建正文容器，旧引用作废
 		if (statusOpen) {
-			if (!ad) {
+			if (this.tab === "typing") {
+				this.typingBox = statBox.createDiv({ cls: "aw-st-typing" });
+				this.renderTyping(this.lastTyping); // 先用上次取到的数据同步画（自动刷新/折叠重渲染时不留白），定时器与落盘跟进再由 refreshTyping 覆盖
+			} else if (!ad) {
 				statBox.createDiv({ text: active ? `未能加载「${active.title}」的状态` : "暂无当前小说：用下方「书籍列表」标题行右侧的下拉框选择激活。", cls: "aw-dim aw-st-hint" });
 			} else {
 				this.renderStatusLines(statBox, ad);

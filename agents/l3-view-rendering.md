@@ -21,6 +21,7 @@
 ## 通用约定
 
 - 统一「submitted/resolved 标志」模式：先置位再 `close()`，`onClose` 里未提交才触发 onCancel，防止 Esc 与按钮双触发。新 Modal 必须照抄该模式。
+- **styles.css 禁用 `:has()` 选择器**（外部检查器告警：大范围选择器失效、性能隐患）——「子元素存在 → 父/兄弟样式」一律改由视图在渲染时挂显式类（先例：时间线 done 行 `is-tl-done-row`）。
 - **预填字段的状态变量必须从传入的初始值初始化**（v0.4.4+ 修 EventEditModal 回归时定下的约定）：Obsidian 控件 `setValue()` **不触发 `onChange()`**，若局部变量只靠 onChange 回填、就恒拿不到未触碰字段的值——保存时校验必失败（弹窗关不上）或把既有内容写成空串。写法＝`let x = (initial?.x ?? 默认值)`，onChange 只负责「改动之后」的值。无预填的创建型弹窗（如 NewStoryModal）不受此约束。
 - **统一基类 `AwModal`（v0.4.3+，`src/modals.ts` 导出）**：本插件所有 `extends Modal` 的弹窗一律 `extends AwModal`（modals.ts 19 个 + main.ts `StatusModal`；`SuggestModal`/`FuzzySuggestModal` 系列不是表单、保持原样）。基类构造函数给 `contentEl` 挂 `.aw-form` 作用域类——**挂在构造函数而非 `onOpen`**：现有子类普遍覆写 `onOpen` 且不调用 `super.onOpen()`，构造期挂类对全部子类恒生效。新写弹窗直接继承 `AwModal`，不要再用裸 `Modal`（main.ts 的 obsidian import 已移除 `Modal`）。CSS 口径见 [l3-settings-page.md](./l3-settings-page.md)「统一表单布局」。
 - **常驻 ItemView 渲染陷阱（规范原文，各视图文档均引用本条）**：本环境 Obsidian 对已注册视图不调用 `getEmptyStateElement()`（返回游离节点会整片空白），UI 必须在 `onOpen()` 里建进框架创建的 `this.contentEl`（内置日历等视图同款做法）；本地 patch dts 中 `ItemView.onClose` 签名是 `Promise<void>` 需声明 async；实例方法须实现 `getViewType()`/`getDisplayText()`/`getIcon()`，开文件用 `leaf.openFile(TFile)`（本 dts 无 setFile）。

@@ -1,12 +1,13 @@
-import { App, Notice, Platform, Plugin, PluginSettingTab, TAbstractFile, TFile, TFolder, View, WorkspaceLeaf, WorkspaceSidedock, type SettingDefinitionItem } from "obsidian";
+import { App, Notice, Platform, Plugin, PluginSettingTab, TAbstractFile, TFile, TFolder, View, WorkspaceLeaf, WorkspaceSidedock, type Editor, type MarkdownFileInfo, type MarkdownView, type SettingDefinitionItem } from "obsidian";
 import { ActionItem, ActionMenuModal, AddCharacterModal, AwModal, AutoBookConfigInput, AutoBookConfigModal, AutoBookInput, AutoBookModal, BookSkillPhaseModal, ChapterListModal, ConfirmModal, ExportPromptsSelectModal, FolderPickerModal, InspirationKitModal, MultiFieldModal, NewFilePickerModal, NewStoryInput, NewStoryModal, PanelLine, SkillEditModal, SkillPickerModal, SkillRangeModal, StoryMetaModal, StoryMetaInput, StoryPickerModal, TextAreaPrompt, TextPanelModal, TextInputModal, VaultFilePickerModal, VolumeBatchCreateModal } from "./modals";
 import type { AddCharacterResult, CharacterScopeOption, SkillEditResult, SkillLevel } from "./modals";
 import { parseBookSkill, type BookSkillSpec } from "./book_skill"; // v0.4.1+ 旧「案头资料/」建书技能文件解析（仅供一次性迁移；建书配置已并入《故事状态.md》auto_book 块）
 import { LlmChatView } from "./llm_chat_view";
 import { GenProgressView, formatElapsedMs, type WritingStreamSink } from "./gen_progress_view";
-import { StatusView, type StatusAction, type StatusChapterEntry, type StatusDetail, type StatusFileEntry, type StatusFolderEntry, type StatusSnapshot, type StatusStoryEntry } from "./status_view";
+import { StatusView, type StatusAction, type StatusChapterEntry, type StatusDetail, type StatusFileEntry, type StatusFolderEntry, type StatusSnapshot, type StatusStoryEntry, type StatusTyping } from "./status_view";
 import { RelationshipView, type RelCharInfo, type RelGroup, type RelRow, type RelSnapshot, type RelStoryEntry } from "./relationship_view";
 import { TimelineView, type TlRow, type TlSnapshot, type TlStoryEntry } from "./timeline_view"; // v0.3.3+ 合并大事件：面板承担事件增删改，构造第三参＝编辑弹窗人物候选
+import { MAX_TYPE_DELTA, SEGMENT_MIN_DEFAULT, SEGMENT_MIN_MAX, SEGMENT_MIN_MIN, TYPE_STATS_HEADER, diffStats, liveSegStats, nextSegmentStart, normalizeSegmentMinutes, renderStatsRow, segActiveMs, segNetChars, segmentMs, segmentStartOf, summarizeStatsFile, type TypeSeg } from "./typing_stats"; // v0.4.5+ 打字统计纯计算（段长可配/停顿/表格渲染/文件汇总/窗口活跃时长）；采集与落盘在本文件接线
 import { chapterOutlineTemplate, countPureWords, FORESHADOW_TEMPLATE, formatLocalDateTime, NOTES_TEMPLATE, outlineTemplate, WORLD_TEMPLATE } from "./story_types";
 import { safeFilename } from "./story_types";
 import { StoryManager, NO_VOL_MODE_MSG, CHAPTER_DIR_RE, PROLOGUE_DIR_NAME, DESK_DOCS_DIR_NAME, MANUSCRIPT_DIR_NAME, type WritingDocPaths } from "./story_manager";
@@ -38,6 +39,7 @@ interface ArticleWriterSettings {
 	prevChapters?: number; // v0.1.4+：写作提示词「前文内容」窗口章数 N（缺省/非法按 CLI 默认 3；0=不注入前文）。卷模式窗口限本卷、跨卷缺口以各前卷《卷摘要》填充
 	nextChapters?: number; // v0.4.3+：写作提示词「后续参考」窗口章数 N（缺省/非法按 3；0=不注入后章）。当前消费方＝编写文章阶段的大纲节选（前 prevN／后 nextN 章）
 	includeVolumeSummary?: boolean; // v0.1.4+：是否把整卷《卷摘要》注入写作上下文（含跨卷前卷摘要）；默认关——对齐 Python 原版严格 prev_n 语义，只注入最近 N 章
+	typingSegmentMin?: number; // v0.4.5+：打字（码字）统计的段长（分钟）；缺省/非法/越界回落 10
 	llm?: PluginConfig; // LLM 多组模型配置 + 对话引用清单/阶段模型映射（替代 ~/.articlewriter/config.json，存插件数据目录 data.json；v0.4.3+ system_prompt 已删除）
 }
 
@@ -47,6 +49,7 @@ const DEFAULT_SETTINGS: ArticleWriterSettings = {
 	autoOpenOnCreate: true,
 	prevChapters: 3,
 	nextChapters: 3,
+	typingSegmentMin: SEGMENT_MIN_DEFAULT,
 };
 
 /** 「添加人物」关系类型下拉的可选值：均能命中 relationship_view.ts 的类型正则（保证图视图边色/图标可识别），空值=未标注 */
@@ -132,6 +135,22 @@ export default class ArticleWriterPlugin extends Plugin {
 	private flatBlocked: string | null = null; // 仍为平面结构且整理失败的书名：章节/卷结构操作锁定，直至「按卷整理目录」成功
 	private wsSaveTimer: number | null = null; // v0.2.1+：layout-change → 防抖存档当前书工作区的定时器
 	private lastWorkspaceRestoreAt = 0; // v0.2.1+：最近一次 changeLayout 恢复的时间戳（抑制自身触发的 layout-change 回存）
+	/** v0.4.5+ 打字（码字）统计状态：当前段缓冲（story＝该段归属小说，segMs＝开窗时刻的段长 ms——设置改动后旧段先结算）；段末/超时经 tick 或跨段 flush */
+	private typeSeg: (TypeSeg & { story: string; segMs: number }) | null = null;
+	private typeTexts = new Map<string, string>(); // 路径→上次读到的正文（diff 基线；某文件首次被看见只立基线、不计数）
+	private typePrevSegEnd = 0; // 上一段（同一本书）的末时刻：改段长后新开段不得回溯到它之前，否则两段的活跃时长区间重叠、《码字记录.md》汇总双计
+	private typeFlushChain: Promise<void> = Promise.resolve(); // 串行 flush 队列（防两次追加读-改-写互相覆盖）
+	/**
+	 * v0.4.5+ 「本次写作」会话（**懒锚定**：开始时刻＝该会话内第一次有效键入，不是写字台打开时刻——
+	 * Obsidian 启动即打开写字台，若打开就计时会把挂机时间灌进「总时长」）。
+	 * `typeSessionStartAt===0`＝本次尚未开始（面板显示「未开始」占位）；写字台打开/重开、切书、停笔超过一个段长＝结束本次（清零待重新锚定）。
+	 */
+	private typeSessionStartAt = 0;
+	private typeSessionStory = "";
+	private typeSessionChars = 0;
+	private typeSessionActiveMs = 0;
+	private typeLastEditAt = 0; // 本次内最后一次有效键入时刻（停笔超过段长即自动结束本次）
+	private typeLastSeg: { start: number; end: number; chars: number; speed: number | null } | null = null;
 	private wsIoErrorNoticed = false; // v0.2.1+：工作区 IO 失败通知每会话只弹一次（防抖存档高频触发会刷屏），细节恒进 console
 	private auto: AutoRun | null = null; // v0.3.0+：auto-book 流水线运行上下文——非 null 时各 prompt/confirm 助手直接返回参数值（免交互驱动），「停止全自动」置 stopped 中断当前阶段
 	private lastGenPanel: GenProgressView | null = null; // v0.3.0+：最近取到/打开过的生成面板实例——面板被关闭（leaf 脱离）后引用仍在，其 signal.aborted 供流水线阶段间识别「流式中关面板/点停止＝停止」
@@ -146,6 +165,11 @@ export default class ArticleWriterPlugin extends Plugin {
 	private effectiveNextN(): number {
 		const n = Math.floor(Number(this.settings.nextChapters ?? 3));
 		return Number.isFinite(n) && n >= 0 ? n : 3;
+	}
+
+	/** v0.4.5+：data.json settings.typingSegmentMin → 有效码字记录段长（分钟；缺省/非法/越界回落 10） */
+	private effectiveTypeSegmentMin(): number {
+		return normalizeSegmentMinutes(this.settings.typingSegmentMin);
 	}
 
 	async onload(): Promise<void> {
@@ -304,7 +328,7 @@ export default class ArticleWriterPlugin extends Plugin {
 
 		this.registerView(LlmChatView.VIEW_TYPE, (leaf) => new LlmChatView(leaf, () => this.settings.llm, () => this.getChatSystemPrompt(), () => this.getActiveStoryInfo(), (name) => this.setActiveLlmFromChat(name), () => this.chatDefaultSaveDir()));
 		this.registerView(GenProgressView.VIEW_TYPE, (leaf) => new GenProgressView(leaf)); // v0.1.4+：摘要延迟生成的工作过程面板（notifyGenProgress 驱动）
-		this.registerView(StatusView.VIEW_TYPE, (leaf) => new StatusView(leaf, () => this.getStatusSnapshot(), (name) => this.statusSwitchStory(name), (story, key) => this.statusActivateChapter(story, key), (a) => this.handleStatusAction(a)));
+		this.registerView(StatusView.VIEW_TYPE, (leaf) => new StatusView(leaf, () => this.getStatusSnapshot(), (name) => this.statusSwitchStory(name), (story, key) => this.statusActivateChapter(story, key), (a) => this.handleStatusAction(a), () => this.getStatusTyping(), () => this.endTypeSession())); // 第 6＝写字台「码字状态」Tab 数据源；第 7＝写字台打开/重开＝结束上次「本次写作」（下次敲字重新锚定）
 		this.registerView(RelationshipView.VIEW_TYPE, (leaf) => new RelationshipView(leaf, () => this.getRelationshipSnapshot(), () => this.openAddCharacterDialog(), (name) => this.renameCharacterFlow(name))); // v0.1.9+：人物关系面板（展示只读，切书在写字台/命令里做；v0.2.0+ 头部「添加人物」注入写动作）
 		this.registerView(TimelineView.VIEW_TYPE, (leaf) => new TimelineView(leaf, () => this.getTimelineSnapshot(), () => this.getTimelineCharOptions())); // v0.2.x+：时间线面板；v0.3.3+ 合并大事件：可编辑（节点增删改写回《时间线.md》），人物候选走 getTimelineCharOptions
 		this.addRibbonIcon("message-square", "打开 LLM 对话窗口（常驻面板）", () => void this.openLlmPanel());
@@ -330,6 +354,12 @@ export default class ArticleWriterPlugin extends Plugin {
 			this.schedulePanelRefresh();
 		};
 		this.registerEvent(this.app.vault.on("rename", watchRename));
+		// v0.4.5+ 打字（码字）统计：编辑器内容变化 → 只统计当前小说目录内 .md 的有效键入，按段长（设置项「码字记录段长」，缺省 10 分钟）分桶；
+		// 段边界被下一次键入跨过、或空闲由定时器兜底 → flush 一行到书级《案头资料/码字记录.md》（tick 取 15s：短段长下边界也能及时结算）
+		this.registerEvent(this.app.workspace.on("editor-change", (editor, info) => this.onTypingEdit(editor, info)));
+		this.registerInterval(window.setInterval(() => this.tickTypingStats(), 15_000));
+		// v0.4.5+ 「本次写作」＝懒锚定（首次有效键入才计），因此不需要 active-leaf-change 钩子去「开一次」：
+		// 写字台打开/重开走 StatusView.onOpen → endTypeSession（结束上次），停笔超过一个段长由 tick 兜底结束
 		// v0.2.1+ 每本书独立工作区：布局任意变化（开/关/分栏/tab 切换等）→ 防抖把当前窗口状态存入「当前小说」的工作区文件；自身 changeLayout 恢复触发的回声事件被时间窗过滤
 		this.registerEvent(this.app.workspace.on("layout-change", () => {
 			if (Date.now() - this.lastWorkspaceRestoreAt < 3000) return; // 刚恢复过布局，跳过回存避免抖动
@@ -492,6 +522,9 @@ export default class ArticleWriterPlugin extends Plugin {
 		if (!target || cur === target) return;
 		await this.captureBookWorkspace(cur); // cur 为空时内部直接返回；正常流程不打日志（失败走 noteWsIoError）
 		this.settings.lastStory = target;
+		// v0.4.5+ 切书：结束上一本书的「本次写作」——顺带把它未落盘的段结算进该书《码字记录.md》（段归属按段上的 story，不按刚改的 lastStory）；
+		// 新书的「本次」不预设起点，等第一次敲字再锚定（anchorTypeSession）
+		this.endTypeSession();
 		await this.saveSettings();
 		await this.loadBookWorkspace(target, closeIfNoArchive);
 	}
@@ -3762,6 +3795,182 @@ async cmdRenameChapterFile(): Promise<void> {
 		this.scheduleTimelinePanelRefresh(delayMs);
 	}
 
+	// ---------- 打字（码字）统计（v0.4.5+）：按段长（设置项「码字记录段长」，缺省 10 分钟）一段，写书级《案头资料/码字记录.md》 ----------
+
+	/**
+	 * 编辑器变化采集（editor-change）：只统计**当前小说目录内** .md 的键入（书根/案头资料/卷/章全覆盖），
+	 * 《码字记录.md》自身不计数。文本与 typeTexts 缓存做前后 diff：
+	 * ① 文件首次被看见只立基线不计数（防打开整章即按全文计字）；
+	 * ② 单次新增非空白字符 > MAX_TYPE_DELTA＝粘贴/程序化写入（含 LLM 落盘、外部改动回声）→ 只更新基线、不记字也不记键入事件；
+	 * ③ 有效键入 → 归入当前段（段长＝设置项 `typingSegmentMin`，缺省 10 分钟；跨段/切书/改了段长先把旧段 flush；
+	 *    新开段的起点经 `nextSegmentStart` 夹到上一段末之后——改段长时新段按新段长回溯对齐会跟刚落盘的旧段重叠，
+	 *    那段时间两段各算一次活跃时长，《码字记录.md》的写作总时长随之虚高）。字数只计非空白字符。
+	 * **v0.4.5+ 净增口径**：删除不倒扣进「键入」，只累加进段上的 `deleted` 把先前敲的字抵掉（净增＝新增−删除，见 `segNetChars`）；
+	 * **纯删除**（本次没有新增）不开段、不记键入事件、不影响停顿/活跃时长——删字不算码字。
+	 */
+	private onTypingEdit(editor: Editor, info: MarkdownView | MarkdownFileInfo): void {
+		const story = (this.settings.lastStory || "").trim();
+		if (!story) return;
+		const f = info.file;
+		if (!f || !f.path.endsWith(".md")) return;
+		const root = this.manager.storyPath(story);
+		if (!f.path.startsWith(`${root}/`)) return;
+		if (f.path === this.manager.bookTypeStatsPath(story)) return;
+		const cur = editor.getValue();
+		const prev = this.typeTexts.get(f.path);
+		this.typeTexts.set(f.path, cur);
+		if (prev === undefined) return; // 首见＝立基线
+		const d = diffStats(prev, cur);
+		if (d.added === 0 && d.deleted === 0) return;
+		if (d.added > MAX_TYPE_DELTA) return; // 粘贴/程序化写入
+		const curSegMs = segmentMs(this.settings.typingSegmentMin); // 段长走设置项（越界/非法回落 10 分钟）
+		if (d.added === 0) { // 纯删除：只抵掉进行中段里先前敲入的字（超长剪贴＝程序化改动，同样不理）
+			if (d.deleted <= MAX_TYPE_DELTA) {
+				const live = this.typeSeg;
+				const at = Date.now();
+				if (live && live.story === story && live.segMs === curSegMs && at < live.start + live.segMs) live.deleted += d.deleted;
+			}
+			return;
+		}
+		const now = Date.now();
+		this.anchorTypeSession(now, story); // 本次未开始时以这次键入为「本次开始」（懒锚定，见 endTypeSession）
+		this.typeLastEditAt = now;
+		const seg = this.typeSeg;
+		if (seg && (seg.start !== segmentStartOf(now, seg.segMs) || seg.story !== story || seg.segMs !== curSegMs)) {
+			const prevEnd = Math.min(now, seg.start + seg.segMs); // 旧段按「开窗时的段长」结算（改段长不影响已在累积的段）
+			void this.enqueueTypeFlush(seg, prevEnd); // 跨段、切书或改了段长：先结算旧段
+			this.typeSeg = null;
+			this.typePrevSegEnd = seg.story === story ? prevEnd : 0; // 换书＝写进另一本书的文件，区间不相干，不做夹取
+		}
+		if (!this.typeSeg) this.typeSeg = { start: nextSegmentStart(now, curSegMs, this.typePrevSegEnd), edits: [], chars: 0, deleted: 0, story, segMs: curSegMs };
+		this.typeSeg.edits.push(now);
+		this.typeSeg.chars += d.added;
+		if (d.deleted > 0 && d.deleted <= MAX_TYPE_DELTA) this.typeSeg.deleted += d.deleted; // 同一次编辑里的替换/回删即时抵掉
+	}
+
+	/**
+	 * 定时器（15s）两件事：
+	 * ① 段满即结算（写作停下后不再有 editor-change，兜底落盘；无键入事件的空段不写行）；
+	 * ② **本次写作自动结束**（v0.4.5+）：本次已开始且停笔超过**一个段长**（＝设置项「码字记录段长」）→ 结束本次
+	 *    （长时间离开不会把挂机时间挂在「本次时长／总时长」上，下次敲字自动重开一次本次）。
+	 */
+	private tickTypingStats(): void {
+		const now = Date.now();
+		if (this.typeSessionStartAt && this.typeLastEditAt && now - this.typeLastEditAt > segmentMs(this.settings.typingSegmentMin)) this.endTypeSession();
+		const seg = this.typeSeg;
+		if (seg && now >= seg.start + seg.segMs) {
+			const prevEnd = seg.start + seg.segMs;
+			this.typePrevSegEnd = prevEnd; // 段区间已占用，之后新开段（哪怕改了段长）不得回溯进这段
+			void this.enqueueTypeFlush(seg, prevEnd);
+			this.typeSeg = null;
+		}
+	}
+
+	/** 串行 flush 队列：读-改-写追加一行，防并发覆盖；失败只 console.debug（后台统计不打扰写作） */
+	private enqueueTypeFlush(seg: TypeSeg & { story: string; segMs: number }, end: number): Promise<void> {
+		this.typeFlushChain = this.typeFlushChain.then(() => this.writeTypeRow(seg, end));
+		return this.typeFlushChain;
+	}
+
+	private async writeTypeRow(seg: TypeSeg & { story: string; segMs: number }, end: number): Promise<void> {
+		// 整段没有一次有效键入事件＝没有写作会话，不产生噪音行；**净增 0（写的全删回去）仍写一行**（字数 0、速度「—」）：
+		// 否则该段的活跃时长在攒段期间被面板算着、落盘时却被整段抹掉——「本次时长／写作总时长」会在 flush 那一刻往回跳。
+		if (!seg.edits.length || end <= seg.start) return;
+		const net = segNetChars(seg);
+		const path = this.manager.bookTypeStatsPath(seg.story);
+		try {
+			let text = "";
+			if (await this.app.vault.adapter.exists(path)) text = await this.app.vault.adapter.read(path);
+			const base = text.trim() ? `${text.replace(/\s+$/, "")}\n` : TYPE_STATS_HEADER; // 缺失按表头创建（adapter.write 自动补建父目录）
+			await this.app.vault.adapter.write(path, `${base}${renderStatsRow(seg, end)}\n`);
+		} catch (e) {
+			console.debug("码字统计写入《码字记录.md》失败：", e);
+			return;
+		}
+		// 落盘成功 → 计入「本次写作」会话累加（仅当该段属于本次会话的小说），并刷新写字台「码字状态」Tab。
+		// 活跃时长按「本次锚点」夹取（段起点按整点网格对齐、可能早于本次开始），本次时长才不会越过墙钟「总时长」
+		if (this.typeSessionStartAt && seg.story === this.typeSessionStory) {
+			const active = segActiveMs(seg, end, this.typeSessionStartAt);
+			this.typeSessionChars += net;
+			this.typeSessionActiveMs += active;
+			this.typeLastSeg = { start: seg.start, end, chars: net, speed: active > 0 ? Math.round((net * 3_600_000) / active) : null };
+		}
+		this.notifyTypingPanel();
+	}
+
+	/** 打字统计落盘后只刷写字台底部「写作状态」区（不重扫字数、不动树区） */
+	private notifyTypingPanel(): void {
+		for (const leaf of this.app.workspace.getLeavesOfType(StatusView.VIEW_TYPE)) {
+			if (leaf.view instanceof StatusView) void leaf.view.refreshTyping();
+		}
+	}
+
+	/**
+	 * 结束「本次写作」：写字台打开/重开（StatusView.onOpen）、切书、或停笔超过一个段长（tickTypingStats）都会调用。
+	 * 动作＝把进行中的段先结算进它自己的《码字记录.md》（本次结束前敲的字不留缓冲、也不带进下一次本次）＋清累加＋开始时刻归零。
+	 * 归零后本次**不预设起点**——下一次有效键入才锚定（`anchorTypeSession`），故启动/挂机时间不进「本次码字／本次时长／总时长」。
+	 */
+	private endTypeSession(): void {
+		const seg = this.typeSeg;
+		if (seg) {
+			const end = Math.min(Date.now(), seg.start + seg.segMs);
+			void this.enqueueTypeFlush(seg, end);
+			this.typePrevSegEnd = seg.story === (this.settings.lastStory || "").trim() ? end : 0; // 同书才做区间夹取（换书写的文件不同、区间不相干）
+			this.typeSeg = null;
+		}
+		this.typeSessionStartAt = 0;
+		this.typeSessionStory = "";
+		this.typeSessionChars = 0;
+		this.typeSessionActiveMs = 0;
+		this.typeLastEditAt = 0;
+		this.typeLastSeg = null;
+		this.notifyTypingPanel();
+	}
+
+	/** 本次尚未开始（或归属的书变了）→ 以这次键入为起点重开一次；已在本次中则只确认归属，不重置累加 */
+	private anchorTypeSession(now: number, story: string): void {
+		if (this.typeSessionStartAt && this.typeSessionStory === story) return;
+		this.typeSessionStartAt = now;
+		this.typeSessionStory = story;
+		this.typeSessionChars = 0;
+		this.typeSessionActiveMs = 0;
+		this.typeLastSeg = null;
+	}
+
+	/** v0.4.5+ 写字台底部「写作状态」区数据：本次累加＋当前段写到此刻＋《码字记录.md》全文汇总（写作总时长的事实源） */
+	async getStatusTyping(): Promise<StatusTyping | null> {
+		const story = (this.settings.lastStory || "").trim();
+		if (!story) return null;
+		const now = Date.now();
+		const started = this.typeSessionStartAt > 0;
+		// 进行中段按其**开窗时的段长**核算，不用当前设置值：改过段长而旧段尚未结算时，按新段长会把「此刻」夹到过去、停顿与活跃时长当场失真
+		const rawSeg = this.typeSeg && this.typeSeg.story === story ? this.typeSeg : null;
+		const live = rawSeg ? liveSegStats(rawSeg, now, rawSeg.segMs) : { chars: 0, pauseMs: 0, activeMs: 0 }; // 整段口径（写进《码字记录.md》的就是这段）
+		const liveSession = rawSeg && started ? liveSegStats(rawSeg, now, rawSeg.segMs, this.typeSessionStartAt) : { chars: 0, pauseMs: 0, activeMs: 0 }; // 本次口径（锚点之后的部分）
+		const path = this.manager.bookTypeStatsPath(story);
+		let hist = { segments: 0, chars: 0, pauseMs: 0, activeMs: 0 };
+		try {
+			if (await this.app.vault.adapter.exists(path)) hist = summarizeStatsFile(await this.app.vault.adapter.read(path));
+		} catch (e) {
+			console.debug("码字统计读取《码字记录.md》失败：", e);
+		}
+		const chars = started ? this.typeSessionChars + liveSession.chars : 0;
+		const active = started ? this.typeSessionActiveMs + liveSession.activeMs : 0;
+		return {
+			started,
+			sessionStartAt: this.typeSessionStartAt,
+			sessionChars: chars,
+			sessionActiveMs: active,
+			wallMs: started ? now - this.typeSessionStartAt : 0,
+			avgSpeed: chars > 0 && active > 0 ? Math.round((chars * 3_600_000) / active) : null,
+			lastSeg: this.typeLastSeg,
+			totalActiveMs: hist.activeMs + live.activeMs, // 文件里的行已含本次已落盘段，这里只补未落盘的当前段
+			totalChars: hist.chars + live.chars, // 与上一行同口径：累计字数也含当前段，否则恒落后一个段长、每次落盘跳一格
+			segmentMin: this.effectiveTypeSegmentMin(),
+			recordPath: path,
+		};
+	}
+
 	/** 防抖刷新已打开的人物关系面板（v0.1.9+）：关系文档在编辑器里改动/新建同样实时跟进 */
 	private scheduleRelationshipPanelRefresh(delayMs = 800): void {
 		if (!this.app.workspace.getLeavesOfType(RelationshipView.VIEW_TYPE).length) return;
@@ -4031,6 +4240,26 @@ async cmdRenameChapterFile(): Promise<void> {
 			}
 			case "edit-story-meta": {
 				await this.cmdEditStoryMeta(a.story);
+				return;
+			}
+			case "open-typing-record": { // v0.4.5+ 底部「写作状态」标题行：打开该书《案头资料/码字记录.md》（文件缺失先按表头建骨架再打开）
+				const story = (this.settings.lastStory || "").trim();
+				if (!story) {
+					new Notice("尚未激活小说：无法定位《码字记录.md》", 4000);
+					return;
+				}
+				const path = this.manager.bookTypeStatsPath(story);
+				let file = this.app.vault.getAbstractFileByPath(path);
+				if (!(file instanceof TFile)) {
+					try {
+						await this.app.vault.adapter.write(path, TYPE_STATS_HEADER);
+					} catch (e) {
+						new Notice(`创建《码字记录.md》失败：${e instanceof Error ? e.message : String(e)}`, 6000);
+						return;
+					}
+					file = this.app.vault.getAbstractFileByPath(path);
+				}
+				if (file instanceof TFile) await this.app.workspace.getLeaf(false).openFile(file);
 				return;
 			}
 			case "rename-story": {
@@ -8802,6 +9031,7 @@ class ArticleWriterSettingTab extends PluginSettingTab {
 		defs.push({ name: "前文参考章数 prevN", desc: "写作命令生成提示词时注入【前文内容】的最近 N 章（每章取 AI 摘要、缺失自动生成；0=不注入前文）。留空=默认 3。卷模式下窗口限本卷，不再拉取他卷章节细节。v0.4.3+：编写文章阶段的大纲块也按本值取当前章之前 N 章的大纲节选", control: { key: "prevChapters", type: "text", placeholder: "默认 3" } });
 		defs.push({ name: "后续参考章数 nextN", desc: "v0.4.3+：编写文章阶段的大纲块只注入当前章前后若干章的节选（不再注入整卷/全书大纲）——前 N 章取「前文参考章数 prevN」、后 N 章取本项（0=不注入后章）。留空=默认 3。本书《故事状态.md》的 next_chapters 显式设置时优先于本项", control: { key: "nextChapters", type: "text", placeholder: "默认 3" } });
 		defs.push({ name: "注入整卷《卷摘要》", desc: "开启后写作上下文额外包含当前卷完整《卷摘要》，跨卷缺口另以各前卷《卷摘要》填充（含触发 LLM 重建）；关闭=严格只注入最近 N 章（对齐 Python 原版语义，默认关）", control: { key: "includeVolumeSummary", type: "toggle" } });
+		defs.push({ name: "码字记录段长（分钟）", desc: "v0.4.5+ 打字（码字）统计每段的时长：段边界按整点对齐（10＝每小时 :00/:10/:20…，5/15/30/60 同理；不能整除 60 的值以整点为原点顺次切段），每段一行追加到该书《案头资料/码字记录.md》（有效字数／停顿／码字速度）。留空或非法＝默认 10；可填 1–120，越界按 10 处理；改动从下一段起生效", control: { key: "typingSegmentMin", type: "text", placeholder: "默认 10" } });
 
 		const c = this.conf();
 		const llmNameMap = filterEnabledLlmConfigs(cfgs).reduce<Record<string, string>>((m, item) => { m[item.name] = item.name; return m; }, {}); // ES2019 同名 API 的低版本等价写法：构造 name→name 恒等映射
@@ -9086,6 +9316,7 @@ class ArticleWriterSettingTab extends PluginSettingTab {
 		if (key === "prevChapters") return s.prevChapters == null ? "" : String(s.prevChapters); // v0.1.4+：空=按内置默认 3
 		if (key === "nextChapters") return s.nextChapters == null ? "" : String(s.nextChapters); // v0.4.3+：空=按内置默认 3
 		if (key === "includeVolumeSummary") return !!s.includeVolumeSummary; // v0.1.4+：卷摘要注入开关（缺省=false）
+		if (key === "typingSegmentMin") return s.typingSegmentMin == null ? "" : String(s.typingSegmentMin); // v0.4.5+：空=按缺省 10 分钟
 		// v0.3.4+：写作阶段模型配置（仅剩 llm_config_name 走 setControlValue；identity_boost 已 Skill 化）
 		const phaseCfgMatch = key.match(/^writing_phases\.(\d+)\.(llm_config_name)$/);
 		if (phaseCfgMatch) {
@@ -9128,6 +9359,12 @@ class ArticleWriterSettingTab extends PluginSettingTab {
 		}
 		if (key === "includeVolumeSummary") { // v0.1.4+：布尔开关，关闭存 false（缺省即关）
 			s.includeVolumeSummary = value === true;
+			await this.plugin.saveSettings();
+			return;
+		}
+		if (key === "typingSegmentMin") { // v0.4.5+：1–120 分钟整数；留空/非法/越界=清除、运行时回落缺省 10（与 prevChapters「空=默认」同口径）
+			const n = Number(str);
+			s.typingSegmentMin = str.trim() !== "" && Number.isFinite(n) && n >= SEGMENT_MIN_MIN && n <= SEGMENT_MIN_MAX ? Math.floor(n) : undefined;
 			await this.plugin.saveSettings();
 			return;
 		}

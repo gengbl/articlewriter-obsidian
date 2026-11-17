@@ -6,6 +6,7 @@
 | `switch-story` | 列出全部小说（含各章数/当前章、◀ 当前标记），选中设为当前并弹出该书状态 |
 | `new-story` | 标题+题材+编写类型三问，建书与全套模板文档（v0.4.3+：题材下拉读 `SKILLS/题材/`、编写类型下拉读 `SKILLS/编写类型/`，均保留手输自定义；目录为空时回落旧四题材/四类型；弹窗表单挂 `aw-form-compact` 控件占满行宽） |
 | `edit-story-meta` | **修改小说信息**（v0.4.3+）：当前小说的题材/编写类型两个下拉分别读 `SKILLS/题材/`、`SKILLS/编写类型/`（可手输自定义），保存只改《故事状态.md》`genre` / `writing_style` 并刷新写字台/人物关系面板；入口＝命令面板 + 写字台「书籍列表」标题行右键「修改题材/编写类型…」（StatusAction `edit-story-meta`） |
+| `open-typing-record` | **打开《码字记录.md》**（v0.4.5+，仅写字台内入口、无命令面板项）：码字状态 Tab 页尾「段长 N 分钟」标记点击 → 按 `manager.bookTypeStatsPath(lastStory)` 定位该书《案头资料/码字记录.md》，文件缺失先写 `TYPE_STATS_HEADER` 骨架再 `getLeaf(false).openFile`；无激活小说只弹 Notice |
 | `new-chapter` / `list-chapters` | 建章后自动激活；列表选择打开正文并切当前章 |
 | `insert-chapter` | 在当前激活章（无则先选参照章）之前/之后插入新空章节：**v0.0.15 起编号在容器内**——仅参照章所在容器（卷/书根）中 ≥插入位的各章整体 +1（**降序单遍顺延：最高号章先移、目标位必空、无临时槽——中断只留断档、不留大号幽灵章**；**全部改名走真实文件系统层 adapter.rename+adapter.exists 逐步强校验（不走会滞后的元数据索引），源目录按复合键定位带原始 FS 兜底，检测到重复号残留目录立即中止；开始前 assertSnapshotCoversDisk 校验快照覆盖磁盘全部章节目录、索引滞后即拒绝启动**——防顺延目标撞上未入快照的存活章），同步重写各章文档「第N章」/「章节：N」引用与伏笔.md（引用为复合键语义、跨卷同号不再歧义）；插入位是断档空位时直接落位不挪动他人；完成后 current_chapter 指向新章（manager.insertChapter）。注：v0.1.4+ 起 listChapters 把磁盘上存在的章节目录一律视为存活章节（无「章节.md」的空正文章照常列出、可被写作命令补写正文） |
 | `next-chapter` / `prev-chapter` | 无当前章时 next→第一章、prev→最后一章；到边界提示不切 |

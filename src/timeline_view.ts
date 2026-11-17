@@ -377,7 +377,7 @@ export class TimelineView extends ItemView {
 		const cappedDepth = Math.min(f.depth, 6); // 深度封顶 6（与 tl-d6 深度类同一口径）：缩进、导引线列数、圆点列、短桩列都按它
 		const hasKids = node.children.length > 0;
 		this.pushTlSpacer(parent, row, cappedDepth); // 时间比例间距（筛选趟/首条为 no-op），随同贯穿本行深度的层级导引线
-		const item = parent.createDiv({ cls: `aw-tl-item lv-${String(Math.min(row.level, 5))} tl-d${String(cappedDepth)}` }); // 级别类＝圆点样式；深度类＝行缩进＋圆点所在层级列
+		const item = parent.createDiv({ cls: `aw-tl-item lv-${String(Math.min(row.level, 5))} tl-d${String(cappedDepth)}${row.done ? " is-tl-done-row" : ""}` }); // 级别类＝圆点样式；深度类＝行缩进＋圆点所在层级列；done 行另挂 is-tl-done-row（条目名弱化样式用，替代 :has 选择器）
 		this.attachTlGuides(item, cappedDepth, hasKids, true); // 层级导引线必须是 item 的前 cappedDepth 个子元素（styles.css 按 nth-child 映射列坐标），圆点/折叠标在其后
 		this.nodeEls.set(row.id, item); // 条目行索引（关联 chip 跳转后高亮闪烁定位；拖动时按结构子树收集后代行）
 		const dot = item.createSpan({ cls: "aw-tl-dot" }); // 节点圆点：落在本行深度列的圆心（与竖向层级通道同一坐标），有子事件时可点击切换折叠

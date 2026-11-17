@@ -1408,6 +1408,11 @@ private emptyState(storyName: string): StoryState {
 		return `${this.deskDocsPath(storyName)}/时间线.md`;
 	}
 
+	/** v0.4.5+ 书级《码字记录》路径（「案头资料/码字记录.md」；打字统计按 10 分钟段自动追加的表格档，非模板文档、建书不播种） */
+	bookTypeStatsPath(storyName: string): string {
+		return `${this.deskDocsPath(storyName)}/码字记录.md`;
+	}
+
 	/** v0.3.3+ 阶段 0 前置：全量写书级《时间线.md》（AI 生成原文原样落盘、尾部补一个换行）；缺失则创建、存在则覆盖 */
 	async setBookTimeline(storyName: string, content: string): Promise<void> {
 		await this.writeDoc(this.bookTimelinePath(storyName), `${String(content ?? "").replace(/\s+$/, "")}\n`);

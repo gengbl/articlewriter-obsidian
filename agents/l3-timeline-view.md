@@ -11,7 +11,7 @@
 | 留白时间标尺 | `.aw-tl-spacer` `background-image: linear-gradient(to bottom, … 0 1px, transparent 1px)`＋`background-size:5px 24px`＋`background-position:-9px 11px`＋`repeat-y`＝沿主轴右侧每 24 布局 px 一格刻度；spacer 是 position:relative 的绘制在主轴之上，刻度从轴右缘起不叠轴 |
 | 圆点光晕/靶心 | `.aw-tl-dot` 加 `box-shadow:0 0 0 2px var(--background-secondary)`；`.aw-tl-item.lv-1 .aw-tl-dot` 追加 `0 0 0 3.5px currentColor` 外环；**`.aw-tl-dot.has-kids` 同样描 `0 0 0 3.5px currentColor` 外环＝「有子事件可折叠」标记（一级 has-kids 由 `.lv-1` 规则 (0,3,0) 胜出、同值不冲突）**；`.aw-tl-dot.has-kids:hover` `transform:translateX(-50%) scale(1.4)`（覆盖基础 transform，须写全） |
 | 徽章/胶囊语言 | `.aw-tl-time` `border-radius:999px`＋`border-color:var(--tl-lv-color, var(--h2-color, var(--interactive-accent)))`（与 `.aw-tl-dot` 的 color **同一回退链**＝描边恒等于本级圆点色；勿回落 `--background-modifier-border`——二级徽章会因此几乎无边框可见）；`.aw-tl-char`/`.aw-tl-rel` 胶囊；`.aw-tl-done` 胶囊＋`color-mix(in srgb, var(--color-green) 12%, transparent)` 底衬（旧内核忽略该 declaration 自动退化） |
-| done 条目语感 | `.aw-tl-item:has(.aw-tl-done) .aw-tl-name{color:var(--text-muted)}`（:has 不支持时整条规则被忽略、退化为仅徽章标示）；lv-1 事件名 `font-size:1.05em` |
+| done 条目语感 | done 行由 renderRow 挂 `is-tl-done-row` 类、`.aw-tl-item.is-tl-done-row .aw-tl-name{color:var(--text-muted)}`（**不用 `:has()`**——外部检查器判大范围选择器失效有性能隐患，一律改视图挂类）；lv-1 事件名 `font-size:1.05em` |
 | caret 移到徽章前（v0.4.4+） | renderRow 里 caret 块先于时间徽章创建（行内序＝圆点→▾/▸→徽章）；caret 吃原徽章的 `margin-left:-12px` 拉回、`.aw-tl-caret + .aw-tl-time{margin-left:0}` 免二次拉回——无 caret 行徽章维持原 -12px 紧贴圆点 |
 
 几何坑位：skip/spacer 内块坐标与 list 坐标换算恒为 **块坐标＝list 坐标−(padding-left 14px)**（主轴占 list x3–5＝块 x−11..−9）；改 `--tl-indent`/主轴位置时两处伪元素与标尺 background-position 须同步；`.aw-tl-time` 徽章左缘（圆点圆心右 2px）会盖过一级靶心外环右侧一小段——徽章边框同为级别色，读作圆点→徽章连续，属预期。
