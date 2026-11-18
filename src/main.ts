@@ -1,6 +1,6 @@
 import { App, Notice, Platform, Plugin, PluginSettingTab, TAbstractFile, TFile, TFolder, View, WorkspaceLeaf, WorkspaceSidedock, type Editor, type MarkdownFileInfo, type MarkdownView, type SettingDefinitionItem } from "obsidian";
-import { ActionItem, ActionMenuModal, AddCharacterModal, AwModal, AutoBookConfigInput, AutoBookConfigModal, AutoBookInput, AutoBookModal, BookSkillPhaseModal, ChapterListModal, ConfirmModal, ExportPromptsSelectModal, FixRefsReviewModal, FolderPickerModal, InspirationKitModal, MultiFieldModal, NewFilePickerModal, NewStoryInput, NewStoryModal, PanelLine, SkillEditModal, SkillPickerModal, SkillRangeModal, StoryMetaModal, StoryMetaInput, StoryPickerModal, TextAreaPrompt, TextPanelModal, TextInputModal, VaultFilePickerModal, VolumeBatchCreateModal } from "./modals";
-import type { AddCharacterResult, CharacterScopeOption, SkillEditResult, SkillLevel } from "./modals";
+import { ActionItem, ActionMenuModal, AddCharacterModal, AwModal, AutoBookConfigInput, AutoBookConfigModal, AutoBookInput, AutoBookModal, BookSkillPhaseModal, ChapterListModal, ConfirmModal, ExportPromptsSelectModal, FixRefsReviewModal, FolderPickerModal, InspirationKitModal, MultiFieldModal, NewFilePickerModal, NewStoryInput, NewStoryModal, PanelLine, SaveReplyModal, SkillEditModal, SkillPickerModal, SkillRangeModal, StoryMetaModal, StoryMetaInput, StoryPickerModal, TextAreaPrompt, TextPanelModal, TextInputModal, VaultFilePickerModal, VolumeBatchCreateModal, ensureParentFolders } from "./modals";
+import type { AddCharacterResult, CharacterScopeOption, SaveReplyResult, SkillEditResult, SkillLevel } from "./modals";
 import { parseBookSkill, type BookSkillSpec } from "./book_skill"; // v0.4.1+ 旧「案头资料/」建书技能文件解析（仅供一次性迁移；建书配置已并入《故事状态.md》auto_book 块）
 import { LlmChatView } from "./llm_chat_view";
 import { GenProgressView, formatElapsedMs, type WritingStreamSink } from "./gen_progress_view";
@@ -26,6 +26,7 @@ import { appendOutlineInstruction, applyTypoMarks, applyWordRangeVars, BOOK_OUTL
 import { requirementsFor, stagesFrom, type StageId, type StageRequirement } from "./pipeline";
 import { assemblePromptFiles, type AssembledPrompt, type PromptFileReader, type PromptSpec } from "./prompt_files";
 import { detectChatAutoRefs } from "./chat_refs";
+import { parseToolArgs, TOOL_RESULT_MAX_CHARS, CHAT_WRITING_TOOLS, CHAT_GENERATION_TOOLS } from "./chat_tools";
 import { cnToNum, extractPlannedChapterCount, maxDeclaredVolumeNum, mergeVolOutlineChapters, parseChapterSelection, parseRelationships, parseTimelines, parseVolumeDeclarations, sliceVolOutlineChapters, splitList, splitVolOutlineByChapter, stripComments, stripForeshadowMarks, timelineGenFormatOk, type TimelineEntry, type VolumeDeclaration, type VolumeInfo } from "./md_docs";
 import type { RelationshipEntry } from "./md_docs";
 import { CAST_ANALYZE_SYSTEM_PROMPT, CAST_JSON_RETRY_NOTE, aggregateCastAnalyses, buildCastChapterPrompt, buildCharacterWritePlan, buildRelationshipWritePlan, buildSceneWritePlan, castStableChars, parseCastChapterAnalysis, relPairKey } from "./cast_analyzer";
@@ -340,7 +341,7 @@ export default class ArticleWriterPlugin extends Plugin {
 		this.addCommand({ id: "relationship-panel", name: "打开人物关系面板（汇总书/卷/章三层关系，按类型·状态带图标展示，点击打开来源文档）", callback: () => void this.openRelationshipPanel() });
 		this.addCommand({ id: "timeline-panel", name: "打开时间线面板（汇总书/卷/章三层《时间线.md》事件流，按时间点数值升序自上而下展示，支持节点增删改与关联跳转）", callback: () => void this.openTimelinePanel() });
 
-		this.registerView(LlmChatView.VIEW_TYPE, (leaf) => new LlmChatView(leaf, () => this.settings.llm, () => this.getChatSystemPrompt(), () => this.getActiveStoryInfo(), (name) => this.setActiveLlmFromChat(name), () => this.chatDefaultSaveDir(), () => this.chatSessionDir(), (raw) => this.collectChatAutoRefBlocks(raw)));
+		this.registerView(LlmChatView.VIEW_TYPE, (leaf) => new LlmChatView(leaf, () => this.settings.llm, () => this.getChatSystemPrompt(), () => this.getActiveStoryInfo(), (name) => this.setActiveLlmFromChat(name), () => this.chatSessionDir(), (raw) => this.collectChatAutoRefBlocks(raw), (name, args) => this.chatExecTool(name, args)));
 		this.registerView(GenProgressView.VIEW_TYPE, (leaf) => new GenProgressView(leaf)); // v0.1.4+：摘要延迟生成的工作过程面板（notifyGenProgress 驱动）
 		this.registerView(StatusView.VIEW_TYPE, (leaf) => new StatusView(leaf, () => this.getStatusSnapshot(), (name) => this.statusSwitchStory(name), (story, key) => this.statusActivateChapter(story, key), (a) => this.handleStatusAction(a), () => this.getStatusTyping(), () => this.endTypeSession())); // 第 6＝写字台「码字状态」Tab 数据源；第 7＝写字台打开/重开＝结束上次「本次写作」（下次敲字重新锚定）
 		this.registerView(RelationshipView.VIEW_TYPE, (leaf) => new RelationshipView(leaf, () => this.getRelationshipSnapshot(), () => this.openAddCharacterDialog(), (name) => this.renameCharacterFlow(name))); // v0.1.9+：人物关系面板（展示只读，切书在写字台/命令里做；v0.2.0+ 头部「添加人物」注入写动作）
@@ -937,6 +938,11 @@ await this.promptCreateVolumesIfEmpty(story); // 零卷 → 先弹建卷框（�
 	// ---------- 交互辅助 ----------
 
 	private prompt(title: string, placeholder: string, hint?: string, initial?: string, multiline?: boolean): Promise<string | null> { // v0.1.6+：可选 hint 渲染在输入框上方（详细说明），placeholder 只留极短占位；initial 预填初始值（光标置末尾）；v0.3.7+ multiline＝5 行 textarea（占满行宽，回车换行、Ctrl/Cmd+回车提交）
+		// v0.4.6+ 对话工具调用：写作命令经 chatExecTool 代跑时，本次补充要求由工具参数预答（一次性消耗，其余弹窗照常交互）
+		if (this.chatToolCtx && this.chatToolCtx.instruction != null && !this.chatToolCtx.instructionUsed) {
+			this.chatToolCtx.instructionUsed = true;
+			return Promise.resolve(this.chatToolCtx.instruction);
+		}
 		return new Promise((resolve) => {
 			new TextInputModal(
 				this.app,
@@ -3831,6 +3837,7 @@ async cmdRenameChapterFile(): Promise<void> {
 
 	/** 章节号输入：空=当前章默认；Esc=取消整个命令（v0.0.15：返回复合键） */
 	private async targetChapterKey(story: string, verb: string): Promise<string | null> {
+		if (this.chatToolCtx?.chapterKey) return this.chatToolCtx.chapterKey; // v0.4.6+ 对话工具代跑：章由工具参数直给，不再弹窗
 		const state = await this.manager.loadState(story);
 		const cur = state?.current_chapter ?? null; // 复合键 "volId:N" / "N"
 		const volNames = await this.volNameMap(story);
@@ -4941,18 +4948,10 @@ async cmdRenameChapterFile(): Promise<void> {
 			for (const spec of specs) {
 				if (spec.kind !== "chapter") continue;
 				for (const num of spec.nums) {
-					const cands = entries.filter(([k]) => parseChKey(k).num === num);
-					if (!cands.length) continue;
-					cands.sort(([ka], [kb]) => {
-						const va = parseChKey(ka).vol === curVol ? 0 : 1;
-						const vb = parseChKey(kb).vol === curVol ? 0 : 1;
-						if (va !== vb) return va - vb;
-						const oa = volMap[parseChKey(ka).vol ?? ""]?.order ?? 0;
-						const ob = volMap[parseChKey(kb).vol ?? ""]?.order ?? 0;
-						return oa - ob;
-					});
-					const [key, meta] = cands[0];
-					const t = (meta.title ?? "").trim();
+					const key = this.chatChapterCandidates(entries, num, volMap, curVol)[0]; // 跨卷同号：当前卷优先（与 read_chapter 工具同口径）
+					if (!key) continue;
+					const meta = state.chapters?.[key];
+					const t = (meta?.title ?? "").trim();
 					await chapterBlock(key, `第${String(num)}章${t ? `《${t}》` : ""}`, t ? `第${String(num)}章《${t}》` : `第${String(num)}章`);
 				}
 			}
@@ -5019,6 +5018,326 @@ async cmdRenameChapterFile(): Promise<void> {
 		if (state.word_range) lines.push(`章字数区间：${String(state.word_range[0])}–${String(state.word_range[1])}`);
 		if (state.one_line?.trim()) lines.push(`一句话设定：${state.one_line.trim()}`);
 		return lines.join("\n");
+	}
+
+	// ---------- v0.4.6+ 对话工具调用（function calling 执行侧；工具定义见 src/chat_tools.ts） ----------
+
+	/** 写作命令代跑上下文：chatExecTool 设定→命令内部经 prompt()/targetChapterKey() 接缝消费→命令结束清空；instruction=null＝不预答任何弹窗（如新建章的标题输入） */
+	private chatToolCtx: { chapterKey: string; instruction: string | null; instructionUsed: boolean } | null = null;
+
+	/** 工具结果统一截断（防单条 tool 消息炸窗口） */
+	private clipToolResult(s: string): string {
+		return s.length > TOOL_RESULT_MAX_CHARS ? `${s.slice(0, TOOL_RESULT_MAX_CHARS)}\n…（结果过长已截断）` : s;
+	}
+
+	/** 按章号取候选章节复合键（跨卷同号→当前卷优先、再按卷 order；自动加载与 read_chapter/写作工具共用口径） */
+	private chatChapterCandidates(
+		entries: Array<[string, { title?: string; words?: number; volume?: string }]>,
+		num: number,
+		volMap: Record<string, VolumeInfo>,
+		curVol: string | null
+	): string[] {
+		return entries
+			.filter(([k]) => parseChKey(k).num === num)
+			.sort(([ka], [kb]) => {
+				const va = parseChKey(ka).vol === curVol ? 0 : 1;
+				const vb = parseChKey(kb).vol === curVol ? 0 : 1;
+				if (va !== vb) return va - vb;
+				return (volMap[parseChKey(ka).vol ?? ""]?.order ?? 0) - (volMap[parseChKey(kb).vol ?? ""]?.order ?? 0);
+			})
+			.map(([k]) => k);
+	}
+
+	/** 对话工具执行入口（LlmChatView 经构造第 8 参转交）：任何异常都转成给模型的文本、不抛断工具循环 */
+	async chatExecTool(name: string, argsJson: string): Promise<string> {
+		const args = parseToolArgs(argsJson);
+		const story = this.settings.lastStory?.trim();
+		try {
+			if (name === "save_content_to_file") return await this.chatToolSaveToFile(args); // 不依赖当前书（回落 work_dir）；SaveReplyModal 人证落盘
+			if (CHAT_GENERATION_TOOLS.includes(name)) {
+				if (!story) return "当前没有选定小说，无法执行生成命令。";
+				return await this.runChatGenerationTool(name, story, args);
+			}
+			if (CHAT_WRITING_TOOLS.includes(name)) {
+				if (!story) return "当前没有选定小说，无法执行写作命令。";
+				return await this.runChatWritingTool(name, story, args);
+			}
+			if (!story) return "当前没有选定小说，该工具不可用。";
+			switch (name) {
+				case "read_chapter":
+					return await this.chatToolReadChapter(story, args);
+				case "read_doc":
+					return await this.chatToolReadDoc(story, args);
+				case "read_chapter_outline":
+					return await this.chatToolReadChapterOutline(story, args);
+				case "read_volume_outline":
+					return await this.chatToolReadVolumeOutline(story, args);
+				case "set_current_chapter":
+					return await this.chatToolSetCurrentChapter(story, args);
+				case "list_chapters":
+					return await this.chatToolListChapters(story);
+				case "search_vault":
+					return await this.chatToolSearch(story, args);
+				default:
+					return `未知工具：${name}`;
+			}
+		} catch (e) {
+			return `工具 ${name} 执行失败：${e instanceof Error ? e.message : String(e)}`;
+		}
+	}
+
+	private async loadToolState(story: string): Promise<StoryState | null> {
+		return await this.manager.loadState(story);
+	}
+
+	private async chatToolReadChapter(story: string, args: Record<string, unknown>): Promise<string> {
+		const state = await this.loadToolState(story);
+		if (!state) return "状态文档缺失，无法定位章节。";
+		const num = typeof args.chapter_num === "number" ? Math.trunc(args.chapter_num) : NaN;
+		if (!Number.isFinite(num) || num <= 0) return "参数 chapter_num 无效（应为正整数章节号）。";
+		let volMap: Record<string, VolumeInfo> = {};
+		try { volMap = await this.manager.loadVolumes(story); } catch { /* 无卷数据退化当前卷优先 */ }
+		const curVol = state.current_chapter ? parseChKey(state.current_chapter).vol : null;
+		const key = this.chatChapterCandidates(Object.entries(state.chapters ?? {}), num, volMap, curVol)[0];
+		if (!key) return `第${String(num)}章不存在。`;
+		const f = await this.manager.chapterBodyFile(story, key);
+		if (!f) return `第${String(num)}章正文文件未定位（可能尚未写作）。`;
+		const meta = state.chapters?.[key];
+		return this.clipToolResult(`【${this.keyLabel(key, await this.volNameMap(story).catch(() => ({})), meta?.title)} 正文】\n${await this.app.vault.cachedRead(f)}`);
+	}
+
+	private async chatToolReadDoc(story: string, args: Record<string, unknown>): Promise<string> {
+		const name = typeof args.doc_name === "string" ? args.doc_name.trim() : "";
+		const alias: Record<string, string> = { 世界观: "worldview", 大纲: "book_outline", 全书大纲: "book_outline", 人物关系: "book_relations", 时间线: "timeline", 策划指南: "planning_guide", 故事状态: "story_state" };
+		const key = alias[name];
+		if (!key) return "参数 doc_name 无效（可选：世界观/大纲/人物关系/时间线/策划指南/故事状态）。";
+		const state = await this.loadToolState(story);
+		if (!state) return "状态文档缺失。";
+		if (key === "story_state") {
+			let volMap: Record<string, VolumeInfo> = {};
+			try { volMap = await this.manager.loadVolumes(story); } catch { /* 平铺书无卷 */ }
+			return this.storyStateSnapshot(state, volMap);
+		}
+		const pair = (await this.chatRefDocPairs(story, state)).find((p) => p.key === key);
+		if (!pair) return "该文档不存在。";
+		const assembled = await assemblePromptFiles(this.promptReader(), [pair.spec]);
+		const text = assembled.text.trim();
+		return text ? this.clipToolResult(text) : `《${name}》文档不存在或为空。`;
+	}
+
+	private async chatToolListChapters(story: string): Promise<string> {
+		const state = await this.loadToolState(story);
+		if (!state) return "状态文档缺失。";
+		let volMap: Record<string, VolumeInfo> = {};
+		try { volMap = await this.manager.loadVolumes(story); } catch { /* 平铺书无卷 */ }
+		const volNames = await this.volNameMap(story).catch(() => ({}));
+		const rows = Object.entries(state.chapters ?? {})
+			.sort(([a], [b]) => (volMap[parseChKey(a).vol ?? ""]?.order ?? 0) - (volMap[parseChKey(b).vol ?? ""]?.order ?? 0) || parseChKey(a).num - parseChKey(b).num)
+			.map(([k, m]) => `第${String(parseChKey(k).num)}章《${m.title || "无题"}》${parseChKey(k).vol ? `（${volMap[parseChKey(k).vol ?? ""]?.name ?? parseChKey(k).vol}）` : ""}${m.words ? ` ${String(m.words)}字` : ""}${k === state.current_chapter ? " ←当前章" : ""}`);
+		return rows.length ? `共 ${String(rows.length)} 章：\n${rows.join("\n")}` : "尚无任何章节。";
+	}
+
+	private async chatToolSearch(story: string, args: Record<string, unknown>): Promise<string> {
+		const kw = typeof args.keyword === "string" ? args.keyword.trim() : "";
+		if (!kw) return "参数 keyword 无效。";
+		const limit = Math.min(50, Math.max(1, typeof args.limit === "number" ? Math.trunc(args.limit) : 20));
+		const base = this.manager.storyPath(story);
+		const hits: string[] = [];
+		for (const f of this.app.vault.getMarkdownFiles()) {
+			if (!f.path.startsWith(`${base}/`) || f.path.includes("/_resources/")) continue;
+			const lines = (await this.app.vault.cachedRead(f)).split(/\r?\n/);
+			for (let i = 0; i < lines.length; i++) {
+				if (!lines[i].includes(kw)) continue;
+				hits.push(`${f.path.replace(`${base}/`, "")}:${String(i + 1)}  ${lines[i].trim().slice(0, 160)}`);
+				if (hits.length >= limit) break;
+			}
+			if (hits.length >= limit) break;
+		}
+		return hits.length ? hits.join("\n") : `未在当前小说内找到「${kw}」。`;
+	}
+
+	/** 读取最近生成面板的累积全文（独立方法避开 TS 对字段置 null 后的窄化——命令内部会重新赋值该字段） */
+	private peekGenPanelText(): string {
+		return this.lastGenPanel?.fullText ?? "";
+	}
+
+	/** 写作命令工具代跑：预置 chatToolCtx（章节直给＋要求预答）→ 当前章驱动型命令先切当前章（续写/重写/编写/润色读 current_chapter）→
+	 *  跑原命令（生成过程面板＋保存确认全流程不变）→ 面板产出回灌给模型。review/deai 走 targetChapterKey 章直给、不动当前章指针 */
+	private async runChatWritingTool(name: string, story: string, args: Record<string, unknown>): Promise<string> {
+		const num = typeof args.chapter_num === "number" ? Math.trunc(args.chapter_num) : NaN;
+		if (!Number.isFinite(num) || num <= 0) return "参数 chapter_num 无效（应为正整数章节号）。";
+		const state = await this.loadToolState(story);
+		if (!state) return "状态文档缺失，无法定位章节。";
+		let volMap: Record<string, VolumeInfo> = {};
+		try { volMap = await this.manager.loadVolumes(story); } catch { /* 平铺书无卷 */ }
+		const curVol = state.current_chapter ? parseChKey(state.current_chapter).vol : null;
+		const key = this.chatChapterCandidates(Object.entries(state.chapters ?? {}), num, volMap, curVol)[0];
+		if (!key) return `第${String(num)}章不存在（不存在该章或尚未创建）。`;
+		const rawInstr = typeof args.instruction === "string" ? args.instruction.trim() : "";
+		const style = typeof args.style === "string" ? args.style.trim() : "";
+		const isNewChapter = !(state.chapters ?? {})[key];
+		// 全新章节走 /write 时第一个弹窗是「章节标题」——不预答（避免把要求当标题），让用户在弹窗里定标题
+		const instruction = name === "write_chapter" && isNewChapter ? null : rawInstr || (name === "polish_chapter" ? style : "");
+		const targetSeamOnly = name === "review_chapter" || name === "deai_chapter";
+		if (!targetSeamOnly) await this.manager.switchChapter(story, key);
+		this.chatToolCtx = { chapterKey: key, instruction, instructionUsed: false };
+		this.lastGenPanel = null;
+		try {
+			if (name === "review_chapter") await this.cmdReviewChapter();
+			else if (name === "continue_writing") await this.cmdContinueWriting();
+			else if (name === "rewrite_chapter") await this.cmdRewriteChapter();
+			else if (name === "write_chapter") await this.cmdWrite();
+			else if (name === "polish_chapter") await this.cmdPolishText();
+			else await this.cmdDeaiClean();
+		} finally {
+			this.chatToolCtx = null;
+		}
+		const out = this.peekGenPanelText().trim();
+		const volNames = await this.volNameMap(story).catch(() => ({}));
+		const label = this.keyLabel(key, volNames, state.chapters?.[key]?.title);
+		const verb: Record<string, string> = { review_chapter: "审阅报告", continue_writing: "续写正文", rewrite_chapter: "重写正文", write_chapter: "章节正文", polish_chapter: "润色结果", deai_chapter: "去AI味结果" };
+		const what = verb[name] ?? name;
+		if (!out) return `${what}（${label}）已结束但没有产出（可能取消、被停止或前置校验未过，详见提示/生成面板）。`;
+		return `已执行「${what}」· ${label}。完整结果已在「生成过程」面板展示，是否保存由用户决定。产出内容如下：\n${this.clipToolResult(out)}`;
+	}
+
+	/** 卷名→卷 id（工具参数用；未匹配返回 undefined＝按命令默认交互选择） */
+	private async resolveToolVolId(story: string, nameArg: unknown): Promise<string | undefined> {
+		const name = typeof nameArg === "string" ? nameArg.trim() : "";
+		if (!name) return undefined;
+		try {
+			const vols = Object.values(await this.manager.loadVolumes(story));
+			const hit = vols.find((v) => v.name === name) ?? vols.find((v) => v.name.includes(name));
+			return hit?.id;
+		} catch {
+			return undefined;
+		}
+	}
+
+	/** 全书各章正文字数快照（连续编写工具前后对比用：哪些章本轮被写上了正文） */
+	private async chapterFilledMap(story: string): Promise<Map<string, number>> {
+		const map = new Map<string, number>();
+		for (const ch of await this.manager.listChapters(story)) {
+			map.set(ch.key, countPureWords(await this.manager.readChapterContent(story, ch.key)));
+		}
+		return map;
+	}
+
+	/** 书级生成命令代跑：弹窗交互（生成模式/目标章数/覆盖确认/中断续跑三选）默认留给用户；
+	 *  仅 generate_worldview 的一句话设定可由工具参数预答（该命令唯一 prompt）。产出读生成面板回灌，取消/无产出如实告知。
+	 *  write_chapters_consecutive 特例：免确认自动保存、多章连写——不读面板文本，改以「正文前后差集」回灌本轮新写了哪些章 */
+	private async runChatGenerationTool(name: string, story: string, args: Record<string, unknown>): Promise<string> {
+		this.lastGenPanel = null;
+		if (name === "generate_worldview") {
+			const premise = typeof args.premise === "string" ? args.premise.trim() : "";
+			if (premise) this.chatToolCtx = { chapterKey: "", instruction: premise, instructionUsed: false };
+		}
+		let consecutiveDiff = ""; // write_chapters_consecutive 专用回灌文本
+		try {
+			if (name === "generate_worldview") await this.cmdGenerateWorldview();
+			else if (name === "generate_planning_guide") await this.cmdPlanningGuideWorldview();
+			else if (name === "generate_timeline") await this.cmdGenerateTimeline();
+			else if (name === "generate_book_outline") await this.cmdGenerateBookOutline();
+			else if (name === "generate_vol_outline") await this.cmdGenerateVolOutline();
+			else if (name === "outline_to_chapters") await this.cmdVolumeOutlineToChapters(await this.resolveToolVolId(story, args.volume_name));
+			else if (name === "write_chapters_consecutive") {
+				const before = await this.chapterFilledMap(story);
+				await this.cmdWriteConsecutive(await this.resolveToolVolId(story, args.volume_name));
+				const volNames = await this.volNameMap(story).catch(() => ({}));
+				const state = await this.loadToolState(story);
+				const newly: string[] = [];
+				const stillEmpty: string[] = [];
+				for (const [k, w] of await this.chapterFilledMap(story)) {
+					const label = this.keyLabel(k, volNames, state?.chapters?.[k]?.title);
+					if ((before.get(k) ?? 0) === 0 && w > 0) newly.push(`${label}（${String(w)}字）`);
+					else if (w === 0) stillEmpty.push(label);
+				}
+				consecutiveDiff = newly.length
+					? `「连续编写」已执行完毕（正文**自动保存**、无需再确认）：本轮新写 ${String(newly.length)} 章——${newly.join("、")}${stillEmpty.length ? `；仍无正文的章：${stillEmpty.join("、")}（可能缺大纲或中途停止）` : "；全书已有正文的章均已覆盖"}。`
+					: `「连续编写」已执行但没有新写入正文（可能全部章节已有正文被跳过、缺章节大纲、或用户在生成面板点了停止）。`;
+			}
+		} finally {
+			this.chatToolCtx = null;
+		}
+		if (consecutiveDiff) return consecutiveDiff;
+		const out = this.peekGenPanelText().trim();
+		const verb: Record<string, string> = {
+			generate_worldview: "生成世界观",
+			generate_planning_guide: "生成策划指南",
+			generate_timeline: "生成时间线",
+			generate_book_outline: "生成书籍大纲",
+			generate_vol_outline: "生成卷大纲",
+			outline_to_chapters: "从大纲生成章节",
+			write_chapters_consecutive: "连续编写",
+		};
+		const what = verb[name] ?? name;
+		if (!out) return `${what}：已结束但没有流式产出（可能用户在弹窗中取消、被停止，或命令直接写盘完成——请查看《案头资料》文档与通知确认结果）。`;
+		return `已执行「${what}」（当前小说：${story}）。结果已在「生成过程」面板展示/写入流程已走完，是否保存由用户决定。产出内容如下：\n${this.clipToolResult(out)}`;
+	}
+
+	private async chatToolReadChapterOutline(story: string, args: Record<string, unknown>): Promise<string> {
+		const state = await this.loadToolState(story);
+		if (!state) return "状态文档缺失，无法定位章节。";
+		const num = typeof args.chapter_num === "number" ? Math.trunc(args.chapter_num) : NaN;
+		if (!Number.isFinite(num) || num <= 0) return "参数 chapter_num 无效（应为正整数章节号）。";
+		let volMap: Record<string, VolumeInfo> = {};
+		try { volMap = await this.manager.loadVolumes(story); } catch { /* 平铺书无卷 */ }
+		const key = this.chatChapterCandidates(Object.entries(state.chapters ?? {}), num, volMap, state.current_chapter ? parseChKey(state.current_chapter).vol : null)[0];
+		if (!key) return `第${String(num)}章不存在。`;
+		const txt = (await this.manager.readChapterOutlineForPrompt(story, key)).trim();
+		return txt ? this.clipToolResult(`【第${String(num)}章 章节大纲】\n${txt}`) : `第${String(num)}章的《章节大纲》不存在或为空。`;
+	}
+
+	private async chatToolReadVolumeOutline(story: string, args: Record<string, unknown> = {}): Promise<string> {
+		let volMap: Record<string, VolumeInfo> = {};
+		try { volMap = await this.manager.loadVolumes(story); } catch { /* 无卷数据 */ }
+		const vols = Object.values(volMap);
+		if (!vols.length) return "本书为平铺结构（无卷），没有卷大纲。";
+		const name = typeof args.volume_name === "string" ? args.volume_name.trim() : "";
+		let vol: VolumeInfo | undefined;
+		if (name) vol = vols.find((v) => v.name === name) ?? vols.find((v) => v.name.includes(name));
+		else {
+			const state = await this.loadToolState(story);
+			const curId = state?.current_volume ?? (state?.current_chapter ? parseChKey(state.current_chapter).vol : null);
+			vol = curId ? volMap[curId] : undefined;
+			if (!vol) return `未指定卷名。现有卷：${vols.sort((a, b) => a.order - b.order).map((v) => v.name).join("、")}`;
+		}
+		if (!vol) return `找不到卷「${name}」。现有卷：${vols.map((v) => v.name).join("、")}`;
+		const body = (await this.manager.readDoc(this.manager.volumeDocPath(story, vol, "卷大纲"))).trim();
+		return body ? this.clipToolResult(`【卷大纲 · ${vol.name}】\n${body}`) : `《${vol.name}》的卷大纲不存在或为空。`;
+	}
+
+	private async chatToolSetCurrentChapter(story: string, args: Record<string, unknown>): Promise<string> {
+		const state = await this.loadToolState(story);
+		if (!state) return "状态文档缺失。";
+		const num = typeof args.chapter_num === "number" ? Math.trunc(args.chapter_num) : NaN;
+		if (!Number.isFinite(num) || num <= 0) return "参数 chapter_num 无效（应为正整数章节号）。";
+		let volMap: Record<string, VolumeInfo> = {};
+		try { volMap = await this.manager.loadVolumes(story); } catch { /* 平铺书无卷 */ }
+		const key = this.chatChapterCandidates(Object.entries(state.chapters ?? {}), num, volMap, state.current_chapter ? parseChKey(state.current_chapter).vol : null)[0];
+		if (!key) return `第${String(num)}章不存在。`;
+		await this.manager.switchChapter(story, key);
+		return `已把当前章设为 ${this.keyLabel(key, await this.volNameMap(story).catch(() => ({})), state.chapters?.[key]?.title)}。`;
+	}
+
+	/** save_content_to_file：内容交 SaveReplyModal（路径可编辑/覆盖需勾选＝人证闸门），确认后逐级建目录写盘；取消＝不落盘 */
+	private async chatToolSaveToFile(args: Record<string, unknown>): Promise<string> {
+		const content = typeof args.content === "string" ? args.content : "";
+		if (!content.trim()) return "参数 content 为空（要保存的完整 Markdown 文本）。";
+		const suggested = typeof args.suggested_path === "string" ? args.suggested_path.trim().replace(/^\/+/, "") : "";
+		const base = await this.chatDefaultSaveDir();
+		const prefix = suggested ? (suggested.includes("/") ? suggested : `${base}/${suggested}`) : `${base}/`;
+		const res = await new Promise<SaveReplyResult | null>((resolve) => {
+			new SaveReplyModal(this.app, prefix, (r) => resolve(r), () => resolve(null)).open();
+		});
+		if (!res) return "用户取消了保存框，未落盘。";
+		const existing = this.app.vault.getAbstractFileByPath(res.path);
+		if (existing instanceof TFile) await this.app.vault.modify(existing, content);
+		else {
+			await ensureParentFolders(this.app, res.path);
+			await this.app.vault.create(res.path, content);
+		}
+		return `已保存到 ${res.path}（用户在确认框中确定）。`;
 	}
 
 	private async getChatSystemPrompt(): Promise<{ text: string; hasStory: boolean }> {

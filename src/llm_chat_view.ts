@@ -1,8 +1,9 @@
 import { ItemView, Notice, TFile, TFolder, WorkspaceLeaf } from "obsidian";
 import { filterEnabledLlmConfigs, type LlmConfigDoc, type PluginConfig, selectEnabledLlmName } from "./plugin_config";
 import { chatStream, describeLlmError, normalizeBaseURL } from "./llm_client";
-import type { Message } from "./llm_client";
-import { SaveReplyModal } from "./modals";
+import type { ChatToolCall, Message } from "./llm_client";
+import { CHAT_TOOLS_PAYLOAD, MAX_TOOL_ROUNDS } from "./chat_tools";
+import { ensureParentFolders } from "./modals";
 import {
 	type SessionTurn,
 	buildCompressUserPrompt,
@@ -67,12 +68,12 @@ export class LlmChatView extends ItemView {
 	private getActiveStory?: () => Promise<{ story: string; chapterNum: number; chapterTitle: string } | null>;
 	/** v0.2.0+：切换模型时写回 data.json 的 chat_model（由 main.ts 注入）——对话框此后使用新模型，随 data.json 持久化 */
 	private setActiveModel?: (name: string) => void | Promise<void>;
-	/** 「保存到文件」弹窗的默认路径前缀（由 main.ts 注入）：当前书目录 > work_dir > vault 根 */
-	private getDefaultSaveDir?: () => Promise<string>;
 	/** v0.4.6+ 会话目录（由 main.ts 注入）：当前书《案头资料/AI会话》；无当前小说返回 ""（纯问答不落盘） */
 	private getChatSessionDir?: () => Promise<string>;
 	/** v0.4.6+ 自然提及自动加载（由 main.ts 注入）：从原始输入识别章节/卷/内置文档提及并读盘成「=== 标签 ===」块串；无命中/无书返回空 */
 	private getAutoRefBlocks?: (raw: string) => Promise<{ text: string; labels: string[] }>;
+	/** v0.4.6+ 工具调用执行器（由 main.ts 注入 chatExecTool）：模型返回 tool_calls 时面板转交执行并把结果续轮回灌（工具定义见 src/chat_tools.ts） */
+	private execTool?: (name: string, argsJson: string) => Promise<string>;
 
 	constructor(
 		leaf: WorkspaceLeaf,
@@ -80,18 +81,18 @@ export class LlmChatView extends ItemView {
 		getSystemPrompt?: () => Promise<{ text: string; hasStory: boolean }>,
 		getActiveStory?: () => Promise<{ story: string; chapterNum: number; chapterTitle: string } | null>,
 		setActiveModel?: (name: string) => void | Promise<void>,
-		getDefaultSaveDir?: () => Promise<string>,
 		getChatSessionDir?: () => Promise<string>,
-		getAutoRefBlocks?: (raw: string) => Promise<{ text: string; labels: string[] }>
+		getAutoRefBlocks?: (raw: string) => Promise<{ text: string; labels: string[] }>,
+		execTool?: (name: string, argsJson: string) => Promise<string>
 	) {
 		super(leaf);
 		this.getConf = getConf;
 		this.getSystemPrompt = getSystemPrompt;
 		this.getActiveStory = getActiveStory;
 		this.setActiveModel = setActiveModel;
-		this.getDefaultSaveDir = getDefaultSaveDir;
 		this.getChatSessionDir = getChatSessionDir;
 		this.getAutoRefBlocks = getAutoRefBlocks;
+		this.execTool = execTool;
 	}
 
 	getViewType(): string {
@@ -151,7 +152,7 @@ export class LlmChatView extends ItemView {
 		const inputBox = root.createDiv({ cls: "aw-chat-input" });
 		this.inputEl = inputBox.createEl("textarea");
 		this.inputEl.rows = 3;
-		this.inputEl.placeholder = "Enter 发送 · Shift+Enter 换行；@引用vault文件（弹窗选择或手输路径），范围可写 :12 / :3-10 或直接紧跟如 @[[x.md]]3-5——发送时替换为对应行的实际内容；直接提及「第一章/第2卷/《标题》/故事状态/人物关系/时间线/世界观/大纲/策划指南」也会自动加载对应内容；每轮自动携带助手身份+当前小说上下文；对话自动保存到当前书《案头资料/AI会话/》，重开面板自动接回"; // 空时显示的提示在框内，输入即消失
+		this.inputEl.placeholder = "Enter 发送 · Shift+Enter 换行；@引用vault文件（弹窗选择或手输路径），范围可写 :12 / :3-10 或直接紧跟如 @[[x.md]]3-5——发送时替换为对应行的实际内容；直接提及「第一章/第2卷/《标题》/故事状态/人物关系/时间线/世界观/大纲/策划指南」也会自动加载对应内容；模型还可按需调用工具（查章/查文档/搜索/审阅/续写/重写）；每轮自动携带助手身份+当前小说上下文；对话自动保存到当前书《案头资料/AI会话/》，重开面板自动接回"; // 空时显示的提示在框内，输入即消失
 		// @ 引用候选弹窗：锚定在输入框上方，键入 @ 触发、随后续字符过滤
 		this.refPopupEl = inputBox.createDiv({ cls: "aw-ref-popup" });
 		this.inputEl.addEventListener("input", () => this.updateRefPopup());
@@ -472,6 +473,9 @@ export class LlmChatView extends ItemView {
 		// v0.4.6+ 上下文压缩：已压出的摘要轮折入系统提示词尾部（对应早期轮次不再逐轮重发，见 buildMessages）——放在自动压缩之后，本轮新压出的摘要即刻生效
 		const summaryBlock = this.history.filter((t) => t.role === "summary").map((t) => t.content).join("\n\n");
 		if (summaryBlock) sysContent = `${sysContent}\n\n【此前对话摘要（更早轮次已压缩，不再逐轮发送）】\n${summaryBlock}`;
+		// v0.4.6+ 工具硬规则：挂了执行器就显式禁止「宣告行动意图然后停下」——部分模型（尤其经不支持工具解析的服务端）
+		// 只会输出「我先看一下…」的文本意图、不发 tool_calls；此规则压住该行为，配合循环内的自动催办兜底
+		if (this.execTool) sysContent = `${sysContent}\n\n【工具调用规则】需要查看稿件内容或执行写作/生成命令时，必须在本次回复中直接发起工具调用（tool_calls）完成，绝不能只输出「我先看看…」「接下来我将…」之类的意图文字就结束；若确实无法调用工具，请如实告知用户当前模型/服务不支持工具调用，并基于已有上下文作答。`.trim();
 		console.debug("[articlewriter] 对话请求系统提示词", { length: sysContent.length, refs: refs.count, autoRefs: autoLabels.length }); // 排查提示词与引用是否注入
 		this.history.push({ role: "user", content: pending }); // 历史/请求用展开后文本（模型看到实际内容；含本轮自动加载块）
 		this.addMessage("user", autoLabels.length ? `${text}\n〔自动加载：${autoLabels.join("、")}〕` : text); // 气泡回显原始输入（保留 @ 引用标记不显示替换结果；自动加载只列清单）
@@ -484,12 +488,63 @@ export class LlmChatView extends ItemView {
 		let full = "";
 		let failed = false; // 出错/中断分支置 true：保留其状态文案；正常完成则清空回空闲态
 		const messages: Message[] = sysContent ? [{ role: "system", content: sysContent }, ...this.buildMessages()] : this.buildMessages();
+		// v0.4.6+ 工具调用循环：带 CHAT_TOOLS 请求→模型返回 tool_calls 则本地执行（main.ts chatExecTool：读章/读文档/搜索/审阅/续写/重写）→
+		// role:"tool" 结果续轮回灌直到给出最终回答。中间工具轮不落会话历史（只存档最终答案）；端点不认 tools 参数时自动去参重试一次。
+		let answerAll = ""; // 跨轮最终文本累积（工具轮模型也可能先吐一段话）
+		let toolsDropped = !this.execTool; // 未注入执行器＝本轮从一开始就不带 tools（普通对话老行为）
+		let toolRounds = 0;
+		let nudged = false; // 模型只输出「行动宣告」没发 tool_calls 时自动催办一次（治「我先看一下…就停下」）
+		const renderBubble = (): void => {
+			el.textContent = answerAll ? (full.trim() ? `${answerAll}\n${full}` : answerAll) : full;
+			this.bodyEl.scrollTop = this.bodyEl.scrollHeight;
+		};
 		try {
-			full = await chatStream(cfg, messages, (d) => {
-				full += d;
-				el.textContent = full;
-				this.bodyEl.scrollTop = this.bodyEl.scrollHeight;
-			}, undefined, this.ctrl.signal);
+			for (;;) {
+				let toolCalls: ChatToolCall[] = [];
+				full = "";
+				try {
+					full = await chatStream(cfg, messages, (d) => {
+						full += d;
+						renderBubble();
+					}, toolsDropped ? undefined : { tools: CHAT_TOOLS_PAYLOAD }, this.ctrl.signal, undefined, undefined, undefined, (cs) => {
+						toolCalls = cs;
+					});
+				} catch (e) {
+					if (!toolsDropped && !this.ctrl.signal.aborted && /\btools?\b|not support|unsupported|invalid|400/i.test(describeLlmError(e))) {
+						toolsDropped = true; // 端点（常见为老版本本地服务/不支持 function calling 的模型）拒绝 tools：去掉参数原样重试一次
+						this.setStatus("当前模型/服务不支持工具调用，已按普通对话继续…", true);
+						continue;
+					}
+					throw e;
+				}
+				if (!toolCalls.length) {
+					// 行动宣告未执行兜底：模型说了「我先看一下…」就停（没发 tool_calls）→ 把宣告存进 messages 后续轮催办一次
+					if (!nudged && this.execTool && !toolsDropped && full.trim() && full.length <= 300 && /(我先|让我|我来|先看|查看|确认|检查|接下来|我将|即将|马上|这就|稍等)/.test(full)) {
+						nudged = true;
+						messages.push({ role: "assistant", content: full });
+						messages.push({ role: "user", content: "请继续：直接调用工具完成你刚才说要做的查看/执行（不要只描述计划）。如当前模型/服务确实发不出工具调用，请说明并基于已有信息直接作答。" });
+						this.setStatus("模型宣告了操作但未发起工具调用，已催办续轮…", true);
+						continue;
+					}
+					break;
+				}
+				toolRounds++;
+				if (toolRounds > MAX_TOOL_ROUNDS) {
+					this.setStatus(`工具调用已达 ${String(MAX_TOOL_ROUNDS)} 轮上限，按当前结果回答`, true);
+					break;
+				}
+				answerAll = full.trim() ? (answerAll ? `${answerAll}\n${full}` : full) : answerAll;
+				const calls = toolCalls.map((c, i) => ({ id: c.id || `aw_call_${String(toolRounds)}_${String(i)}`, type: "function" as const, function: { name: c.name, arguments: c.arguments } }));
+				messages.push({ role: "assistant", content: full || null, tool_calls: calls });
+				for (const c of calls) {
+					this.setStatus(`🔧 正在执行工具 ${c.function.name}（${c.function.arguments.replace(/\s+/g, " ").slice(0, 80)}）…`);
+					const res = await (this.execTool?.(c.function.name, c.function.arguments) ?? Promise.resolve("工具执行器未配置"));
+					messages.push({ role: "tool", tool_call_id: c.id, content: res });
+				}
+				full = "";
+				renderBubble(); // 等最终回答的新一轮流式
+			}
+			full = [answerAll, full].filter((s) => s.trim()).join("\n");
 		} catch (e) {
 			const aborted = !!this.ctrl && this.ctrl.signal.aborted;
 			const msg = describeLlmError(e); // 带底层 cause/code/HTTP 状态，便于区分连接被拒、超时与 4xx
@@ -506,7 +561,6 @@ export class LlmChatView extends ItemView {
 			if (!failed) this.setStatus(""); // 正常完成回到空闲态（输入框占位提示重新可见）
 			if (full.trim() && el.parentElement !== null) {
 				this.history.push({ role: "assistant", content: full });
-				this.addSaveAction(el.parentElement, full); // 气泡下方「保存到文件」按钮（中断留部分结果的轮次同样显示；出错移除气泡的轮次不显示）
 			}
 			await this.saveSession(); // v0.4.6+ 每轮结束（含中断留半截回复/仅用户轮）自动保存会话文件
 			this.setBusy(false);
@@ -516,55 +570,11 @@ export class LlmChatView extends ItemView {
 		}
 	}
 
-	/** 助手气泡下方追加「保存到文件」动作行：点击弹 SaveReplyModal 选目标路径，把完整回复原文落盘 */
-	private addSaveAction(wrap: HTMLElement, content: string): void {
-		const actions = wrap.createDiv({ cls: "aw-chat-actions" });
-		const btn = actions.createEl("button", { cls: "aw-chat-save-btn", text: "保存到文件" });
-		btn.addEventListener("click", () => void this.saveReply(content));
-	}
-
-	private async saveReply(content: string): Promise<void> {
-		let dir = "";
-		try {
-			dir = (await this.getDefaultSaveDir?.()) ?? "";
-		} catch { /* 取默认目录失败降级为空（vault 根） */ }
-		new SaveReplyModal(this.app, dir ? dir.replace(/\/+$/, "") + "/" : "", (res) => void this.writeReply(res.path, content, res.openAfter)).open();
-	}
-
-	/** 回复落盘：已存在→modify；否则逐级创建缺失父目录（createFolder 一次只建一层）+ create；可选保存后打开 */
-	private async writeReply(path: string, content: string, openAfter: boolean): Promise<void> {
-		try {
-			const existing = this.app.vault.getAbstractFileByPath(path);
-			if (existing instanceof TFolder) {
-				new Notice(`目标是文件夹，无法保存：${path}`, 6000);
-				return;
-			}
-			if (existing instanceof TFile) {
-				await this.app.vault.modify(existing, content);
-			} else {
-				await this.ensureFolders(path); // 逐级创建缺失父目录（与会话保存共用）
-				await this.app.vault.create(path, content);
-			}
-			if (openAfter) {
-				const f = this.app.vault.getAbstractFileByPath(path);
-				if (f instanceof TFile) await this.app.workspace.getLeaf(false).openFile(f);
-			}
-			new Notice(`已保存到 ${path}`);
-		} catch (e) {
-			new Notice(`保存文件失败：${e instanceof Error ? e.message : String(e)}`, 8000);
-		}
-	}
-
 	// ---------- v0.4.6+ 会话持久化（案头资料/AI会话/）· 上下文压缩 · 重新加载 ----------
 
-	/** 逐级创建 path 的全部父目录（createFolder 一次只建一层；已存在跳过）。writeReply 与会话保存共用 */
+	/** 逐级创建 path 的全部父目录（会话保存用；实现已提取到 modals.ensureParentFolders，与 main.ts save_content_to_file 工具共用） */
 	private async ensureFolders(path: string): Promise<void> {
-		const parts = path.split("/");
-		let cur = "";
-		for (let i = 0; i < parts.length - 1; i++) {
-			cur = cur ? `${cur}/${parts[i]}` : parts[i];
-			if (!this.app.vault.getAbstractFileByPath(cur)) await this.app.vault.createFolder(cur);
-		}
+		await ensureParentFolders(this.app, path);
 	}
 
 	/** 会话行：绑定文件路径 · 条目数/字数 · 摘要标记 · 窗口预算/自动压缩状态（无当前小说时发送不落盘，见 saveSession） */

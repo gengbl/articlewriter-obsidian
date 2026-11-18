@@ -5,6 +5,16 @@ import { type BookSkillPhase } from "./state_doc"; // v0.3.4+：BookSkillPhaseMo
 import { GENRE_SKILL_NAMES } from "./skills_default"; // v0.3.6+：NewStoryModal 旧四题材回落；v0.4.3+ skills_default 会派生题材/编写类型目录技能（story_types 为单向依赖）
 import { INSPIRATION_SKILL_NAME, inspirationMatches, inspirationPreview, type InspirationBlock } from "./inspiration"; // v0.4.3+ 灵感工具包弹窗（inspiration.ts 纯解析/渲染、不 import obsidian，无循环依赖）
 
+/** 逐级创建 filePath 的全部父目录（createFolder 一次只建一层；已存在跳过）——对话面板「保存到文件」与会话保存、工具落盘共用 */
+export async function ensureParentFolders(app: App, filePath: string): Promise<void> {
+	const parts = filePath.split("/");
+	let cur = "";
+	for (let i = 0; i < parts.length - 1; i++) {
+		cur = cur ? `${cur}/${parts[i]}` : parts[i];
+		if (!app.vault.getAbstractFileByPath(cur)) await app.vault.createFolder(cur);
+	}
+}
+
 /** v0.4.3+ 本插件弹窗统一基类：构造期给 contentEl 挂 `.aw-form` 作用域类（styles.css）——
  *  弹窗内 Setting 行标签一律左对齐、输入框/下拉框吃满标签之外的剩余整行宽度。
  *  挂在构造函数而非 onOpen：现有子类普遍覆写 onOpen 且不调用 super.onOpen()，构造期挂类对全部子类恒生效。 */

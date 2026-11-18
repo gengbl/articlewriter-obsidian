@@ -356,6 +356,13 @@ export async function chatCompletion(cfg: LlmConfigDoc, messages: Message[], ext
  * "stop"＝自然结束、null＝端点未给出）——供调用方判断是否需要自动续写，不改变返回值语义。
  * onCache（可选）在流结束后回调一次前缀缓存读数（v0.4.3+，端点在最后一个 chunk 带 timings 才有值）——
  * 生成面板据此在状态行显示「前缀缓存复用 x/y」，核对 pin 是否命中，不必再切到服务端面板看。 */
+/** v0.4.6+ function calling：流式 delta.tool_calls 按 index 累加后的完整工具调用（arguments＝跨 chunk 拼好的 JSON 串） */
+export interface ChatToolCall {
+	id: string;
+	name: string;
+	arguments: string;
+}
+
 export async function chatStream(
 	cfg: LlmConfigDoc,
 	messages: Message[],
@@ -364,7 +371,8 @@ export async function chatStream(
 	signal?: AbortSignal,
 	onReasoning?: (text: string) => void,
 	onFinish?: (reason: string | null) => void,
-	onCache?: (stats: CacheStats) => void
+	onCache?: (stats: CacheStats) => void,
+	onToolCalls?: (calls: ChatToolCall[]) => void
 ): Promise<string> {
 	const client = createClient(cfg, GENERATE_TIMEOUT_MS); // 流式放宽超时（默认 60s 会掐断长章节生成）
 	const stream = await client.chat.completions.create(buildParams(cfg, messages, true, extra) as OpenAI.ChatCompletionCreateParamsStreaming, { signal });
@@ -372,11 +380,23 @@ export async function chatStream(
 	let reasoning = "";
 	let finishReason: string | null | undefined;
 	let cache: CacheStats | undefined; // 取最后一个带读数的 chunk（服务端在末尾 chunk 才给 timings）
+	const toolAcc = new Map<number, ChatToolCall>(); // v0.4.6+ 工具调用累加（tools 经 extra 透传给端点）
+	const msgToolCalls: ChatToolCall[] = []; // 兼容形态：部分服务端在流式最终 chunk 的 choice.message.tool_calls 直给完整调用（不经 delta 分片）
 	for await (const chunk of stream) {
 		const cs = readCacheStats(chunk);
 		if (cs) cache = cs;
 		const choice = chunk.choices?.[0];
 		if (choice?.finish_reason) finishReason = choice.finish_reason; // 记录最后一个非空值：正文为空时区分「预算耗尽」与「思考未闭合」
+		for (const tc of choice?.delta?.tool_calls ?? []) {
+			const slot = toolAcc.get(tc.index ?? 0) ?? { id: "", name: "", arguments: "" };
+			if (tc.id) slot.id = tc.id;
+			if (tc.function?.name) slot.name += tc.function.name;
+			if (tc.function?.arguments) slot.arguments += tc.function.arguments;
+			toolAcc.set(tc.index ?? 0, slot);
+		}
+		for (const tc of (choice as unknown as { message?: { tool_calls?: Array<{ id?: string; function?: { name?: string; arguments?: string } }> } } | undefined)?.message?.tool_calls ?? []) {
+			if (tc.function?.name) msgToolCalls.push({ id: tc.id ?? "", name: tc.function.name, arguments: tc.function.arguments ?? "" });
+		}
 		const delta = choice?.delta?.content ?? "";
 		if (delta) {
 			full += delta;
@@ -393,7 +413,9 @@ export async function chatStream(
 		onCache?.(cache); // 面板状态行展示（同一措辞）
 	}
 	onFinish?.(finishReason ?? null); // 流正常结束（含空正文）时透出 finish_reason，供截断检测/自动续写
-	if (!full.trim()) {
+	const toolCalls = [...toolAcc.values()].filter((t) => t.name);
+	if (toolCalls.length) onToolCalls?.(toolCalls); // v0.4.6+ 工具调用轮：正文常为空，调用方执行工具后带 role:"tool" 结果续轮
+	if (!full.trim() && !toolCalls.length) {
 		if (reasoning.trim()) throw new Error(`思考型模型正文为空（已产生 ${String(reasoning.length)} 字思考）：${emptyBodyReason(finishReason)}`);
 		throw new Error("LLM 流式输出为空");
 	}
