@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { CHAT_REF_DOC_CATALOG, filterEnabledLlmConfigs, getVisibleLlmFields, IDENTITY_BOOST_SKILL_PREFIX, isLlmConfigEnabled, LEGACY_WRITING_TASK_SKILL_NAMES, normalizeLlmProvider, PHASE_REF_DOC_CATALOGS, PHASE_REF_DOC_DEFAULTS, REF_DOC_KEY_RENAMES, REF_DOC_LABELS, selectEnabledLlmName, setLlmConfigEnabled, TENSION_TOOLBOX_SKILL_NAME, toggleLlmConfigEnabled, WRITING_PHASE_LABELS, WRITING_TASK_SKILL_NAME } from "./plugin_config";
+import { CHAT_REF_DOC_CATALOG, filterEnabledLlmConfigs, getVisibleLlmFields, IDENTITY_BOOST_SKILL_PREFIX, isLlmConfigEnabled, LEGACY_WRITING_TASK_SKILL_NAMES, normalizeLlmProvider, PHASE_REF_DOC_CATALOGS, PHASE_REF_DOC_DEFAULTS, REF_DOC_KEY_RENAMES, REF_DOC_LABELS, renameLlmConfig, selectEnabledLlmName, setLlmConfigEnabled, TENSION_TOOLBOX_SKILL_NAME, toggleLlmConfigEnabled, WRITING_PHASE_LABELS, WRITING_TASK_SKILL_NAME } from "./plugin_config";
 import { DEFAULT_SKILLS } from "./skills_default";
 
 void test("normalizeLlmProvider maps legacy values to canonical model types", () => {
@@ -23,6 +23,7 @@ void test("visible fields vary by model type and hide irrelevant settings", () =
 		"top_p",
 		"repeat_penalty",
 		"reasoning_effort",
+		"context_window",
 	]);
 	assert.deepEqual(getVisibleLlmFields("deepseek"), [
 		"base_url",
@@ -33,6 +34,7 @@ void test("visible fields vary by model type and hide irrelevant settings", () =
 		"top_p",
 		"repeat_penalty",
 		"reasoning_effort",
+		"context_window",
 		"thinking",
 	]);
 	assert.deepEqual(getVisibleLlmFields("qwen"), [
@@ -44,6 +46,7 @@ void test("visible fields vary by model type and hide irrelevant settings", () =
 		"top_p",
 		"repeat_penalty",
 		"reasoning_effort",
+		"context_window",
 	]);
 });
 
@@ -78,6 +81,21 @@ void test("disabled llm configs are filtered out and default reasoning is off", 
 	assert.equal(conf.chat_model, undefined);
 	assert.equal(conf.active_llm, "enabled");
 	assert.equal(conf.writing_phases[0].llm_config_name, undefined);
+});
+
+void test("renaming a config follows every name reference (chat_model / active_llm / phase mappings)", () => {
+	const conf = { active_llm: "local", chat_model: "local", writing_phases: [{ name: "phase", llm_config_name: "local" }, { name: "p2", llm_config_name: "deepseek" }], llm_configs: [
+		{ name: "local" },
+		{ name: "deepseek" },
+	] };
+	renameLlmConfig(conf, conf.llm_configs[0], "local-72b");
+	assert.equal(conf.llm_configs[0].name, "local-72b");
+	assert.equal(conf.chat_model, "local-72b");
+	assert.equal(conf.active_llm, "local-72b");
+	assert.equal(conf.writing_phases[0].llm_config_name, "local-72b");
+	assert.equal(conf.writing_phases[1].llm_config_name, "deepseek"); // 其它配置的引用不动
+	renameLlmConfig(conf, conf.llm_configs[1], "deepseek"); // 同名＝无操作
+	assert.equal(conf.chat_model, "local-72b");
 });
 
 void test("tension_rules built-in key retired in favour of the 张力工具箱 skill", () => {

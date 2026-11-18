@@ -3,18 +3,32 @@ import { filterEnabledLlmConfigs, type LlmConfigDoc, type PluginConfig, selectEn
 import { chatStream, describeLlmError, normalizeBaseURL } from "./llm_client";
 import type { Message } from "./llm_client";
 import { SaveReplyModal } from "./modals";
-
-interface ChatTurn {
-	role: "user" | "assistant";
-	content: string;
-}
+import {
+	type SessionTurn,
+	buildCompressUserPrompt,
+	chatContextWindow,
+	compressible,
+	COMPRESS_SYSTEM_PROMPT,
+	estimateTokens,
+	formatSession,
+	LONG_CHAT_HINT_CHARS,
+	parseSession,
+	sessionChars,
+	sessionFileName,
+	sessionTimeStamp,
+	shouldAutoCompress,
+	splitCompressWindow,
+} from "./chat_session";
 
 /**
  * 常驻 LLM 对话面板（自定义 ItemView，可停靠到任意工作区区域、重载后保留位置）：
  * Enter 发送 / Shift+Enter 换行（含中文输入法合成态保护），助手回复流式逐块显示；
  * 「停止生成」只中断当前一轮、会话保留；顶部下拉切换任意已保存的模型配置（对后续轮次生效）。
- * 每轮请求前置对话专用系统提示词（对齐 CLI chat.py _chat_reply：友好助手身份+当前小说上下文快照），多轮历史用原生 messages 传递；历史不落盘。v0.3.5+：旧【创作规范】三层指南已随写作指南体系废弃。
- * 关闭面板时中断进行中的请求。
+ * 每轮请求前置对话专用系统提示词（对齐 CLI chat.py _chat_reply：友好助手身份+当前小说上下文快照），多轮历史用原生 messages 传递。
+ * v0.4.6+ 会话持久化：每轮（含中断留存的半截回复）自动保存到当前书《案头资料/AI会话/对话 YYYY-MM-DD HHMM.md》
+ * （格式见 src/chat_session.ts）；面板重开自动加载该目录最近会话；「重新加载」从磁盘读回（支持人工编辑后的文件）；
+ * 「压缩上下文」把保留窗之外的早期轮次经 LLM 合并成摘要轮（注入系统提示词、不再逐轮重发）；「清空对话」解除会话绑定、下一轮另起新文件。
+ * 无当前小说（纯问答模式）时不落盘、仅内存。关闭面板时中断进行中的请求。
  */
 export class LlmChatView extends ItemView {
 	static readonly VIEW_TYPE = "articlewriter-llm-chat";
@@ -34,9 +48,16 @@ export class LlmChatView extends ItemView {
 	private sendBtn!: HTMLButtonElement;
 	private stopBtn!: HTMLButtonElement;
 	private clearBtn!: HTMLButtonElement;
-	private history: ChatTurn[] = [];
+	private compressBtn!: HTMLButtonElement;
+	private reloadBtn!: HTMLButtonElement;
+	private sessionLineEl!: HTMLElement;
+	private history: SessionTurn[] = [];
 	private ctrl: AbortController | null = null;
 	private busy = false;
+	// v0.4.6+ 会话持久化：sessionPath＝当前绑定的会话文件（vault 相对路径；null＝未落盘/已清空，下一轮发送新建文件）；
+	// sessionCreatedAt/updatedModel 供 frontmatter；sessionDir 每轮取（切书后新会话落新书目录，已绑定文件不动）
+	private sessionPath: string | null = null;
+	private sessionCreatedAt = "";
 	// @ 引用弹窗状态：输入框内键入 @ 后列出 vault 文件，选中插入 @[[路径]]（可再手输 :行号 / :起-止）
 	private refPopupEl!: HTMLElement;
 	private refOpen = false;
@@ -48,6 +69,10 @@ export class LlmChatView extends ItemView {
 	private setActiveModel?: (name: string) => void | Promise<void>;
 	/** 「保存到文件」弹窗的默认路径前缀（由 main.ts 注入）：当前书目录 > work_dir > vault 根 */
 	private getDefaultSaveDir?: () => Promise<string>;
+	/** v0.4.6+ 会话目录（由 main.ts 注入）：当前书《案头资料/AI会话》；无当前小说返回 ""（纯问答不落盘） */
+	private getChatSessionDir?: () => Promise<string>;
+	/** v0.4.6+ 自然提及自动加载（由 main.ts 注入）：从原始输入识别章节/卷/内置文档提及并读盘成「=== 标签 ===」块串；无命中/无书返回空 */
+	private getAutoRefBlocks?: (raw: string) => Promise<{ text: string; labels: string[] }>;
 
 	constructor(
 		leaf: WorkspaceLeaf,
@@ -55,7 +80,9 @@ export class LlmChatView extends ItemView {
 		getSystemPrompt?: () => Promise<{ text: string; hasStory: boolean }>,
 		getActiveStory?: () => Promise<{ story: string; chapterNum: number; chapterTitle: string } | null>,
 		setActiveModel?: (name: string) => void | Promise<void>,
-		getDefaultSaveDir?: () => Promise<string>
+		getDefaultSaveDir?: () => Promise<string>,
+		getChatSessionDir?: () => Promise<string>,
+		getAutoRefBlocks?: (raw: string) => Promise<{ text: string; labels: string[] }>
 	) {
 		super(leaf);
 		this.getConf = getConf;
@@ -63,6 +90,8 @@ export class LlmChatView extends ItemView {
 		this.getActiveStory = getActiveStory;
 		this.setActiveModel = setActiveModel;
 		this.getDefaultSaveDir = getDefaultSaveDir;
+		this.getChatSessionDir = getChatSessionDir;
+		this.getAutoRefBlocks = getAutoRefBlocks;
 	}
 
 	getViewType(): string {
@@ -88,6 +117,8 @@ export class LlmChatView extends ItemView {
 		this.refreshModels(); // 常驻面板可能在设置变更后重新显示，刷新模型列表并尽量保持原选择
 		void this.updateCtxLine();
 		void this.updateSpLabel();
+		if (!this.history.length) void this.loadMostRecentSession(); // v0.4.6+ 重载/新开的面板自动接回当前书最近一次会话
+		this.updateSessionLine();
 		this.focusInputIfVisible();
 	}
 
@@ -100,6 +131,7 @@ export class LlmChatView extends ItemView {
 		const root = parent.createDiv({ cls: "aw-chat-view" });
 		this.ctxLineEl = root.createDiv({ cls: "aw-dim aw-chat-ctx" });
 		this.ctxLineEl.setText("当前小说：加载中…");
+		this.sessionLineEl = root.createDiv({ cls: "aw-dim aw-chat-session" }); // v0.4.6+ 会话文件/轮数/压缩状态行（updateSessionLine 维护）
 		const head = root.createDiv({ cls: "aw-chat-head" });
 		head.appendText("模型：");
 		this.selectEl = head.createEl("select");
@@ -119,7 +151,7 @@ export class LlmChatView extends ItemView {
 		const inputBox = root.createDiv({ cls: "aw-chat-input" });
 		this.inputEl = inputBox.createEl("textarea");
 		this.inputEl.rows = 3;
-		this.inputEl.placeholder = "Enter 发送 · Shift+Enter 换行；@引用vault文件（弹窗选择或手输路径），范围可写 :12 / :3-10 或直接紧跟如 @[[x.md]]3-5——发送时替换为对应行的实际内容；每轮自动携带助手身份+当前小说上下文；历史不落盘"; // 空时显示的提示在框内，输入即消失
+		this.inputEl.placeholder = "Enter 发送 · Shift+Enter 换行；@引用vault文件（弹窗选择或手输路径），范围可写 :12 / :3-10 或直接紧跟如 @[[x.md]]3-5——发送时替换为对应行的实际内容；直接提及「第一章/第2卷/《标题》/故事状态/人物关系/时间线/世界观/大纲/策划指南」也会自动加载对应内容；每轮自动携带助手身份+当前小说上下文；对话自动保存到当前书《案头资料/AI会话/》，重开面板自动接回"; // 空时显示的提示在框内，输入即消失
 		// @ 引用候选弹窗：锚定在输入框上方，键入 @ 触发、随后续字符过滤
 		this.refPopupEl = inputBox.createDiv({ cls: "aw-ref-popup" });
 		this.inputEl.addEventListener("input", () => this.updateRefPopup());
@@ -157,6 +189,10 @@ export class LlmChatView extends ItemView {
 		this.stopBtn = btns.createEl("button", { text: "停止生成" });
 		this.stopBtn.disabled = true;
 		this.stopBtn.addEventListener("click", () => this.abort());
+		this.compressBtn = btns.createEl("button", { text: "压缩上下文" });
+		this.compressBtn.addEventListener("click", () => void this.compressContext());
+		this.reloadBtn = btns.createEl("button", { text: "重新加载对话" });
+		this.reloadBtn.addEventListener("click", () => void this.reloadSession());
 		this.clearBtn = btns.createEl("button", { text: "清空对话" });
 		this.clearBtn.addEventListener("click", () => this.clearChat());
 
@@ -232,6 +268,8 @@ export class LlmChatView extends ItemView {
 		this.stopBtn.disabled = !b;
 		this.sendBtn.disabled = b;
 		this.clearBtn.disabled = b;
+		this.compressBtn.disabled = b;
+		this.reloadBtn.disabled = b;
 		if (!b) this.focusInputIfVisible();
 	}
 
@@ -244,13 +282,20 @@ export class LlmChatView extends ItemView {
 		}
 	}
 
-	private addMessage(role: ChatTurn["role"], content: string): HTMLElement {
-		const wrap = this.bodyEl.createDiv({ cls: `aw-chat-msg ${role === "user" ? "user" : "assistant"}` });
-		wrap.createSpan({ cls: "aw-chat-role", text: role === "user" ? "我" : "助手" });
+	private addMessage(role: SessionTurn["role"], content: string): HTMLElement {
+		const cls = role === "user" ? "user" : role === "assistant" ? "assistant" : "summary";
+		const wrap = this.bodyEl.createDiv({ cls: `aw-chat-msg ${cls}` });
+		wrap.createSpan({ cls: "aw-chat-role", text: role === "user" ? "我" : role === "assistant" ? "助手" : "上下文摘要" });
 		const body = wrap.createDiv({ cls: "aw-chat-text" });
 		body.textContent = content;
 		this.bodyEl.scrollTop = this.bodyEl.scrollHeight;
 		return body;
+	}
+
+	/** v0.4.6+ 按 history 全量重绘气泡区（加载/重新加载/压缩后调用；摘要轮渲染为 dim 样式「上下文摘要」块） */
+	private renderAll(): void {
+		this.bodyEl.empty();
+		for (const t of this.history) this.addMessage(t.role, t.content);
 	}
 
 	/** @ 引用两种形式：①@[[相对路径]]（弹窗插入、可含空格）②@相对路径（手输，不含空白/冒号/方括号）。行范围支持 :行号 / :起-止、「空格+起-止」、紧贴 token 尾的数字「3-5」/「7」（如 ]]3-5；纯文本形式扩展名后紧跟数字同样识别）。[[ ]] 形式先定位 token 本体、再对尾部单独探测范围（parseRangeSuffix），避免单条复杂正则的可选分支问题 */
@@ -379,7 +424,12 @@ export class LlmChatView extends ItemView {
 	}
 
 	private buildMessages(): Message[] {
-		return this.history.map((t) => ({ role: t.role, content: t.content }));
+		const msgs: Message[] = [];
+		for (const t of this.history) { // v0.4.6+ 摘要轮不进 messages（已折入系统提示词，见 send）
+			if (t.role === "user") msgs.push({ role: "user", content: t.content });
+			else if (t.role === "assistant") msgs.push({ role: "assistant", content: t.content });
+		}
+		return msgs;
 	}
 
 	async send(): Promise<void> {
@@ -403,12 +453,31 @@ export class LlmChatView extends ItemView {
 		// 内联展开消息里的 @ 引用：token 原位替换为指定行的实际内容片段（历史/气泡/请求都用替换后文本，模型直接看到原文）
 		const refs = await this.resolveRefs(text);
 		if (refs.missing.length) this.setStatus(`引用文件不存在：${refs.missing.join("、")}`, true);
-		console.debug("[articlewriter] 对话请求系统提示词", { length: sysContent.length, refs: refs.count }); // 排查提示词与引用是否注入
-		this.history.push({ role: "user", content: refs.expanded }); // 历史/请求用展开后文本（模型看到实际内容）
-		this.addMessage("user", text); // 气泡回显原始输入（保留 @ 引用标记，不显示替换结果）
+		// v0.4.6+ 自然提及自动加载：输入里提到「第N章/第N卷/《标题》/故事状态/人物关系/时间线/世界观/大纲/策划指南」等
+		// → main.ts 读盘拼同款「=== 标签 ===」块，追加进本轮 user 消息（识别见 src/chat_refs.ts；失败/无命中静默跳过、不阻断发送）
+		let pending = refs.expanded;
+		let autoLabels: string[] = [];
+		if (this.getAutoRefBlocks) {
+			try {
+				const auto = await this.getAutoRefBlocks(text);
+				if (auto.text.trim()) pending = `${refs.expanded}\n${auto.text.trim()}`;
+				autoLabels = auto.labels;
+			} catch (e) {
+				this.setStatus(`自动加载检查失败（${e instanceof Error ? e.message : String(e)}），本轮按未自动加载发送`, true);
+			}
+		}
+		// v0.4.6+ 发送前自动压缩：估算提示词（系统提示词＋历史含旧摘要＋本轮展开文本＋自动加载块）＋回复预留 ≥ 模型窗口×阈值 →
+		// 先走一遍压缩（早期轮次→摘要轮）再发送；窗口未知/关闭自动/历史太短则不触发（详见 autoCompressIfNeeded）
+		await this.autoCompressIfNeeded(cfg, sysContent, pending);
+		// v0.4.6+ 上下文压缩：已压出的摘要轮折入系统提示词尾部（对应早期轮次不再逐轮重发，见 buildMessages）——放在自动压缩之后，本轮新压出的摘要即刻生效
+		const summaryBlock = this.history.filter((t) => t.role === "summary").map((t) => t.content).join("\n\n");
+		if (summaryBlock) sysContent = `${sysContent}\n\n【此前对话摘要（更早轮次已压缩，不再逐轮发送）】\n${summaryBlock}`;
+		console.debug("[articlewriter] 对话请求系统提示词", { length: sysContent.length, refs: refs.count, autoRefs: autoLabels.length }); // 排查提示词与引用是否注入
+		this.history.push({ role: "user", content: pending }); // 历史/请求用展开后文本（模型看到实际内容；含本轮自动加载块）
+		this.addMessage("user", autoLabels.length ? `${text}\n〔自动加载：${autoLabels.join("、")}〕` : text); // 气泡回显原始输入（保留 @ 引用标记不显示替换结果；自动加载只列清单）
 		this.inputEl.value = "";
 		this.hideRefPopup();
-		this.setStatus(sysContent ? `正在回复（${cfg.name || "?"}）· 已注入助手提示词 …` : `正在回复（${cfg.name || "?"}）· 未携带提示词 …`);
+		this.setStatus(sysContent ? `正在回复（${cfg.name || "?"}）· 已注入助手提示词${autoLabels.length ? ` · 自动加载 ${String(autoLabels.length)} 项` : ""} …` : `正在回复（${cfg.name || "?"}）· 未携带提示词${autoLabels.length ? ` · 自动加载 ${String(autoLabels.length)} 项` : ""} …`);
 		this.setBusy(true);
 		this.ctrl = new AbortController();
 		const el = this.addMessage("assistant", "");
@@ -439,9 +508,11 @@ export class LlmChatView extends ItemView {
 				this.history.push({ role: "assistant", content: full });
 				this.addSaveAction(el.parentElement, full); // 气泡下方「保存到文件」按钮（中断留部分结果的轮次同样显示；出错移除气泡的轮次不显示）
 			}
+			await this.saveSession(); // v0.4.6+ 每轮结束（含中断留半截回复/仅用户轮）自动保存会话文件
 			this.setBusy(false);
 			void this.updateCtxLine(); // 每轮后同步小说/章节行与提示词来源（期间可能执行过写作命令）
 			void this.updateSpLabel();
+			this.updateSessionLine();
 		}
 	}
 
@@ -471,12 +542,7 @@ export class LlmChatView extends ItemView {
 			if (existing instanceof TFile) {
 				await this.app.vault.modify(existing, content);
 			} else {
-				const parts = path.split("/");
-				let cur = "";
-				for (let i = 0; i < parts.length - 1; i++) {
-					cur = cur ? `${cur}/${parts[i]}` : parts[i];
-					if (!this.app.vault.getAbstractFileByPath(cur)) await this.app.vault.createFolder(cur);
-				}
+				await this.ensureFolders(path); // 逐级创建缺失父目录（与会话保存共用）
 				await this.app.vault.create(path, content);
 			}
 			if (openAfter) {
@@ -489,6 +555,192 @@ export class LlmChatView extends ItemView {
 		}
 	}
 
+	// ---------- v0.4.6+ 会话持久化（案头资料/AI会话/）· 上下文压缩 · 重新加载 ----------
+
+	/** 逐级创建 path 的全部父目录（createFolder 一次只建一层；已存在跳过）。writeReply 与会话保存共用 */
+	private async ensureFolders(path: string): Promise<void> {
+		const parts = path.split("/");
+		let cur = "";
+		for (let i = 0; i < parts.length - 1; i++) {
+			cur = cur ? `${cur}/${parts[i]}` : parts[i];
+			if (!this.app.vault.getAbstractFileByPath(cur)) await this.app.vault.createFolder(cur);
+		}
+	}
+
+	/** 会话行：绑定文件路径 · 条目数/字数 · 摘要标记 · 窗口预算/自动压缩状态（无当前小说时发送不落盘，见 saveSession） */
+	private updateSessionLine(): void {
+		if (!this.built) return;
+		const entries = this.history.filter((t) => t.role !== "summary").length;
+		const hasSummary = this.history.some((t) => t.role === "summary");
+		const bits = [this.sessionPath ? `会话：${this.sessionPath}` : "会话：发送后自动保存到当前书《案头资料/AI会话/》"];
+		if (entries) bits.push(`${String(entries)} 条${hasSummary ? "（含上下文摘要）" : ""} · 约 ${String(sessionChars(this.history))} 字`);
+		const win = chatContextWindow(this.cfgs[this.activeIdx] ?? {});
+		if (win) {
+			let tok = 0;
+			for (const t of this.history) tok += estimateTokens(t.content);
+			const ratio = this.getConf()?.chat_compress_ratio ?? 75;
+			bits.push(ratio > 0 ? `历史估算 ~${String(tok)} token / 窗口 ${String(win)}，≥${String(Math.round(ratio))}% 自动压缩` : `历史估算 ~${String(tok)} token / 窗口 ${String(win)} · 自动压缩已关闭`);
+		} else if (sessionChars(this.history) > LONG_CHAT_HINT_CHARS) bits.push("对话较长：模型窗口未知不自动压缩，可手动「压缩上下文」");
+		this.sessionLineEl.setText(bits.join(" · "));
+	}
+
+	/** 每轮结束整写会话文件（全量重写＝压缩后的文件与内存一致）：未绑定则在会话目录新建《对话 YYYY-MM-DD HHMM.md》（同分钟撞名加 -2 后缀）；
+	 *  已绑定始终写回原文件（期间切书不改绑定）；无当前小说（dir=""）纯内存不落盘 */
+	private async saveSession(): Promise<void> {
+		if (!this.history.length) return;
+		const dir = (await this.getChatSessionDir?.()) ?? "";
+		if (!dir) {
+			this.updateSessionLine();
+			return;
+		}
+		try {
+			if (!this.sessionPath) {
+				const base = sessionFileName(new Date());
+				let p = `${dir}/${base}.md`;
+				for (let i = 2; this.app.vault.getAbstractFileByPath(p); i++) p = `${dir}/${base}-${String(i)}.md`;
+				this.sessionPath = p;
+				this.sessionCreatedAt = sessionTimeStamp(new Date());
+			}
+			const info = await this.getActiveStory?.();
+			const now = sessionTimeStamp(new Date());
+			const content = formatSession(
+				{ story: info?.story ?? "", created_at: this.sessionCreatedAt || now, updated_at: now, model: this.cfgs[this.activeIdx]?.name ?? "" },
+				this.history,
+			);
+			const f = this.app.vault.getAbstractFileByPath(this.sessionPath);
+			if (f instanceof TFile) await this.app.vault.modify(f, content);
+			else {
+				await this.ensureFolders(this.sessionPath);
+				await this.app.vault.create(this.sessionPath, content);
+			}
+		} catch (e) {
+			new Notice(`对话会话保存失败：${e instanceof Error ? e.message : String(e)}`, 8000);
+		}
+		this.updateSessionLine();
+	}
+
+	/** 面板重开自动接回：读当前书《案头资料/AI会话/》里 mtime 最新的会话文件；无文件/解析为空返回 false（保持空面板） */
+	private async loadMostRecentSession(): Promise<boolean> {
+		const dir = (await this.getChatSessionDir?.()) ?? "";
+		if (!dir) return false;
+		const folder = this.app.vault.getAbstractFileByPath(dir);
+		if (!(folder instanceof TFolder)) return false;
+		let latest: TFile | null = null;
+		for (const child of folder.children) {
+			if (child instanceof TFile && child.name.startsWith("对话 ") && child.name.endsWith(".md")) {
+				if (!latest || child.stat.mtime > latest.stat.mtime) latest = child;
+			}
+		}
+		if (!latest) return false;
+		try {
+			const { meta, turns } = parseSession(await this.app.vault.read(latest));
+			if (!turns.length) return false;
+			this.history = turns;
+			this.sessionPath = latest.path;
+			this.sessionCreatedAt = meta.created_at ?? "";
+			this.renderAll();
+			this.setStatus(`已接回上次对话：${latest.name}`);
+			return true;
+		} catch {
+			return false;
+		}
+	}
+
+	/** 「重新加载对话」：从磁盘重读当前绑定文件（人工在 Obsidian 里编辑后生效）；未绑定则接回目录内最近会话文件 */
+	private async reloadSession(): Promise<void> {
+		if (this.busy) return;
+		if (!this.sessionPath) {
+			if (await this.loadMostRecentSession()) this.updateSessionLine();
+			else this.setStatus("没有可加载的对话文件（当前书《案头资料/AI会话/》为空，或当前无小说）", true);
+			return;
+		}
+		const f = this.app.vault.getAbstractFileByPath(this.sessionPath);
+		if (!(f instanceof TFile)) {
+			this.setStatus(`对话文件已不存在：${this.sessionPath}（可从「重新加载」接回目录内最近会话，或发送新消息另起）`, true);
+			return;
+		}
+		try {
+			const { meta, turns } = parseSession(await this.app.vault.read(f));
+			this.history = turns;
+			this.sessionCreatedAt = meta.created_at ?? this.sessionCreatedAt;
+			this.renderAll();
+			this.setStatus(`已重新加载 ${String(turns.length)} 条对话：${f.name}`);
+		} catch (e) {
+			this.setStatus(`重新加载失败：${e instanceof Error ? e.message : String(e)}`, true);
+		}
+		this.updateSessionLine();
+	}
+
+	/** v0.4.6+ 发送前自动压缩判定：模型窗口已知（模型配置 context_window，回落模型名 NNK 后缀启发式）时，
+	 *  估算「系统提示词＋历史（含旧摘要轮）＋本轮展开文本＋回复预留」≥ 窗口 × chat_compress_ratio%（缺省 75，0＝关闭）
+	 *  且历史可压缩 → 复用 compressContext 先压一轮再继续发送；压缩失败/中止历史不动、照常发送（真超限由服务商报错兜底） */
+	private async autoCompressIfNeeded(cfg: LlmConfigDoc, sysContent: string, pendingUser: string): Promise<void> {
+		const win = chatContextWindow(cfg);
+		if (!win) return;
+		const ratio = this.getConf()?.chat_compress_ratio ?? 75;
+		if (ratio <= 0) return;
+		let promptTok = estimateTokens(sysContent) + estimateTokens(pendingUser);
+		for (const t of this.history) promptTok += estimateTokens(t.content);
+		const reserve = Math.min(cfg.max_tokens ?? 2048, Math.floor(win / 4));
+		if (!shouldAutoCompress(promptTok, reserve, win, ratio)) return;
+		if (!compressible(this.history)) {
+			this.setStatus(`估算提示词约 ${String(promptTok)} token、接近窗口 ${String(win)} 的 ${String(Math.round(ratio))}%——但历史太短无可压轮次，本轮照发`, true);
+			return;
+		}
+		this.setStatus(`估算提示词约 ${String(promptTok)} token ≥ 窗口 ${String(win)} 的 ${String(Math.round(ratio))}% —— 自动压缩早期轮次…`);
+		await this.compressContext();
+	}
+
+	/** 「压缩上下文」：保留最近 2 轮原样，更早轮次连同旧摘要交当前模型合并成新摘要轮（置于会话最前，只折入系统提示词）；
+	 *  压缩中断/失败/为空＝历史原样不动；成功后会话文件同步重写 */
+	private async compressContext(): Promise<void> {
+		if (this.busy) return;
+		if (!compressible(this.history)) {
+			this.setStatus("对话还不够长：保留最近 2 轮，需要至少再多 4 条早期消息才值得压缩", true);
+			return;
+		}
+		const cfg = this.cfgs[this.activeIdx];
+		if (!cfg.name && !cfg.base_url) {
+			this.setStatus("未找到 LLM 配置：请在 Obsidian 设置 → ArticleWriter 的「LLM 模型配置」区填写", true);
+			return;
+		}
+		const { toCompress, keep } = splitCompressWindow(this.history);
+		const compressCount = toCompress.filter((t) => t.role !== "summary").length;
+		this.setBusy(true);
+		this.ctrl = new AbortController();
+		this.setStatus(`正在压缩 ${String(compressCount)} 条早期对话 …`);
+		let summary = "";
+		let failed = false;
+		try {
+			summary = await chatStream(
+				cfg,
+				[{ role: "system", content: COMPRESS_SYSTEM_PROMPT }, { role: "user", content: buildCompressUserPrompt(toCompress) }],
+				(d) => {
+					summary += d;
+					this.setStatus(`正在压缩上下文… ${String(summary.length)} 字（可停止，历史不动）`);
+				},
+				undefined,
+				this.ctrl.signal,
+			);
+		} catch (e) {
+			failed = true;
+			this.setStatus(this.ctrl.signal.aborted ? "已中止压缩，对话未改动" : `压缩失败：${describeLlmError(e)}`, true);
+		}
+		if (!failed) {
+			if (summary.trim()) {
+				this.history = [{ role: "summary", content: summary.trim() }, ...keep];
+				this.renderAll();
+				await this.saveSession();
+				this.setStatus("");
+				new Notice(`✓ 已把 ${String(compressCount)} 条早期对话压成摘要（约 ${String(summary.trim().length)} 字）——更早轮次不再逐轮重发，可在气泡区与会话文件中查看`, 8000);
+			} else {
+				this.setStatus("模型未返回摘要，对话未改动", true);
+			}
+		}
+		this.setBusy(false);
+		this.updateSessionLine();
+	}
+
 	private abort(): void {
 		if (this.busy && this.ctrl) this.ctrl.abort();
 	}
@@ -497,6 +749,9 @@ export class LlmChatView extends ItemView {
 		if (this.busy) return;
 		this.history = [];
 		this.bodyEl.empty();
-		this.setStatus("对话已清空");
+		this.sessionPath = null; // v0.4.6+ 解除会话文件绑定（已写盘的文件保留在《案头资料/AI会话/》），下一轮发送另起新文件
+		this.sessionCreatedAt = "";
+		this.setStatus("对话已清空（会话文件保留在案头资料/AI会话/，可用「重新加载对话」找回）");
+		this.updateSessionLine();
 	}
 }

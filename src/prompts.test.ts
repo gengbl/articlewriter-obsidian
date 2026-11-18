@@ -523,3 +523,15 @@ test("章节写作指导 assembled as standalone block numbered from 1 (v0.4.3+)
 	assert.doesNotMatch(prose, /先判断本章在卷结构中的位置与功能/, "兜底也不再注入卷结构定位条款");
 	assert.ok(prose.includes(CHAPTER_REF_BAN), "兜底也补章节号禁令");
 });
+
+// v0.4.6+ C9：续写末尾衔接窗口可配（旧硬编码末尾 1000 字，长章只见开头 1/4）
+test("buildContinuePrompt honors tailChars for the continuity window (default 1000)", () => {
+	const base = { chapterNum: 1, chapterKey: "1", context: "CTX", chapterOutlineRaw: "", wordRange: [4000, 5000] as [number, number], prevOutlines: [], globalOutlineRaw: "" };
+	const long = "甲".repeat(5000);
+	const dflt = buildContinuePrompt({ ...base, existingContent: long }).prompt;
+	assert.ok(dflt.includes("末尾1000字"), "缺省窗口 1000");
+	assert.ok(dflt.includes("甲".repeat(1000)) && !dflt.includes("甲".repeat(1001)), "缺省只注入末尾 1000 字");
+	const wide = buildContinuePrompt({ ...base, existingContent: long, tailChars: 3000 }).prompt;
+	assert.ok(wide.includes("末尾3000字"), "标题随 tailChars");
+	assert.ok(wide.includes("甲".repeat(3000)) && !wide.includes("甲".repeat(3001)), "注入末尾 3000 字");
+});

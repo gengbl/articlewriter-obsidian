@@ -892,6 +892,7 @@ export interface ContinuePromptInput {
 	existingContent: string;
 	wordRange: [number, number];
 	withSummary?: boolean; // v0.2.21+：要求同响应末尾输出 <SUMMARY> 摘要块（只覆盖新续写部分）
+	tailChars?: number; // v0.4.6+ 修 C9：末尾衔接窗口字数（缺省 1000；由设置项 continueTailChars 传入）
 }
 
 export function buildContinuePrompt(input: ContinuePromptInput): { prompt: string; foreshadows: ForeshadowItem[] } {
@@ -907,7 +908,8 @@ export function buildContinuePrompt(input: ContinuePromptInput): { prompt: strin
 	const descGuide = descStyleGuide(input.descStyle);
 	const storyTypeSkill = applyWordRangeVars((input.storyTypeSkillBlock || "").trim(), input.wordRange); // v0.4.3+：字数占位符按书级 word_range 插值
 	const taskSkill = applyWordRangeVars((input.taskSkillBlock || "").trim(), input.wordRange);
-	const tail1000 = (input.existingContent || "").slice(-1000);
+	const tailChars = input.tailChars && input.tailChars > 0 ? Math.round(input.tailChars) : 1000; // v0.4.6+ C9：衔接窗口可配（旧硬编码 1000）
+	const tail1000 = (input.existingContent || "").slice(-tailChars);
 	const [wordLow, wordHigh] = input.wordRange;
 	// v0.3.8+ 前缀缓存友好排序：写作上下文块提到最前（其内部已按稳定→易变排序），带章号的引导语与逐章/逐次易变段全部压后，
 	// 同一章多次续写及相邻章续写请求都能复用「上下文稳定段」整段前缀
@@ -930,7 +932,7 @@ ${descGuide}
 【本章已有内容摘要】
 ${input.currentSummary || "（无）"}
 
-【已有内容（末尾1000字，保持衔接）】
+【已有内容（末尾${String(tailChars)}字，保持衔接）】
 ${tail1000}
 
 ${input.userInstruction ? `【续写要求】${input.userInstruction}` : `请按${outlineRef}与本章大纲自然续写，保持文风一致。`}

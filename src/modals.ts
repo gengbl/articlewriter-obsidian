@@ -1389,6 +1389,52 @@ export class ConfirmModal extends AwModal {
 
 // ---------- LLM 流式生成预览已并入统一生成过程面板（src/gen_progress_view.ts GenProgressView 的 WritingStreamSink 流式阶段），不再使用独立 Modal。
 
+/** v0.4.6+ 修 C6：「修复章节编号引用」落盘前预览确认弹窗——逐章列出「原句 → 改写句」对照（可滚动、长句截断展示），
+ *  确认后调用方才批量 setChapterBody；取消/Esc ＝全部不落盘。取代旧「LLM 改写正文但零预览直接覆盖」的行为。 */
+export class FixRefsReviewModal extends AwModal {
+	private resolved = false;
+
+	constructor(
+		app: App,
+		private title: string,
+		private summary: string,
+		private chapters: Array<{ label: string; pairs: Array<{ from: string; to: string }> }>,
+		private onConfirm?: () => void | Promise<void>,
+		private onCancel?: () => void
+	) {
+		super(app);
+	}
+
+	onOpen(): void {
+		this.contentEl.createEl("h3", { text: this.title });
+		this.contentEl.createEl("p", { text: this.summary, cls: "aw-dim" });
+		const box = this.contentEl.createDiv({ cls: "aw-fixrefs-review" }); // styles.css：max-height 滚动区
+		for (const ch of this.chapters) {
+			box.createEl("h4", { text: ch.label });
+			for (const pair of ch.pairs) {
+				const cut = (s: string) => (s.length > 160 ? `${s.slice(0, 160)}…` : s);
+				box.createDiv({ cls: "aw-fixrefs-pair" }).appendText(`原：${cut(pair.from)}`);
+				box.createDiv({ cls: "aw-fixrefs-pair aw-fixrefs-pair-new" }).appendText(`新：${cut(pair.to)}`);
+			}
+		}
+		new Setting(this.contentEl)
+			.addButton((btn) => btn.setButtonText(`确认保存（${String(this.chapters.length)} 章）`).setCta().onClick(() => void this.do(true)))
+			.addButton((btn) => btn.setButtonText("取消（全部不落盘）").onClick(() => void this.do(false)));
+	}
+
+	private async do(ok: boolean): Promise<void> {
+		this.resolved = true;
+		this.close();
+		if (ok && this.onConfirm) await this.onConfirm();
+		else if (!ok && this.onCancel) this.onCancel();
+	}
+
+	override onClose(): void {
+		this.contentEl.empty();
+		if (!this.resolved && this.onCancel) this.onCancel();
+	}
+}
+
 /** 导出 AI 提示词功能点选择弹窗：checkbox 列表 + 全选/全不选按钮，提交回调返回选中标题数组（空数组视为取消） */
 export class ExportPromptsSelectModal extends AwModal {
 	private submitted = false;

@@ -155,6 +155,7 @@ export type StatusAction =
 	| { kind: "delete-chapter"; story: string; key: string }
 	| { kind: "new-file"; story: string; key: string | null; folder?: string } // key=null → 书根目录；否则该章节目录；folder 指定 → 在该文件夹内新建（案头资料文件夹行右键）
 	| { kind: "chapter-to-screenplay"; story: string; key: string } // 章节行右键「转成剧本」：针对某章节正文文件生成“原文件名+剧本.md”
+	| { kind: "sensitive-check"; story: string; key: string } // v0.4.6+ 章节行右键「检测敏感词」：零 LLM 扫描该章正文、命中落标色标记
 	| { kind: "delete-file"; path: string }
 	| { kind: "delete-folder"; path: string } // 案头资料文件夹行右键「删除」：整个文件夹移入回收站（先确认框）
 	| { kind: "new-volume-doc"; story: string; volId: string } // 卷节点 / 卷内「文档」分组右键：在该卷实体目录下新建 .md（语义同 new-file，落点为卷目录而非章节目录）
@@ -768,6 +769,7 @@ export class StatusView extends ItemView {
 					{ label: "续写本章…", run: () => this.runStatusAction({ kind: "llm-continue", story: storyName, key: c.key }) }, // /continue
 					{ label: "润色本章…", run: () => this.runStatusAction({ kind: "llm-polish", story: storyName, key: c.key }) }, // /polish
 					{ label: "转成剧本…", run: () => this.runStatusAction({ kind: "chapter-to-screenplay", story: storyName, key: c.key }) },
+					{ label: "检测敏感词", run: () => this.runStatusAction({ kind: "sensitive-check", story: storyName, key: c.key }) }, // v0.4.6+：零 LLM 扫描该章正文（词表＝SKILLS/敏感词清单.md），命中落标色标记
 					{ sep: true },
 					{ label: "重命名本章…", run: () => this.runStatusAction({ kind: "rename-chapter", story: storyName, key: c.key }) }, // /chapter rename：改写章名，同步目录与文档引用
 					{ label: `删除本章（第${String(c.num)}章）`, danger: true, run: () => this.runStatusAction({ kind: "delete-chapter", story: storyName, key: c.key }) }, // 删除只作用于被点中的这一章

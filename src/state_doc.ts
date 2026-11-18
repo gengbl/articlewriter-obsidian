@@ -25,6 +25,13 @@ export interface AutoBookConfig {
 	overwrite?: boolean; // 已有世界观/策划指南/书级大纲是否重新生成
 }
 
+/** 「从大纲生成章节」中断续跑标记（v0.4.6+）：cmdVolumeOutlineToChapters 主循环每写成一章《章节大纲》即把进度落盘；
+ *  正常收尾（含清理重生成开跑前）清除。vol＝本轮拆分源容器 id（""＝平铺书根读《大纲.md》）；done＝本轮已成功写入章节大纲的复合键数组。 */
+export interface OutlineSplitProgress {
+	vol: string;
+	done: string[];
+}
+
 /** 章节复合键：根域（未归属）"N"，卷域 "volId:N"。卷 id 禁止含冒号（addVolume 校验）。 */
 export function chKey(vol: string | null | undefined, num: number): string {
 	return vol ? `${vol}:${num}` : String(num);
@@ -55,6 +62,7 @@ export interface StoryState {
 	ai_outline_cast?: boolean; // v0.4.3+：大纲阶段（生成卷大纲 / 从大纲生成章节）是否抽取人物与人物关系并按出现范围分层写入《人物.md》《人物关系.md》；缺省（未写）=true
 	one_line?: string; // v0.3.0+：全自动流水线（auto-book）的一句话设定——/auto-book 弹窗填入后持久化，「生成世界观」命令读取作 premise；仅显式设置时写回
 	auto_book?: AutoBookConfig; // v0.4.1+：全自动建书配置（执行范围＋规模参数）——旧「案头资料/自动建书.md」技能文档合并进状态文档；仅显式配置时写回
+	outline_split?: OutlineSplitProgress; // v0.4.6+：「从大纲生成章节」中断续跑标记——主循环每写成一章《章节大纲》即落盘（vol＝拆分源容器 id，""＝平铺书根；done＝本轮已写入章复合键）；正常收尾清除。下次同容器再运行且标记非空＝上次被中断，弹「继续生成 / 清理重新生成」
 	book_skills?: Record<BookSkillPhase, string[]>; // v0.3.4+：本书选用的书籍级技能（技能名数组，读 <书>/案头资料/Skill/<名>.md）。键=阶段 key（BOOK_SKILL_PHASE_KEYS）；仅显式配置时写回
 	chapters: Record<string, ChapterMeta>; // 键=复合键（见 chKey/parseChKey）
 	created_at: string;
@@ -187,6 +195,17 @@ export function normalizeAutoBook(raw: unknown): AutoBookConfig | undefined {
 	return Object.keys(out).length ? out : undefined;
 }
 
+/** 「从大纲生成章节」中断续跑标记清洗（v0.4.6+）：只认 {vol:string, done:string[]} 形状——vol 缺失按 ""（平铺书根）、
+ *  done 须为字符串数组（逐项去空）；done 空数组/非法＝无中断进度，返回 undefined（标记视为不存在）。 */
+export function normalizeOutlineSplit(raw: unknown): OutlineSplitProgress | undefined {
+	if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
+	const o = raw as Record<string, unknown>;
+	if (!Array.isArray(o.done)) return undefined;
+	const done = o.done.filter((x): x is string => typeof x === "string" && x.trim() !== "").map((x) => x.trim());
+	if (!done.length) return undefined;
+	return { vol: typeof o.vol === "string" ? o.vol : "", done };
+}
+
 /** 全自动写书免交互开跑所需参数是否齐全：返回缺失项中文说明（空数组＝可直接开跑范围确认）。
  *  premise 取 state.one_line；规模模式由 use_volumes 决定（flatMode=true＝平铺看 chapters，false＝分卷看 volumes＋chapter_counts）；
  *  仅起始节点＝worldview 时才要求一句话设定（从后续节点起跑不必重新建世界观） */
@@ -256,7 +275,7 @@ export function parseStateDoc(
 	const extraKeys = new Set([
 		"version", "title", "genre", "writing_style", "current_chapter", "current_scene",
 		"current_volume", "total_words", "use_summaries", "use_volumes", "chapters", "created_at", "updated_at",
-		"prev_chapters", "next_chapters", "include_volume_summary", "word_range", "ai_expand_chapter_outline", "ai_outline_cast", "one_line", "auto_book", "book_skills",
+		"prev_chapters", "next_chapters", "include_volume_summary", "word_range", "ai_expand_chapter_outline", "ai_outline_cast", "one_line", "auto_book", "outline_split", "book_skills",
 	]);
 	const extra: Record<string, unknown> = {};
 	for (const [k, v] of Object.entries(o)) if (!extraKeys.has(k)) extra[k] = v;
@@ -284,6 +303,7 @@ export function parseStateDoc(
 			ai_outline_cast: typeof o.ai_outline_cast === "boolean" ? o.ai_outline_cast : undefined, // v0.4.3+：大纲阶段是否抽取人物/关系并分层写入（缺省 undefined＝按开处理）
 			one_line: asStr(o.one_line).trim() || undefined, // v0.3.0+：一句话设定（空串视为未设置）
 			auto_book: normalizeAutoBook(o.auto_book), // v0.4.1+：全自动建书配置（非法/空结构视为未配置）
+			outline_split: normalizeOutlineSplit(o.outline_split), // v0.4.6+：从大纲生成章节的中断续跑标记（done 空/非法＝未设置）
 			book_skills: normalizeBookSkills(o.book_skills), // v0.3.4+：书籍技能阶段配置（非法/空结构视为未配置）
 			chapters,
 			created_at: asStr(o.created_at),
@@ -329,6 +349,8 @@ export function formatStateDoc(
 		if (ab.overwrite != null) blk["overwrite"] = ab.overwrite;
 		if (Object.keys(blk).length) o["auto_book"] = blk;
 	}
+	// v0.4.6+：「从大纲生成章节」中断续跑标记——仅存在进度时写回（正常收尾由调用方置 undefined、不写）
+	if (state.outline_split) o["outline_split"] = { vol: state.outline_split.vol, done: [...state.outline_split.done] };
 	// v0.3.4+：书籍技能阶段配置——仅含有效条目时写回，按 BOOK_SKILL_PHASE_KEYS 固定键序、空数组阶段省略
 	if (state.book_skills) {
 		const bs: Record<string, string[]> = {};

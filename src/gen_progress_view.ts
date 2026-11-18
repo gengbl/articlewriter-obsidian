@@ -45,6 +45,11 @@ export class GenProgressView extends ItemView implements WritingStreamSink {
 	private ctrl = new AbortController();
 	private submitted = false;
 	private streamState: "idle" | "streaming" | "done" | "failed" = "idle";
+
+	/** v0.4.6+ 只读流式判定（main.ts「打开章节文件自动激活当前章」在生成进行中跳过同步——生成目标已锁定，不应被中途切换） */
+	isStreaming(): boolean {
+		return this.streamState === "streaming";
+	}
 	fullText = "";
 	done: Promise<boolean> = new Promise(() => {}); // beginStream 前占位；每次 beginStream 换新 Promise
 	private resolveDone!: (keep: boolean) => void;
@@ -91,10 +96,16 @@ export class GenProgressView extends ItemView implements WritingStreamSink {
 			this.submitted = true;
 			this.ctrl.abort();
 			this.resolveDone?.(false);
+			// v0.4.6+ 修 C5：done 态（等待「保存/不保存」）被关面板＝整章/整篇蒸发——对写作场景是数据事故。
+			// 兜底：把已流式完的全文交给 main 的草稿落盘（案头资料/生成草稿/），Notice 告知路径；「不保存」按钮与「停止」不触发（那是明确弃稿）。
+			if (this.streamState === "done" && this.fullText.trim()) this.onDiscardText?.(this.fullText);
 		}
 		this.stopTimer();
 		this.built = false; // contentEl 由框架清空 → 重开时重建 UI
 	}
+
+	/** v0.4.6+ 由 main.ts beginWritingPanel 注入：done 态被关面板时的全文草稿落盘回调（标题/书籍上下文在 main 侧） */
+	onDiscardText?: (text: string) => void;
 
 	/** v0.2.x+ 计时器：流式中每秒刷新状态行「已用时」；离开 streaming 态自停（收尾路径亦显式调用） */
 	private startTimer(): void {

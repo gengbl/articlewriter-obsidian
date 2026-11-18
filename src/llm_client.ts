@@ -257,6 +257,10 @@ export function describeLlmError(e: unknown): string {
 	if (/exceeds the available context size|maximum context length|context length exceeded|prompt is too long|too many tokens/i.test(out)) {
 		out += " · 提示词超出模型上下文窗口（服务端直接拒绝）：① 换上下文窗口更大的端点/模型 ② 调大服务端上下文（如 llama-server --ctx-size 131072，内存代价随之增长）③ 减少注入内容（降低目标章数 / 用「继续生成」而非完整生成 / 精简策划指南与引用文档）";
 	}
+	// v0.4.6+ 修 C3：max_tokens 超端点上限被 4xx 拒绝（旧默认模板恒发 65535，qwen-dashscope/GLM 等云端必炸且报错看不懂）：追加可操作诊断
+	if (/max[\s_]?tokens|maximum (?:output )?tokens|range of .{0,20}tokens|output length.{0,30}(?:exceed|limit)/i.test(out)) {
+		out += " · 请求的 max_tokens（最大输出 token）超出该模型端点上限：到设置页把该模型配置的「最大 tokens」调小（云端 API 常见上限 8192；本地端点 llama-server 则建议保持 ≥16384，思考型模型思考与正文共享该预算）";
+	}
 	return out.replace(/Bearer .+/g, "Bearer ***").replace(/\bsk-[A-Za-z0-9_-]{6,}/g, "sk-***");
 }
 

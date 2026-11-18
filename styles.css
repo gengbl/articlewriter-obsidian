@@ -40,6 +40,19 @@
 	background: var(--background-modifier-hover);
 }
 
+/* v0.4.6+ 「压缩上下文」产物：摘要轮以虚线框+弱化色呈现，区别于普通气泡 */
+.aw-chat-msg.summary {
+	background: var(--background-primary);
+	border: 1px dashed var(--text-faint);
+	color: var(--text-muted);
+	font-size: 0.9em;
+}
+
+.aw-chat-session {
+	font-size: 0.78em;
+	word-break: break-all;
+}
+
 .aw-chat-role {
 	display: block;
 	font-size: 0.72em;
@@ -2450,4 +2463,31 @@
 .aw-insp-btn.aw-insp-del:hover {
 	color: var(--text-error);
 	border-color: var(--text-error);
+}
+
+/* v0.4.6+ C6：修复章节编号引用 · 落盘前预览弹窗（FixRefsReviewModal）——可滚动对照区＋每句两行（原/新） */
+.aw-fixrefs-review {
+	max-height: 55vh;
+	overflow-y: auto;
+	margin: 8px 0;
+	border: 1px solid var(--background-modifier-border);
+	border-radius: var(--radius-s);
+	padding: 8px 12px;
+}
+
+.aw-fixrefs-review h4 {
+	margin: 10px 0 4px;
+	font-size: var(--font-ui-small);
+}
+
+.aw-fixrefs-pair {
+	font-size: var(--font-ui-smaller);
+	color: var(--text-muted);
+	margin: 2px 0;
+	overflow-wrap: anywhere;
+}
+
+.aw-fixrefs-pair-new {
+	color: var(--text-normal);
+	margin-bottom: 8px;
 }

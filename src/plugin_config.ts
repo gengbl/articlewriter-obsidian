@@ -27,9 +27,9 @@ export function defaultBaseUrlForProvider(provider?: string): string | undefined
 	}
 }
 
-export function getVisibleLlmFields(provider?: string): Array<"base_url" | "model_name" | "api_key" | "temperature" | "max_tokens" | "top_p" | "repeat_penalty" | "reasoning_effort" | "thinking"> {
+export function getVisibleLlmFields(provider?: string): Array<"base_url" | "model_name" | "api_key" | "temperature" | "max_tokens" | "top_p" | "repeat_penalty" | "reasoning_effort" | "context_window" | "thinking"> {
 	const normalized = normalizeLlmProvider(provider);
-	const common = ["base_url", "model_name", "api_key", "temperature", "max_tokens", "top_p", "repeat_penalty", "reasoning_effort"] as const;
+	const common = ["base_url", "model_name", "api_key", "temperature", "max_tokens", "top_p", "repeat_penalty", "reasoning_effort", "context_window"] as const;
 	if (normalized === "deepseek") return [...common, "thinking"]; 
 	return [...common];
 }
@@ -71,6 +71,23 @@ export function setLlmConfigEnabled<T extends { name: string; enabled?: boolean 
 	}
 }
 
+/**
+ * 模型配置改名：把「按名字引用配置」的地方一次性全部跟上——配置自身 `name`、`active_llm`、`chat_model`、各写作阶段 `llm_config_name`。
+ * 只做数据同步（空名/重名的拒绝在设置页改名输入框里），改名后 UI 侧另需重刷已渲染的下拉框：
+ * 已打开的 LLM 对话框走 `main.ts syncChatModelSelect()`，设置页内各「模型配置」下拉走 `ArticleWriterSettingTab.refreshLlmNameSelects()`。
+ */
+export function renameLlmConfig<T extends { name: string }>(conf: Pick<PluginConfig, "chat_model" | "active_llm" | "writing_phases" | "llm_configs"> | undefined, cfg: T, newName: string): void {
+	const oldName = cfg.name;
+	if (!oldName || oldName === newName) return;
+	cfg.name = newName;
+	if (!conf) return;
+	if (conf.chat_model === oldName) conf.chat_model = newName;
+	if (conf.active_llm === oldName) conf.active_llm = newName;
+	for (const phase of conf.writing_phases ?? []) {
+		if (phase.llm_config_name === oldName) phase.llm_config_name = newName;
+	}
+}
+
 export interface LlmConfigDoc {
 	name: string;
 	enabled?: boolean;
@@ -88,6 +105,9 @@ export interface LlmConfigDoc {
 	api_style?: string;
 	retry_times?: number;
 	retry_delay?: number;
+	/** v0.4.6+ 模型支持的上下文窗口（token 数，如 128000）——LLM 对话面板「自动上下文压缩」判定预算用；
+	 *  留空回落模型名 NNK 后缀启发式（如 llama-3.1-8b-instruct-128k）；两者皆无＝窗口未知、自动压缩不启用（仍可手动压缩） */
+	context_window?: number;
 }
 
 /** 写作阶段：五阶段独立模型配置（v0.3.7+：世界观生成居首） */
@@ -164,6 +184,9 @@ export const PHASE_REF_DOC_CATALOGS: Record<string, string>[] = [
 /** 禁用词清单技能名（v0.3.6+ 禁用词 Skill 化：词表事实源＝SKILLS/<此名>.md；正文族默认清单与词检测/清洗共用） */
 export const BANNED_LIST_SKILL_NAME = "网文高频禁用词清单";
 
+/** v0.4.6+ 敏感词检测词表事实源技能名（SKILLS/敏感词清单.md，与禁用词清单同格式；不注入提示词，仅供确定性检测） */
+export const SENSITIVE_LIST_SKILL_NAME = "敏感词清单";
+
 /** 世界观生成方法论技能名（v0.3.7+：方法论种子随世界观阶段默认引用清单播种，内容对齐 prompts.buildWorldviewGenPrompt 的 H2 骨架与红线） */
 export const WORLDVIEW_FRAMEWORK_SKILL_NAME = "世界观生成框架";
 
@@ -218,13 +241,17 @@ export interface PluginConfig {
 	// v0.4.3+：system_prompt 已废弃删除（写作系统提示词输入框退役，身份改经「对话助手身份」任务段与引用技能/文档装配）
 	desc_style?: string; // "normal" | "complete"
 	chat_ref_docs?: string[]; // v0.4.3+ 对话窗口引用文档清单（机制同阶段 ref_docs）：内置 key（见 CHAT_REF_DOC_CATALOG）或 "file:<vault 路径>" 或 "skill:<技能名>"；undefined/[]＝不追加额外文档
+	/** v0.4.6+ 对话自动压缩触发阈值（占模型上下文窗口的百分比 1–100，缺省 75）：发送前估算提示词 token，
+	 *  超过 窗口×比例 即先自动压缩早期轮次再发送；0＝关闭自动压缩（仅手动按钮）。依赖模型配置的 context_window（见 LlmConfigDoc） */
+	chat_compress_ratio?: number;
 	writing_phases?: WritingPhase[]; // 写作阶段模型配置（五阶段独立模型）
 }
 
 /** 首次运行（data.json 无 llm 段）时预置的标准模板：字段结构与 Python 用户配置文件一致，api_key/model_name 留空待填。
- * 说明：本插件仅支持桌面端使用，原因是它依赖本地或远程 LLM API 端点、文件系统访问与 Obsidian 桌面环境；
- * 任何密钥都应仅保存在本地桌面 vault 的 .obsidian 目录中，不建议同步到共享/不受信任位置。
- */
+ * 插件支持桌面＋移动双端（manifest isDesktopOnly=false，见 l1-overview 设计决策⑤），端点走本地或远程 LLM API。
+ * 任何密钥都应仅保存在本地 vault 的 .obsidian 目录中，不建议同步到共享/不受信任位置。
+ * v0.4.6+ 修 C3：max_tokens 按端点分档——本地（llama-server 类）保持 65535（思考与正文共享预算，需大）；
+ * 云端模板（deepseek/qwen-dashscope）改 8192：这些 API 输出上限普遍 8K 档，发 65535 首跑必吃 400 参数错。 */
 export function buildDefaultLlmConf(): PluginConfig {
 	const base = {
 		temperature: 0.8,
@@ -236,6 +263,7 @@ export function buildDefaultLlmConf(): PluginConfig {
 		retry_times: 3,
 		retry_delay: 3,
 	};
+	const cloud = { max_tokens: 8192 }; // 云端模板覆盖：见上方注释（v0.4.6+ C3）
 	return {
 		version: 1,
 		active_llm: "local",
@@ -244,8 +272,8 @@ export function buildDefaultLlmConf(): PluginConfig {
 			// 思考与正文共享 max_tokens 预算，"high" 会耗尽预算致 content 恒空（大纲/长文生成失败根因）。
 			// 需要思考的本地模型自行在设置页改回 high/max。
 			{ name: "local", enabled: true, provider: "openai-compatible", base_url: "http://localhost:8509", model_name: "", ...base, reasoning_effort: "none", openai_extras: ["repeat_penalty"], api_style: "" },
-			{ name: "deepseek", enabled: true, provider: "deepseek", api_key: "", base_url: "https://api.deepseek.com", model_name: "", ...base, openai_extras: [], api_style: "responses" },
-			{ name: "qwen-dashscope", enabled: true, provider: "qwen", api_key: "", base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1", model_name: "", ...base, openai_extras: [], api_style: "" },
+			{ name: "deepseek", enabled: true, provider: "deepseek", api_key: "", base_url: "https://api.deepseek.com", model_name: "", ...base, ...cloud, openai_extras: [], api_style: "responses" },
+			{ name: "qwen-dashscope", enabled: true, provider: "qwen", api_key: "", base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1", model_name: "", ...base, ...cloud, openai_extras: [], api_style: "" },
 		],
 		desc_style: "normal",
 		writing_phases: WRITING_PHASE_LABELS.map((name) => ({ name, llm_config_name: "" })), // v0.3.7+：由 WRITING_PHASE_LABELS 派生（世界观生成居首），防词源漂移

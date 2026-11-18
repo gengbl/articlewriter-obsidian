@@ -19,11 +19,12 @@ src/main.ts ──esbuild(bundle)──▶ release/main.js ──非生产构建
 
 | 模块 | 行 | 职责 | 关键导出 |
 | --- | --- | --- | --- |
-| `main.ts` | 9197 | 插件入口＋全部命令实现＋面板装配＋设置页（内部区块见下节） | `default ArticleWriterPlugin` |
-| `story_manager.ts` | 3974 | 磁盘结构层：书/卷/章实体目录与文档的 CRUD、状态文档、章节重排顺延、打包合集、扫描重建 | `StoryManager`、`CHAPTER_SUFFIX_TO_BASE`、`WritingDocPaths`、章节/卷读写全套 |
+| `main.ts` | 9593 | 插件入口＋全部命令实现＋面板装配＋设置页（内部区块见下节） | `default ArticleWriterPlugin` |
+| `story_manager.ts` | 4028 | 磁盘结构层：书/卷/章实体目录与文档的 CRUD、状态文档、章节重排顺延（号码算术调 `chapter_moves.ts`）、打包合集（跨容器选择连续重编号）、扫描重建 | `StoryManager`、`CHAPTER_SUFFIX_TO_BASE`、`WritingDocPaths`、章节/卷读写全套、`writeDoc`（v0.4.6+ public） |
+| `chapter_moves.ts` | 55 | 章节重排**纯决策层**（v0.4.6+ C10，无 obsidian 依赖）：`planRenumber`（容器内补洞压缩 1..N，升序单遍只挪变号章）、`hasAnyGap`（断档判定）、`planInsert`（插章冲突→降序顺延规划）；搬移/快照/引用重写仍在 story_manager，执行序必须与 plan 一致 | `planRenumber`、`hasAnyGap`、`planInsert` |
 | `prompts.ts` | 1763 | 各生成阶段提示词组装（纯函数，不触 Vault/LLM）：编写章节、大纲族、策划指南、人物分析、deai/查重/错字等；上下文入参收 `bookDocs/volDocs/chapterDocs` 预装配文档串 | `build*Prompt`、各 `*_SYSTEM_PROMPT`、`CleanReport`、`cleanRelationshipsDoc` |
 | `md_docs.ts` | 1115 | MD 文本解析/序列化：人物/场景/关系/伏笔/世界观字段级 parse↔format、章选解析、拆分卷大纲 | `CharacterDoc/SceneDoc/…`、`parse*/format*`、`splitVolOutlineByChapter`（v0.4.3+ 同族 `sliceVolOutlineChapters`：按章号窗口取块，供编写文章阶段前后 N 章大纲节选） |
-| `modals.ts` | 1883 | 通用弹窗库（26 个导出 Modal/SuggestModal，含 v0.4.3+ `InspirationKitModal` 灵感工具包弹窗） | `TextInputModal`、`ActionMenuModal`、`TextPanelModal`、`ConfirmModal`、`InspirationKitModal`… |
+| `modals.ts` | 1931 | 通用弹窗库（27 个导出 Modal/SuggestModal，含 v0.4.3+ `InspirationKitModal` 灵感工具包弹窗） | `TextInputModal`、`ActionMenuModal`、`TextPanelModal`、`ConfirmModal`、`InspirationKitModal`… |
 | `relationship_view.ts` | 795 | 人物关系面板（ItemView，SVG 图＋列表；v0.4.4+ 图表的节点坐标、分级与弧线 path 不再就地算，改调 `graph_layout.ts`） | `RelationshipView`、`RelSnapshot` |
 | `status_view.ts` | 806 | 「写字台」面板（ItemView，书/卷/章树＋动作分发；v0.4.3+ 案头资料右键「灵感工具包…」） | `StatusView`、`StatusAction`、`StatusSnapshot` |
 | `timeline_view.ts` | 771 | 时间线面板（ItemView；定位到文档行改走共用件 `editor_nav.revealEditorLine`） | `TimelineView`、`TlSnapshot` |
@@ -34,7 +35,7 @@ src/main.ts ──esbuild(bundle)──▶ release/main.js ──非生产构建
 | `llm_chat_view.ts` | 500 | 聊天面板（ItemView，流式、工具注入） | `LlmChatView` |
 | `banned_words.ts` | 291 | 禁用词清单解析（唯一事实源＝`SKILLS/网文高频禁用词清单.md`，v0.3.6+ Skill 化）、句式简化、AI 词检测标红（纯函数） | `BannedWordsData`、`findAiWordHits`（~~`buildBannedWordsBlock`/`buildMergedBannedBlock`~~ 专用注入函数已随 v0.3.6+ 禁用词 Skill 化删除、~~`stripGuideCategoryBlock`~~ 曾用于剥指南「禁用词」类目，已随 v0.3.5+ 写作指南体系整体废弃删除） |
 | `llm_client.ts` | 382 | OpenAI 兼容 chat/completions 封装（流式/非流式、错误装饰、前缀缓存读数） | `chatCompletion`、`chatStream`、`readCacheStats`/`cacheStatsText`、`LlmConfigDoc` 消费 |
-| `prompts.test.ts` 等 13 个 `*.test.ts` | 288 起 | 纯函数单测（node --test，`npm test` 的 entries 列表在 package.json）；v0.4.3+ 新增 `llm_client.test.ts`（缓存读数口径）、`cast_analyzer.test.ts`（逐章分析钉点落点）、`deai_ledger.test.ts`（AI 味清单渲染与状态回填）、`inspiration.test.ts`（灵感文档解析↔渲染/按行增删往返、CRLF 保住换行风格）；v0.4.4+ 新增 `graph_layout.test.ts`（力导向确定性／点全落在画布内／枢纽居首且摆到中心偏上／圆点互不重叠／弧一律向上拱且不越顶边／端点裁到圆周外与两圆重叠时不推过头／交换端点侧向一致）。**新增测试文件必须同时加进 package.json 的 entries** | — |
+| `prompts.test.ts` 等 14 个 `*.test.ts` | 288 起 | 纯函数单测（node --test，`npm test` 的 entries 列表在 package.json）；v0.4.3+ 新增 `llm_client.test.ts`（缓存读数口径）、`cast_analyzer.test.ts`（逐章分析钉点落点）、`deai_ledger.test.ts`（AI 味清单渲染与状态回填）、`inspiration.test.ts`（灵感文档解析↔渲染/按行增删往返、CRLF 保住换行风格）；v0.4.4+ 新增 `graph_layout.test.ts`（力导向确定性／点全落在画布内／枢纽居首且摆到中心偏上／圆点互不重叠／弧一律向上拱且不越顶边／端点裁到圆周外与两圆重叠时不推过头／交换端点侧向一致）；v0.4.6+ 新增 `chapter_moves.test.ts`（补洞升序单遍／插章降序顺延／断档判定）。**新增测试文件必须同时加进 package.json 的 entries** | — |
 | `gen_progress_view.ts` | 279 | 统一「生成过程」流式面板 | `GenProgressView`（implements `WritingStreamSink`） |
 | `state_doc.ts` | 200 | `状态.md` 文档 ↔ `StoryState` 序列化/解析、`chKey` 复合键 | `formatStateDoc/parseStateDoc`、`chKey/parseChKey` |
 | `inspiration.ts` | 203 | 灵感工具包（v0.4.3+）：书级《案头资料/灵感/灵感.md》**纯数据结构＋纯解析/渲染＋按行增删**（无 IO、不 import obsidian）：`InspirationBlock{heading,name,date,body,line,endLine}`、`parseInspirationDoc`（只按 `##` 切块、`###` 属块内）、`renderInspirationBody/Block`（模板→块：丢 H1 与注释、`#`/`##` 降为 `###`、替换 `{{name}}/{{date}}/{{time}}`）、`append/remove/renameInspirationBlock`、`inspirationPreview/inspirationMatches`、`normalizeInspirationName`、`inspirationDate`；写回保住原文件 eol | `parseInspirationDoc`、`renderInspirationBlock`、`INSPIRATION_DOC_NAME`、`INSPIRATION_FOLDER_NAME`、`INSPIRATION_SKILL_NAME` |
@@ -82,7 +83,7 @@ L3: main.ts(→其余全部)          prompts.test.ts(→prompts)
 | ├ export-ai-prompts | 6065–6614 | `fenceBlock`(L6065)`/exportSection`(L6076)`/cmdExportPrompts`(L6098 巨型导出器) |
 | └ 审校命令 | 6615–6779 | `cmdTypoCheck`(L6615)`/cmdReviewChapter`(L6691) |
 | `StatusModal` | 6780–6794 | 状态文本弹窗（与 `modals.TextPanelModal` 功能重复，见债务） |
-| `ArticleWriterSettingTab` | 6976–7500 | 设置页：`getSettingDefinitions` 声明式渲染＋「LLM 配置」tab 区块自定义 render（固定两 tab：全局设置页 + 模型配置页列表/详情两形态，`renderLlmGlobalTab`/`renderLlmConfigList`/`renderLlmConfigDetail`，模型增删/改名/上下移） |
+| `ArticleWriterSettingTab` | 6976–7500 | 设置页：`getSettingDefinitions` 声明式渲染＋「LLM 配置」tab 区块自定义 render（固定两 tab：全局设置页 + 模型配置页列表/详情两形态，`renderLlmGlobalTab`/`renderLlmConfigList`/`renderLlmConfigDetail`，模型增删/改名/上下移；改名走 `plugin_config.renameLlmConfig`＋`refreshLlmNameSelects()` 就地重刷页面上的「模型配置」下拉（见 l3-settings-page） |
 
 ## 根目录遗留文件（git 已跟踪、不参与构建）
 

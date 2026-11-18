@@ -1,5 +1,6 @@
 import { App, MarkdownView, Platform, TFile, TFolder, Vault } from "obsidian";
 import * as doc from "./md_docs";
+import { hasAnyGap, planInsert, planRenumber } from "./chapter_moves"; // v0.4.6+ C10：章节重排纯规划层（chapter_moves.test.ts 锁顺序约定）
 import {
 	LEGACY_STATE_JSON,
 	STATE_DOC_BODY,
@@ -569,7 +570,8 @@ export class StoryManager {
 		await this.vault.rename(f, `${backupDir}/${LEGACY_STATE_JSON.replace(".json", "")}_${stamp}.json`);
 	}
 
-	private async writeDoc(path: string, content: string): Promise<TFile> {
+	/** v0.4.6+ 改公开（C5 草稿兜底由 main.ts 直写任意 vault MD；其余行为不变：自动补父目录、已存在覆盖） */
+	async writeDoc(path: string, content: string): Promise<TFile> {
 		const sn = this.storyNameOfPath(path);
 		if (sn) await this.ensureLayout(sn); // 布局收口：旧格式书先自动迁移再写
 		path = this.resolveChapterDocPath(path); // 章节目录模板文件按新格式 <标题>-<基名> 落盘（老格式存量回退）
@@ -2975,7 +2977,7 @@ private emptyState(storyName: string): StoryState {
 		let anyGap = false;
 		for (const s of scopes.values()) {
 			s.list.sort((a, b) => a.num - b.num);
-			for (let i = 0; i < s.list.length; i++) if (s.list[i].num !== i + 1) (anyGap = true);
+			if (hasAnyGap(s.list.map((c) => c.num))) anyGap = true; // v0.4.6+ C10：判定走纯规划模块 chapter_moves.ts（有单测）
 		}
 		if (!anyGap) return { ok: false, msg: "各容器内章节号均已连续（「书稿/」直属与各卷各自 1..N），无需调整" };
 
@@ -2993,17 +2995,13 @@ private emptyState(storyName: string): StoryState {
 		const scopeMaps = new Map<string | null, Record<number, number>>(); // volId → 局部号映射（仅留洞的容器参与改写）
 		const vols = await this.loadVolumes(storyName).catch((): Record<string, doc.VolumeInfo> => ({}));
 		for (const s of [...scopes.values()].sort((a, b) => (a.volId ?? "").localeCompare(b.volId ?? ""))) {
+			const plan = planRenumber(s.list); // v0.4.6+ C10：号码算术与「升序单遍、只挪变号章」的顺序约定由纯模块＋单测锁定，此处只管搬移
+			if (plan.alreadySequential) continue;
 			const map: Record<number, number> = {};
-			s.list.forEach((c, i) => (map[c.num] = i + 1));
-			const moving = s.list.filter((c, i) => c.num !== i + 1).map((c) => c.key); // 只移动真正变号的章——减少重命名次数即减少出错面
-			if (!moving.length) continue;
+			for (const [from, to] of plan.map) map[from] = to;
 			scopeMaps.set(s.volId, map);
-			// 升序单遍：位置 i 的章目标位 i+1 必空（洞，或刚被前一步从该位移走时腾出）——无临时槽，中断也不会留下大号幽灵章
-			for (let i = 0; i < s.list.length; i++) {
-				if (s.list[i].num === i + 1) continue;
-				await this.moveChapterDir(storyName, s.list[i].key, i + 1);
-			}
-			movedTotal += moving.length;
+			for (const st of plan.steps) await this.moveChapterDir(storyName, st.key, st.to); // 升序单遍：目标位 i+1 此刻必空——无临时槽，中断不会留下大号幽灵章
+			movedTotal += plan.steps.length;
 		}
 
 		// 引用重写：仅受影响容器内的文件、按该容器局部映射（跨卷显式引用由 renumText 跳过）
@@ -3047,16 +3045,14 @@ private emptyState(storyName: string): StoryState {
 		const inScope = chapters.filter((c) => (c.vol ?? null) === scopeVol).sort((a, b) => a.num - b.num);
 		const nums = inScope.map((c) => c.num);
 		const newNum = pos === "before" ? ref.num : ref.num + 1;
+		const insPlan = planInsert(nums, newNum); // v0.4.6+ C10：顺延规划走纯模块（降序执行顺序由单测锁定）
 		let affectedKeys: string[] = [];
 		let path: string;
-		if (!nums.includes(newNum)) {
+		if (!insPlan.collision) {
 			path = await this.createChapterAt(storyName, newNum, title, scopeVol ?? ""); // 空位直插，无需顺延
 		} else {
-			affectedKeys = inScope.filter((c) => c.num >= newNum).map((c) => c.key); // 这些章都要 +1
-			// 降序单遍：最高号章先移，目标位 num+1 必空（最高章之上无章；其下各章的目标位刚被上一步腾出）——无临时槽，中断也不会留下大号幽灵章
-			for (let i = affectedKeys.length - 1; i >= 0; i--) {
-				await this.moveChapterDir(storyName, affectedKeys[i], parseChKey(affectedKeys[i]).num + 1);
-			}
+			affectedKeys = insPlan.shifts.map((sh) => chKey(scopeVol, sh.from)); // 这些章都要 +1
+			for (const sh of insPlan.shifts) await this.moveChapterDir(storyName, chKey(scopeVol, sh.from), sh.to); // 降序单遍（insPlan.shifts 已是降序执行序）：最高号先移，目标位必空、无临时槽
 			path = await this.createChapterAt(storyName, newNum, title, scopeVol ?? ""); // 插入位已腾空
 		}
 		const newKey = chKey(scopeVol, newNum);
@@ -3162,7 +3158,10 @@ private emptyState(storyName: string): StoryState {
 		return this.packByKeys(storyName, res.keys, outputPath);
 	}
 
-	/** 按复合键列表（已定序）装配合辑：/pack 解析完成与导出卷共用的落盘入口 */
+	/** 按复合键列表（已定序）装配合辑：/pack 解析完成与导出卷共用的落盘入口。
+	 *  v0.4.6+ 修 C1：选择跨容器（多卷/卷+书根混合）时按阅读序 1..N 连续重编号——旧版直接输出各容器本地号，
+	 *  三卷书整本合辑会出现三个「第一章」，且文件名首末号取自两端本地号（如 -第1-1章-合集）严重误导。
+	 *  单容器（单卷/书根/卷内范围）保持本地号不变。 */
 	async packByKeys(
 		storyName: string,
 		keys: string[],
@@ -3170,7 +3169,8 @@ private emptyState(storyName: string): StoryState {
 	): Promise<{ path: string; packed: Array<{ num: number; words: number }>; skipped: number[] }> {
 		const all = await this.listChapters(storyName);
 		const entries = keys.map((k) => all.find((c) => c.key === k)).filter((c): c is NonNullable<typeof c> => !!c);
-		const built = await this.buildPackParts(entries);
+		const crossContainer = new Set(entries.map((c) => c.vol ?? "")).size > 1; // 多卷/卷+书根混合＝跨容器
+		const built = await this.buildPackParts(entries, crossContainer);
 		const state = (await this.loadState(storyName)) ?? this.emptyState(storyName);
 		const title = this.bookTitle(storyName, state);
 		const first = built.packed[0].num;
@@ -3221,19 +3221,16 @@ private emptyState(storyName: string): StoryState {
 		if (!all.some((c) => picked.has(c.key))) throw new Error("没有可导出的章节");
 		const entriesOf = (volId: string | null) => all.filter((c) => (c.vol ?? null) === volId && picked.has(c.key));
 
-		const bodyRe = /^#\s.*$/m;
 		const parts: string[] = [];
 		const packed: Array<{ num: number; words: number }> = [];
 		const skipped: number[] = [];
 		const appendChapter = async (ch: (typeof all)[number]): Promise<void> => {
-			const f = this.vault.getAbstractFileByPath(this.resolveChapterDocPath(`${ch.dir.path}/章节.md`));
-			let text = f instanceof TFile ? stripAiWordMarks(await this.vault.read(f)) : ""; // 剥离错别字下划线等标记，导出合辑不含 span
-			text = doc.stripLeadingChapterHeading(text.replace(bodyRe, "").trim()); // 正文自带的「第N章 标题」行一并去掉，章节号只用代码生成
+			const text = await this.packChapterBodyText(ch); // 与 buildPackParts 共用装配（v0.4.6+ C4：只剥文档首部 H1 行，正文中间的「# 一」类分节行原样保留）
 			if (!text) {
 				skipped.push(ch.num);
 				return;
 			}
-			parts.push(`## 第${doc.numToCn(ch.num)}章 ${ch.title}\n\n${text}`);
+			parts.push(`## 第${doc.numToCn(ch.num)}章 ${ch.title}\n\n${text}`); // 导出书稿按卷分节（每节前置「第N卷 · 卷名」H1），章号沿用容器内本地号
 			packed.push({ num: ch.num, words: countPureWords(text) });
 		};
 		const volumeHeader = (v: doc.VolumeInfo): string => `# ${volSeq.get(v.id) ? `第${doc.numToCn(volSeq.get(v.id)!)}卷 · ` : ""}${v.name || v.id}`;
@@ -3268,24 +3265,33 @@ private emptyState(storyName: string): StoryState {
 		return this.writePackFile(this.deskDocsPath(storyName), fileName, outputPath, { parts, packed, skipped }); // 未指定输出路径时默认落「案头资料/」
 	}
 
-	/** /pack 与导出卷共用的合辑装配：逐章读《章节.md》正文（去 H1 标题行、再去正文开头自带的章节号行）、以分隔线拼接；空正文章节跳过并计入 skipped */
+	/** v0.4.6+ 打包共用正文装配（buildPackParts 与 packStoryByKeys 共用）：读《章节.md》→ 剥离错别字下划线等标记（导出合辑不含 span）→ stripTitleLine 只剥**文档首行**的 H1 标题（v0.4.6+ 修 C4：旧 `/^#\s.*$/m` 会把正文中间的「# 一」类分节行也删掉）→ 再剥正文自带「第N章 标题」行；返回可入合辑的正文（空串＝无正文） */
+	private async packChapterBodyText(ch: { dir: TFolder }): Promise<string> {
+		const f = this.vault.getAbstractFileByPath(this.resolveChapterDocPath(`${ch.dir.path}/章节.md`));
+		const raw = f instanceof TFile ? stripAiWordMarks(await this.vault.read(f)) : ""; // 剥离错别字下划线等标记，导出合辑不含 span
+		const noH1 = doc.stripTitleLine(raw)[0]; // 只剥首部 H1（章节文档标题行），正文其余标题行保留
+		return doc.stripLeadingChapterHeading(noH1.trim()); // 正文自带的「第N章 标题」行一并去掉，章节号只用代码生成
+	}
+
+	/** /pack 与导出卷共用的合辑装配：逐章读正文（见 packChapterBodyText）、以分隔线拼接；空正文章节跳过并计入 skipped（真实本地章号）。
+	 *  v0.4.6+ 修 C1：`renumberSeq=true`（调用方判定选择**跨容器**时传入）→ 合辑章题按选择内阅读序 1..N 连续重编号，
+	 *  杜绝多卷书整本合集里「三个卷各有三个第一章」的重复章号；单容器保持容器内本地号不变。 */
 	private async buildPackParts(
-		chapters: Array<{ key: string; num: number; title: string; dir: TFolder }>
+		chapters: Array<{ key: string; num: number; title: string; dir: TFolder }>,
+		renumberSeq = false
 	): Promise<{ parts: string[]; packed: Array<{ num: number; words: number }>; skipped: number[] }> {
-		const bodyRe = /^#\s.*$/m; // 正文标题行
 		const parts: string[] = [];
 		const packed: Array<{ num: number; words: number }> = [];
 		const skipped: number[] = [];
 		for (const ch of chapters) {
-			const f = this.vault.getAbstractFileByPath(this.resolveChapterDocPath(`${ch.dir.path}/章节.md`));
-			let text = f instanceof TFile ? stripAiWordMarks(await this.vault.read(f)) : ""; // 剥离错别字下划线等标记，导出合辑不含 span
-			text = doc.stripLeadingChapterHeading(text.replace(bodyRe, "").trim()); // 正文自带的「第N章 标题」行一并去掉，章节号只用代码生成
+			const text = await this.packChapterBodyText(ch);
 			if (!text) {
 				skipped.push(ch.num);
 				continue;
 			}
-			parts.push(`## 第${doc.numToCn(ch.num)}章 ${ch.title}\n\n${text}`); // v0.1.6+：章节号带「第」前缀，对齐 CLI /pack（如「## 第二十章 虎妖初现」）
-			packed.push({ num: ch.num, words: countPureWords(text) });
+			const displayNum = renumberSeq ? packed.length + 1 : ch.num; // 重编号按「已入辑章数」连续推进（跳过的空章不占号）
+			parts.push(`## 第${doc.numToCn(displayNum)}章 ${ch.title}\n\n${text}`); // v0.1.6+：章节号带「第」前缀，对齐 CLI /pack（如「## 第二十章 虎妖初现」）
+			packed.push({ num: displayNum, words: countPureWords(text) });
 		}
 		if (!packed.length) throw new Error("所选章节均无正文，未生成文件");
 		return { parts, packed, skipped };
