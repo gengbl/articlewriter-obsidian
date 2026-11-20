@@ -1,7 +1,7 @@
 /**
  * LLM 对话会话持久化（v0.4.6+）：纯模块——会话 Markdown 的格式化/解析、上下文压缩窗口切分与压缩提示词组装。
- * 会话落盘位置＝当前书《案头资料/AI会话/对话 YYYY-MM-DD HHMM.md》；文件是普通 Markdown，可人工编辑，
- * 面板「重新加载」按本模块 parseSession 读回。LlmChatView 只做 UI 与 LLM 调用，格式细节全在这里。
+ * 会话落盘位置＝当前书《案头资料/AI会话/》：面板固定读写《当前对话.md》（v0.4.7+），「清空对话」时旧文件改名归档为《对话 YYYY-MM-DD HHMM.md》；
+ * 文件是普通 Markdown，可人工编辑，面板「重新加载」按本模块 parseSession 读回。LlmChatView 只做 UI 与 LLM 调用，格式细节全在这里。
  */
 
 /** 一轮对话条目：role=summary 为「上下文压缩」产生的摘要轮（始终位于会话开头，只注入系统提示词、不进气泡历史原样重发） */
@@ -15,6 +15,9 @@ export interface SessionMeta {
 	created_at: string;
 	updated_at: string;
 	model: string;
+	/** v0.4.7+ 提示词轨保留窗：提示词轨＝摘要轮＋显示轨末尾 N 轮（显示与会话文件始终存完整对话，压缩只重写提示词轨）。
+	 *  缺省（字段缺失）＝提示词轨含全部轮次（旧文件/未压缩）。 */
+	prompt_keep?: number;
 }
 
 /** 会话文件的章节标记：任何「## <名>」行都是段落边界——`我`/`助手`/`摘要（上下文压缩）` 为会话轮，
@@ -38,6 +41,7 @@ export function formatSession(meta: SessionMeta, turns: SessionTurn[]): string {
 		`created_at: "${escVal(meta.created_at)}"`,
 		`updated_at: "${escVal(meta.updated_at)}"`,
 		`model: "${escVal(meta.model)}"`,
+		...(typeof meta.prompt_keep === "number" && Number.isSafeInteger(meta.prompt_keep) && meta.prompt_keep >= 0 ? [`prompt_keep: ${String(meta.prompt_keep)}`] : []),
 		"---",
 		"",
 	];
@@ -57,11 +61,12 @@ export function parseSession(raw: string): { meta: Partial<SessionMeta>; turns: 
 	if (fm) {
 		body = clean.slice(fm[0].length);
 		for (const line of fm[1].split(/\r?\n/)) {
-			const m = line.match(/^(story|created_at|updated_at|model):\s*(.*)$/);
+			const m = line.match(/^(story|created_at|updated_at|model|prompt_keep):\s*(.*)$/);
 			if (!m) continue;
 			let v = m[2].trim();
 			if (v.startsWith('"') && v.endsWith('"') && v.length >= 2) v = v.slice(1, -1).replace(/\\"/g, '"').replace(/\\\\/g, "\\");
 			const mk = m[1];
+			if (mk === "prompt_keep") { const n = Number(v); if (Number.isSafeInteger(n) && n >= 0) meta.prompt_keep = n; continue; }
 			if (mk === "story" || mk === "created_at" || mk === "updated_at" || mk === "model") meta[mk] = v;
 		}
 	}
@@ -88,6 +93,23 @@ export function parseSession(raw: string): { meta: Partial<SessionMeta>; turns: 
  *  可压缩的 user/assistant 轮不足 minCompress 时不值得压（一次 LLM 调用换不了多少空间） */
 export const COMPRESS_KEEP_ROUNDS = 2;
 export const COMPRESS_MIN_TURNS = 4;
+
+/** 自动压缩的自适应下限：预算仍超限时可只保留最近 1 轮（2 条），再把更早的 2 条并入摘要；
+ *  手动「压缩上下文」仍走 COMPRESS_MIN_TURNS=4 的保守门槛。 */
+export const AUTO_COMPRESS_MIN_TURNS = 2;
+export const AUTO_COMPRESS_MIN_KEEP_ROUNDS = 1;
+export const AUTO_COMPRESS_MAX_PASSES = 3;
+
+/** v0.4.7+ 自动压缩防抖：首轮按 `chat_compress_ratio%` 触发，一旦开始压就要求压到「阈值 − 本值」以下（下限 50），
+ *  一次多腾一段喘息空间，避免「压完刚好在线下、下一轮又超」的每轮刷屏式压缩 */
+export const AUTO_COMPRESS_HYSTERESIS_PCT = 10;
+
+/** v0.4.7+ 「不值得压」下限：待压切片估算不足 max(200, 窗口/24) token 就跳过自动压缩——省一次 LLM 调用，也不糟蹋上下文。
+ *  典型触发场景：本地模型没填 `context_window`（按缺省 8192 算）时，系统提示词＋工具开销＋回复预留就把预算顶到阈值附近，
+ *  而对话本身还很短，压了也降不下来（用户视角＝「压缩得太频繁」）。 */
+export function autoCompressMinGain(windowTokens: number): number {
+	return Math.max(200, Math.floor(windowTokens / 24));
+}
 
 /** 切分压缩窗口：返回 { toCompress（含旧摘要轮，送压缩）, keep（原样保留的尾部） }；无摘要轮时新摘要由调用方插到最前 */
 export function splitCompressWindow(turns: SessionTurn[], keepRounds = COMPRESS_KEEP_ROUNDS): { toCompress: SessionTurn[]; keep: SessionTurn[] } {
@@ -139,12 +161,25 @@ export function estimateTokens(s: string): number {
 	return cjk + Math.ceil((s.length - cjk) / 4);
 }
 
+/** 估算一整轮请求的 prompt 预算：系统提示词（含摘要块/工具规则）＋历史中的 user/assistant 轮＋本轮展开文本＋额外开销。
+ *  摘要轮不重复计入——它只折入系统提示词、不以原生 message 重发（见 LlmChatView.buildMessages）。 */
+export function estimatePromptTokens(sysContent: string, turns: SessionTurn[], pendingUser: string, extraTokens = 0): number {
+	let n = estimateTokens(sysContent) + estimateTokens(pendingUser) + extraTokens;
+	for (const t of turns) if (t.role !== "summary") n += estimateTokens(t.content);
+	return n;
+}
+
 /** 模型上下文窗口（token）：显式 context_window > 模型名 NNK 后缀启发式（`-128k`、`(128k)` 等；不匹配 72b 之类参数规模）> null（未知，不自动压缩） */
 export function chatContextWindow(cfg: { context_window?: number; model_name?: string }): number | null {
 	if (typeof cfg.context_window === "number" && Number.isSafeInteger(cfg.context_window) && cfg.context_window > 0) return cfg.context_window;
 	const m = /(\d{2,4})k\b/i.exec(cfg.model_name ?? "");
 	return m ? Number(m[1]) * 1000 : null;
 }
+
+/** v0.4.7+ 窗口未知（context_window 未填且模型名无 NNK 后缀）时自动压缩的缺省窗口假设：
+ *  宁小勿大——不假设就无法防「长对话全量历史逐轮重发」把提示词无限滚大（实测本地量化模型 ~10k token 即输出崩溃）。
+ *  模型实际窗口更大时到设置页填 context_window 即可关闭该缺省。 */
+export const DEFAULT_CHAT_WINDOW = 8192;
 
 /** 自动压缩判定：提示词估算 token＋预留回复预算 是否超过 窗口×阈值比例（ratio 取 1–100，≤0＝关闭） */
 export function shouldAutoCompress(promptTokens: number, reserveTokens: number, windowTokens: number, ratioPct: number): boolean {
@@ -155,6 +190,20 @@ export function shouldAutoCompress(promptTokens: number, reserveTokens: number, 
 /** 会话文件名（不含扩展名）：`对话 YYYY-MM-DD HHMM`；同分钟撞名由调用方加 `-2` 后缀 */export function sessionFileName(now: Date): string {
 	const p = (n: number) => String(n).padStart(2, "0");
 	return `对话 ${String(now.getFullYear())}-${p(now.getMonth() + 1)}-${p(now.getDate())} ${p(now.getHours())}${p(now.getMinutes())}`;
+}
+
+/** v0.4.7+ 固定「当前会话」文件名（不含扩展名）：LLM 面板每次打开只加载这一个文件；
+ *  「清空对话」＝把它改名归档（`对话 YYYY-MM-DD HHMM.md`）并在原位新建同名空文件。 */
+export const LIVE_SESSION_NAME = "当前对话";
+
+/** 归档会话文件的前缀（＝旧式会话文件命名，也是「旧版遗留会话」的识别前缀） */
+export const SESSION_ARCHIVE_PREFIX = "对话 ";
+
+/** 「清空对话」归档名：由 frontmatter `created_at`（`YYYY-MM-DD HHMMSS`）前 16 字符推出 `对话 YYYY-MM-DD HHMM`；
+ *  字段缺失/格式不符（旧文件、手工编辑过）回落按当前时刻 `sessionFileName(fallback)` */
+export function archiveSessionName(createdAt: string, fallback: Date): string {
+	const m = /^(\d{4})-(\d{2})-(\d{2}) (\d{2})(\d{2})/.exec(createdAt);
+	return m ? `对话 ${m[1]}-${m[2]}-${m[3]} ${m[4]}${m[5]}` : sessionFileName(fallback);
 }
 
 /** 会话时间戳（frontmatter created_at/updated_at）：本地可读 `YYYY-MM-DD HHMMSS` */

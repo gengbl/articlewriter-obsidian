@@ -24,6 +24,7 @@ void test("visible fields vary by model type and hide irrelevant settings", () =
 		"repeat_penalty",
 		"reasoning_effort",
 		"context_window",
+		"chat_tools",
 	]);
 	assert.deepEqual(getVisibleLlmFields("deepseek"), [
 		"base_url",
@@ -35,6 +36,7 @@ void test("visible fields vary by model type and hide irrelevant settings", () =
 		"repeat_penalty",
 		"reasoning_effort",
 		"context_window",
+		"chat_tools",
 		"thinking",
 	]);
 	assert.deepEqual(getVisibleLlmFields("qwen"), [
@@ -47,6 +49,7 @@ void test("visible fields vary by model type and hide irrelevant settings", () =
 		"repeat_penalty",
 		"reasoning_effort",
 		"context_window",
+		"chat_tools",
 	]);
 });
 
@@ -105,7 +108,7 @@ void test("tension_rules built-in key retired in favour of the 张力工具箱 s
 	assert.ok(!Object.keys(REF_DOC_LABELS).includes("tension_rules"));
 	for (const catalog of PHASE_REF_DOC_CATALOGS) assert.ok(!Object.keys(catalog).includes("tension_rules"));
 	assert.ok(!Object.keys(CHAT_REF_DOC_CATALOG).includes("tension_rules"));
-	assert.ok(!PHASE_REF_DOC_DEFAULTS.flat().includes("tension_rules"));
+	assert.ok(!PHASE_REF_DOC_DEFAULTS.reduce<string[]>((acc, list) => acc.concat(list), []).includes("tension_rules")); // 不用 flat＝ES2019，见 eslint.config.mjs 黑名单
 	for (const phase of [0, 1, 2, 3]) assert.ok(PHASE_REF_DOC_DEFAULTS[phase].includes(`skill:${TENSION_TOOLBOX_SKILL_NAME}`), `phase ${phase} default list`);
 });
 

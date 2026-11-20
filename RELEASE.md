@@ -13,9 +13,12 @@
 
 ## 发布门禁：no-unsafe-* lint 检测（强制）
 
-- **规则**：任何提交 / 发布前必须跑 `npm run lint`（= `eslint src/`）且**零违规**；命中以下四类中任一即视为发布失败、先修复再走后续步骤：`@typescript-eslint/no-unsafe-assignment` / `no-unsafe-call` / `no-unsafe-member-access` / `no-unsafe-return`（error/any 类型的赋值 / 调用 / 成员访问 / 返回）。
-- **工具**：devDependencies `eslint` + `typescript-eslint`（flat config），配置在仓库根 `eslint.config.mjs`——类型感知解析（`parserOptions.project: ./tsconfig.json`），只启用上述四条规则为 error，不做其他风格检查。
-- **背景与配套约定**：外部检查器（不含 `@types/node` 传递 lib 的类型环境）曾把超出 tsconfig lib（止于 ES2018）的 ES2019 API（`Array.prototype.flatMap`，src/md_docs.ts:296）判为 error 类型、一次触发全部四类告警——已改为显式循环修复。因此本门禁之外还保持既有约定：**src/ 不使用超出 tsconfig lib（≤ES2018）的 API**（先例：prompts.ts 以 exec 循环替代 matchAll(ES2020)；已知实例清单见 l3-build-deploy.md「API 版本上限」条）。
+- **规则**：任何提交 / 发布前必须跑 `npm run lint`（= `eslint src/`）且**零违规**；命中任一即视为发布失败、先修复再走后续步骤。v0.4.6+ 起门禁分三类：
+  1. 四类 `@typescript-eslint/no-unsafe-*`（error/any 类型的赋值 / 调用 / 成员访问 / 返回）；
+  2. **ES2019+ API 黑名单**（`no-restricted-properties`/`no-restricted-globals`）：flatMap/flat/trimStart/trimEnd/matchAll/replaceAll/at/Object.fromEntries/structuredClone/globalThis——把「src/ 只用 ≤ES2018 API」的约定从注释升级为硬拦截（外部检查器缺 @types/node 传递 lib 时这些退化为 error/any，曾命中 v0.4.6 评审 main.ts:5607 trimEnd）；
+  3. `no-irregular-whitespace`（模板字面量内 U+3000/NBSP＝error；普通字符串/注释/正则放行，测试数据全角字符不误伤）＋ `@typescript-eslint/no-unused-vars`（`_` 前缀豁免）。
+- **工具**：devDependencies `eslint` + `typescript-eslint`（flat config），配置在仓库根 `eslint.config.mjs`——类型感知解析（`parserOptions.project: ./tsconfig.json`），上述规则全部 error、不做其他风格检查；新规则上线前用探针文件自测（故意植入 trimEnd/flatMap/U+3000 确认被拦，v0.4.6+ 实测）。
+- **背景与配套约定**：外部检查器（不含 `@types/node` 传递 lib 的类型环境）曾把超出 tsconfig lib（止于 ES2018）的 ES2019 API（`Array.prototype.flatMap`，src/md_docs.ts:296）判为 error 类型、一次触发全部四类告警——已改为显式循环修复。先例：prompts.ts 以 exec 循环替代 matchAll(ES2020)；已知实例清单见 l3-build-deploy.md「API 版本上限」条。
 
 ## 代码提交流程（每次任务收尾）
 

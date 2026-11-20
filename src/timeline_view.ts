@@ -14,6 +14,15 @@ export interface TlRow extends TimelineEntry {
 	scope: TlScope;
 	sourcePath: string; // 来源《时间线.md》的 vault 相对路径
 	sourceLabel: string; // 层级标签（书籍级 / 卷 · <卷名> / 章 · 第N章 <标题>），合并展示时随条目显示出处
+	lane: string; // v0.4.7+ 多时间线泳道名（默认《时间线.md》＝"默认"、《时间线-战斗线.md》＝"战斗线"）
+	laneIndex: number; // v0.4.7+ 泳道序号（按快照 lanes 顺序）：驱动行配色 .tl-l<idx>
+}
+
+/** v0.4.7+ 多时间线泳道：一条时间线（可跨书/卷/章多份同名文档），面板按泳道配色、可单独筛显 */
+export interface TlLane {
+	name: string; // 泳道名："默认"（时间线.md）或《时间线-xxx.md》里的 xxx
+	count: number; // 该泳道的事件条数（各容器同名泳道合并计数）
+	paths: string[]; // 该泳道涉及的文档路径（可能多份）
 }
 
 /** 合并时间轴的轮廓节点（v0.3.1+ 起复用 outline_tree 通用算法）：条目 + 子节点。**挂父按文档结构**：父＝**同一《时间线.md》内**其前最近一条级别更小的条目（跨文档不挂父）；无更小级别前驱者为根 */
@@ -42,9 +51,16 @@ export interface TlSnapshot {
 	rows: TlRow[]; // 书/卷/章全部条目合并，文档枚举顺序（面板据此按文档结构挂父，再扁平化为时间升序渲染）
 	totalCount: number; // 全部层解析出的事件总条数
 	bookTimelinePath: string; // 书级《时间线.md》路径（＝头部「＋ 事件」根级新增的写入目标；文件可尚不存在，mutate 时自动创建）
+	lanes: TlLane[]; // v0.4.7+ 本书全部时间线泳道（含仅默认一条时），顺序＝行内首次出现序（默认泳道恒最先）
 }
 
 /** 某行是否命中筛选词（人物名 + 事件名 + 事件正文匹配） */
+/** v0.4.7+ 条目显示名：标题带事件名用事件名；**无名条目（纯时间点标题）把「事件」字段首行当作名字**——面板名称徽章、关联索引/候选、各类文案统一走此口径（不改写文档，标题仍无名） */
+function tlRowName(r: { title?: string; event: string }): string {
+	const t = (r.title ?? "").trim();
+	return t || (r.event ?? "").split("\n")[0].trim();
+}
+
 function matchRow(r: TlRow, q: string): boolean {
 	return (r.chars.join(" ") + " " + (r.title ?? "") + " " + r.event).toLowerCase().includes(q);
 }
@@ -55,6 +71,13 @@ const TL_DAY_MS = 86_400_000; // 一天的毫秒数（时间点间隔换算用�
 const TL_PX_PER_DAY = 5; // 时间比例间距基准比例尺：100% 缩放下每过一天拉开约 5px（密度调节另有 Ctrl|Shift 滚轮缩放）；随画布缩放等比变化
 const TL_SPACER_MAX_DAYS = 90; // 比例留白上限（天）：相邻间隔在此内按真实比例出留白；超出压成定高「⋯ 约 N 年 ⋯」时间跳跃标记块——防极端跨度的孤立点（如公元前测试时间点）把画布拉到无法使用
 const TL_DRAG_PX_PER_UNIT = 50; // 拖动手势灵敏度：纯年/只含月条目每纵向拖动 50 布局 px 增减 1 年/1 月（含日条目仍按 TL_PX_PER_DAY 逐日）。不能用 TL_PX_PER_DAY 换算拖动——年精度条目 1 年＝365 天要拖 1825px，远超可操作距离，且年间隔被 TL_SPACER_MAX_DAYS 压成定高 skip 块后画面间距与真实天数脱钩
+const TL_LANE_COLORS = ["#8a8f98", "#4f8cff", "#e8683a", "#34b37a", "#c9a227", "#b5527d", "#2f9e9e", "#8a63d2", "#a0632b", "#5b7fd4"]; // v0.4.7+ 多时间线泳道配色：索引＝laneIndex % 长度（默认泳道恒 0＝中性灰）；CSS 类 .tl-l<n> 与汇总 chip 内联色同一口径
+const TL_LANE_CLASS_MAX = 9; // 泳道配色类封顶（超出取模，避免 CSS 类无限增长）
+
+/** 泳道序号 → 配色（十六进制）与 CSS 类名（`.tl-l<n>`，样式见 styles.css） */
+export function tlLaneStyle(index: number): { color: string; cls: string } {
+	return { color: TL_LANE_COLORS[index % TL_LANE_COLORS.length], cls: `tl-l${String(Math.min(index, TL_LANE_CLASS_MAX))}` };
+}
 
 /** 时间点 → 绝对毫秒时刻（仅用于相邻条目间隔计算与总跨度统计）：缺月按一月、缺日按一号；旧数据小数年份先截断为整年再进 Date.UTC；极端超范围年份得 NaN 时退化为「年 × 365 天」近似，保证结果有限且对升序输入单调不减 */
 function tlEpochMs(p: Pick<TimelineEntry, "time" | "month" | "day">): number {
@@ -65,7 +88,8 @@ function tlEpochMs(p: Pick<TimelineEntry, "time" | "month" | "day">): number {
 
 /**
  * 时间线面板（自定义 ItemView，可停靠任意区域、重载保留位置）：
- * 把当前小说**书根 / 卷目录 / 章节目录三层《时间线.md》**合并成一条自上而下的纵向时间轴——条目按时间点（支持 年 / 年-月 / 年-月-日）升序排列，每条带来源层级标签；标题深度即事件级别（#=一级、##=二级、###=三级，可更深）。**父子关系按文档结构**：同一文档内「父＝其前最近一条级别更小的条目」（跨文档不挂父）；轮廓树仅决定嵌套深度与折叠归属，**渲染是扁平的一条时间升序序列**——子事件即使时间排在别的更大事件之后也仍属于结构父，缩进按轮廓深度、圆点固定在主轴。
+ * 把当前小说**书根 / 卷目录 / 章节目录三层全部「时间线开头」的文档**（默认《时间线.md》＋扩展《时间线-***.md》，v0.4.7+ 多时间线）合并成一条自上而下的纵向时间轴——条目按时间点（支持 年 / 年-月 / 年-月-日）升序排列，每条带来源层级标签；标题深度即事件级别（#=一级、##=二级、###=三级，可更深）。**父子关系按文档结构**：同一文档内「父＝其前最近一条级别更小的条目」（跨文档不挂父）；轮廓树仅决定嵌套深度与折叠归属，**渲染是扁平的一条时间升序序列**——子事件即使时间排在别的更大事件之后也仍属于结构父，缩进按轮廓深度、圆点固定在主轴。
+ * **多时间线（v0.4.7+）**：同容器内《时间线-战斗线.md》之类文档自动并入面板，与默认时间线**按时间合并绘制**；每条泳道一种配色（徽章描边 + 非默认泳道的彩色名称 chip），底部汇总行下给出「时间线」图例（色点＋名称＋条数，点击＝只看该泳道／恢复全部），头部另有时间线下拉；「＋ 事件」写入当前所选泳道的文档（未选＝书级《时间线.md》）。
  * **时间比例间距**：相邻条目的垂直间隔按其时间差成比例拉开（基准 5px/天、90 天内按真实比例出留白，超过 90 天的间隔压成定高「⋯ 约 N 年 ⋯」时间跳跃标记块防极端点拉爆画布；密度另可用 Ctrl|Shift 滚轮缩放调节）；筛选模式下改紧凑堆叠（命中稀疏不成比例）。汇总行附「跨度 N 年 M 月」（最早到最晚的总时长）。
  * 顶部筛选框可按人物/事件关键词过滤（筛选时显示命中条目及其祖先链、忽略折叠状态）。**双击**条目在编辑器打开来源文件并定位到该时间点标题行（单击不触发，避免误触）；**点击圆点**切换有子事件条目的折叠状态；**右键条目**弹出节点菜单（编辑/添加子事件/添加同级/完成切换/删除）。
  * **事件编辑（v0.3.3+ 合并大事件后由本面板承担，原「大事件」面板已退场）**：头部「＋ 事件」＝书级《时间线.md》文档末尾追加一级节点；条目行右侧动作组（＋／✎／✓○／🗑）＝添加子事件、编辑、完成状态快速切换、删除（删除经 ConfirmModal，根节点＝整棵子树删除）；条目还可带**影响**行（内联小字）与**关联** chip（点击跳到目标事件所在文档标题，并给该条目 1.2s 高亮闪烁）。所有写回按条目 `sourcePath` 定位（updateTimelineBlock/insertTimelineBlock/deleteTimelineBlock），书级文档不存在时自动创建；子事件级别封顶 6（标题深度上限）。
@@ -76,7 +100,6 @@ function tlEpochMs(p: Pick<TimelineEntry, "time" | "month" | "day">): number {
  */
 export class TimelineView extends ItemView {
 	static readonly VIEW_TYPE = "articlewriter-timeline";
-
 	private getData: () => Promise<TlSnapshot>;
 	private getCharOptions: () => Promise<string[]>;
 	private built = false;
@@ -90,6 +113,9 @@ export class TimelineView extends ItemView {
 	private busy = false;
 	private lastSnap: TlSnapshot | null = null;
 	private filterText = "";
+	// v0.4.7+ 多时间线：泳道筛选（""＝全部时间线；否则泳道名）＋本次渲染趟的「泳道名→序号」索引（renderBody 每趟重建，条目 laneIndex 与配色/图例同一口径）
+	private laneFilter = "";
+	private laneNameIdx = new Map<string, number>();
 	// 折叠中的条目 id 集合（圆点点击切换；重渲染不清零、切书重置）
 	private collapsedIds = new Set<string>();
 	private lastStoryKey = "";
@@ -197,7 +223,7 @@ export class TimelineView extends ItemView {
 		this.renderBody(snap);
 	}
 
-	/** 固定头部：倍率标签（缩放≠100% 时出现、点击复位）+ 筛选输入框 + 「＋ 事件」（新增根级事件）+ 刷新按钮（不展示工作目录与小说列表，面板只呈现时间线本身） */
+	/** 固定头部：倍率标签（缩放≠100% 时出现、点击复位）+ 筛选输入框 + 「时间线」下拉（v0.4.7+ 多时间线：全部/单条泳道，多条时才出现）+ 「＋ 事件」（新增根级事件，写入当前所选时间线）+ 刷新按钮（不展示工作目录与小说列表，面板只呈现时间线本身） */
 	private renderTop(): void {
 		const filterRow = this.topEl.createDiv({ cls: "aw-rel-filter-row" }); // 复用关系面板的头部行布局
 		this.canvas.attachZoomLabel(filterRow); // 倍率标签（缩放≠100% 时出现、点击复位；类与提示经 CanvasPanel 选项给出，内部已按当前缩放刷新显示）
@@ -207,17 +233,54 @@ export class TimelineView extends ItemView {
 			this.filterText = input.value; // 只重渲染主体区（头部保持不动，输入焦点与光标不丢）
 			if (this.lastSnap) this.renderBody(this.lastSnap);
 		});
+		const lanes = this.lanesOf(this.lastSnap);
+		if (lanes.length > 1) { // 只有一条时间线时不出下拉（无意义），多条时可按泳道单独筛显/合并绘制
+			const sel = filterRow.createEl("select", { cls: "aw-tl-lanesel" });
+			sel.createEl("option", { text: "全部时间线", value: "" });
+			for (const l of lanes) sel.createEl("option", { text: `${l.name}（${String(l.count)}）`, value: l.name });
+			sel.value = lanes.some((l) => l.name === this.laneFilter) ? this.laneFilter : "";
+			setTooltip(sel, "选择要绘制的时间线：默认＝《时间线.md》，其它＝《时间线-***.md》；「＋ 事件」会写入所选时间线的文档");
+			sel.addEventListener("change", () => {
+				this.laneFilter = sel.value;
+				if (this.lastSnap) this.renderBody(this.lastSnap);
+			});
+		}
 		const btns = filterRow.createSpan({ cls: "aw-st-actions" });
-		btns.createEl("button", { text: "＋ 事件" }).addEventListener("click", () => void this.openAddRoot()); // 根级新增：追加到书级《时间线.md》末尾（不存在则自动创建）
+		btns.createEl("button", { text: "＋ 事件" }).addEventListener("click", () => void this.openAddRoot()); // 根级新增：追加到当前所选时间线文档末尾（默认＝书级《时间线.md》，不存在则自动创建）
 		btns.createEl("button", { text: "刷新" }).addEventListener("click", () => void this.refresh());
 	}
 
-	/** 主体区：单一合并纵向时间轴（**扁平的一条时间升序序列**、每条带来源标签；缩进＝文档结构轮廓深度、折叠按结构子树整棵隐藏；相邻条目间按时间差插比例间隔——90 天内为留白块 .aw-tl-spacer〔基准 5px/天〕、超出压成定高时间跳跃标记 .aw-tl-skip；筛选模式紧凑堆叠）+ 无有效条目文档的格式提示；汇总行固定显示在底部 sumEl（非筛选视图附「跨度」＝最早到最晚总时长，按全 rows min/max 计算）。重渲染只清 zoomEl——缩放/滚动位置/折叠状态保持 */
+	/** v0.4.7+ 快照里的泳道列表（按 laneIndex 序，默认泳道恒最先）；无快照＝空 */
+	private lanesOf(snap: TlSnapshot | null): TlLane[] {
+		return snap?.lanes ?? [];
+	}
+
+	/** 当前「＋ 事件」的写入目标文档：选中某条泳道＝该泳道已有文档（优先书级→卷级→章级首个真实文档），否则书级《时间线.md》 */
+	private addTargetPath(snap: TlSnapshot): string {
+		if (!this.laneFilter) return snap.bookTimelinePath;
+		const inLane = snap.rows.filter((r) => r.lane === this.laneFilter);
+		for (const scope of ["book", "volume", "chapter"] as const) {
+			const hit = inLane.find((r) => r.scope === scope);
+			if (hit) return hit.sourcePath;
+		}
+		return this.lanesOf(snap).find((l) => l.name === this.laneFilter)?.paths[0] ?? snap.bookTimelinePath;
+	}
+
+	/** 主体区：单一合并纵向时间轴（**扁平的一条时间升序序列**、每条带来源标签；缩进＝文档结构轮廓深度、折叠按结构子树整棵隐藏；相邻条目间按时间差插比例间隔——90 天内为留白块 .aw-tl-spacer〔基准 5px/天〕、超出压成定高时间跳跃标记 .aw-tl-skip；筛选模式紧凑堆叠）+ 无有效条目文档的格式提示；汇总行固定显示在底部 sumEl（非筛选视图附「跨度」＝最早到最晚总时长，按可见行 min/max 计算）。
+	 *  v0.4.7+ 多时间线：同书全部《时间线.md》/《时间线-***.md》合并绘制，每条泳道一种配色（行 `.tl-l<n>` 类 + 非默认泳道的彩色名称 chip）；头部下拉选单条时间线时只显示该泳道条目（时间线 chip 与图例随可见行变化）。重渲染只清 zoomEl——缩放/滚动位置/折叠状态保持 */
 	private renderBody(snap: TlSnapshot): void {
 		this.zoomElClear();
-		// 关联 chip 的跳转索引：仅带事件名的条目入索引（旧「纯时间点」标题无名 → 不建索引、相关引用只能定位到文档级）
+		// 本次渲染趟的泳道索引：按快照 lanes 序（默认恒 0），缺失名按出现序补号
+		this.laneNameIdx.clear();
+		for (const l of this.lanesOf(snap)) this.laneNameIdx.set(l.name, this.laneNameIdx.size);
+		for (const r of snap.rows) if (!this.laneNameIdx.has(r.lane)) this.laneNameIdx.set(r.lane, this.laneNameIdx.size);
+		const visible = this.laneFilter ? snap.rows.filter((r) => r.lane === this.laneFilter) : snap.rows;
+		// 关联 chip 的跳转索引：带事件名（或无名条目按事件字段推导的显示名，tlRowName）的条目入索引（v0.4.7+ 无名条目也可被关联命中）
 		this.relatedIndex.clear();
-		for (const r of snap.rows) if (r.title) this.relatedIndex.set(r.title.trim().toLowerCase(), r.id);
+		for (const r of visible) {
+			const n = tlRowName(r);
+			if (n) this.relatedIndex.set(n.toLowerCase(), r.id);
+		}
 		const ph = this.placeholderFor(snap);
 		if (ph) {
 			this.sumEl.empty();
@@ -232,11 +295,11 @@ export class TimelineView extends ItemView {
 			this.collapsedIds.clear();
 		}
 		const q = this.filterText.trim().toLowerCase();
-		const flat = this.buildFlatRows(snap.rows); // 逐文档挂父建树 → 扁平化 → 时间升序（v0.3.3+ 折叠修复，见 buildFlatRows）
+		const flat = this.buildFlatRows(visible); // 逐文档挂父建树 → 扁平化 → 时间升序（v0.3.3+ 折叠修复，见 buildFlatRows）
 		this.tlSpacingOn = q === ""; // 时间比例间距仅非筛选视图（筛选命中稀疏，按真实间隔会拉出荒长空白）
 		this.tlPrevMs = null;
 		if (q) {
-			const matchCount = snap.rows.filter((r) => matchRow(r, q)).length;
+			const matchCount = visible.filter((r) => matchRow(r, q)).length;
 			if (!matchCount) {
 				this.zoomEl.createDiv({ text: `没有匹配「${this.filterText.trim()}」的时间线条目。`, cls: "aw-dim aw-st-hint" });
 			} else {
@@ -245,7 +308,8 @@ export class TimelineView extends ItemView {
 				for (const f of flat) if (matchRow(f.node.item, q)) for (const a of f.ancestors) ancestorIds.add(a.id);
 				for (const f of flat) if (matchRow(f.node.item, q) || ancestorIds.has(f.node.item.id)) this.renderRow(list, f, q, null);
 			}
-			this.sumEl.setText(`匹配 ${String(matchCount)} 条（共 ${String(snap.totalCount)} 条）`);
+			this.sumEl.setText(`匹配 ${String(matchCount)} 条（共 ${String(visible.length)} 条）`);
+			this.renderLaneLegend(visible);
 		} else {
 			const list = this.zoomEl.createDiv({ cls: "aw-tl-list" });
 			for (const f of flat) {
@@ -256,16 +320,16 @@ export class TimelineView extends ItemView {
 			}
 			const perScope: Record<TlScope, number> = { book: 0, volume: 0, chapter: 0 };
 			let doneCount = 0;
-			for (const r of snap.rows) {
+			for (const r of visible) {
 				perScope[r.scope]++;
 				if (r.done) doneCount++;
 			}
 			let spanTxt = "";
-			if (snap.rows.length >= 2) {
+			if (visible.length >= 2) {
 				// rows 为文档顺序（非时间序）→ min/max 遍历求最早到最晚总时长（缺月日按年初/一号计）
 				let lo = Number.POSITIVE_INFINITY;
 				let hi = Number.NEGATIVE_INFINITY;
-				for (const r of snap.rows) {
+				for (const r of visible) {
 					const ms = tlEpochMs(r);
 					if (ms < lo) lo = ms;
 					if (ms > hi) hi = ms;
@@ -273,9 +337,31 @@ export class TimelineView extends ItemView {
 				const days = Math.round((hi - lo) / TL_DAY_MS);
 				if (days > 0) spanTxt = `｜跨度 ${this.formatTlSpan(days)}`;
 			}
-			this.sumEl.setText(`共 ${String(snap.totalCount)} 条：书籍级 ${String(perScope.book)} · 卷 ${String(perScope.volume)} · 章 ${String(perScope.chapter)}${doneCount ? `｜已完成 ${String(doneCount)}` : ""}${spanTxt}`);
+			const scopeTotal = this.laneFilter ? `共 ${String(visible.length)} 条（时间线「${this.laneFilter}」）` : `共 ${String(snap.totalCount)} 条`;
+			this.sumEl.setText(`${scopeTotal}：书籍级 ${String(perScope.book)} · 卷 ${String(perScope.volume)} · 章 ${String(perScope.chapter)}${doneCount ? `｜已完成 ${String(doneCount)}` : ""}${spanTxt}`);
+			this.renderLaneLegend(visible);
 		}
 		this.canvas.apply(); // 内容尺寸变化 → 同步 sizer 与滚动限位
+	}
+
+	/** v0.4.7+ 汇总行之下的时间线图例：可见行涉及的每条泳道一个「色点＋名称＋条数」chip（点击切换为该泳道单独显示／回到全部）；只有一条泳道时不占行 */
+	private renderLaneLegend(visible: TlRow[]): void {
+		const counts = new Map<string, number>();
+		for (const r of visible) counts.set(r.lane, (counts.get(r.lane) ?? 0) + 1);
+		if (counts.size < 2) return;
+		const row = this.sumEl.createDiv({ cls: "aw-tl-legend" });
+		row.createSpan({ text: "时间线", cls: "aw-dim aw-tl-rels-lbl" });
+		for (const [name, n] of counts) {
+			const chip = row.createSpan({ cls: "aw-tl-lane-chip" });
+			chip.createSpan({ cls: "aw-tl-lane-dot" }).style.backgroundColor = tlLaneStyle(this.laneNameIdx.get(name) ?? 0).color;
+			chip.createSpan({ text: name === "默认" ? "默认（时间线.md）" : name });
+			chip.createSpan({ text: String(n), cls: "aw-dim aw-tl-lane-n" });
+			setTooltip(chip, this.laneFilter === name ? "当前只显示这条时间线，点击恢复全部" : `只显示「${name}」这条时间线（合并绘制＝选「全部时间线」）`);
+			chip.addEventListener("click", () => {
+				this.laneFilter = this.laneFilter === name ? "" : name;
+				if (this.lastSnap) this.render(this.lastSnap); // 重渲头部（下拉选中项同步）＋主体
+			});
+		}
 	}
 
 	/** 某节点的全部后代条数（折叠提示用；countSubtree 含自身，减 1） */
@@ -283,7 +369,7 @@ export class TimelineView extends ItemView {
 		return countSubtree(node) - 1;
 	}
 
-	/** 快照 rows（文档枚举顺序）→ 渲染趟扁平时间线：按 **sourcePath 连续段**逐文档 buildOutlineTree 挂父（跨文档不挂父——否则章文档首条会挂到前一书/卷文档末条名下，破坏 addChild/delete 等文档内子树锚点语义），深度优先扁平化为 {node, depth, ancestors}，再按 (年,月,日) 稳定升序——同刻条目保持树序。渲染趟据此逐行输出：缩进＝depth、可见性＝祖先链折叠判定 */
+	/** 快照 rows（文档枚举顺序）→ 渲染趟扁平时间线：按 **sourcePath 连续段**逐文档 buildOutlineTree 挂父（跨文档不挂父——否则章文档首条会挂到前一书/卷文档末条名下，破坏 addChild/delete 等文档内子树锚点语义），深度优先扁平化为 {node, depth, ancestors}，再按 (年,月,日) 稳定升序——同刻条目保持树序。渲染趟据此逐行输出：缩进＝depth、可见性＝祖先链折叠判定。v0.4.7+ 泳道筛选后的子集仍保持文档连续性（同一文档的条目 lane 相同、枚举上必相邻），挂父语义不变 */
 	private buildFlatRows(rows: TlRow[]): TlFlatNode[] {
 		const flat: TlFlatNode[] = [];
 		let i = 0;
@@ -360,7 +446,7 @@ export class TimelineView extends ItemView {
 			const where = snap.useVolumes
 				? "书根 `<书名>/时间线.md`、卷目录 `<卷名>-时间线.md`、章节目录 `<编号>-<标题>-时间线.md`"
 				: "书根 `<书名>/时间线.md` 或章节目录 `<编号>-<标题>-时间线.md`";
-			return `还没有时间线：点头部「＋ 事件」新建，或在${where}手动记录——每条事件一个标题块，标题＝时间点 + 空格 + 事件名（如 \`## 120-06-15 黑市陷阱\`；只写时间点＝无名条目），可带 \`- 人物：A、B\` / \`- 完成：是\` / \`- 事件：…\` / \`- 描述：…\` / \`- 影响：…\` / \`- 关联：标题A、标题B\` 字段行；标题深度即事件级别（\`#\`=一级、\`##\`=二级、\`###\`=三级，可更深＝更细的子事件），面板会把三层合并成一条按时间排序的时间轴并按级别嵌套展示。`;
+			return `还没有时间线：点头部「＋ 事件」新建，或在${where}手动记录——每条事件一个标题块，标题＝时间点 + 空格 + 事件名（如 \`## 120-06-15 黑市陷阱\`；只写时间点＝无名条目），可带 \`- 人物：A、B\` / \`- 完成：是\` / \`- 事件：…\` / \`- 详情：…\`（旧写法 \`- 描述：\` 也兼容） / \`- 影响：…\` / \`- 关联：标题A、标题B\` 字段行；标题深度即事件级别（\`#\`=一级、\`##\`=二级、\`###\`=三级，可更深＝更细的子事件），面板会把三层合并成一条按时间排序的时间轴并按级别嵌套展示。\n多条时间线：默认那份叫《时间线.md》，其它按《时间线-名字.md》命名（如《时间线-战斗线.md》），放在同一层容器里即自动并入面板、按泳道配色。`;
 		}
 		return null;
 	}
@@ -377,7 +463,7 @@ export class TimelineView extends ItemView {
 		const cappedDepth = Math.min(f.depth, 6); // 深度封顶 6（与 tl-d6 深度类同一口径）：缩进、导引线列数、圆点列、短桩列都按它
 		const hasKids = node.children.length > 0;
 		this.pushTlSpacer(parent, row, cappedDepth); // 时间比例间距（筛选趟/首条为 no-op），随同贯穿本行深度的层级导引线
-		const item = parent.createDiv({ cls: `aw-tl-item lv-${String(Math.min(row.level, 5))} tl-d${String(cappedDepth)}${row.done ? " is-tl-done-row" : ""}` }); // 级别类＝圆点样式；深度类＝行缩进＋圆点所在层级列；done 行另挂 is-tl-done-row（条目名弱化样式用，替代 :has 选择器）
+		const item = parent.createDiv({ cls: `aw-tl-item lv-${String(Math.min(row.level, 5))} tl-d${String(cappedDepth)}${row.done ? " is-tl-done-row" : ""} ${tlLaneStyle(this.laneNameIdx.get(row.lane) ?? row.laneIndex).cls}` }); // 级别类＝圆点样式；深度类＝行缩进＋圆点所在层级列；done 行另挂 is-tl-done-row（条目名弱化样式用，替代 :has 选择器）；v0.4.7+ 泳道类＝该时间线配色（圆点/时间徽章着色）
 		this.attachTlGuides(item, cappedDepth, hasKids, true); // 层级导引线必须是 item 的前 cappedDepth 个子元素（styles.css 按 nth-child 映射列坐标），圆点/折叠标在其后
 		this.nodeEls.set(row.id, item); // 条目行索引（关联 chip 跳转后高亮闪烁定位；拖动时按结构子树收集后代行）
 		const dot = item.createSpan({ cls: "aw-tl-dot" }); // 节点圆点：落在本行深度列的圆心（与竖向层级通道同一坐标），有子事件时可点击切换折叠
@@ -402,16 +488,27 @@ export class TimelineView extends ItemView {
 			caret.addEventListener("dblclick", (ev: MouseEvent) => ev.stopPropagation());
 		}
 		item.createSpan({ text: timelineTimeText(row), cls: "aw-tl-time" }); // 时间徽章紧跟圆点：负 margin 从内容缩进拉回圆点右后侧（几何见 styles.css .aw-tl-time），读作「该圆点＝此时间点」；前有 caret 时由兄弟选择器免掉拉回（.aw-tl-caret + .aw-tl-time）
-		if (row.title) item.createSpan({ text: row.title, cls: "aw-tl-name" }); // 事件名（旧「纯时间点」标题无名 → 不渲染）
+		const rowName = tlRowName(row); // v0.4.7+ 无名条目把「事件」字段首行当事件名（文档标题仍无名、不改写）
+		if (rowName) {
+			const nameEl = item.createSpan({ text: rowName, cls: "aw-tl-name" }); // 事件名徽章（无名条目＝事件字段首行，悬停注明出处）
+			if (!row.title) setTooltip(nameEl, "该事件没有事件名：以「事件」字段首行作为名称显示");
+		}
 		if (row.done) item.createSpan({ text: "✓ 已完成", cls: "aw-tl-done" });
 		if (row.sourceLabel) item.createSpan({ text: row.sourceLabel, cls: "aw-dim aw-tl-src" });
+		if (row.lane && row.lane !== "默认") { // v0.4.7+ 多时间线：非默认泳道挂彩色名称 chip（默认时间线不占位，配色已由圆点/徽章体现）
+			const laneChip = item.createSpan({ text: row.lane, cls: "aw-tl-lane aw-tl-lane-tag" });
+			const color = tlLaneStyle(this.laneNameIdx.get(row.lane) ?? row.laneIndex).color;
+			laneChip.style.borderColor = color;
+			laneChip.style.color = color;
+			setTooltip(laneChip, `时间线「${row.lane}」· ${row.sourcePath}`);
+		}
 		const wrap = item.createDiv({ cls: "aw-tl-evwrap" });
 		if (row.chars.length) {
 			const chars = wrap.createDiv({ cls: "aw-tl-chars" });
 			for (const c of row.chars) chars.createSpan({ text: c, cls: "aw-tl-char" });
 		}
 		if (row.event) wrap.createDiv({ text: row.event, cls: "aw-tl-event" });
-		else if (!row.chars.length && !row.title) wrap.createDiv({ text: "（未填写事件与人物）", cls: "aw-dim aw-st-hint" });
+		else if (!row.chars.length && !rowName) wrap.createDiv({ text: "（未填写事件与人物）", cls: "aw-dim aw-st-hint" });
 		if (row.impact) wrap.createDiv({ text: `影响：${row.impact}`, cls: "aw-tl-impact" });
 		if (row.related?.length) {
 			// 关联 chip：事件名命中索引 → 点击跳到该条目所在文档并闪烁高亮；未命中（无名/未找到）→ 置灰不可点
@@ -568,19 +665,19 @@ export class TimelineView extends ItemView {
 		const newText = rewriteTimelineEntryTime(text, row.srcHeading, row.srcOrdinal, { time: row.time, month: row.month, day: row.day }, np);
 		if (newText === null) { new Notice("写回失败：源文档自面板加载后可能已变化，请点「刷新」后再拖"); return; }
 		try { await this.app.vault.adapter.write(f.path, newText); } catch (e) { new Notice(`写入《时间线.md》失败：${e instanceof Error ? e.message : String(e)}`); return; }
-		new Notice(`已将「${(row.event || "").split("\n")[0] || timelineTimeText(np)}」移至 ${timelineTimeText(np)}（${row.sourceLabel}）`);
+		new Notice(`已将「${tlRowName(row) || timelineTimeText(np)}」移至 ${timelineTimeText(np)}（${row.sourceLabel}）`);
 		void this.refresh(); // 立即重渲染；vault modify 事件还会触发防抖刷新——双保险
 	}
 
 	// ---------- 事件编辑（v0.3.3+ 合并大事件：原事件树面板的增删改/完成切换由本面板承担） ----------
 
-	/** 关联事件候选：当前快照全部条目的事件名（去重、去空白；excludeTitle 排除自身防自关联） */
-	private eventOptions(excludeTitle?: string): string[] {
+	/** 关联事件候选：当前快照全部条目的显示名（tlRowName：事件名，无名条目＝事件字段首行；去重、去空白；excludeName 排除自身防自关联） */
+	private eventOptions(excludeName?: string): string[] {
 		const seen = new Set<string>();
 		const out: string[] = [];
-		const ex = (excludeTitle ?? "").trim().toLowerCase();
+		const ex = (excludeName ?? "").trim().toLowerCase();
 		for (const r of this.lastSnap?.rows ?? []) {
-			const t = (r.title ?? "").trim();
+			const t = tlRowName(r);
 			if (!t) continue;
 			const k = t.toLowerCase();
 			if (k === ex || seen.has(k)) continue;
@@ -635,21 +732,21 @@ export class TimelineView extends ItemView {
 		void this.refresh();
 	}
 
-	/** 头部「＋ 事件」＝根级新增：level 1、写书级《时间线.md》文档末尾（afterHeading null；文档不存在时经 mutate 自动创建）。不能用 level 2 追加末尾——buildOutlineTree 父＝前最近更小级别条目，会挂成最后一条一级事件的子事件 */
+	/** 头部「＋ 事件」＝根级新增：level 1、写**当前所选时间线**的文档末尾（未筛选泳道＝书级《时间线.md》；选中某条时间线＝该泳道已有文档，优先书级→卷级→章级；文档不存在时经 mutate 自动创建）。不能用 level 2 追加末尾——buildOutlineTree 父＝前最近更小级别条目，会挂成最后一条一级事件的子事件 */
 	private async openAddRoot(): Promise<void> {
 		const snap = this.lastSnap;
 		if (!snap) { new Notice("时间线尚未加载，请先点「刷新」"); return; }
-		await this.openAddAt(1, "新增事件", snap.bookTimelinePath, null, 0, undefined, undefined);
+		await this.openAddAt(1, "新增事件", this.addTargetPath(snap), null, 0, undefined, undefined);
 	}
 
 	/** 添加子事件：级别＝父+1（封顶 6），锚点＝该条目自身（insertTimelineBlock 挂整棵子树末尾）、写回该条目所在文档。缺定位信息的条目退化为文档末尾追加 */
 	private async openAddChild(row: TlRow): Promise<void> {
-		await this.openAddAt(Math.min(6, row.level + 1), `添加子事件（父：${row.title || timelineTimeText(row)}）`, row.sourcePath, row.srcHeading ?? null, row.srcOrdinal ?? 0, row, row);
+		await this.openAddAt(Math.min(6, row.level + 1), `添加子事件（父：${tlRowName(row) || timelineTimeText(row)}）`, row.sourcePath, row.srcHeading ?? null, row.srcOrdinal ?? 0, row, row);
 	}
 
 	/** 添加同级事件：级别＝该条目级别，锚点＝该条目自身（插到其整棵子树之后＝其后首个同级）、写回该条目所在文档 */
 	private async openAddSibling(row: TlRow): Promise<void> {
-		await this.openAddAt(row.level, `添加同级事件（同${row.title || timelineTimeText(row)}级）`, row.sourcePath, row.srcHeading ?? null, row.srcOrdinal ?? 0, row, row);
+		await this.openAddAt(row.level, `添加同级事件（同${tlRowName(row) || timelineTimeText(row)}级）`, row.sourcePath, row.srcHeading ?? null, row.srcOrdinal ?? 0, row, row);
 	}
 
 	/** 新增节点公共流程：先取人物候选再开弹窗；弹窗内时间点必填（非法内联报错）；写回按 level/锚点校验——锚点级别必须比新节点浅一级否则标题序列非法（提示先刷新），通过则 insertTimelineBlock 到锚点子树末尾（锚点 null＝文档末尾） */
@@ -657,13 +754,13 @@ export class TimelineView extends ItemView {
 		if (anchorHeading !== null && level <= (anchorRow?.level ?? 1)) { new Notice("锚点条目级别与新节点不符，请先点「刷新」后重试"); return; }
 		let chars: string[] = [];
 		try { chars = await this.getCharOptions(); } catch { /* 人物候选读取失败：弹窗人物区显示「暂无」 */ }
-		const related = this.eventOptions(anchorRow?.title);
+		const related = this.eventOptions(anchorRow ? tlRowName(anchorRow) : undefined);
 		const initial: Partial<EventEditResult> = { timeText: defaultTimeRow ? timelineTimeText(defaultTimeRow) : "" };
 		const modal = new EventEditModal(this.app, label, initial, chars, related, (res) => {
 			const p = parseTimelineTime(res.timeText); // 弹窗已校验；闭包里对 row 的窄化会丢失，这里就地复解析收窄类型
 			if (!p) { new Notice(`时间点无效：「${res.timeText}」`); return; }
 			const entry: TimelineEntryInput = { level, time: p.time, month: p.month, day: p.day, title: res.title, chars: res.chars, event: res.event, desc: res.desc, impact: res.impact, related: res.related, done: res.done };
-			void this.mutate(`已新增事件「${res.title || timelineTimeText(p)}」（级别 ${String(level)}）`, docPath, (text) => insertTimelineBlock(text, entry, anchorHeading, anchorOrdinal));
+			void this.mutate(`已新增事件「${tlRowName(res) || timelineTimeText(p)}」（级别 ${String(level)}）`, docPath, (text) => insertTimelineBlock(text, entry, anchorHeading, anchorOrdinal));
 		});
 		modal.open();
 	}
@@ -685,12 +782,12 @@ export class TimelineView extends ItemView {
 			impact: row.impact ?? "",
 			related: row.related ?? [],
 		};
-		const related = this.eventOptions(row.title);
+		const related = this.eventOptions(tlRowName(row));
 		const modal = new EventEditModal(this.app, "编辑事件", initial, chars, related, (res) => {
 			const p = parseTimelineTime(res.timeText);
 			if (!p) { new Notice(`时间点无效：「${res.timeText}」`); return; }
 			const entry: TimelineEntryInput = { level: row.level, time: p.time, month: p.month, day: p.day, title: res.title, chars: res.chars, event: res.event, desc: res.desc, impact: res.impact, related: res.related, done: res.done };
-			void this.mutate(`已更新事件「${res.title || timelineTimeText(p)}」`, row.sourcePath, (text) => updateTimelineBlock(text, head, ord, entry));
+			void this.mutate(`已更新事件「${tlRowName(res) || timelineTimeText(p)}」`, row.sourcePath, (text) => updateTimelineBlock(text, head, ord, entry));
 		});
 		modal.open();
 	}
@@ -709,7 +806,7 @@ export class TimelineView extends ItemView {
 		if (!row.srcHeading || row.srcOrdinal == null) { new Notice("该条目缺少来源定位信息，请先点「刷新」"); return; }
 		const head = row.srcHeading;
 		const ord = row.srcOrdinal;
-		const name = row.title || timelineTimeText(row);
+		const name = tlRowName(row) || timelineTimeText(row);
 		const kids = countSubtree(node);
 		new ConfirmModal(
 			this.app,

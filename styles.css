@@ -3,6 +3,19 @@
 	margin-left: 0.5em;
 }
 
+/* 对话历史选择器（SessionPickerModal）行：主行＝文件名＋轮数，副行＝字数＋首句摘要（灰、小、单行截断） */
+.aw-session-pick-label {
+	font-size: 0.95em;
+}
+
+.aw-session-pick-sub {
+	color: var(--text-muted);
+	font-size: 0.8em;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
 /* 输入弹窗标题与输入框之间的说明文字（TextInputModal hint，支持多行） */
 .aw-prompt-hint {
 	color: var(--text-muted);
@@ -117,6 +130,19 @@
 
 .aw-chat-view .aw-chat-input textarea {
 	min-height: 3.4em;
+}
+
+/* 对话面板底部按钮行（v0.4.7+，类名避开 v0.4.6 已删除的 `.aw-chat-actions`）：
+   左组＝压缩上下文 / 重新加载对话 / 清空对话，右组＝发送 / 停止生成（DOM 顺序即此顺序）。
+   「发送」用 margin-left:auto 把右组整体顶到右缘（两按钮仍成组挨着），窄屏换行时右组自成一行。 */
+.aw-chat-view .aw-chat-btns {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 6px;
+}
+.aw-chat-view .aw-chat-btns .aw-chat-send {
+	margin-left: auto;
 }
 
 /* @ 引用候选弹窗：锚定在输入框上方，↑↓/Enter/Esc 或点击选择 */
@@ -1407,6 +1433,7 @@
 .tooltip.aw-tl-tip {
 	max-width: 220px;
 	font-size: var(--font-ui-smaller);
+	text-align: left; /* v0.4.7+：核心 .tooltip 默认居中，多行描述读起来参差不齐——左对齐 */
 }
 
 /* 时间跳跃标记块：相邻条目间隔超过 90 天时把比例留白压成此定高行（居中「⋯ 约 N 年 ⋯」小字），防极端跨度的孤立时间点拉爆画布；list 竖线自动贯穿；position:relative 供通高导引线挂接（跳跃里层级通道同样不断） */
@@ -1471,6 +1498,72 @@
 	flex-wrap: wrap;
 	gap: 3px;
 	margin-top: 3px;
+}
+
+/* ===== v0.4.7+ 多时间线（合并绘制＋泳道配色）=====
+   泳道配色类 .tl-l<n>（n＝laneIndex，0＝默认《时间线.md》中性灰；由 timeline_view tlLaneStyle 给出同一色表）：
+   时间徽章描边取泳道色（级别色仍由圆点/大小承担，两套视觉通道不冲突）。 */
+.aw-tl-item.tl-l0 .aw-tl-time { border-color: #8a8f98; }
+.aw-tl-item.tl-l1 .aw-tl-time { border-color: #4f8cff; }
+.aw-tl-item.tl-l2 .aw-tl-time { border-color: #e8683a; }
+.aw-tl-item.tl-l3 .aw-tl-time { border-color: #34b37a; }
+.aw-tl-item.tl-l4 .aw-tl-time { border-color: #c9a227; }
+.aw-tl-item.tl-l5 .aw-tl-time { border-color: #b5527d; }
+.aw-tl-item.tl-l6 .aw-tl-time { border-color: #2f9e9e; }
+.aw-tl-item.tl-l7 .aw-tl-time { border-color: #8a63d2; }
+.aw-tl-item.tl-l8 .aw-tl-time { border-color: #a0632b; }
+.aw-tl-item.tl-l9 .aw-tl-time { border-color: #5b7fd4; }
+
+/* 非默认泳道的名称 chip（默认时间线不渲染，配色已由徽章描边体现） */
+.aw-tl-lane-tag {
+	display: inline-block;
+	margin-right: 6px;
+	padding: 0 6px;
+	font-size: 0.75em;
+	border: 1px solid var(--text-faint);
+	border-radius: 999px;
+}
+
+/* 头部时间线下拉（多条时间线时出现：全部 / 单条泳道） */
+.aw-tl-lanesel {
+	margin-right: 6px;
+	font-size: 0.85em;
+	max-width: 14em;
+}
+
+/* 汇总行下方时间线图例：色点＋名称＋条数，点击切换为该泳道单独显示／恢复全部 */
+.aw-tl-legend {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 6px;
+	margin-top: 3px;
+	font-size: 0.8em;
+}
+
+.aw-tl-lane-chip {
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
+	padding: 1px 7px;
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 999px;
+	cursor: pointer;
+}
+
+.aw-tl-lane-chip:hover {
+	background: var(--background-modifier-hover);
+}
+
+.aw-tl-lane-dot {
+	width: 8px;
+	height: 8px;
+	border-radius: 50%;
+	background: var(--text-faint);
+}
+
+.aw-tl-lane-n {
+	font-variant-numeric: tabular-nums;
 }
 
 .aw-tl-char {
@@ -1663,8 +1756,21 @@
 	min-width: 0;
 	box-sizing: border-box;
 }
-.aw-form .setting-item-control button:first-child {
+/* 选择器必须是「直接子按钮」（`>`）：Obsidian 的自定义面板（tab 页头、模型配置列表/详情）也挂在 controlEl 内，
+   写成后代选择器会把面板里第一个按钮（「全局设置」tab、「＋ 新建配置」）一并顶到右缘。 */
+.aw-form .setting-item-control > button:first-child {
 	margin-left: auto;
+}
+/* 自定义面板（`.aw-phase-tabs-container`：tab 页头＋模型配置列表/详情＋阶段设置/引用文档清单）里的按钮
+   复位为「按内容宽度＋贴左」。根因是 Obsidian 新版核心有一条后代选择器
+   `.setting-item:not(:is(.mod-toggle,.mod-navigable,.mod-action,.setting-item-heading,.mod-list *)) .setting-item-control button:not(.clickable-icon){width:100%;max-width:100%}`
+   （特异性 (0,4,1)）：它把 controlEl 内**所有**按钮拉成每人一整行、文字居中——tab 按钮、「＋ 新建配置」、
+   「← 返回模型配置列表」、引用文档增删钮全中招（光归零 margin-left 无效）。下面选择器 (0,5,1) 压过它；
+   面板内的 input/select 不吃这条复位（仍按核心 width:100% 撑满），贴右的按钮组仍由各自容器（`.aw-llm-item-actions`/`.aw-llm-actions`）负责。 */
+.aw-form .setting-item.aw-phase-tabs-setting .setting-item-control .aw-phase-tabs-container button {
+	width: auto;
+	max-width: 100%;
+	margin-left: 0;
 }
 /* 自定义行（非 Setting 渲染）同口径：标签列左对齐、控件列吃满剩余
    （.aw-llm-row/.aw-phase-model-row 已是「标签左＋控件 flex:1」，此处只补默认左对齐，防主题右对齐继承） */
@@ -1801,7 +1907,7 @@
 	margin-top: 12px;
 }
 
-/* 事件编辑弹窗（EventEditModal）人物/关联下拉多选：已选各占一行（值 + ✕ 移除），行尾下拉补选；下拉复用 .aw-addchar-sel/.aw-addchar-relrm */
+/* 事件编辑弹窗（EventEditModal）人物/关联下拉多选：v0.4.7+ 已选胶囊排成一行＋行尾下拉补选（溢出横向滚动）；下拉复用 .aw-addchar-sel/.aw-addchar-relrm */
 .aw-ev-msel-label {
 	margin: 10px 0 2px;
 	font-weight: 600;
@@ -1815,16 +1921,49 @@
 	margin: 4px 0 6px;
 }
 
-.aw-ev-msel-row {
+/* v0.4.7+（二次调整）：已选胶囊独占一行、**人多自动换行**；「＋」补选下拉单独下一行。
+   padding-top＋行距 8px 给胶囊右上角外溢的 ✕ 留空间（wrap 后下一行胶囊的 ✕ 上探 6px，行距过小会压到上一行） */
+.aw-ev-msel-chips {
 	display: flex;
+	flex-wrap: wrap;
 	align-items: center;
-	gap: 6px;
+	gap: 8px 6px;
+	padding: 8px 4px 2px 2px;
+}
+
+/* 已选胶囊：小圆角胶囊，✕ 挂在右上角（半压胶囊边缘，一眼可辨「这是可移除的」） */
+.aw-ev-msel-chip {
+	position: relative;
+	flex: 0 0 auto;
+	display: inline-block;
+	padding: 2px 10px 2px 9px;
+	font-size: 0.9em;
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 999px;
+	background: var(--background-secondary);
 }
 
 .aw-ev-msel-val {
-	flex: 1 1 auto;
 	min-width: 0;
-	overflow-wrap: anywhere; /* 长事件标题换行不撑破弹窗 */
+	max-width: 16em; /* 长事件名/关联标题：胶囊内省略号截断（悬停 title 看全名），防单行被撑爆 */
+	display: inline-block;
+	vertical-align: middle;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+/* 胶囊右上角删除小按钮：小圆点贴角（覆盖 .aw-addchar-relrm 的 padding:0 8px） */
+.aw-ev-msel-chipx {
+	position: absolute;
+	top: -6px;
+	right: -6px;
+	width: 15px;
+	height: 15px;
+	padding: 0;
+	font-size: 9px;
+	line-height: 1;
+	border-radius: 50%;
 }
 
 .aw-ev-msel-empty {
@@ -2045,6 +2184,7 @@
 .aw-phase-tabs-container {
 	margin-top: 16px;
 	padding: 0 16px 12px; /* 内容区边缘留白：外层 setting-item 的 padding 已被清零，这里补回左右+底部间距（底部=编辑/保存按钮下方） */
+	text-align: left; /* 核心 .setting-item-control 是 text-align:end，会继承进本容器：面板里的裸按钮（「← 返回模型配置列表」等 inline 按钮）会被推到右边，这里显式复位 */
 	/* 父级 .setting-item-control 是 flex 容器，本元素作为 flex item 默认按内容宽度自适应——
 	   显示模式下 pre 中文长文本会把它撑满，编辑模式下 textarea 固有宽度窄导致整体收缩、右侧大片空白；
 	   显式 width:100% 让两种模式都占满整行 */

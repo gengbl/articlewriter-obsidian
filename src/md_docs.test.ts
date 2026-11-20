@@ -7,11 +7,13 @@ import {
 	formatTimelineBlock,
 	formatTimelines,
 	insertTimelineBlock,
+	isTimelineDocName,
 	parseTimelineHeading,
 	parseTimelines,
 	rewriteTimelineEntryTime,
 	sliceVolOutlineChapters,
 	timelineGenFormatOk,
+	timelineLaneOf,
 	updateTimelineBlock,
 	type TimelineEntryInput,
 } from "./md_docs";
@@ -247,4 +249,32 @@ void test("sliceVolOutlineChapters：按章号窗口取块，前言恒保留，�
 	assert.equal(sliceVolOutlineChapters(outline, 1, 4), outline.trim(), "窗口覆盖全书 → 与原文等价（调用方据此回退整份）");
 	assert.equal(sliceVolOutlineChapters(outline, 9, 12), "# 第一卷 风起 卷大纲\n\n## 卷设计\n本卷从低谷走向反击，止于初次正面交锋。", "窗口无章块 → 只剩前言");
 	assert.equal(sliceVolOutlineChapters("## 第1章 甲\n内容\n", 2, 3), "", "无前言且窗口无章块 → 空串");
+});
+
+test("多时间线命名口径（v0.4.7+）：时间线开头文档识别与泳道名解析", () => {
+	assert.equal(isTimelineDocName("时间线.md"), true, "默认时间线");
+	assert.equal(isTimelineDocName("时间线-战斗线.md"), true, "扩展时间线");
+	assert.equal(isTimelineDocName("时间线-.md"), false, "「时间线-」后无名字不算");
+	assert.equal(isTimelineDocName("章节时间线.md"), false, "非「时间线」开头不算");
+	assert.equal(isTimelineDocName("时间线.md.bak"), false, "非 .md 不算");
+	assert.equal(timelineLaneOf("时间线.md"), "默认");
+	assert.equal(timelineLaneOf("时间线-战斗线.md"), "战斗线");
+	assert.equal(timelineLaneOf("01-初见-时间线.md", ["01-初见"]), "默认", "章节目录旧命名剥前缀后为默认泳道");
+	assert.equal(timelineLaneOf("01-初见-时间线-感情线.md", ["01-初见"]), "感情线", "旧命名带泳道名");
+	assert.equal(timelineLaneOf("风起-时间线-支线.md", ["风起"]), "支线", "卷目录旧前缀");
+	assert.equal(timelineLaneOf("时间线-卷首-序.md"), "卷首-序", "名字里仍可含连字符（只剥第一段前缀）");
+});
+
+test("时间线字段更名 描述→详情（v0.4.7+）：旧格式兼容解析、写回统一出新格式", () => {
+	const legacy = ["## 120 黑市陷阱", "- 人物：张三", "- 事件：潜入黑市", "- 描述：", "```text", "旧式描述正文", "```"].join("\n");
+	const [e] = parseTimelines(legacy);
+	assert.equal(e.desc, "旧式描述正文", "旧 `- 描述：` 仍解析为详情字段");
+	const out = formatTimelineBlock(e);
+	assert.ok(out.includes("- 详情："), "写回统一输出 `- 详情：`");
+	assert.ok(!out.includes("- 描述："), "不再输出旧字段名");
+	const back = parseTimelines(out);
+	assert.equal(back[0].desc, "旧式描述正文", "新格式解析往返一致");
+	const e2 = parseTimelines("## 121 甲\n- 详情：详情走详情字段\n");
+	assert.equal(e2[0].desc, "详情走详情字段", "「详情」不再作事件别名、归详情字段");
+	assert.equal(e2[0].event, "", "事件字段不被 详情 抢占");
 });

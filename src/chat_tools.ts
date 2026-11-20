@@ -148,6 +148,9 @@ export const CHAT_TOOLS_PAYLOAD = CHAT_TOOLS.map((t) => ({ type: "function" as c
 /** 一轮对话最多执行几轮工具调用（防模型反复调用不收口） */
 export const MAX_TOOL_ROUNDS = 5;
 
+/** 面板回答被输出上限截断（finish_reason=length）时自动续写的最多次数（再截断则提示调大 max_tokens） */
+export const MAX_TRUNCATION_CONTINUES = 3;
+
 /** 工具结果回灌给模型前的截断上限（字符）——章正文/搜索结果可能很长，防单条 tool 消息炸窗口 */
 export const TOOL_RESULT_MAX_CHARS = 12000;
 
@@ -161,4 +164,143 @@ export function parseToolArgs(raw: string): Record<string, unknown> {
 	} catch {
 		return {};
 	}
+}
+
+/** ---------- v0.4.7+ 工具名与参数容错（模型训练语料里通用 agent 都叫 read_file/grep/write_file，容易串名） ---------- */
+
+/** 常见幻觉工具名 → 本插件真实工具名。命中＝改派（参数由各工具自己宽松接收）。
+ *  **只映射无破坏性后果的**：删除/移动类幻觉名一律不改派，走 unknownToolHint 让模型自己改名重试。 */
+export const TOOL_NAME_ALIASES: Record<string, string> = {
+	read_file: "read_doc",
+	read: "read_doc",
+	view_file: "read_doc",
+	open_file: "read_doc",
+	cat: "read_doc",
+	show_file: "read_doc",
+	list_files: "list_chapters",
+	list_documents: "list_chapters",
+	grep: "search_vault",
+	glob: "search_vault",
+	find: "search_vault",
+	search: "search_vault",
+	search_files: "search_vault",
+	write_file: "save_content_to_file",
+	create_file: "save_content_to_file",
+	save_file: "save_content_to_file",
+	append_file: "save_content_to_file",
+	edit_file: "save_content_to_file",
+};
+
+/** 工具名解析：真名原样返回；命中别名→改派（mapped=true，供状态行标注）；未知→原样返回（调用方走 unknownToolHint） */
+export function resolveToolName(raw: string): { name: string; mapped: boolean } {
+	const t = (raw ?? "").trim();
+	if (CHAT_TOOLS.some((d) => d.name === t)) return { name: t, mapped: false };
+	const alias = TOOL_NAME_ALIASES[t.toLowerCase()];
+	return alias ? { name: alias, mapped: true } : { name: t, mapped: false };
+}
+
+function levenshtein(a: string, b: string): number {
+	const prev: number[] = [];
+	for (let j = 0; j <= b.length; j++) prev[j] = j;
+	for (let i = 1; i <= a.length; i++) {
+		let diag = prev[0];
+		prev[0] = i;
+		for (let j = 1; j <= b.length; j++) {
+			const up = prev[j];
+			prev[j] = Math.min(prev[j] + 1, prev[j - 1] + 1, diag + (a[i - 1] === b[j - 1] ? 0 : 1));
+			diag = up;
+		}
+	}
+	return prev[b.length];
+}
+
+/** 拼错/串名时按编辑距离给候选（含前缀共享加分），用于纠正提示里列「最接近的工具」 */
+export function nearestToolNames(raw: string, limit = 3): string[] {
+	const t = (raw ?? "").trim().toLowerCase();
+	if (!t) return [];
+	const scored = CHAT_TOOLS.map((d) => {
+		const n = d.name.toLowerCase();
+		const base = 1 - levenshtein(t, n) / Math.max(t.length, n.length);
+		const bonus = n.startsWith(t) || t.startsWith(n.slice(0, n.indexOf("_") + 1)) ? 0.25 : 0;
+		return { name: d.name, score: base + bonus };
+	})
+		.filter((x) => x.score >= 0.4)
+		.sort((a, b) => b.score - a.score);
+	return scored.slice(0, Math.max(0, limit)).map((x) => x.name);
+}
+
+/** 未知工具名的纠正型 tool 结果：列候选＋全量名单，让下一轮自己改对（比「未知工具：x」这种死胡同强） */
+export function unknownToolHint(raw: string): string {
+	const cands = nearestToolNames(raw, 3)
+		.map((n) => {
+			const d = CHAT_TOOLS.find((x) => x.name === n);
+			return d ? `${n}（${d.description.slice(0, 70)}）` : n;
+		})
+		.join("；");
+	const all = CHAT_TOOLS.map((d) => d.name).join("、");
+	return `没有名为「${raw}」的工具，这次调用未执行。${cands ? `\n最接近的候选：${cands}` : ""}\n可用工具：${all}。请按这些名字和参数重新调用——不存在 read_file / list_files / grep / write_file 这类通用工具名。`;
+}
+
+/** read_doc 文档名的常见参数键（模型爱写成 name/path/file） */
+export const DOC_NAME_ARG_KEYS = ["doc_name", "docName", "doc", "docname", "name", "doc_type", "file", "filename", "file_name", "path"];
+
+/** 章节号类参数的常见键 */
+export const CHAPTER_NUM_ARG_KEYS = ["chapter_num", "chapter", "chapter_number", "chapterNo", "num", "n", "chapter_id"];
+
+/** 卷名类参数的常见键 */
+export const VOL_NAME_ARG_KEYS = ["volume_name", "volume", "volumeName", "vol", "vol_name", "name"];
+
+/** 取第一个非空字符串参数（键名宽松） */
+export function pickStringArg(args: Record<string, unknown>, keys: string[]): string {
+	for (const k of keys) {
+		const v = args[k];
+		if (typeof v === "string" && v.trim()) return v.trim();
+	}
+	return "";
+}
+
+/** 取第一个可转成正整数的参数（接受 "18"、"第18章"、"chapter 18" 这类写法）；取不到返回 NaN */
+export function pickNumberArg(args: Record<string, unknown>, keys: string[]): number {
+	for (const k of keys) {
+		const v = args[k];
+		if (typeof v === "number" && Number.isFinite(v)) return Math.trunc(v);
+		if (typeof v === "string" && v.trim()) {
+			const digits = v.replace(/[^\d]/g, "");
+			if (digits) {
+				const n = Number(digits);
+				if (Number.isFinite(n)) return n;
+			}
+		}
+	}
+	return NaN;
+}
+
+/** 内置文档名同义写法（含模型常写的文件名形式） */
+export const DOC_NAME_SYNONYMS: Record<string, string> = {
+	世界设定: "世界观",
+	设定: "世界观",
+	书籍大纲: "大纲",
+	全书大纲: "大纲",
+	总大纲: "大纲",
+	book_outline: "大纲",
+	目录: "大纲",
+	关系: "人物关系",
+	人物: "人物关系",
+	年表: "时间线",
+	timeline: "时间线",
+	指南: "策划指南",
+	规划指南: "策划指南",
+	状态: "故事状态",
+	进度: "故事状态",
+	story_state: "故事状态",
+};
+
+/** 文档名归一：去《》〔〕引号与 .md 与目录前缀，再过同义表；结果仍可能是原词（交给调用方判有效） */
+export function normalizeDocName(raw: string): string {
+	let s = (raw ?? "").replace(/[《》【】\[\]"'`「」]/g, "").trim();
+	s = s.replace(/\.md$/i, "");
+	const slash = s.lastIndexOf("/");
+	if (slash >= 0) s = s.slice(slash + 1);
+	s = s.trim();
+	return DOC_NAME_SYNONYMS[s] ?? DOC_NAME_SYNONYMS[s.toLowerCase()] ?? s;
 }

@@ -19,12 +19,12 @@ src/main.ts ──esbuild(bundle)──▶ release/main.js ──非生产构建
 
 | 模块 | 行 | 职责 | 关键导出 |
 | --- | --- | --- | --- |
-| `main.ts` | 9593 | 插件入口＋全部命令实现＋面板装配＋设置页（内部区块见下节） | `default ArticleWriterPlugin` |
+| `main.ts` | 10413 | 插件入口＋全部命令实现＋面板装配＋设置页（内部区块见下节） | `default ArticleWriterPlugin` |
 | `story_manager.ts` | 4028 | 磁盘结构层：书/卷/章实体目录与文档的 CRUD、状态文档、章节重排顺延（号码算术调 `chapter_moves.ts`）、打包合集（跨容器选择连续重编号）、扫描重建 | `StoryManager`、`CHAPTER_SUFFIX_TO_BASE`、`WritingDocPaths`、章节/卷读写全套、`writeDoc`（v0.4.6+ public） |
 | `chapter_moves.ts` | 55 | 章节重排**纯决策层**（v0.4.6+ C10，无 obsidian 依赖）：`planRenumber`（容器内补洞压缩 1..N，升序单遍只挪变号章）、`hasAnyGap`（断档判定）、`planInsert`（插章冲突→降序顺延规划）；搬移/快照/引用重写仍在 story_manager，执行序必须与 plan 一致 | `planRenumber`、`hasAnyGap`、`planInsert` |
 | `prompts.ts` | 1763 | 各生成阶段提示词组装（纯函数，不触 Vault/LLM）：编写章节、大纲族、策划指南、人物分析、deai/查重/错字等；上下文入参收 `bookDocs/volDocs/chapterDocs` 预装配文档串 | `build*Prompt`、各 `*_SYSTEM_PROMPT`、`CleanReport`、`cleanRelationshipsDoc` |
 | `md_docs.ts` | 1115 | MD 文本解析/序列化：人物/场景/关系/伏笔/世界观字段级 parse↔format、章选解析、拆分卷大纲 | `CharacterDoc/SceneDoc/…`、`parse*/format*`、`splitVolOutlineByChapter`（v0.4.3+ 同族 `sliceVolOutlineChapters`：按章号窗口取块，供编写文章阶段前后 N 章大纲节选） |
-| `modals.ts` | 1931 | 通用弹窗库（27 个导出 Modal/SuggestModal，含 v0.4.3+ `InspirationKitModal` 灵感工具包弹窗） | `TextInputModal`、`ActionMenuModal`、`TextPanelModal`、`ConfirmModal`、`InspirationKitModal`… |
+| `modals.ts` | 2009 | 通用弹窗库（29 个导出 Modal/SuggestModal，含 v0.4.3+ `InspirationKitModal` 灵感工具包弹窗、v0.4.7+ `AwGuideModal` 通用引导弹窗＝h3＋`.aw-prompt-hint` 多行＋动作按钮组（启动无书引导用它）、v0.4.7+ `SessionPickerModal` 对话历史选择器（SuggestModal，label＋sub 两行）） | `TextInputModal`、`ActionMenuModal`、`TextPanelModal`、`ConfirmModal`、`InspirationKitModal`、`AwGuideModal`、`SessionPickerModal`… |
 | `relationship_view.ts` | 795 | 人物关系面板（ItemView，SVG 图＋列表；v0.4.4+ 图表的节点坐标、分级与弧线 path 不再就地算，改调 `graph_layout.ts`） | `RelationshipView`、`RelSnapshot` |
 | `status_view.ts` | 806 | 「写字台」面板（ItemView，书/卷/章树＋动作分发；v0.4.3+ 案头资料右键「灵感工具包…」） | `StatusView`、`StatusAction`、`StatusSnapshot` |
 | `timeline_view.ts` | 771 | 时间线面板（ItemView；定位到文档行改走共用件 `editor_nav.revealEditorLine`） | `TimelineView`、`TlSnapshot` |
@@ -32,7 +32,11 @@ src/main.ts ──esbuild(bundle)──▶ release/main.js ──非生产构建
 | `cast_analyzer.ts` | 516 | `analyze-cast` 纯逻辑：逐章 JSON 聚合、span 定层、同名合并 | 聚合/定层函数 |
 | `outline_cast.ts` | ~290 | 大纲阶段人物/关系增量分层（v0.4.3+）：附录要求/拆分、`OutlineCastTracker` 逐章定层与增量写盘计划 | `OutlineCastTracker`、`splitOutlineCastAppendix`、`outlineCastAppendixInstruction` |
 | `graph_layout.ts` | 436 | 人物关系图（图表模式）纯几何＋纯排序（v0.4.4+，无 DOM/无 vault）：`nodeRadius`/`labelFontSize`（按连线数分级）、`hubOf`（连线最多者＝枢纽）、`adjacencyMap`、`chainOrder`（贪心邻接链、旋转到枢纽居首）、`forceLayout`（**默认布局**：退火式力导向→硬碰撞消解→以枢纽为锚点两轴摊满画布→枢纽挪回锚点（`alignShift`）→逐点夹进画布；`hubUp` 即「把主角向上提」）、`ringLayout(count,cx,cy,rx,ry,degrees)`（椭圆环，留作对照）、`edgeCurvePath(a,b)` 出 SVG path `d`＝**向上拱的二次贝塞尔弧**（控制点＝弦两法向里朝上（−y）的一支，凸出量夹 [12,50]＝弦长·0.18，并按上边界再夹 `bow ≤ 2·(my−TOP_PAD)`；端点按节点半径裁到圆周外并按对方圆周收口；竖直弦固定向右拱）、`curvePoint(d,t)` 弧上取点 | `forceLayout`、`edgeCurvePath`、`chainOrder`、`adjacencyMap`、`nodeRadius`、`labelFontSize` |
-| `llm_chat_view.ts` | 500 | 聊天面板（ItemView，流式、工具注入） | `LlmChatView` |
+| `llm_chat_view.ts` | 1105 | 聊天面板（ItemView，流式、工具注入；v0.4.7+ 双轨历史＋固定会话文件《当前对话.md》＋历史选择器＋截断自动续写＋碎片三级链＋压缩防抖＋闲聊闸门） | `LlmChatView` |
+| `chat_intent.ts` | 32 | 对话面板「这条消息算不算纯闲聊」纯判定（v0.4.7+，无 IO）：问候套话整句正则、承认短句放行、动作意图词宽松匹配＋短句长度阈值 | `isPureChatter`、`CHATTER_MAX_CHARS` |
+| `chat_tools.ts` | 306 | 对话工具登记表（21 个）＋`parseToolArgs`；v0.4.7+ 工具名/参数容错：`TOOL_NAME_ALIASES`/`resolveToolName`（串名改派）、`nearestToolNames`/`unknownToolHint`（纠正型 tool 结果）、`pickStringArg`/`pickNumberArg`/`normalizeDocName`＋`*_ARG_KEYS` | `CHAT_TOOLS`、`CHAT_TOOLS_PAYLOAD`、`resolveToolName`、`unknownToolHint`、`normalizeDocName` |
+| `err.ts` | 5 | 错误对象→可读文本的共用件（v0.4.7+ 提取自聊天面板的 `e instanceof Error ? e.message : String(e)`，Notice/状态行统一用） | `errMsg` |
+| `chat_session.ts` | 213 | 会话持久化/压缩纯模块（v0.4.6+）：`formatSession`/`parseSession` 往返、压缩窗口切分与提示词、token 估算与窗口识别；v0.4.7+ `LIVE_SESSION_NAME`/`SESSION_ARCHIVE_PREFIX`/`archiveSessionName` 固定文件与归档名、`AUTO_COMPRESS_HYSTERESIS_PCT`/`autoCompressMinGain` 自动压缩防抖 | `formatSession`、`parseSession`、`shouldAutoCompress`、`LIVE_SESSION_NAME`、`autoCompressMinGain` |
 | `banned_words.ts` | 291 | 禁用词清单解析（唯一事实源＝`SKILLS/网文高频禁用词清单.md`，v0.3.6+ Skill 化）、句式简化、AI 词检测标红（纯函数） | `BannedWordsData`、`findAiWordHits`（~~`buildBannedWordsBlock`/`buildMergedBannedBlock`~~ 专用注入函数已随 v0.3.6+ 禁用词 Skill 化删除、~~`stripGuideCategoryBlock`~~ 曾用于剥指南「禁用词」类目，已随 v0.3.5+ 写作指南体系整体废弃删除） |
 | `llm_client.ts` | 382 | OpenAI 兼容 chat/completions 封装（流式/非流式、错误装饰、前缀缓存读数） | `chatCompletion`、`chatStream`、`readCacheStats`/`cacheStatsText`、`LlmConfigDoc` 消费 |
 | `prompts.test.ts` 等 14 个 `*.test.ts` | 288 起 | 纯函数单测（node --test，`npm test` 的 entries 列表在 package.json）；v0.4.3+ 新增 `llm_client.test.ts`（缓存读数口径）、`cast_analyzer.test.ts`（逐章分析钉点落点）、`deai_ledger.test.ts`（AI 味清单渲染与状态回填）、`inspiration.test.ts`（灵感文档解析↔渲染/按行增删往返、CRLF 保住换行风格）；v0.4.4+ 新增 `graph_layout.test.ts`（力导向确定性／点全落在画布内／枢纽居首且摆到中心偏上／圆点互不重叠／弧一律向上拱且不越顶边／端点裁到圆周外与两圆重叠时不推过头／交换端点侧向一致）；v0.4.6+ 新增 `chapter_moves.test.ts`（补洞升序单遍／插章降序顺延／断档判定）。**新增测试文件必须同时加进 package.json 的 entries** | — |
@@ -45,6 +49,7 @@ src/main.ts ──esbuild(bundle)──▶ release/main.js ──非生产构建
 | `deai_ledger.ts` | 139 | 连续编写 AI 味登记表（v0.4.3+）：`DeaiLedger`/`DeaiLedgerEntry` 数据结构＋《案头资料/AI味清单.md》纯渲染（状态图标、汇总、句子折叠、每节机器可读键行 `<!-- aw-deai-key:… -->`）＋`parseDeaiLedgerDoc` 回读解析（供「补做去AI味」续做中途停止的章），无 IO | `renderDeaiLedger`、`parseDeaiLedgerDoc`、`ledgerCounts`、`DEAI_LEDGER_DOC_NAME` |
 | `usage_guide_default.ts` | 8 | `.md=text` 内联文档的唯一导出壳（docs/使用说明.md → work_dir《使用说明.md》）。`tension_rules_default.ts` 已随 v0.4.3+ 张力规则并入张力工具箱删除；`banned_words_default.ts` 已随 v0.3.6 禁用词 Skill 化删除 | 文本常量 |
 | `md.d.ts` | 4 | `*.md` 模块声明（配 loader） | — |
+| `usage_doc_stamp.ts` | 30 | 《使用说明.md》**版本戳**纯模块（v0.4.7+）：写出＝首行注释戳 `articlewriter:usage-doc-version X.Y.Z`＋一行可见版本提示（先剥旧戳/旧提示行＝幂等）；`usageDocNeedsRegen`＝缺失/为空/无戳/戳版本≠当前版本即重建（升级直接覆盖、不留备份）——启动自检 `syncUsageDocOnStartup`／切目录 `seedUsageDoc`／`generate-usage-doc` 命令三处共用；测试 `usage_doc_stamp.test.ts` 4 条 | `stampUsageDoc`、`usageDocVersion`、`usageDocNeedsRegen` |
 
 ## 依赖分层（相对 import，实测无环）
 

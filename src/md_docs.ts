@@ -895,7 +895,7 @@ export interface TimelineEntry {
 	title?: string; // 事件名（标题行时间点之后的空格分隔文本；旧纯时间点标题缺省＝无名）
 	chars: string[]; // 涉及人物（空数组=未标注）
 	event: string; // 事件（简短，面板内联显示；多行原文，已去字段前缀与代码围栏标记）
-	desc?: string; // 描述（详细，仅面板悬停 Tip 显示、不内联渲染；未写则缺省）
+	desc?: string; // 详情（v0.4.7+ 字段更名：写回出 `- 详情：`，旧 `- 描述：` 兼容解析；仅面板悬停 Tip 显示、不内联渲染；未写则缺省）
 	impact?: string; // 影响（别名 后果/代价/事件影响；合并自大事件列表）
 	related?: string[]; // 关联（别名 相关/关联事件；顿号/逗号分隔的其它事件名，面板 chip 跳转）
 	done?: boolean; // 完成状态（仅 true 时写出 `- 完成：是` 行；缺省＝未完成，面板 ✓/○ 快速切换）
@@ -950,7 +950,7 @@ export function parseTimelineHeading(head: string): { point: TimelinePoint; titl
 	return { point, title: m[2] };
 }
 
-/** 正文行并入 cur 块最近出现的事件/描述/影响字段（围栏内容与无字段前缀自由文本同口径） */
+/** 正文行并入 cur 块最近出现的事件/详情/影响字段（围栏内容与无字段前缀自由文本同口径） */
 function tlPushBody(cur: { target: "event" | "desc" | "impact"; eventLines: string[]; descLines: string[]; impactLines: string[] }, line: string): void {
 	cur[cur.target === "desc" ? "descLines" : cur.target === "impact" ? "impactLines" : "eventLines"].push(line);
 }
@@ -959,7 +959,7 @@ function tlPushBody(cur: { target: "event" | "desc" | "impact"; eventLines: stri
  * 解析《时间线.md》：按 ATX 标题（`# `–`###### `，任意深度）分块，每块一条事件，标题深度即事件级别（#=一级、##=二级、###=三级，可更深）。
  * 标题＝时间点＋可选空格分隔事件名（parseTimelineHeading 口径）——`# 120`、`## 120-06-15 黑市陷阱`、`### -129-06`〔旧纯时间点标题，无名〕；非有效时间点标题的块（文档标题 `# 时间线`、「概述」、月份越界等）整块忽略。
  * 块内字段行（复用 REL_FIELD_RE）：`- 人物：A、B`（别名 角色/登场人物/涉及人物/出场人物）、`- 事件：…`（简短，面板内联显示；别名 经过/简述/说明/详情/备注/简介）、`- 描述：…`（详细，仅面板悬停 Tip 显示）、`- 影响：…`（别名 后果/代价/事件影响）、`- 关联：…`（别名 相关/关联事件/相关事件，顿号/逗号分隔）、`- 完成：是/否`（别名 完成状态/状态/是否完成；是/已完成/完成→true、空值视作勾选、其余→false）。
- * 正文归属：`- 事件：`/`- 描述：`/`- 影响：` 行后接的文本、```text 围栏内容、无字段前缀的自由文本行，均并入**最近出现**的事件/描述/影响字段（块内尚未出现三者时归事件）；其它字段行与其它列表行不并入。
+ * 正文归属：`- 事件：`/`- 详情：`（旧 `- 描述：` 兼容）/`- 影响：` 行后接的文本、```text 围栏内容、无字段前缀的自由文本行，均并入**最近出现**的事件/详情/影响字段（块内尚未出现三者时归事件）；其它字段行与其它列表行不并入。
  */
 export function parseTimelines(text: string): TimelineEntry[] {
 	const body = stripComments(text || "");
@@ -1013,12 +1013,12 @@ export function parseTimelines(text: string): TimelineEntry[] {
 				for (const c of splitList(val)) if (c && !cur.chars.includes(c)) cur.chars.push(c);
 				continue;
 			}
-			if (/^(事件|经过|简述|说明|详情|备注|简介)$/.test(key)) {
+			if (/^(事件|经过|简述|说明|备注|简介)$/.test(key)) { // v0.4.7+ 别名「详情」改归描述字段（旧文档详情→desc），不再作事件别名
 				if (val) cur.eventLines.push(val);
 				cur.target = "event"; // 后续自由文本/围栏归事件
 				continue;
 			}
-			if (/^描述$/.test(key)) {
+			if (/^(详情|描述)$/.test(key)) { // v0.4.7+ 字段更名：新格式 `- 详情：`；旧 `- 描述：` 兼容解析（写回统一出 详情）
 				if (val) cur.descLines.push(val);
 				cur.target = "desc"; // 后续自由文本/围栏归描述（支持 `- 描述：`＋```text 围栏多行写法）
 				continue;
@@ -1086,7 +1086,7 @@ export function rewriteTimelineEntryTime(
 	return oLines.join("\n");
 }
 
-/** 时间线条目序列化为文档块（与 parseTimelines 往返一致）：标题行＝`#`×级别＋空格＋规范时间点＋可选空格＋事件名；字段顺序＝人物/完成/事件/描述/影响/关联——人物、关联单行，完成仅 done=true 写出 `- 完成：是`，事件/描述/影响非空时以 `- 字段：`＋```text 围栏写出（多行安全）。块尾带空行 */
+/** 时间线条目序列化为文档块（与 parseTimelines 往返一致）：标题行＝`#`×级别＋空格＋规范时间点＋可选空格＋事件名；字段顺序＝人物/完成/事件/详情/影响/关联——人物、关联单行，完成仅 done=true 写出 `- 完成：是`，事件/详情/影响非空时以 `- 字段：`＋```text 围栏写出（多行安全；v0.4.7+ 描述更名详情）。块尾带空行 */
 export function formatTimelineBlock(e: TimelineEntryInput): string {
 	const head = `${"#".repeat(Math.max(1, Math.min(6, e.level)))} ${timelineTimeText(e)}`;
 	const lines = [e.title?.trim() ? `${head} ${e.title.trim()}` : head];
@@ -1098,7 +1098,7 @@ export function formatTimelineBlock(e: TimelineEntryInput): string {
 		lines.push(`- ${label}：`, "```text", t, "```");
 	};
 	pushFenced("事件", e.event);
-	pushFenced("描述", e.desc);
+	pushFenced("详情", e.desc); // v0.4.7+ 字段更名：序列化统一写「详情」（旧 `- 描述：` 解析兼容，编辑写回即转新格式）
 	pushFenced("影响", e.impact);
 	if (e.related?.length) lines.push(`- 关联：${joinList(e.related)}`);
 	lines.push("");
@@ -1208,6 +1208,25 @@ export function deleteTimelineBlock(text: string, srcHeading: string, srcOrdinal
 // ---------- 大纲读取辅助 ----------
 
 /** 去掉文档开头的 "# " 标题行，返回 [正文, 标题] */
+/** v0.4.7+ 多时间线：文件名是否为「时间线开头」的时间线文档（默认 `时间线.md` 或扩展 `时间线-***.md`） */
+export function isTimelineDocName(name: string): boolean {
+	return name === "时间线.md" || /^时间线-.+\.md$/.test(name);
+}
+
+/** v0.4.7+ 从时间线物理文件名提取泳道名：`时间线.md`→"默认"；`时间线-战斗线.md`→"战斗线"；带容器前缀的旧命名（`01-初见-时间线-战斗线.md`／`风起-时间线.md`）先剥前缀再取名 */
+export function timelineLaneOf(name: string, prefixes: string[] = []): string {
+	let base = name.replace(/\.md$/i, "");
+	for (const p of prefixes) {
+		if (p && base.startsWith(`${p}-`)) {
+			base = base.slice(p.length + 1);
+			break;
+		}
+	}
+	if (base === "时间线") return "默认";
+	if (base.startsWith("时间线-")) return base.slice("时间线-".length) || "默认";
+	return "默认";
+}
+
 export function stripTitleLine(text: string): [string, string] {
 	const lines = String(text || "").split("\n");
 	if (lines[0]?.trim().startsWith("# ")) {

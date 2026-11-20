@@ -27,9 +27,9 @@ export function defaultBaseUrlForProvider(provider?: string): string | undefined
 	}
 }
 
-export function getVisibleLlmFields(provider?: string): Array<"base_url" | "model_name" | "api_key" | "temperature" | "max_tokens" | "top_p" | "repeat_penalty" | "reasoning_effort" | "context_window" | "thinking"> {
+export function getVisibleLlmFields(provider?: string): Array<"base_url" | "model_name" | "api_key" | "temperature" | "max_tokens" | "top_p" | "repeat_penalty" | "reasoning_effort" | "context_window" | "chat_tools" | "thinking"> {
 	const normalized = normalizeLlmProvider(provider);
-	const common = ["base_url", "model_name", "api_key", "temperature", "max_tokens", "top_p", "repeat_penalty", "reasoning_effort", "context_window"] as const;
+	const common = ["base_url", "model_name", "api_key", "temperature", "max_tokens", "top_p", "repeat_penalty", "reasoning_effort", "context_window", "chat_tools"] as const;
 	if (normalized === "deepseek") return [...common, "thinking"]; 
 	return [...common];
 }
@@ -108,6 +108,9 @@ export interface LlmConfigDoc {
 	/** v0.4.6+ 模型支持的上下文窗口（token 数，如 128000）——LLM 对话面板「自动上下文压缩」判定预算用；
 	 *  留空回落模型名 NNK 后缀启发式（如 llama-3.1-8b-instruct-128k）；两者皆无＝窗口未知、自动压缩不启用（仍可手动压缩） */
 	context_window?: number;
+	/** v0.4.7+ 对话工具调用开关（仅 LLM 对话面板）："off"＝发送不带工具定义；留空＝启用。
+	 *  部分本地小模型 GGUF 带工具语法约束时输出不稳（正文半句即停甚至全空，实测 strata Qwen3.8-Flash）——关掉即恢复完整输出；写作命令不受此开关影响 */
+	chat_tools?: string;
 }
 
 /** 写作阶段：五阶段独立模型配置（v0.3.7+：世界观生成居首） */

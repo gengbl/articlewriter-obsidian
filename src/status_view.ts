@@ -158,7 +158,7 @@ export type StatusAction =
 	| { kind: "sensitive-check"; story: string; key: string } // v0.4.6+ 章节行右键「检测敏感词」：零 LLM 扫描该章正文、命中落标色标记
 	| { kind: "delete-file"; path: string }
 	| { kind: "delete-folder"; path: string } // 案头资料文件夹行右键「删除」：整个文件夹移入回收站（先确认框）
-	| { kind: "new-volume-doc"; story: string; volId: string } // 卷节点 / 卷内「文档」分组右键：在该卷实体目录下新建 .md（语义同 new-file，落点为卷目录而非章节目录）
+	| { kind: "new-volume-doc"; story: string; volId: string } // 卷节点 / 卷内「文档」分组右键：在该卷实体目录下的「文档」子目录新建 .md（v0.4.7+：落点与写字台卷内文档列表一致，旧实现写卷根导致「建了看不到」；语义同 new-file，落点为卷文档目录而非章节目录）
 	| { kind: "complete-volume-docs"; story: string; volId: string } // 卷内「文档」命名头右键「补全卷文档」：检查该卷下缺失的设定模板（卷大纲/人物/人物关系/场景/时间线五件套）并创建，已存在不覆盖
 	| { kind: "complete-root-docs"; story: string } // 案头资料节点右键「补全资料」：检查书根缺失的默认资料文件（大纲/策划指南/世界观/伏笔/笔记/人物/人物关系/场景/时间线九件套；张力规则已并入系统技能张力工具箱）并按模板创建，已存在不覆盖
 	| { kind: "skill-new"; story: string } // 案头资料节点右键「新建 Skill…」：打开新建技能弹窗（预填格式模板，保存只落盘不进配置），与命令面板同义

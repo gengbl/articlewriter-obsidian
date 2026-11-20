@@ -77,11 +77,14 @@ export interface CharacterInfoEntry extends doc.CharacterDoc {
 /** 时间线面板数据源（v0.2.x+）：一份《时间线.md》的归属层级、展示标签、实际探测到的路径与原文；文件缺失时 text 为空串。volId 仅有卷模式下归入某卷的章条目携带（供面板嵌套分组） */
 export interface TimelineDocSource {
 	scope: "book" | "volume" | "chapter";
-	label: string; // 书籍级 / 卷 · <卷名> / 章 · 第N章 <标题>
+	label: string; // 书籍级 / 卷 · <卷名> / 章 · 第N章 <标题>（v0.4.7+ 多时间线时再追加「· <泳道名>」）
 	path: string; // vault 相对路径（面板点击据此打开文件；文档尚不存在时为新格式候选路径）
 	text: string;
 	volId?: string; // 该章所属卷 ID（仅「有卷模式」下归卷章节携带）
+	lane?: string; // v0.4.7+ 多时间线泳道名：默认《时间线.md》＝"默认"，其它《时间线-战斗线.md》＝"战斗线"（同名泳道跨容器合并着色/筛选）
 }
+
+/** 时间线文档命名口径（v0.4.7+ 多时间线）不在本文件重复实现：判定与泳道名解析一律用 md_docs 的 doc.isTimelineDocName / doc.timelineLaneOf（纯函数、测试在 md_docs.test.ts） */
 
 /** 章节目录内的标准模板文档「逻辑基名」（代码内部一律用逻辑基名读写，物理名经 chapterDocPhysicalName 解析） */
 const CHAPTER_TEMPLATE_BASES = new Set(["章节.md", "章节大纲.md", "人物.md", "人物关系.md", "场景.md", "章节信息.md", "章节摘要.md", "时间线.md"]);
@@ -1396,13 +1399,43 @@ private emptyState(storyName: string): StoryState {
 		return out;
 	}
 
-	/** 章节目录内探测《时间线.md》物理名：新格式 `<NN-标题>-时间线.md` → 裸 `时间线.md`；都不存在时返回新格式候选路径 + 空文本 */
-	private async probeTimelineInDir(dirPath: string, folder: string): Promise<{ path: string; text: string }> {
-		const prefixed = `${dirPath}/${chapterFilePrefix(folder)}-时间线.md`; // 如 01-初见-时间线.md
-		if (this.vault.getAbstractFileByPath(prefixed)) return { path: prefixed, text: await this.readDoc(prefixed) };
-		const bare = `${dirPath}/时间线.md`;
-		if (this.vault.getAbstractFileByPath(bare)) return { path: bare, text: await this.readDoc(bare) };
-		return { path: prefixed, text: "" };
+	/** v0.4.7+ 多时间线：枚举容器目录下所有「时间线开头」的 .md（默认 `时间线.md` + 扩展 `时间线-***.md`，含带容器前缀的旧命名）。
+	 *  opts.legacyPrefixes＝需剥掉/匹配的旧命名前缀（如章节目录 `01-初见`、卷目录 `<卷名>`）；
+	 *  opts.candidatePaths[0]＝该容器默认《时间线.md》的候选物理名（文档缺失时给出候选路径 + 空文本，保持旧 probe 语义——面板「＋ 事件」据此自动建文档）。
+	 *  排序：默认泳道恒在前，其余泳道名按 zh 升序 */
+	private async listTimelineDocsIn(
+		dir: TFolder | null,
+		opts: { legacyPrefixes: string[]; candidatePaths: string[] }
+	): Promise<Array<{ path: string; text: string; lane: string }>> {
+		const found: Array<{ path: string; lane: string }> = [];
+		if (dir) {
+			for (const f of dir.children) {
+				if (!(f instanceof TFile) || !f.path.endsWith(".md")) continue;
+				const legacyPrefix = opts.legacyPrefixes.find((p) => p && f.name.startsWith(`${p}-时间线`)); // 旧命名：`01-初见-时间线-战斗线.md` / `风起-时间线.md`
+				const bare = doc.isTimelineDocName(f.name) || f.name === `${dir.name}-undefined`; // 裸命名；历史缺陷残留 `<卷名>-undefined` 同视为默认时间线
+				if (!bare && !legacyPrefix) continue;
+				found.push({ path: f.path, lane: f.name === `${dir.name}-undefined` ? "默认" : doc.timelineLaneOf(f.name, opts.legacyPrefixes) });
+			}
+		}
+		found.sort((a, b) => (a.lane === b.lane ? 0 : a.lane === "默认" ? -1 : b.lane === "默认" ? 1 : a.lane.localeCompare(b.lane, "zh")));
+		const out: Array<{ path: string; text: string; lane: string }> = [];
+		for (const f of found) out.push({ path: f.path, text: await this.readFileSafe(f.path), lane: f.lane });
+		if (!out.some((o) => o.lane === "默认")) { // 该容器还没有默认《时间线.md》：给候选路径 + 空文本（旧 probe 语义，写回时自动创建）
+			const cand = opts.candidatePaths[0] ?? "";
+			if (cand) out.unshift({ path: cand, text: "", lane: "默认" });
+		}
+		return out;
+	}
+
+	/** 直读 vault 文件原文（失败按空处理）——枚举得到的路径已是真实物理路径，无需 readDoc 的命名收口/布局迁移 */
+	private async readFileSafe(path: string): Promise<string> {
+		const f = this.vault.getAbstractFileByPath(path);
+		if (!(f instanceof TFile)) return "";
+		try {
+			return await this.vault.read(f);
+		} catch {
+			return "";
+		}
 	}
 
 	/** v0.3.3+ 书级《时间线》路径（「案头资料/时间线.md」；旧《大事件列表.md》退场后的统一口径，时间线面板与提示词装配共用） */
@@ -1421,49 +1454,86 @@ private emptyState(storyName: string): StoryState {
 	}
 
 	/**
-	 * v0.2.x+ 时间线面板：只读枚举某书**全部**《时间线.md》来源（书级 + 每一卷 + 每一章），自上而下的完整时间轴概览。
+	 * v0.2.x+ 时间线面板：只读枚举某书**全部**时间线文档来源（书级 + 每一卷 + 每一章），自上而下的完整时间轴概览。
+	 * **v0.4.7+ 多时间线合并**：每层不再只看《时间线.md》，而是枚举该层容器内所有「时间线开头」的 .md
+	 * （默认 `时间线.md` + 扩展 `时间线-***.md`，含旧命名 `<卷名>-时间线***.md`／`<NN-标题>-时间线***.md`），
+	 * 每份文档一条 TimelineDocSource、带泳道名 lane（默认时间线＝"默认"）。
 	 * 顺序——有卷模式：书籍级 → 「书稿/」直属未归卷章节(num升序) → 各卷按阅读序、每卷紧随其成员章节(num升序，条目带 volId)；无卷模式：书籍级 → 全部章节(num升序)。
-	 * 物理命名兼容新格式(`<NN-标题>-时间线.md` / `<卷名>-时间线.md`)与裸 `时间线.md`，探测次序 新→裸；缺失层记候选路径 + 空文本（展示侧按空态处理）。全程非交互、不写盘。
+	 * 文档缺失的容器仍记候选路径 + 空文本（展示侧按空态处理、写回时自动创建）。全程非交互、不写盘。
 	 */
 	async readTimelineDocs(storyName: string): Promise<TimelineDocSource[]> {
 		const out: TimelineDocSource[] = [];
 		const base = this.bookTimelinePath(storyName); // 书级《时间线》在「案头资料/」
-		out.push({ scope: "book", label: "书籍级", path: base, text: await this.readDoc(base) });
-		const chLabel = (ch: { num: number; title: string }): string => `章 · 第${ch.num}章 ${ch.title}`.trim();
+		const deskDir = this.vault.getAbstractFileByPath(this.deskDocsPath(storyName));
+		for (const d of await this.listTimelineDocsIn(deskDir instanceof TFolder ? deskDir : null, { legacyPrefixes: [], candidatePaths: [base] })) {
+			out.push({ scope: "book", label: d.lane === "默认" ? "书籍级" : `书籍级 · ${d.lane}`, path: d.path, text: d.text, lane: d.lane });
+		}
+		const chLabel = (ch: { num: number; title: string }, lane: string): string =>
+			`章 · 第${ch.num}章 ${ch.title}`.trim() + (lane && lane !== "默认" ? ` · ${lane}` : "");
+		const chapterDocs = async (ch: { dir: TFolder }): Promise<Array<{ path: string; text: string; lane: string }>> =>
+			await this.listTimelineDocsIn(ch.dir, {
+				legacyPrefixes: [chapterFilePrefix(ch.dir.name), ch.dir.name], // 新格式前缀 `01-初见-时间线…` 与旧文件夹前缀 `第01章-初见-时间线…`
+				candidatePaths: [`${ch.dir.path}/${chapterFilePrefix(ch.dir.name)}-时间线.md`, `${ch.dir.path}/时间线.md`],
+			});
 		const all = await this.listChapters(storyName); // 阅读序：「书稿/」直属未归卷在前，其后各卷章节依次(num升序)
 		if ((await this.loadState(storyName))?.use_volumes !== true) {
 			for (const ch of all) {
-				const p = await this.probeTimelineInDir(ch.dir.path, ch.dir.name);
-				out.push({ scope: "chapter", label: chLabel(ch), path: p.path, text: p.text });
+				for (const d of await chapterDocs(ch)) out.push({ scope: "chapter", label: chLabel(ch, d.lane), path: d.path, text: d.text, lane: d.lane });
 			}
 			return out;
 		}
 		for (const ch of all) if (!ch.vol) {
-			const p = await this.probeTimelineInDir(ch.dir.path, ch.dir.name);
-			out.push({ scope: "chapter", label: chLabel(ch), path: p.path, text: p.text });
+			for (const d of await chapterDocs(ch)) out.push({ scope: "chapter", label: chLabel(ch, d.lane), path: d.path, text: d.text, lane: d.lane });
 		}
 		for (const vol of await this.volumeList(storyName)) {
-			const vpath = this.resolveVolumeDocPath(this.volumeDirPath(storyName, vol), vol.name, "时间线.md"); // 文档/裸基名 → legacy 前缀 → 旧新格式
-			out.push({ scope: "volume", label: `卷 · ${vol.name}`, path: vpath, text: await this.readDoc(vpath) });
+			const volDir = this.vault.getAbstractFileByPath(this.volumeDirPath(storyName, vol));
+			const docsDir = volDir instanceof TFolder ? volDir.children.find((x): x is TFolder => x instanceof TFolder && x.name === VOLUME_DOCS_DIR_NAME) ?? null : null;
+			const volStem = safeFilename(vol.name);
+			const volDocs = await this.listTimelineDocsIn(docsDir, {
+				legacyPrefixes: [volStem],
+				candidatePaths: [this.volumeDocPath(storyName, vol, "时间线.md")],
+			});
+			if (volDir instanceof TFolder) { // 旧布局兜底：卷根的 `<卷名>-时间线***.md`（含历史缺陷残留 `<卷名>-undefined`）
+				for (const f of volDir.children) {
+					if (!(f instanceof TFile) || !f.path.endsWith(".md")) continue;
+					if (!f.name.startsWith(`${volStem}-时间线`) && f.name !== `${volStem}-undefined`) continue;
+					if (volDocs.some((d) => d.path === f.path)) continue;
+					volDocs.unshift({ path: f.path, text: await this.readFileSafe(f.path), lane: f.name === `${volStem}-undefined` ? "默认" : doc.timelineLaneOf(f.name, [volStem]) });
+				}
+				volDocs.sort((a, b) => (a.lane === b.lane ? 0 : a.lane === "默认" ? -1 : b.lane === "默认" ? 1 : a.lane.localeCompare(b.lane, "zh")));
+			}
+			for (const d of volDocs) {
+				out.push({ scope: "volume", label: `卷 · ${vol.name}` + (d.lane !== "默认" ? ` · ${d.lane}` : ""), path: d.path, text: d.text, volId: vol.id, lane: d.lane });
+			}
 			for (const ch of all) if (ch.vol === vol.id) {
-				const p = await this.probeTimelineInDir(ch.dir.path, ch.dir.name);
-				out.push({ scope: "chapter", label: chLabel(ch), path: p.path, text: p.text, volId: vol.id });
+				for (const d of await chapterDocs(ch)) out.push({ scope: "chapter", label: chLabel(ch, d.lane), path: d.path, text: d.text, volId: vol.id, lane: d.lane });
 			}
 		}
 		return out;
 	}
 
 	/**
-	 * v0.3.3+ 合并时间轴与大事件：把某书**三层**《时间线.md》（书级 → 未归卷章节 → 各卷及其章节，readTimelineDocs 顺序）合并为一段提示词用的时间轴文本。
+	 * v0.3.3+ 合并时间轴与大事件：把某书**三层**时间线文档（书级 → 未归卷章节 → 各卷及其章节，readTimelineDocs 顺序）合并为一段提示词用的时间轴文本。
 	 * 条目按 formatTimelineBlock 规范重新序列化（标题行＝时间点＋事件名，字段行 人物/完成/事件/描述/影响/关联），非时间线标题块与非时间点标题块自然丢弃。
 	 * 各文档内部保持原层级与先后次序（父子事件相邻、不被全局排序打散）；无有效条目（文档缺失或全是旧式内容）返回空串——调用方据此判定「本书暂无时间线」。
+	 * v0.4.7+ 多时间线：除默认《时间线.md》外还含同容器《时间线-***.md》；出现第二条泳道时按泳道分组并加【时间线：<泳道名>】标题行，便于模型区分不同线索。
 	 */
 	async mergedTimelineText(storyName: string): Promise<string> {
-		const blocks: string[] = [];
-		for (const d of await this.readTimelineDocs(storyName)) {
-			for (const e of doc.parseTimelines(d.text)) blocks.push(doc.formatTimelineBlock(e));
+		const docs = await this.readTimelineDocs(storyName);
+		const lanes = new Map<string, string[]>(); // 泳道名 → 该泳道各文档的条目块（保持文档顺序）
+		for (const d of docs) {
+			const blocks = doc.parseTimelines(d.text).map((e) => doc.formatTimelineBlock(e));
+			if (!blocks.length) continue;
+			const lane = d.lane && d.lane !== "默认" ? d.lane : "默认";
+			const arr = lanes.get(lane) ?? [];
+			arr.push(...blocks);
+			lanes.set(lane, arr);
 		}
-		return blocks.join("\n").trim();
+		if (!lanes.size) return "";
+		if (lanes.size === 1) return (lanes.get("默认") ?? []).join("\n").trim();
+		const out: string[] = [];
+		for (const [lane, blocks] of lanes) out.push(lane === "默认" ? blocks.join("\n") : `【时间线：${lane}】\n${blocks.join("\n")}`);
+		return out.join("\n\n").trim();
 	}
 
 	/**

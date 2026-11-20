@@ -830,6 +830,45 @@ export class StoryPickerModal extends SuggestModal<string> {
 	}
 }
 
+/** v0.4.7+ 对话历史选择器（LLM 面板「重新加载对话」）：列表项由调用方组好（label＝文件名＋轮数、sub＝字数＋首句摘要），
+ *  选中即回传该文件的 vault 路径；取消/Esc＝调 onCancel（调用方可用来恢复状态行）。 */
+export interface SessionPickerItem {
+	path: string;
+	label: string;
+	sub: string;
+}
+
+export class SessionPickerModal extends SuggestModal<SessionPickerItem> {
+	private submitted = false;
+
+	constructor(app: App, private items: SessionPickerItem[], private onPick: (path: string) => void | Promise<void>, private onCancel?: () => void) {
+		super(app);
+		this.inputEl.placeholder = "选择要载入的对话历史（选中＝它的内容成为《当前对话.md》，当前内容转为历史归档）…";
+	}
+
+	getSuggestions(query: string): SessionPickerItem[] {
+		const q = query.trim().toLowerCase();
+		if (!q) return this.items;
+		return this.items.filter((it) => `${it.label} ${it.sub}`.toLowerCase().includes(q));
+	}
+
+	renderSuggestion(it: SessionPickerItem, el: HTMLElement): void {
+		el.createDiv({ cls: "aw-session-pick-label", text: it.label });
+		if (it.sub) el.createDiv({ cls: "aw-session-pick-sub", text: it.sub });
+	}
+
+	onChooseSuggestion(it: SessionPickerItem): void {
+		this.submitted = true;
+		this.close();
+		void this.onPick(it.path);
+	}
+
+	override onClose(): void {
+		super.onClose();
+		if (!this.submitted && this.onCancel) this.onCancel();
+	}
+}
+
 /** vault Markdown 文档选择器（引用文档配置框「添加 vault 文档」）：模糊搜索 vault 内全部 .md，选中即直接添加，无需手输路径 */
 export class VaultFilePickerModal extends SuggestModal<TFile> {
 	constructor(app: App, private onPick: (path: string) => void) {
@@ -1531,15 +1570,16 @@ export interface EventEditResult {
 	chars: string[]; // - 人物：
 	done: boolean; // 完成状态（勾选＝已完成，写回 `- 完成：是`）
 	event: string; // - 事件：（多行保留换行）
-	desc: string; // - 描述：（多行保留换行；面板仅悬停 Tip 显示）——弹窗不再提供编辑控件，提交时原样透传 initialValues.desc（编辑保留既有描述、新增为空）
+	desc: string; // - 详情：（v0.4.7+ 字段更名；旧 `- 描述：` 兼容解析、写回出 详情。多行保留换行；面板仅悬停 Tip 显示；弹窗内可编辑）
 	impact: string; // - 影响：
 	related: string[]; // - 关联：（其它事件名）
 }
 
 /**
  * 下拉多选控件（EventEditModal「人物」「关联」两字段共用，交互仿 AddCharacterModal 关系行下拉）：
- * 已选项各占一行（值 + ✕ 移除）；行尾「＋」下拉只列出尚未选中的候选（选后自动重渲染、候选里去重）；
- * 无可再选项时显示 emptyHint（传空串＝不显示占位提示）。initial 中的旧值即使不在候选里也保留为已选行（不丢历史数据）。
+ * v0.4.7+ 已选项排成胶囊 chip、**人多自动换行**（每个 chip 右上角小 ✕ 移除；换行留行距防 ✕ 互压），「＋」补选下拉**单独下一行**；
+ * 下拉只列出尚未选中的候选（选后自动重渲染、候选里去重）；
+ * 无可再选项时显示 emptyHint（传空串＝不显示占位提示）。initial 中的旧值即使不在候选里也保留为已选胶囊（不丢历史数据）。
  * 返回 `{ get, render }`：get＝当前选中项（保持加入顺序、去重）；render＝重画（外部按 tab 切换等场景复用同一节点重渲染）。
  */
 const makeMultiSelect = (
@@ -1554,13 +1594,17 @@ const makeMultiSelect = (
 	const selected: string[] = [...new Set(initial)];
 	const render = (): void => {
 		el.empty();
-		for (const v of selected) {
-			const row = el.createDiv({ cls: "aw-ev-msel-row" });
-			row.createSpan({ text: v, cls: "aw-ev-msel-val" });
-			row.createEl("button", { text: "✕", cls: "aw-addchar-relrm", attr: { "aria-label": `移除 ${v}` } }).addEventListener("click", () => {
-				selected.splice(selected.indexOf(v), 1);
-				render();
-			});
+		if (selected.length) { // v0.4.7+（二次调整）：已选胶囊独占一行（横滚动），补选下拉单独下一行；胶囊容器顶部留白防右上角 ✕ 被滚动容器裁掉
+			const chips = el.createDiv({ cls: "aw-ev-msel-chips" });
+			for (const v of selected) {
+				const chip = chips.createSpan({ cls: "aw-ev-msel-chip" });
+				chip.title = v; // 长名截断后悬停可看全名
+				chip.createSpan({ text: v, cls: "aw-ev-msel-val" });
+				chip.createEl("button", { text: "✕", cls: "aw-addchar-relrm aw-ev-msel-chipx", attr: { "aria-label": `移除 ${v}` } }).addEventListener("click", () => {
+					selected.splice(selected.indexOf(v), 1);
+					render();
+				});
+			}
 		}
 		const remaining = options.filter((o) => !selected.includes(o));
 		if (!remaining.length) {
@@ -1581,7 +1625,7 @@ const makeMultiSelect = (
 };
 
 /**
- * 时间线事件编辑弹窗（时间线面板「新增/编辑事件」共用）：事件名（可空） + 人物（下拉多选） + 已完成（勾选，完成状态） + 事件（多行） + 影响（多行） + 关联（下拉多选，其它事件名）。描述不在弹窗编辑：提交时原样透传 initialValues.desc（编辑保留既有 `- 描述：`、新增为空）。
+ * 时间线事件编辑弹窗（时间线面板「新增/编辑事件」共用）：事件名（可空） + 人物（下拉多选） + 已完成（勾选，完成状态） + 事件（多行） + 详情（多行；v0.4.7+ 更名自「描述」，旧 `- 描述：` 解析兼容、保存写回 `- 详情：`） + 影响（多行） + 关联（下拉多选，其它事件名）。
  * initialValues 预填（编辑=节点现值；新增=空）；charOptions/relatedOptions 为人物/关联下拉候选（面板注入：人物来自三层《人物.md》，关联为既有事件名、已排除自身）。
  * 事件名允许留空（＝旧「纯时间点」标题保持无名）；关闭弹窗即放弃（onCancel）。
  */
@@ -1610,6 +1654,7 @@ export class EventEditModal extends AwModal {
 		let title = this.initialValues?.title ?? "";
 		let done = this.initialValues?.done ?? false;
 		let event = this.initialValues?.event ?? "";
+		let desc = this.initialValues?.desc ?? "";
 		let impact = this.initialValues?.impact ?? "";
 		new Setting(this.contentEl).setName("时间点").addText((t) => {
 			t.setPlaceholder("如 120 / 120-06 / 120-06-15");
@@ -1629,12 +1674,19 @@ export class EventEditModal extends AwModal {
 			tg.setValue(this.initialValues?.done ?? false);
 			tg.onChange((v) => (done = v));
 		});
-		new Setting(this.contentEl).setName("事件").addTextArea((ta) => { // 多行：事件简述（面板内联显示）
+		new Setting(this.contentEl).setName("事件").addTextArea((ta) => { // 多行：事件简述（面板内联显示；无名条目面板把它的首行当事件名）
 			ta.setPlaceholder("事件经过简述");
 			ta.setValue(this.initialValues?.event ?? "");
 			ta.inputEl.classList.add("aw-prompt-textarea", "aw-ta-rows"); // 宽度复用既有多行输入类；aw-ta-rows 去掉全局 240px min-height，让 rows 生效
-			ta.inputEl.rows = 5; // 事件＝5 行高
+			ta.inputEl.rows = 2; // 事件＝2 行高（v0.4.7+ 用户要求收窄，多行内容靠框内滚动）
 			ta.onChange((v) => (event = v));
+		});
+		new Setting(this.contentEl).setName("详情").addTextArea((ta) => { // v0.4.7+：补上详情编辑框并更名（旧字段 描述；文档里的 - 描述： 解析兼容、保存后写回 - 详情：）；面板上详情仅悬停 Tip 显示
+			ta.setPlaceholder("详细内容（面板中悬停条目可见）");
+			ta.setValue(this.initialValues?.desc ?? "");
+			ta.inputEl.classList.add("aw-prompt-textarea", "aw-ta-rows"); // 同上：宽度复用、去 min-height
+			ta.inputEl.rows = 5; // 描述＝5 行高（v0.4.7+ 用户要求；事件框另收窄为 2 行）
+			ta.onChange((v) => (desc = v));
 		});
 		new Setting(this.contentEl).setName("影响").addTextArea((ta) => {
 			ta.setPlaceholder("事件影响 / 后果 / 代价");
@@ -1654,7 +1706,7 @@ export class EventEditModal extends AwModal {
 				}
 				this.submitted = true;
 				this.close();
-				await this.onSubmit({ timeText, title, chars: getChars.get(), done, event: event.trim(), desc: (this.initialValues?.desc ?? "").trim(), impact: impact.trim(), related: getRelated.get() }); // desc＝透传原值（弹窗无编辑控件），防编辑时抹掉既有描述
+				await this.onSubmit({ timeText, title, chars: getChars.get(), done, event: event.trim(), desc: desc.trim(), impact: impact.trim(), related: getRelated.get() }); // desc＝v0.4.7+ 弹窗内编辑后的值（空＝删除描述）
 			})
 		);
 		btns.addButton((btn) => btn.setButtonText("取消").onClick(() => this.close())); // onClose 未提交时触发 onCancel
@@ -1937,5 +1989,34 @@ export class InspirationKitModal extends AwModal {
 	override onClose(): void {
 		this.closed = true;
 		this.contentEl.empty();
+	}
+}
+
+/** v0.4.7+ 通用引导弹窗：h3 标题＋多行说明（`.aw-prompt-hint` 走 pre-line）＋一排动作按钮（`cta:true` 者为主按钮）。
+ *  任一动作＝先 `close()` 再执行（模态遮罩让位给后续弹窗/文件切换，同 InspirationModal 的 closeFirst 约定）；Esc/点遮罩＝无动作。
+ *  现用于「工作目录里没有书籍」时的建书引导（main.ts `guideNewStoryOnStartup`）。 */
+export class AwGuideModal extends AwModal {
+	constructor(
+		app: App,
+		private opts: { title: string; body: string; actions: Array<{ label: string; cta?: boolean; run: () => void }> }
+	) {
+		super(app);
+	}
+
+	onOpen(): void {
+		this.contentEl.empty();
+		this.contentEl.createEl("h3", { text: this.opts.title });
+		this.contentEl.createEl("p", { cls: "aw-prompt-hint", text: this.opts.body });
+		const btns = new Setting(this.contentEl);
+		for (const a of this.opts.actions) {
+			btns.addButton((b) => {
+				b.setButtonText(a.label).onClick(() => {
+					this.close();
+					a.run();
+				});
+				if (a.cta) b.setCta();
+				return b;
+			});
+		}
 	}
 }

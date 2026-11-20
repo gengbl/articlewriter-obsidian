@@ -17,8 +17,10 @@ test("第A到B章范围展开：中文数字、至、逆序交换、跨span不�
 	assert.deepEqual(labels("第1到3章"), ["第1–3章"]);
 	assert.deepEqual(labels("第一章至第三章"), ["第1–3章"]);
 	assert.deepEqual(labels("第5到2章"), ["第2–5章"]);
-	// 范围已吃 span，内部不再拆单章
-	assert.deepEqual(detectChatAutoRefs("第1到3章", []).flatMap((s) => s.nums), [1, 2, 3]);
+	// 范围已吃 span，内部不再拆单章（不用 flatMap＝ES2019，见 eslint.config.mjs 黑名单）
+	const spanNums: number[] = [];
+	for (const s of detectChatAutoRefs("第1到3章", [])) spanNums.push(...s.nums);
+	assert.deepEqual(spanNums, [1, 2, 3]);
 });
 
 test("范围与总量上限 MAX_CHAPTER_REFS：超长范围截断", () => {
