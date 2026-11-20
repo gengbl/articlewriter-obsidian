@@ -455,7 +455,7 @@ export class TimelineView extends ItemView {
 	 * 条目带 `lv-<级别>` 类（级别＝标题深度，≥5 归入 lv-5）——圆点大小/颜色与正文强调按级别区分；另带 `tl-d<深度>` 类（≥6 归入 6）驱动行缩进与层级列坐标（--tl-d × --tl-indent，样式见 styles.css `.aw-tl-item`）；**圆点落在本行深度列**（根＝主轴、子级逐级右移一列），配合 attachTlGuides 画的通高竖向导引线/肘形接线/短桩，父子从属关系沿竖向通道一眼可辨；有子事件另挂 `.aw-tl-caret` 折叠标识（▾展开/▸折叠，点击切换、Tip 带子事件条数）。
 	 * **描述内容（row.desc）只经悬停 Tip 显示、不内联渲染**：desc 非空时用 setTooltip（aria-label 驱动 Obsidian 自绘 .tooltip，可 CSS 定制）给条目与圆点挂同一份 Tip（类 aw-tl-tip，样式见 styles.css）——圆点仅 5–12px，悬停稍有偏差落到条目上也能看到描述；无描述则不挂 Tip。圆点为真实元素 .aw-tl-dot、有子事件时可点击切换折叠状态（折叠隐藏＝全部结构后代，无论其时间排在何处）；**双击**条目在编辑器打开来源文档并定位到该时间点。**拖动更新时间点**（q==="" 时 attachTlDrag 挂载、鼠标左键沿轴上下拖）：该条目＋其全部**已渲染**后代行实时平移＋浮标提示目标时间，松手写回源《时间线.md》标题行。
 	 * collapsedCount 非 null（仅非筛选趟、本条折叠且有后代时由 renderBody 给出）→ 行尾追加「（已折叠 N 条子事件）」。
-	 * **编辑态元素**：条目行注册进 nodeEls（关联 chip 跳转闪烁定位 + 拖动收集后代行）；有事件名时渲染 `.aw-tl-name` 名称徽章、done 时渲染「✓ 已完成」徽章（`.aw-tl-done`）；有 `- 影响：` 时内联一行 `.aw-tl-impact`；`- 关联：` 每项渲染可点 chip（`.aw-tl-rel`，索引未命中加 `is-tl-dead` 置灰）。行尾动作组 `.aw-tl-acts`（CSS 悬停显现）＝＋子事件（级别＜6）/✎ 编辑/✓○ 完成切换/🗑 删除；右键条目弹节点菜单。动作组 pointerdown 阻止冒泡以免进入拖动改时手势。
+	 * **编辑态元素**：条目行注册进 nodeEls（关联 chip 跳转闪烁定位 + 拖动收集后代行）；有事件名时渲染 `.aw-tl-name` 名称徽章、done 时渲染「✓ 已完成」徽章（`.aw-tl-done`）；有 `- 影响：` 时内联一行 `.aw-tl-impact`；`- 关联：` 每项渲染可点 chip（`.aw-tl-rel`，索引未命中加 `is-tl-dead` 置灰）。动作组 `.aw-tl-acts`（v0.4.7+：不再绝对定位右上角，改为**事件内容下方独占一行**——`.aw-tl-item` 内、`.aw-tl-evwrap` 之后，左缘随条目缩进；CSS 悬停显现＝＋子事件（级别＜6）/✎ 编辑/✓○ 完成切换/🗑 删除）；右键条目弹节点菜单。动作组 pointerdown 阻止冒泡以免进入拖动改时手势。
 	 * 渲染顺序＝buildFlatRows 扁平数组序＝时间升序：每行先经 pushTlSpacer 按与上一条**已渲染**条目的时间差插比例间隔块（间隔块一律插在 list 内、该行之前——扁平化后不再跨嵌套容器） */
 	private renderRow(parent: HTMLElement, f: TlFlatNode, q: string, collapsedCount: number | null): void {
 		const node = f.node;
@@ -521,7 +521,7 @@ export class TimelineView extends ItemView {
 				else setTooltip(chip, "未在当前时间线中找到同名事件");
 			}
 		}
-		const acts = item.createSpan({ cls: "aw-tl-acts" }); // 动作组（悬停条目显现）：＋子事件 / ✎ 编辑 / ✓○ 完成切换 / 🗑 删除
+		const acts = item.createDiv({ cls: "aw-tl-acts" }); // 动作组（v0.4.7+ 独占一行、排在事件内容最下边；悬停条目显现）：＋子事件 / ✎ 编辑 / ✓○ 完成切换 / 🗑 删除
 		acts.addEventListener("pointerdown", (ev: PointerEvent) => ev.stopPropagation()); // 按钮不进入拖动改时手势
 		acts.addEventListener("dblclick", (ev: MouseEvent) => ev.stopPropagation());
 		if (row.level < 6) {

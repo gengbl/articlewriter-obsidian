@@ -1179,6 +1179,15 @@
 	transform: var(--tl-transform, none); /* JS 通过 setProperty("--tl-transform", ...) 更新（no-static-styles-assignment）；宽度也由 JS 设为视口宽（transform 不影响布局，须显式给定） */
 }
 
+/* 虚拟平移层（v0.4.7+，共用设施固定类）：translate＝无滚动余量时拖动视野的累计偏移（JS 在 panEl 上 setProperty --aw-canvas-pan-x/-y）。
+   变量缺省 0px＝未平移时不产生位移，完全等同旧行为 */
+.aw-canvas-pan {
+	position: absolute;
+	left: 0;
+	top: 0;
+	transform: translate(var(--aw-canvas-pan-x, 0px), var(--aw-canvas-pan-y, 0px));
+}
+
 /* 底部固定汇总行：不参与缩放/平移，始终可见 */
 .aw-tl-sumrow {
 	flex: 0 0 auto;
@@ -1230,7 +1239,7 @@
 
 .aw-tl-item {
 	position: relative;
-	padding: 2px 6px 8px calc(14px + var(--tl-d, 0) * var(--tl-indent, 22px)); /* 左缩进＝轮廓深度（每级 --tl-indent，--tl-d 由 .tl-d<n> 深度类给出）；基线 14px 把内容左缘让过子列短桩（列 d+1＝12px＋d×indent 处），圆点/导引线另行按 --tl-d 落列（见 .aw-tl-dot / .aw-tl-branch-line） */
+	padding: 2px 6px 6px calc(14px + var(--tl-d, 0) * var(--tl-indent, 22px)); /* 左缩进＝轮廓深度（v0.4.7+ 底部留白 8px→6px：动作组改为条目底部独立一行，其自身 margin 补足下边距）（每级 --tl-indent，--tl-d 由 .tl-d<n> 深度类给出）；基线 14px 把内容左缘让过子列短桩（列 d+1＝12px＋d×indent 处），圆点/导引线另行按 --tl-d 落列（见 .aw-tl-dot / .aw-tl-branch-line） */
 	border-radius: 4px;
 }
 
@@ -1662,13 +1671,11 @@
 	color: var(--text-faint);
 }
 
-/* 条目动作组（＋子事件/✎ 编辑/✓○ 完成切换/🗑 删除）：条目行是 inline-flow 布局，绝对定位挂右上角（条目本身 position:relative）；默认隐藏、悬停显现 */
+/* 条目动作组（＋子事件/✎ 编辑/✓○ 完成切换/🗑 删除）：v0.4.7+ 不再绝对定位挂右上角，改为块级独占一行、排在事件内容（.aw-tl-evwrap）下方——左缘随条目缩进；默认隐藏、悬停显现 */
 .aw-tl-acts {
-	position: absolute;
-	top: 2px;
-	right: 6px;
-	display: inline-flex;
+	display: flex;
 	gap: 2px;
+	margin: 4px 0 2px;
 	visibility: hidden;
 }
 
@@ -2610,4 +2617,200 @@
 .aw-fixrefs-pair-new {
 	color: var(--text-normal);
 	margin-bottom: 8px;
+}
+
+/* ---------- 场景面板（v0.4.7+）：三层《场景.md》卡片画布（CanvasPanel 三段结构同时间线：body 滚动/sizer 撑范围/zoom 绝对定位内容） ---------- */
+
+.aw-st-tree.aw-scene-body {
+	overflow: auto;
+	cursor: grab; /* 空白处提示可按住平移 */
+	user-select: none; /* 拖动卡片/平移时不选中文字 */
+	touch-action: pan-x pan-y; /* 触屏单指走原生滚动 */
+}
+
+.aw-st-tree.aw-scene-body.is-panning {
+	cursor: grabbing;
+}
+
+.aw-scene-sizer {
+	position: relative; /* .aw-scene-zoom 的定位包含块；宽高由 JS 设为 内容×缩放 */
+}
+
+.aw-scene-zoom {
+	position: absolute;
+	left: 0;
+	top: 0;
+	transform-origin: 0 0;
+	transform: var(--aw-scene-zoom, none); /* JS setProperty 更新；宽度由 JS 设视口宽、高度由 JS 设内容高（绝对定位卡片撑不开容器） */
+}
+
+.aw-scene-ph {
+	margin: 12px;
+	white-space: pre-wrap;
+}
+
+/* 父子连线底图（大场景包含小场景，v0.4.7+）：DOM 序在卡片前＝画在卡片下层；只描边不接收指针事件 */
+.aw-scene-edges {
+	position: absolute;
+	left: 0;
+	top: 0;
+	pointer-events: none;
+	overflow: visible;
+}
+
+.aw-scene-edges path {
+	fill: none;
+	stroke: var(--text-faint);
+	stroke-width: 1.5;
+	stroke-dasharray: 5 4;
+	opacity: 0.8;
+}
+
+/* 包含框（大场景包含小场景）：每个「有可见子场景的父场景」一个圆角矩形（含父卡片自身），衬在卡片下层；成员拖动时按包围盒重算。
+   pointer-events 单独开启＋grab 光标＝**框内空白处按住即可拖动整组**（svg 容器仍 none，卡片在上层先命中） */
+.aw-scene-frame {
+	fill: var(--background-modifier-hover);
+	fill-opacity: 0.35;
+	stroke: var(--text-faint);
+	stroke-width: 1;
+	stroke-dasharray: 4 3;
+	opacity: 0.7;
+	pointer-events: none; /* v0.4.7+ 纯衬底：不拦截指针，框内空白＝画布平移热区（此前 auto＋grab 抢走空白手势——框占满画布时根本无处平移） */
+}
+
+/* 关联场景连线（v0.4.7+）：点线＋主题强调色（区别于层级短划虚线），同一底图下层 */
+.aw-scene-edges .aw-scene-rel-edge {
+	stroke: var(--interactive-accent);
+	stroke-dasharray: 1.5 4;
+	stroke-linecap: round;
+	opacity: 0.65;
+}
+
+/* 底部汇总行线型图例 */
+.aw-scene-legend-mark {
+	margin: 0 2px 0 10px;
+	font-weight: 700;
+}
+
+.aw-scene-legend-mark.is-hier {
+	color: var(--text-faint);
+	letter-spacing: -1px;
+}
+
+.aw-scene-legend-mark.is-rel {
+	color: var(--interactive-accent);
+	letter-spacing: 1px;
+}
+
+.aw-scene-legend {
+	font-size: 0.85em;
+}
+
+.aw-scene-sumrow {
+	flex: none;
+	padding: 4px 8px;
+	border-top: 1px solid var(--background-modifier-border);
+}
+
+.aw-scene-card {
+	position: absolute; /* 坐标＝场景 `- 位置：x,y`（布局 px）或自动网格落点，left/top 由 JS 设 */
+	width: 230px;
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 6px;
+	padding: 6px 10px;
+	background: var(--background-primary);
+	cursor: move; /* 卡片本身＝拖动改位置（区别于空白处平移的 grab） */
+}
+
+.aw-scene-card:hover {
+	background: var(--background-modifier-hover);
+}
+
+.aw-scene-card.is-dragging {
+	z-index: 2;
+	outline: 1px solid var(--interactive-accent);
+	background: var(--background-modifier-hover);
+	user-select: none;
+}
+
+/* 卡片底部动作组（✎ 编辑/🗑 删除）：独占一行排在卡片内容最下边（同 .aw-tl-acts 口径）；visibility 隐藏保住卡片高度测量稳定 */
+.aw-scene-acts {
+	display: flex;
+	gap: 2px;
+	margin: 4px 0 0;
+	visibility: hidden;
+}
+
+.aw-scene-card:hover .aw-scene-acts {
+	visibility: visible;
+}
+
+.aw-scene-acts button {
+	width: 24px;
+	height: 22px;
+	padding: 0;
+	font-size: 0.85em;
+	line-height: 1;
+	background: transparent;
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 4px;
+	box-shadow: none;
+	cursor: pointer;
+}
+
+.aw-scene-acts button:hover {
+	background: var(--background-modifier-hover);
+	border-color: var(--interactive-hover);
+}
+
+.aw-scene-acts button.is-tl-danger:hover {
+	color: var(--color-red);
+	border-color: var(--color-red);
+}
+
+.aw-scene-head {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: baseline;
+	gap: 6px;
+}
+
+.aw-scene-name {
+	font-weight: 600;
+}
+
+.aw-scene-id,
+.aw-scene-parent {
+	font-size: 0.8em;
+}
+
+/* 关联场景 chip（v0.4.7+）：可点跳转目标场景来源文档；解析不到置灰。卡片整体 cursor:move，chip 单独指回 pointer */
+.aw-scene-rels {
+	margin-top: 4px;
+}
+
+.aw-scene-rel {
+	cursor: pointer;
+}
+
+.aw-scene-rel:hover {
+	background: var(--interactive-hover);
+	color: var(--text-normal);
+}
+
+.aw-scene-rel.is-missing {
+	opacity: 0.55;
+	cursor: default;
+	text-decoration: line-through;
+}
+
+.aw-scene-rels-mark {
+	margin-right: 4px;
+	font-size: 0.85em;
+}
+
+.aw-scene-desc {
+	margin-top: 3px;
+	white-space: pre-wrap;
+	font-size: 0.9em;
 }

@@ -297,7 +297,7 @@ export const DOC_NAME_SYNONYMS: Record<string, string> = {
 
 /** 文档名归一：去《》〔〕引号与 .md 与目录前缀，再过同义表；结果仍可能是原词（交给调用方判有效） */
 export function normalizeDocName(raw: string): string {
-	let s = (raw ?? "").replace(/[《》【】\[\]"'`「」]/g, "").trim();
+	let s = (raw ?? "").replace(/[《》【】[\]"'`「」]/g, "").trim(); // v0.4.7+ 社区 lint：`[` 类内直接写字面量、`]` 用 `\]`（`[` 的转义才是 useless-escape）
 	s = s.replace(/\.md$/i, "");
 	const slash = s.lastIndexOf("/");
 	if (slash >= 0) s = s.slice(slash + 1);

@@ -21,23 +21,28 @@ export interface CanvasPanelOptions {
 	onResize?: () => void;
 }
 
-/** 缩放/平移画布：Ctrl|Shift＋滚轮以鼠标位置为不动点缩放（普通滚轮不拦截、走原生滚动）、左键按住拖动平移（驱动容器滚动位置）、倍率标签点击复位；拖拽后的紧随 click/dblclick 自动吞掉（平移与条目拖拽两种来源） */
+/** 缩放/平移画布：Ctrl|Shift＋滚轮以鼠标位置为不动点缩放（普通滚轮不拦截、走原生滚动）、左键按住拖动平移（滚动余量内驱动容器滚动、到底后由虚拟平移层继续挪动——内容不超出面板也能挪视野；Alt＋左键/中键＝任意位置平移）、倍率标签点击复位；拖拽后的紧随 click/dblclick 自动吞掉（平移与条目拖拽两种来源） */
 export class CanvasPanel {
 	readonly bodyEl: HTMLElement;
 	readonly sizerEl: HTMLElement;
+	readonly panEl: HTMLElement; // v0.4.7+ 虚拟平移层（translate CSS 变量；sizer 与 zoom 之间）
 	readonly zoomEl: HTMLElement;
 
 	private zoomLevel = 1; // 缩放倍率（重渲染不清零——筛选切换后视野保持）
+	private panX = 0; // 虚拟平移偏移（布局 px，独立于缩放；滚动余量用尽后由拖动继续累加——无滚动条也挪得动视野）
+	private panY = 0;
 	private zoomLbl: HTMLElement | null = null; // 头部倍率标签（==100% 时隐藏，点击复位）
 	private suppressClickUntil = 0; // 条目拖拽结束后需吞掉紧随 click/dblclick 的时间戳上限
 	private resizeObs: ResizeObserver | null = null; // v0.4.3+：画布容器尺寸观察器（撑满布局后宽度变化即重算尺寸）
 	private resizeTimer: number | null = null; // 尺寸变化防抖定时器（连续拖动只处理最后一帧）
 	private lastBoxW = 0; // 上次处理时的容器宽（宽度真变化才回调 onResize 重渲染内容）
+	private contentW = 0; // 内容真实宽（0＝按视口宽；场景画布等绝对定位内容用它撑出横向可滚动/可拖动范围）
 
 	constructor(parent: HTMLElement, private readonly opts: CanvasPanelOptions) {
 		this.bodyEl = parent.createDiv({ cls: opts.bodyCls });
 		this.sizerEl = this.bodyEl.createDiv({ cls: opts.sizerCls });
-		this.zoomEl = this.sizerEl.createDiv({ cls: opts.zoomCls });
+		this.panEl = this.sizerEl.createDiv({ cls: "aw-canvas-pan" });
+		this.zoomEl = this.panEl.createDiv({ cls: opts.zoomCls });
 		this.setupCanvas();
 		this.watchResize(); // v0.4.3+：容器尺寸变化（拖侧栏/分屏/窗口缩放）→ 重算画布尺寸并按需回调视图重渲染
 	}
@@ -48,9 +53,11 @@ export class CanvasPanel {
 
 	/** 头部挂倍率标签（每次头部重建都可重挂；旧标签随头部清空自然废弃） */
 	attachZoomLabel(container: HTMLElement): void {
-		this.zoomLbl = container.createSpan({ text: "", cls: this.opts.zoomLabelCls ?? "aw-dim aw-panel-zoomlbl", title: this.opts.zoomLabelTitle ?? "Ctrl|Shift＋滚轮缩放 / 普通滚轮滚动 / 左键拖动平移；点击复位为 100%" });
+		this.zoomLbl = container.createSpan({ text: "", cls: this.opts.zoomLabelCls ?? "aw-dim aw-panel-zoomlbl", title: this.opts.zoomLabelTitle ?? "Ctrl|Shift＋滚轮缩放 / 普通滚轮滚动 / 左键拖动平移（Alt＋左键或中键＝任意位置平移）；点击复位为 100%" });
 		this.zoomLbl.addEventListener("click", () => {
 			this.zoomLevel = 1;
+			this.panX = 0; // 虚拟平移一并复位（标签＝「复位视图」而不是只复位倍率）
+			this.panY = 0;
 			this.bodyEl.scrollTo({ left: 0, top: 0 });
 			this.apply();
 		});
@@ -62,14 +69,24 @@ export class CanvasPanel {
 		this.suppressClickUntil = Date.now() + delayMs;
 	}
 
+	/** 场景画布等**绝对定位内容**的真实内容宽：>视口宽时 sizer 撑出横向可滚动/可拖动范围（v0.4.7+，否则最右侧卡片与包含框拖不出去也滚不到）。0＝恢复「宽＝视口宽」旧行为 */
+	setContentWidth(w: number): void {
+		this.contentW = Number.isFinite(w) && w > 0 ? w : 0;
+		this.apply();
+	}
+
 	/** 应用画布视图状态：sizer 宽高＝内容×缩放（决定可滚动范围）、transform via CSS var、滚动位置限位、倍率标签 class；构造 / 滚轮缩放 / 点击复位 / 重渲染后共用 */
 	apply(): void {
-		const w = this.bodyEl.clientWidth;
-		this.zoomEl.style.width = `${String(w)}px`; // 内容布局宽＝视口宽（transform 不影响布局，须显式给定）
+		const w = Math.max(this.bodyEl.clientWidth, this.contentW); // v0.4.7+：内容宽（setContentWidth）大于视口时按内容宽撑开
+		this.zoomEl.style.width = `${String(w)}px`; // 内容布局宽（transform 不影响布局，须显式给定）
 		const h = this.zoomEl.clientHeight; // 内容布局高（scale=1 时）
 		this.sizerEl.style.width = `${Math.round(w * this.zoomLevel)}px`;
 		this.sizerEl.style.height = `${Math.round(h * this.zoomLevel)}px`;
 		this.zoomEl.style.setProperty(this.opts.zoomVar, `scale(${String(this.zoomLevel)})`);
+		// v0.4.7+ 虚拟平移层：translate（布局 px，独立于缩放，加在 scale 之外）——无滚动余量时拖动视野也能挪动。
+		// 变量用固定名设在 panEl 自身（每面板一个 panEl，互不冲突；CSS 只需认这一对名字）
+		this.panEl.style.setProperty("--aw-canvas-pan-x", `${String(this.panX)}px`);
+		this.panEl.style.setProperty("--aw-canvas-pan-y", `${String(this.panY)}px`);
 		const maxX = Math.max(0, this.sizerEl.clientWidth - w);
 		const maxY = Math.max(0, this.sizerEl.clientHeight - this.bodyEl.clientHeight);
 		if (this.bodyEl.scrollLeft > maxX) this.bodyEl.scrollLeft = maxX; // 缩小时把越界的滚动位置拉回
@@ -121,24 +138,35 @@ export class CanvasPanel {
 			const d = ev.deltaMode === 1 ? ev.deltaY * 32 : ev.deltaY; // 行模式换算成像素量级
 			const nz = clampNum(this.zoomLevel * Math.exp(-d * 0.0015), lo, hi);
 			if (nz === this.zoomLevel) return;
-			// 以鼠标位置为不动点：鼠标下的内容点 p=(scroll+m)/z 缩放后仍停在屏幕 m 处 → scroll′ = p·z′ − m
+			// 以鼠标位置为不动点：屏幕点 m＝pan＋p·z−scroll（v0.4.7+ 含虚拟平移层）→ p＝(m+scroll−pan)/z，缩放后 scroll′＝pan＋p·z′−m
 			const rect = this.bodyEl.getBoundingClientRect();
 			const mx = ev.clientX - rect.left;
 			const my = ev.clientY - rect.top;
-			const px = (this.bodyEl.scrollLeft + mx) / this.zoomLevel;
-			const py = (this.bodyEl.scrollTop + my) / this.zoomLevel;
+			const px = (this.bodyEl.scrollLeft + mx - this.panX) / this.zoomLevel;
+			const py = (this.bodyEl.scrollTop + my - this.panY) / this.zoomLevel;
 			this.zoomLevel = nz;
-			this.bodyEl.scrollLeft = px * nz - mx;
-			this.bodyEl.scrollTop = py * nz - my;
+			this.bodyEl.scrollLeft = this.panX + px * nz - mx;
+			this.bodyEl.scrollTop = this.panY + py * nz - my;
 			this.apply();
 		}, { passive: false });
 
-		let dragFrom: { x: number; y: number; sl: number; st: number } | null = null;
+		let dragFrom: { x: number; y: number; sl: number; st: number; px: number; py: number } | null = null;
 		let dragged = false; // 本次手势是否真的拖过：用于吃掉松手时紧随的 click/dblclick，避免拖完误打开文档/误切折叠
+		// v0.4.7+：中键＝平移（绘图软件习惯）；普通左键照旧＝空白处平移（卡片/包含框/连线各自 stopPropagation 独占自己的手势，能冒泡到 bodyEl 的必是空白处）。
+		// Alt＋左键＝任意位置平移：卡片/框的手势遇 altKey 直接让位不 stopPropagation（画布热区被框占满时，按住 Alt 从卡片上就能平移视野）
+		const wantsPan = (ev: PointerEvent): boolean => ev.button === 1 || ev.button === 0;
 		const onDragMove = (ev: PointerEvent): void => {
 			if (!dragFrom) return;
-			this.bodyEl.scrollLeft = dragFrom.sl - (ev.clientX - dragFrom.x); // 拖动＝驱动容器滚动位置（与滚轮/滚动条/触屏同一套滚动）
-			this.bodyEl.scrollTop = dragFrom.st - (ev.clientY - dragFrom.y);
+			// v0.4.7+ 混合平移：滚动余量内驱动容器滚动（与滚轮/滚动条/触屏同一套），到底后剩余量转入虚拟平移层（panEl translate）——内容不超出面板也能挪整个视野
+			const maxX = Math.max(0, this.sizerEl.clientWidth - this.bodyEl.clientWidth);
+			const maxY = Math.max(0, this.sizerEl.clientHeight - this.bodyEl.clientHeight);
+			const wantL = dragFrom.sl - (ev.clientX - dragFrom.x);
+			const wantT = dragFrom.st - (ev.clientY - dragFrom.y);
+			this.bodyEl.scrollLeft = clampNum(wantL, 0, maxX);
+			this.bodyEl.scrollTop = clampNum(wantT, 0, maxY);
+			this.panX = dragFrom.px + (wantL - this.bodyEl.scrollLeft);
+			this.panY = dragFrom.py + (wantT - this.bodyEl.scrollTop);
+			this.apply();
 			if (!dragged && Math.abs(ev.clientX - dragFrom.x) + Math.abs(ev.clientY - dragFrom.y) > 3) {
 				dragged = true;
 				this.bodyEl.classList.add("is-panning");
@@ -149,14 +177,16 @@ export class CanvasPanel {
 			this.bodyEl.classList.remove("is-panning");
 			document.removeEventListener("pointermove", onDragMove);
 			document.removeEventListener("pointerup", endDrag);
+			document.removeEventListener("pointercancel", endDrag);
 			window.setTimeout(() => { dragged = false; }, 0); // 等紧随其后的 click 先被拦下再复位
 		};
 		this.bodyEl.addEventListener("pointerdown", (ev: PointerEvent) => {
-			if (ev.button !== 0) return; // 只响应左键（触屏单指平移走原生滚动，touch-action 放行后 pointer 手势会被浏览器接管）
-			dragFrom = { x: ev.clientX, y: ev.clientY, sl: this.bodyEl.scrollLeft, st: this.bodyEl.scrollTop };
+			if (!wantsPan(ev)) return; // 左键/中键都可起手；卡片/框手势已 stopPropagation，冒泡到这里＝空白处或 Alt 让位
+			dragFrom = { x: ev.clientX, y: ev.clientY, sl: this.bodyEl.scrollLeft, st: this.bodyEl.scrollTop, px: this.panX, py: this.panY };
 			dragged = false;
 			document.addEventListener("pointermove", onDragMove);
 			document.addEventListener("pointerup", endDrag);
+			document.addEventListener("pointercancel", endDrag); // v0.4.7+：取消事件也收尾，防 dragFrom 残留导致后续裸 pointermove 继续拽视野
 			if (ev.pointerType === "mouse") ev.preventDefault(); // 鼠标拖动不选中文字；触屏保持原生滚动手势
 		});
 		for (const type of ["click", "dblclick"] as const) {

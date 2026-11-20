@@ -19,6 +19,13 @@ export interface SceneDoc {
 	created_at?: string;
 	updated_at?: string;
 	content?: string;
+	/** v0.4.7+ 场景面板：画布坐标（单位 px，文档坐标系；未设置＝缺省，面板自动布局）。写盘行 `- 位置：x,y` */
+	x?: number;
+	y?: number;
+	/** v0.4.7+ 场景面板：父场景 scene_id（大场景包含小场景）。写盘行 `- 父场景：<id>` */
+	parent?: string;
+	/** v0.4.7+ 场景面板：关联场景 scene_id 列表（同角色口径「、」连接）。写盘行 `- 关联：甲、乙`；卡片上渲染成可点 chip */
+	related?: string[];
 }
 
 export interface CharacterDoc {
@@ -427,6 +434,24 @@ export function parseScenes(text: string, defaultChapter: number): Record<string
 			}
 			m = /^-?\s*更新[：:]\s*(.+)$/.exec(s);
 			if (m) scene.updated_at = m[1].trim();
+			// v0.4.7+ 场景面板字段：画布坐标与父场景（大小场景）
+			m = /^-?\s*位置[：:]\s*(-?\d+(?:\.\d+)?)\s*[，,]\s*(-?\d+(?:\.\d+)?$)/.exec(s);
+			if (m) {
+				const x = Number(m[1]);
+				const y = Number(m[2]);
+				if (Number.isFinite(x) && Number.isFinite(y)) {
+					scene.x = x;
+					scene.y = y;
+				}
+				continue;
+			}
+			m = /^-?\s*父场景[：:]\s*(.+)$/.exec(s);
+			if (m) {
+				scene.parent = m[1].trim();
+				continue;
+			}
+			m = /^-?\s*关联[：:]\s*(.+)$/.exec(s); // v0.4.7+ 关联场景（同角色口径、列表）
+			if (m) scene.related = splitList(m[1]);
 		}
 		if (contentParts.length) scene.content = contentParts.join("\n").trim();
 		result[sid] = scene;
@@ -442,10 +467,205 @@ export function formatScenes(heading: string, scenes: Record<string, SceneDoc>):
 		if (scene.chapter_num) lines.push(`- 章节：${scene.chapter_num}`);
 		if (scene.characters.length) lines.push(`- 角色：${joinList(scene.characters)}`);
 		if (scene.notes) lines.push(`- 备注：${scene.notes}`);
+		if (scene.x != null && scene.y != null) lines.push(`- 位置：${String(scene.x)},${String(scene.y)}`); // v0.4.7+ 场景面板画布坐标
+		if (scene.parent) lines.push(`- 父场景：${scene.parent}`); // v0.4.7+ 大场景包含小场景
+		if (scene.related?.length) lines.push(`- 关联：${joinList(scene.related)}`); // v0.4.7+ 关联场景
 		if (scene.created_at) lines.push(`- 创建：${scene.created_at}`);
 		if (scene.updated_at) lines.push(`- 更新：${scene.updated_at}`);
 		if (scene.content) lines.push("", "正文：", "```text", scene.content, "```");
 		lines.push("");
+	}
+	return lines.join("\n");
+}
+
+// ---------- 场景面板块级写回（v0.4.7+：定位＝ `## <scene_id>` 标题行，注释掩码后精确匹配；只改动目标块）----------
+
+/** 场景面板写回用的条目输入＝SceneDoc 去运行态字段（vol 不落盘） */
+export type SceneBlockInput = Omit<SceneDoc, "vol">;
+
+/** 场景面板编辑弹窗提交结果（未触碰的字段 undefined＝写回保留原文该行，不臆造覆盖） */
+export interface SceneBlockEdit {
+	title?: string; // 显示名（空串＝删除 `- 标题：` 行）
+	description?: string;
+	characters?: string[];
+	notes?: string;
+	parent?: string; // 空串＝删除 `- 父场景：` 行（升为顶层）
+	related?: string[]; // v0.4.7+ 关联场景 id 列表（空数组＝删除 `- 关联：` 行）
+	content?: string; // 多行正文（```text 围栏）
+}
+
+/** 原文中定位 `## <scene_id>` 块（注释掩码后标题行 trim 比对，标题后空白忽略；围栏内 `#` 行不算标题）。返回起始行号（含）与尾行号（不含，下一条 H1/H2 之前或文档尾）；找不到返回 null（＝文档自解析后已变化，调用方应提示刷新重试） */
+function findSceneBlockLines(text: string, sceneId: string): { start: number; end: number } | null {
+	const mLines = maskCommentSpans(text).split("\n");
+	const lines = text.split("\n");
+	let inFence = false;
+	for (let i = 0; i < lines.length; i++) {
+		const line = lines[i];
+		if (/^\s*```/.test(line)) { inFence = !inFence; continue; }
+		if (inFence) continue;
+		const hm = /^##\s+(.*)$/.exec(mLines[i]);
+		if (hm && hm[1].trim() === sceneId.trim()) {
+			let end = lines.length;
+			for (let j = i + 1; j < lines.length; j++) {
+				if (/^\s*```/.test(lines[j])) { inFence = !inFence; continue; }
+				if (inFence) continue;
+				if (/^#{1,2}\s+/.test(mLines[j])) { end = j; break; }
+			}
+			return { start: i, end };
+		}
+	}
+	return null;
+}
+
+/** 场景条目序列化为文档块（与 parseScenes 往返一致）：字段顺序＝标题/描述/章节/角色/备注/位置/父场景/创建/更新＋正文围栏（`正文：`＋```text）。块尾带空行 */
+export function formatSceneBlock(s: SceneBlockInput): string {
+	const lines = [`## ${s.scene_id}`];
+	if (s.title?.trim()) lines.push(`- 标题：${s.title.trim()}`);
+	if (s.description) lines.push(`- 描述：${s.description}`);
+	if (s.chapter_num) lines.push(`- 章节：${String(s.chapter_num)}`);
+	if (s.characters.length) lines.push(`- 角色：${joinList(s.characters)}`);
+	if (s.notes) lines.push(`- 备注：${s.notes}`);
+	if (s.x != null && s.y != null) lines.push(`- 位置：${String(s.x)},${String(s.y)}`);
+	if (s.parent) lines.push(`- 父场景：${s.parent}`);
+	if (s.related?.length) lines.push(`- 关联：${joinList(s.related)}`);
+	if (s.created_at) lines.push(`- 创建：${s.created_at}`);
+	if (s.updated_at) lines.push(`- 更新：${s.updated_at}`);
+	if (s.content) lines.push("", "正文：", "```text", s.content.replace(/\s+$/, ""), "```");
+	lines.push("");
+	return lines.join("\n");
+}
+
+/** 在《场景.md》文末追加一个新场景块（已有内容原样保留；空文档/缺文件按 "# 场景" 起底）。scene_id 已存在或为空时返回 null（调用方先查重） */
+export function insertSceneBlock(text: string, scene: SceneBlockInput): string | null {
+	const id = String(scene.scene_id ?? "").trim();
+	if (!id || /[\\/:*?"<>|]/.test(id)) return null;
+	if (findSceneBlockLines(text, id)) return null; // 同名场景已存在
+	const base = text.trim() ? text.replace(/\s+$/, "") : "# 场景";
+	return `${base}\n\n${formatSceneBlock(scene)}`.replace(/\n{3,}/g, "\n\n").replace(/\s+$/, "") + "\n";
+}
+
+/** 字段行识别（编辑写回时用于区分「保留的自由/未知行」；正文围栏整体保留或整体替换） */
+const SCENE_FIELD_LINE_RE = /^\s*-?\s*(标题|描述|章节|角色|备注|位置|父场景|关联|创建|更新)\s*[：:]/;
+
+/** 编辑更新《场景.md》中的场景块：edit 中 undefined 的字段保留原行（含创建/更新/章节与未识别的自由行、围栏外自由文本），给出的字段整行重写（空值＝删除该字段行）；正文围栏按 edit.content 整段替换/删除/保留。定位失败返回 null（＝文档已被外部改动，调用方提示刷新） */
+export function updateSceneBlock(text: string, sceneId: string, edit: SceneBlockEdit): string | null {
+	const loc = findSceneBlockLines(text, sceneId);
+	if (!loc) return null;
+	const lines = text.split("\n");
+	const out: string[] = [lines[loc.start]];
+	let inFence = false;
+	let fenceBuf: string[] = [];
+	let fenceHandled = false;
+	const seenKeys = new Set<string>();
+	const pending: string[] = []; // 原文缺该行但编辑给出了值＝补写（插在正文围栏前）
+	const wanted: Array<[string, string | null | undefined]> = [
+		["标题", edit.title === undefined ? undefined : edit.title.trim() ? `- 标题：${edit.title.trim()}` : null],
+		["描述", edit.description === undefined ? undefined : edit.description.trim() ? `- 描述：${edit.description.trim()}` : null],
+		["角色", edit.characters === undefined ? undefined : edit.characters.length ? `- 角色：${joinList(edit.characters)}` : null],
+		["备注", edit.notes === undefined ? undefined : edit.notes.trim() ? `- 备注：${edit.notes.trim()}` : null],
+		["父场景", edit.parent === undefined ? undefined : edit.parent.trim() ? `- 父场景：${edit.parent.trim()}` : null],
+		["关联", edit.related === undefined ? undefined : edit.related.length ? `- 关联：${joinList(edit.related)}` : null],
+	];
+	let pendingFlushed = false;
+	const flushPending = (): void => {
+		if (pendingFlushed) return;
+		pendingFlushed = true;
+		for (const [key, line] of wanted) {
+			if (seenKeys.has(key) || line === undefined || line === null) continue;
+			pending.push(line);
+			seenKeys.add(key);
+		}
+		out.push(...pending);
+	};
+	let labelSeen = false; // 块内「正文：」标签行（围栏的引导行）：捕获后不直接回写，由本函数统一重排
+	const emitContent = (): void => {
+		flushPending(); // 补写的字段行排在正文围栏前
+		if (edit.content === undefined) {
+			if (fenceBuf.length) { if (labelSeen) out.push("", "正文："); out.push(...fenceBuf); } // 未触碰正文＝原围栏原样（标签行按原位置语义回排）
+			else if (labelSeen) out.push("正文："); // 孤儿标签行（无围栏跟随）原样保留
+			return;
+		}
+		const t = edit.content.replace(/\s+$/, "");
+		if (t) out.push("", "正文：", "```text", t, "```");
+	};
+	for (let i = loc.start + 1; i < loc.end; i++) {
+		const line = lines[i];
+		if (/^\s*```/.test(line)) {
+			if (!inFence) { inFence = true; fenceBuf = [line]; }
+			else { fenceBuf.push(line); inFence = false; emitContent(); fenceHandled = true; } // 收尾 ``` 也入缓冲（未触碰时原围栏须原样）
+			continue;
+		}
+		if (inFence) { fenceBuf.push(line); continue; }
+		if (!inFence && !line.trim() && /^正文\s*[：:]\s*$/.test(line.trim())) { labelSeen = true; continue; } // 「正文：」标签行由 emitContent 统一回排
+		const fm = SCENE_FIELD_LINE_RE.test(line);
+		if (!fm) { if (!line.trim() && !fenceHandled) continue; out.push(line); continue; } // 围栏前空行由正文段自带，防重复；围栏后自由文本行原样
+		const key = (/^\s*-?\s*(\S+?)\s*[：:]/.exec(line) ?? [])[1] ?? "";
+		seenKeys.add(key);
+		const written = (() => {
+			switch (key) {
+				case "标题": return edit.title === undefined ? line : edit.title.trim() ? `- 标题：${edit.title.trim()}` : null;
+				case "描述": return edit.description === undefined ? line : edit.description.trim() ? `- 描述：${edit.description.trim()}` : null;
+				case "角色": return edit.characters === undefined ? line : edit.characters.length ? `- 角色：${joinList(edit.characters)}` : null;
+				case "备注": return edit.notes === undefined ? line : edit.notes.trim() ? `- 备注：${edit.notes.trim()}` : null;
+				case "父场景": return edit.parent === undefined ? line : edit.parent.trim() ? `- 父场景：${edit.parent.trim()}` : null;
+				case "关联": return edit.related === undefined ? line : edit.related.length ? `- 关联：${joinList(edit.related)}` : null;
+				default: return line; // 标题/章节/位置/创建/更新＝面板不编辑、原样保留（显示名输入已删——场景名即显示名）
+			}
+		})();
+		if (written !== null) out.push(written);
+	}
+	if (inFence) { emitContent(); } // 围栏未闭合（原文残缺）＝按已读内容处理
+	if (!pendingFlushed) flushPending(); // 块内没有围栏时补写行直接落字段区尾
+	if (edit.content !== undefined && !fenceHandled) {
+		const t = edit.content.replace(/\s+$/, "");
+		if (t) out.push("", "正文：", "```text", t, "```");
+	}
+	out.push("");
+	const merged = [...lines.slice(0, loc.start), ...out, ...lines.slice(loc.end)];
+	return merged.join("\n").replace(/\n{3,}/g, "\n\n").replace(/\s+$/, "") + "\n";
+}
+
+/** 删除《场景.md》中的场景块（整块含正文围栏）。定位失败返回 null（＝文档已被外部改动） */
+export function deleteSceneBlock(text: string, sceneId: string): string | null {
+	const loc = findSceneBlockLines(text, sceneId);
+	if (!loc) return null;
+	const lines = text.split("\n");
+	const merged = [...lines.slice(0, loc.start), ...lines.slice(loc.end)];
+	return merged.join("\n").replace(/\n{3,}/g, "\n\n").replace(/\s+$/, "") + "\n";
+}
+
+/** 改写场景块的 `- 位置：x,y` 行（场景面板拖动更新位置的写回路径）：expectOld＝面板快照里的旧坐标（null＝尚无位置行）。校验目标块内旧位置行与 expectOld 一致后写规范值（保留 2 位小数、整数不带小数点）；无该行时在字段区末尾（正文围栏前）插入。定位/校验失败返回 null（＝快照过期，调用方应提示刷新重试） */
+export function rewriteScenePosition(text: string, sceneId: string, expectOld: { x: number; y: number } | null, x: number, y: number): string | null {
+	if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+	const loc = findSceneBlockLines(text, sceneId);
+	if (!loc) return null;
+	const lines = text.split("\n");
+	const fmt = (v: number): string => String(Math.round(v * 100) / 100);
+	const posLine = `- 位置：${fmt(x)},${fmt(y)}`;
+	let inFence = false;
+	let posIdx = -1;
+	let insertAt = loc.end; // 默认插到块尾
+	for (let i = loc.start + 1; i < loc.end; i++) {
+		if (/^\s*```/.test(lines[i])) { if (!inFence) insertAt = Math.min(insertAt, i); inFence = !inFence; continue; }
+		if (inFence) continue;
+		if (SCENE_FIELD_LINE_RE.test(lines[i]) && /^\s*-?\s*位置\s*[：:]/.test(lines[i])) {
+			if (posIdx >= 0) return null; // 重复位置行＝文档异常，放弃防误写
+			posIdx = i;
+		}
+	}
+	if (posIdx >= 0) {
+		const m = /^\s*-?\s*位置\s*[：:]\s*(-?\d+(?:\.\d+)?)\s*[，,]\s*(-?\d+(?:\.\d+)?)/.exec(lines[posIdx]);
+		if (!m) return null; // 旧位置行解析不出＝快照过期
+		const ox = Number(m[1]);
+		const oy = Number(m[2]);
+		const same = expectOld != null && Math.abs(ox - expectOld.x) < 0.51 && Math.abs(oy - expectOld.y) < 0.51;
+		const empty = expectOld == null && !Number.isFinite(ox);
+		if (!same && !empty) return null;
+		lines[posIdx] = posLine;
+	} else {
+		if (expectOld != null) return null; // 快照有坐标但原文无该行＝文档已变化
+		while (insertAt > loc.start + 1 && !lines[insertAt - 1].trim()) insertAt--; // 回退到块尾空行之前
+		lines.splice(insertAt, 0, posLine);
 	}
 	return lines.join("\n");
 }

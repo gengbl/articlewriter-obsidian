@@ -1,4 +1,4 @@
-import { App, Modal, Notice, SuggestModal, Setting, TFile, TFolder, ToggleComponent } from "obsidian";
+import { App, Modal, Notice, setTooltip, SuggestModal, Setting, TFile, TFolder, ToggleComponent } from "obsidian";
 import { PIPELINE_STAGES, type StageId } from "./pipeline"; // v0.3.0+：AutoBookModal 起始节点下拉（pipeline.ts 纯数据、不 import obsidian，无循环依赖）
 import { parseTimelineTime } from "./md_docs"; // v0.3.3+：EventEditModal 时间点校验（md_docs 纯数据模块，无循环依赖）
 import { type BookSkillPhase } from "./state_doc"; // v0.3.4+：BookSkillPhaseModal 阶段键（state_doc 纯数据模块，无循环依赖）
@@ -1719,6 +1719,114 @@ export class EventEditModal extends AwModal {
 	}
 }
 
+// ---------- 场景面板（v0.4.7+）：场景编辑弹窗（新建/编辑共用） ----------
+
+export interface SceneEditResult {
+	sceneId: string; // 新建必填；编辑态忽略（调用方按原 id 定位块）。v0.4.7+ 起**场景名即显示名**（独立「显示名」输入已删）
+	description: string;
+	characters: string[];
+	notes: string;
+	content: string; // 多行正文（写盘 ```text 围栏）
+	parent: string; // 父场景 scene_id（空＝顶层；写盘 `- 父场景：<id>`／删除该行）
+	related: string[]; // v0.4.7+ 关联场景 scene_id 列表（写盘 `- 关联：甲、乙`／空＝删行）
+}
+
+/**
+ * 场景编辑弹窗（场景面板「新增/编辑场景」共用）：场景名（＝显示名；新建必填＝`## id` 块锚、编辑态只读防引用悬空）＋描述＋角色（下拉多选，候选＝三层《人物.md》）＋备注＋正文（多行）＋父场景下拉＋关联场景（下拉多选，候选＝其它场景）。
+ * initialValues 预填（编辑＝条目现值；新增＝空）；名称非法（空 / 含 `\\ / : * ? " < > |`）内联报错、不关闭弹窗；关闭弹窗即放弃（onCancel）。
+ */
+export class SceneEditModal extends AwModal {
+	private submitted = false;
+
+	constructor(
+		app: App,
+		private title: string,
+		private editing: { scene_id: string } | null,
+		private initialValues: Partial<SceneEditResult> | undefined,
+		private charOptions: readonly string[],
+		private parentOptions: readonly { id: string; label: string }[] = [], // 父场景候选（调用方给：全部场景去自身与后代防环）
+		private sceneOptions: readonly { id: string; label: string }[] = [], // 关联场景候选（v0.4.7+：全部场景去自身；label 展示、id 为选中值与写盘值）
+		private onSubmit: (result: SceneEditResult) => void | Promise<void>,
+		private onCancel?: () => void
+	) {
+		super(app);
+	}
+
+	onOpen(): void {
+		this.contentEl.addClass("aw-form-compact");
+		this.contentEl.createEl("h3", { text: this.title });
+		// 预填值必须直接从 initialValues 取（setValue 不触发 onChange——同 EventEditModal 坑位）
+		let sceneId = this.editing?.scene_id ?? "";
+		let nameErr: HTMLElement | null = null;
+		let description = this.initialValues?.description ?? "";
+		let notes = this.initialValues?.notes ?? "";
+		let content = this.initialValues?.content ?? "";
+		let parent = this.initialValues?.parent ?? ""; // v0.4.7+ 大场景包含小场景
+		const ed = this.editing; // 收窄一次（回调闭包里窄化不保留）
+		if (ed) {
+			new Setting(this.contentEl).setName("场景名").addText((t) => {
+				t.setValue(ed.scene_id);
+				t.setDisabled(true); // 编辑态只读：改名会破坏 `## id` 块锚与 `- 父场景：` 引用（场景名即显示名）
+			});
+		} else {
+			new Setting(this.contentEl).setName("场景名").addText((t) => {
+				t.setPlaceholder("如 黑石城（即面板显示名与《场景.md》块锚名）");
+				t.onChange((v) => (sceneId = v.trim()));
+			});
+			nameErr = this.contentEl.createDiv({ cls: "aw-ev-msel-empty" });
+			nameErr.hide();
+		}
+		new Setting(this.contentEl).setName("描述").addTextArea((ta) => {
+			ta.setPlaceholder("一句话场景描述");
+			ta.setValue(this.initialValues?.description ?? "");
+			ta.inputEl.classList.add("aw-prompt-textarea", "aw-ta-rows");
+			ta.inputEl.rows = 2;
+			ta.onChange((v) => (description = v));
+		});
+		this.contentEl.createDiv({ text: "角色", cls: "aw-ev-msel-label" }); // 下拉多选（候选＝该书三层《人物.md》角色名）
+		const getChars = makeMultiSelect(this.contentEl, "＋ 选择角色…", this.charOptions.length ? "（候选人物已全部选用）" : "（没有人物候选：先在《人物.md》中登记人物）", this.charOptions, this.initialValues?.characters ?? []);
+		new Setting(this.contentEl).setName("备注").addText((t) => {
+			t.setPlaceholder("备注（可选）");
+			if (this.initialValues?.notes) t.setValue(this.initialValues.notes);
+			t.onChange((v) => (notes = v.trim()));
+		});
+		new Setting(this.contentEl).setName("父场景").addDropdown((d) => { // v0.4.7+ 大场景包含小场景：写 `- 父场景：<id>`（选「无」＝删除该行、升为顶层）
+			d.addOption("", "（无 · 顶层场景）");
+			for (const o of this.parentOptions) d.addOption(o.id, o.label);
+			d.setValue(this.initialValues?.parent ?? "");
+			d.onChange((v) => (parent = v));
+		});
+		this.contentEl.createDiv({ text: "关联场景", cls: "aw-ev-msel-label" }); // v0.4.7+ 下拉多选（候选＝其它场景；选中值＝scene_id，写 `- 关联：甲、乙`；卡片 chip 可点跳转）
+		const getRelated = makeMultiSelect(this.contentEl, "＋ 选择关联场景…", this.sceneOptions.length ? "（已全部选用）" : "（还没有其它场景可关联）", this.sceneOptions.map((o) => o.id), this.initialValues?.related ?? []);
+		new Setting(this.contentEl).setName("正文").addTextArea((ta) => { // 多行正文（写盘 ```text 围栏；编辑未触碰时保留原围栏）
+			ta.setPlaceholder("场景正文：氛围、布局、规则等（可多行）");
+			ta.setValue(this.initialValues?.content ?? "");
+			ta.inputEl.classList.add("aw-prompt-textarea", "aw-ta-rows");
+			ta.inputEl.rows = 6;
+			ta.onChange((v) => (content = v));
+		});
+		const btns = new Setting(this.contentEl).addButton((btn) =>
+			btn.setButtonText("保存").setCta().onClick(async () => {
+				if (!ed && (!sceneId || /[\\/:*?"<>|]/.test(sceneId))) {
+					nameErr?.setText(sceneId ? `场景名无效：「${sceneId}」不能包含 \\ / : * ? " < > |` : "场景名不能为空");
+					nameErr?.show();
+					return;
+				}
+				this.submitted = true;
+				this.close();
+				await this.onSubmit({ sceneId: ed ? ed.scene_id : sceneId, description: description.trim(), characters: getChars.get(), notes, content: content.replace(/\s+$/, ""), parent, related: getRelated.get() });
+			})
+		);
+		btns.addButton((btn) => btn.setButtonText("取消").onClick(() => this.close()));
+		btns.settingEl.addClass("aw-btns-right");
+	}
+
+	override onClose(): void {
+		this.contentEl.empty();
+		if (!this.submitted && this.onCancel) this.onCancel();
+	}
+}
+
 // ---------- 书籍级写作技能（v0.3.4+）：技能编写弹窗＋阶段配置弹窗（面板本体由 main.ts 用 ActionMenuModal 组装菜单项）----------
 
 /** 技能保存位置级别：system＝全局 <work_dir>/SKILLS/<name>.md（跨书共用）；book＝<书>/案头资料/Skill/<name>.md（本书专属） */
@@ -1770,15 +1878,15 @@ export class SkillEditModal extends AwModal {
 			nameErr = this.contentEl.createDiv({ cls: "aw-ev-msel-empty" });
 			nameErr.hide();
 		}
-		new Setting(this.contentEl)
-			.setName("保存位置")
-			.setDesc(this.editing ? "更改位置并保存＝以同名另存到新位置，原文件自动删除（书籍级引用同步清理）" : "系统级＝SKILLS/（全部书籍共用）；书籍级＝案头资料/Skill/（仅本书）")
+		const loc = new Setting(this.contentEl)
+			.setName("保存位置") // v0.4.7+ 说明文字从标签下移出——悬停「保存位置」标签才显示（弹窗更紧凑）
 			.addDropdown((d) => {
 				d.addOption("system", "系统级（SKILLS/）");
 				d.addOption("book", "书籍级（案头资料/Skill/）");
 				d.setValue(level);
 				d.onChange((v) => (level = v === "system" ? "system" : "book"));
 			});
+		setTooltip(loc.nameEl, this.editing ? "更改位置并保存＝以同名另存到新位置，原文件自动删除（书籍级引用同步清理）" : "系统级＝SKILLS/（全部书籍共用）；书籍级＝案头资料/Skill/（仅本书）");
 		new Setting(this.contentEl).setName("Skill 内容").addTextArea((ta) => {
 			ta.setPlaceholder("技能按独立 Markdown 章节编写；注入提示词时剥去起始标题行、以【技能 · 名称】包裹");
 			ta.setValue(this.initialContent);

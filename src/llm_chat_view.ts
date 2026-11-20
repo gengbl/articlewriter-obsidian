@@ -847,7 +847,7 @@ export class LlmChatView extends ItemView {
 				createdAt = parsed.meta.created_at ?? "";
 				body = raw.replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n?/, "").trim(); // 只剩 frontmatter＝插件建的空骨架
 			} catch { /* 读不了＝按有内容处理，保守归档 */ }
-			if (!turnCount && !body) await this.app.vault.delete(live);
+			if (!turnCount && !body) await this.app.fileManager.trashFile(live); // v0.4.7+ 社区 lint：走回收站尊重用户删除偏好（不用 vault.delete）
 			else {
 				const parent = livePath.slice(0, livePath.lastIndexOf("/"));
 				const base = archiveSessionName(createdAt, new Date());
