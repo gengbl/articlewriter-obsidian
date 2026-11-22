@@ -825,12 +825,12 @@ export class TimelineView extends ItemView {
 
 	/** 添加同级事件：级别＝该条目级别，锚点＝该条目自身（插到其整棵子树之后＝其后首个同级）、写回该条目所在文档 */
 	private async openAddSibling(row: TlRow): Promise<void> {
-		await this.openAddAt(row.level, `添加同级事件（同${tlRowName(row) || timelineTimeText(row)}级）`, row.sourcePath, row.srcHeading ?? null, row.srcOrdinal ?? 0, row, row, { label: this.locationOf(row.scope, row.sourcePath) }); // v0.4.9+ 级别行只读＝同级随该条同一份文档
+		await this.openAddAt(row.level, `添加同级事件（同${tlRowName(row) || timelineTimeText(row)}级）`, row.sourcePath, row.srcHeading ?? null, row.srcOrdinal ?? 0, row, row, { label: this.locationOf(row.scope, row.sourcePath) }, "sibling"); // v0.4.9+ 级别行只读＝同级随该条同一份文档
 	}
 
-	/** 新增节点公共流程：先取人物候选再开弹窗；弹窗内时间点必填（非法内联报错）；写回按 level/锚点校验——锚点级别必须比新节点浅一级否则标题序列非法（提示先刷新），通过则 insertTimelineBlock 到锚点子树末尾（锚点 null＝文档末尾） */
-	private async openAddAt(level: number, label: string, docPath: string, anchorHeading: string | null, anchorOrdinal: number, anchorRow: TlRow | undefined, defaultTimeRow: TlRow | undefined, levelChoice: { options?: readonly { value: string; label: string }[]; value?: string; label?: string } | undefined = undefined): Promise<void> {
-		if (anchorHeading !== null && level <= (anchorRow?.level ?? 1)) { new Notice("锚点条目级别与新节点不符，请先点「刷新」后重试"); return; }
+	/** 新增节点公共流程：先取人物候选再开弹窗；弹窗内时间点必填（非法内联报错）；写回按 level/锚点校验——**锚点关系分两种**：`parent`（添加子事件）＝锚点级别必须比新节点浅一级、`sibling`（添加同级事件）＝锚点级别必须与新节点相同，不符＝快照过期（提示先刷新），通过则 insertTimelineBlock 到锚点子树末尾（锚点 null＝文档末尾） */
+	private async openAddAt(level: number, label: string, docPath: string, anchorHeading: string | null, anchorOrdinal: number, anchorRow: TlRow | undefined, defaultTimeRow: TlRow | undefined, levelChoice: { options?: readonly { value: string; label: string }[]; value?: string; label?: string } | undefined = undefined, anchorRelation: "parent" | "sibling" = "parent"): Promise<void> {
+		if (anchorHeading !== null && anchorRow && (anchorRelation === "sibling" ? level !== anchorRow.level : level <= anchorRow.level)) { new Notice("锚点条目级别与新节点不符，请先点「刷新」后重试"); return; }
 		let chars: string[] = [];
 		try { chars = await this.getCharOptions(); } catch { /* 人物候选读取失败：弹窗人物区显示「暂无」 */ }
 		const related = this.eventOptions(anchorRow ? tlRowName(anchorRow) : undefined);
