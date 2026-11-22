@@ -16,7 +16,7 @@ import { BOOK_SKILL_PHASE_KEYS, bookSkillPhaseKey, WORD_RANGE_DEFAULT, autoBookM
 import { BANNED_LIST_SKILL_NAME, buildDefaultLlmConf, CHAT_REF_DOC_CATALOG, CHAT_REF_DOC_DEFAULTS, defaultBaseUrlForProvider, filterEnabledLlmConfigs, getVisibleLlmFields, IDENTITY_BOOST_SKILL_PREFIX, isLlmConfigEnabled, LEGACY_WRITING_TASK_SKILL_NAMES, normalizeLlmProvider, PHASE_CHAPTER_OUTLINE, PHASE_OUTLINE, PHASE_PLANNING, PHASE_REF_DOC_CATALOGS, PHASE_REF_DOC_DEFAULTS, PHASE_WORLDVIEW, PHASE_WRITING, REF_DOC_KEY_RENAMES, REF_DOC_LABELS, renameLlmConfig, selectEnabledLlmName, SENSITIVE_LIST_SKILL_NAME, setLlmConfigEnabled, TENSION_TOOLBOX_SKILL_NAME, toggleLlmConfigEnabled, WRITING_PHASE_LABELS, WRITING_TASK_SKILL_NAME } from "./plugin_config";
 import type { LlmConfigDoc, PluginConfig, WritingPhase } from "./plugin_config";
 import { stampUsageDoc, usageDocNeedsRegen, usageDocVersion } from "./usage_doc_stamp";
-import { DEFAULT_USAGE_GUIDE } from "./usage_guide_default";
+import { DEFAULT_USAGE_GUIDE, USAGE_QR_ASSET_NAME, USAGE_QR_DATA_URL } from "./usage_guide_default";
 import { assembleSystemPrompt, cacheStatsText, chatCompletion, chatStream, describeLlmError, isLoopbackBaseUrl, isRetryableLlmError, normalizeBaseURL, retryTurnMessages, testConnection } from "./llm_client";
 import type { Message } from "./llm_client";
 import { findAiWordHits, simplifyEmphaticRepetition, simplifyNegationContrast, findAiSentences, parseBannedWordsMd, type BannedWordsData } from "./banned_words";
@@ -3409,7 +3409,10 @@ async cmdRenameChapterFile(): Promise<void> {
 			const p = this.usageDocPath();
 			const v = this.manifest.version;
 			const ex = await this.manager.readGuideAt(p);
-			if (!usageDocNeedsRegen(ex, v)) return;
+			if (!usageDocNeedsRegen(ex, v)) {
+				if (!(await this.app.vault.adapter.exists(this.usageQrAssetPath(p)))) await this.writeUsageQrAsset(p); // 版本一致不动说明正文，但二维码资源被删过要补投（wikilink 才不会空）
+				return;
+			}
 			const old = usageDocVersion(ex ?? "");
 			await this.writeUsageDoc(p);
 			new Notice(ex && ex.trim() ? (old ? `插件升级 ${old} → ${v}：已重新生成《使用说明.md》（内置说明，可按需继续编辑）` : `《使用说明.md》无版本戳（旧版插件遗留），已按当前版本 ${v} 重新生成`) : "已在工作目录创建《使用说明.md》", 8000);
@@ -3419,9 +3422,26 @@ async cmdRenameChapterFile(): Promise<void> {
 		}
 	}
 
-	/** 写内置说明的统一出口（v0.4.7+）：stampUsageDoc 前置版本戳注释＋可见版本提示行——启动自检/切工作目录投放/手动命令三处共用 */
+	/** 写内置说明的统一出口（v0.4.7+）：stampUsageDoc 前置版本戳注释＋可见版本提示行——启动自检/切工作目录投放/手动命令三处共用；**v0.4.10+ 同目录投放二维码资源**（md 里 wikilink 引用；阅读模式不渲染内联 data: 图＝空白，故走资源文件） */
 	private async writeUsageDoc(path: string): Promise<void> {
 		await this.manager.writeGuideAt(path, stampUsageDoc(DEFAULT_USAGE_GUIDE, this.manifest.version));
+		await this.writeUsageQrAsset(path);
+	}
+
+	/** 二维码资源文件路径＝《使用说明.md》同目录（文件名带插件前缀防撞名） */
+	private usageQrAssetPath(docPath: string): string {
+		const dir = docPath.replace(/\/[^/]*$/, "");
+		return dir ? `${dir}/${USAGE_QR_ASSET_NAME}` : USAGE_QR_ASSET_NAME;
+	}
+
+	/** 把包内二维码 dataurl 解码为二进制写到文档同目录（覆盖写；dataurl 异常时跳过不阻断说明生成） */
+	private async writeUsageQrAsset(docPath: string): Promise<void> {
+		const comma = USAGE_QR_DATA_URL.indexOf(",");
+		if (comma < 0) return;
+		const buf = Buffer.from(USAGE_QR_DATA_URL.slice(comma + 1), "base64");
+		const ab = new ArrayBuffer(buf.length);
+		new Uint8Array(ab).set(buf); // Buffer 可能取自共享池——拷一份干净 ArrayBuffer 再交 writeBinary
+		await this.app.vault.adapter.writeBinary(this.usageQrAssetPath(docPath), ab);
 	}
 
 	/** 等 workspace 布局就绪再开文件（onload 阶段 getLeaf 可能不可用）；转调 runWhenLayoutReady */

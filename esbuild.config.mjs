@@ -35,7 +35,8 @@ let options = {
 	format: "cjs",
 	target: "es2018",
 	// docs/使用说明.md 以纯文本内联进包：生成《使用说明.md》时从代码中恢复（独立文档维护，见 src/usage_guide_default.ts）
-	loader: { ".md": "text" },
+	// docs/wechat_qr.png 以 dataurl 内联（微信二维码图片→base64 字符串，生成说明文档时替换 md 里的 {{wechat_qr}} 占位符）
+	loader: { ".md": "text", ".png": "dataurl" },
 	logLevel: "info",
 	sourcemap: prod ? false : "inline",
 	treeShaking: true,
