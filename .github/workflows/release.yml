@@ -72,6 +72,14 @@ jobs:
           # 约定：GitHub Release 资产只传三个散文件，不再包含写作指南 WRITING_GUIDE.md（仅 Gitea zip 内含它），也不上传 zip（zip 附件只在 Gitea Release 维护）
           ASSETS=(release/main.js release/manifest.json release/styles.css)
           if gh release view "$TARGET" >/dev/null 2>&1; then
+            PT=$(gh release view "$TARGET" --json isDraft,targetCommitish -q '[.isDraft, .targetCommitish] | @tsv' 2>/dev/null || true)
+            if [ "${PT%%$'\t'*}" = "true" ] || [ "${PT##*$'\t'}" != "$GITHUB_SHA" ]; then
+              # 幽灵 Release＝删 tag 的异步清理与重打 tag 相撞留下的未发布/指旧 commit 残骸：对外不可见（404）但 gh view 能看到，旧逻辑只 upload 不发布＝永远 404。强制清掉后走 create 重建
+              echo "检测到残留 Release（draft/target 不符：$PT）→ 强制删除后重建"
+              gh release delete "$TARGET" --yes 2>/dev/null || true # 不带 --cleanup-tag：git tag 要保留，稍后 create 基于它发布
+            fi
+          fi
+          if gh release view "$TARGET" >/dev/null 2>&1; then
             echo "Release $TARGET 已存在 → 用 --clobber 覆盖同名资产（旧版本残留的其他文件不会被删除）"
             gh release upload "$TARGET" "${ASSETS[@]}" --clobber
           else
