@@ -1301,6 +1301,143 @@ export class AddCharacterModal extends AwModal {
 	}
 }
 
+/** 人物关系表单提交结果（v0.4.11+）：新增与编辑共用；`scope`＝写入哪一层《人物关系.md》 */
+export interface RelationshipFormResult {
+	a: string; // 角色1（关系主体）
+	b: string; // 角色2（关系对象）
+	type: string; // 关系类型（空＝未标注）
+	status: string; // 关系状态原文（空＝未标注；进行中／铺垫中／已结束均可被面板识别）
+	desc: string; // 关系描述（多行原文）
+	scope: CharacterScopeOption; // 写入哪一层《人物关系.md》
+}
+
+/** 旧名保留兼容（main.ts 既有 import） */
+export type AddRelationshipResult = RelationshipFormResult;
+
+/** 编辑态预填值（新增时只给 a＝选中人物作角色1，其余空） */
+export interface RelationshipFormInitial {
+	a: string;
+	b: string;
+	type: string;
+	status: string;
+	desc: string;
+	scope?: CharacterScopeOption; // 有值＝编辑态（级别行只读）
+}
+
+/**
+ * 人物关系表单弹窗（v0.4.11+）：人物关系面板头部「＋ 关系」＝新增；图视图双击连线＝编辑（同一份表单，代码重用）。
+ * 级别（书/卷/章，决定写入哪份《人物关系.md》；编辑态只读）＋两个人物（可下拉选全书已登记角色，也允许手填未登记名字）
+ * ＋类型／状态下拉＋描述；写盘由 main.ts 分别走 manager.appendRelationships / md_docs.updateRelationshipBlock。
+ */
+export class RelationshipModal extends AwModal {
+	private submitted = false;
+	private a: string;
+	private b: string;
+	private type: string;
+	private status: string;
+	private desc: string;
+	private scopeId: string;
+
+	constructor(
+		app: App,
+		private scopes: CharacterScopeOption[],
+		private allCandidates: string[],
+		private relationTypes: string[],
+		private defaultScopeId: string | undefined,
+		private initial: RelationshipFormInitial | undefined,
+		private editMode: boolean,
+		private onSubmit: (result: RelationshipFormResult) => void | Promise<void>,
+		private onCancel?: () => void,
+	) {
+		super(app);
+		this.a = initial?.a ?? "";
+		this.b = initial?.b ?? "";
+		this.type = initial?.type ?? "";
+		this.status = initial?.status ?? "";
+		this.desc = initial?.desc ?? "";
+		const wanted = initial?.scope?.id ?? defaultScopeId;
+		this.scopeId = wanted && scopes.some((s) => s.id === wanted) ? wanted : scopes[0]?.id ?? "";
+	}
+
+	onOpen(): void {
+		this.contentEl.addClass("aw-form-compact");
+		this.contentEl.createEl("h3", { text: this.editMode ? "编辑人物关系" : "添加人物关系" });
+		this.contentEl.createDiv({
+			text: this.editMode
+				? "修改这条关系的类型、状态与描述；人物级别不可改（要换文档请去对应《人物关系.md》里挪块）。"
+				: "关系条目写入所选层级的《人物关系.md》；两个人物可从下拉选已登记角色，也可手填未登记的名字。",
+			cls: "aw-prompt-hint",
+		});
+		new Setting(this.contentEl).setName("关系级别").addDropdown((d) => {
+			if (this.editMode && this.initial?.scope) {
+				d.addOption(this.scopeId, this.initial.scope.label);
+				d.setValue(this.scopeId);
+				d.setDisabled(true);
+			} else {
+				for (const sc of this.scopes) d.addOption(sc.id, sc.label);
+				if (this.scopeId) d.setValue(this.scopeId);
+				d.onChange((v) => (this.scopeId = v));
+			}
+		});
+		const dlA = this.contentEl.createEl("datalist", { attr: { id: "aw-rel-a-options" } });
+		const dlB = this.contentEl.createEl("datalist", { attr: { id: "aw-rel-b-options" } });
+		for (const n of this.allCandidates) {
+			dlA.createEl("option", { attr: { value: n } });
+			dlB.createEl("option", { attr: { value: n } });
+		}
+		new Setting(this.contentEl).setName("角色1（必填）").addText((t) => {
+			t.setPlaceholder("关系主体，如 林川");
+			t.setValue(this.a);
+			t.inputEl.setAttribute("list", "aw-rel-a-options");
+			t.onChange((v) => (this.a = v.trim()));
+		});
+		new Setting(this.contentEl).setName("角色2（必填）").addText((t) => {
+			t.setPlaceholder("关系对象，如 苏晚");
+			t.setValue(this.b);
+			t.inputEl.setAttribute("list", "aw-rel-b-options");
+			t.onChange((v) => (this.b = v.trim()));
+		});
+		new Setting(this.contentEl).setName("关系类型").addDropdown((d) => {
+			d.addOption("", "（未标注）");
+			for (const t of this.relationTypes) d.addOption(t, t);
+			d.setValue(this.type);
+			d.onChange((v) => (this.type = v));
+		});
+		new Setting(this.contentEl).setName("关系状态").addDropdown((d) => {
+			for (const [v, label] of [["", "未标注"], ["进行中", "进行中（active）"], ["铺垫中", "铺垫中（pending）"], ["已结束", "已结束（ended）"]] as const) d.addOption(v, label);
+			d.setValue(this.status);
+			d.onChange((v) => (this.status = v));
+		});
+		new Setting(this.contentEl).setName("描述").addTextArea((ta) => {
+			ta.setPlaceholder("这段关系是怎么来的、目前如何（可留空）");
+			ta.inputEl.classList.add("aw-prompt-textarea", "aw-ta-rows");
+			ta.inputEl.rows = 4;
+			ta.setValue(this.desc);
+			ta.onChange((v) => (this.desc = v));
+		});
+		const actions = this.contentEl.createDiv({ cls: "aw-addchar-actions" });
+		actions.createEl("button", { text: "确定", cls: "mod-cta" }).addEventListener("click", () => this.submit());
+		actions.createEl("button", { text: "取消" }).addEventListener("click", () => this.close());
+	}
+
+	private submit(): void {
+		if (this.submitted) return;
+		if (!this.a || !this.b) { new Notice("请填写两个人物名"); return; }
+		if (this.a === this.b) { new Notice("角色1 与角色2 不能是同一个人"); return; }
+		const scope = this.scopes.find((sc) => sc.id === this.scopeId) ?? this.initial?.scope;
+		if (!scope) { new Notice("请选择关系级别"); return; }
+		this.submitted = true;
+		this.close();
+		void this.onSubmit({ a: this.a, b: this.b, type: this.type.trim(), status: this.status, desc: this.desc.trim(), scope });
+	}
+
+	override onClose(): void {
+		this.contentEl.empty();
+		if (!this.submitted && this.onCancel) this.onCancel();
+	}
+}
+
+export const AddRelationshipModal = RelationshipModal; // 旧名兼容（新增入口）
 /**
  * 人物编辑弹窗（v0.4.9+ 人物关系面板「编辑人物」）：级别（写进哪一份《人物.md》＝可换层，`manager.updateCharacter` 负责搬条目）
  * ＋ 姓名（改名＝调用方走 `manager.renameCharacter` 全书同步替换＋自动备份）＋ 设定字段（身份/年龄/性别/性格/外貌/背景/能力/备注）。
@@ -1673,8 +1810,7 @@ export interface EventEditResult {
 	title: string; // 事件名（标题行时间点之后的文本；空串＝无名）
 	chars: string[]; // - 人物：
 	done: boolean; // 完成状态（勾选＝已完成，写回 `- 完成：是`）
-	event: string; // - 事件：（多行保留换行）
-	desc: string; // - 详情：（v0.4.7+ 字段更名；旧 `- 描述：` 兼容解析、写回出 详情。多行保留换行；面板仅悬停 Tip 显示；弹窗内可编辑）
+	desc: string; // - 详情：（v0.4.11+ 唯一正文内容字段；旧 `- 事件：`／`- 描述：` 兼容解析、写回统一出 详情。多行保留换行；面板内联显示＋悬停 Tip；弹窗内可编辑）
 	impact: string; // - 影响：
 	related: string[]; // - 关联：（其它事件名）
 	scope?: string; // v0.4.9+ 「级别」下拉所选的**目标文档路径**（＝新建事件写进哪一份《时间线.md》；只读级别行不带回＝调用方沿用原口径）。名称用 scope 而非 level＝弹窗里 level 另指标题深度
@@ -1873,7 +2009,6 @@ export class EventEditModal extends AwModal {
 		let timeErr: HTMLElement | null = null;
 		let title = this.initialValues?.title ?? "";
 		let done = this.initialValues?.done ?? false;
-		let event = this.initialValues?.event ?? "";
 		let desc = this.initialValues?.desc ?? "";
 		let impact = this.initialValues?.impact ?? "";
 		new Setting(this.contentEl).setName("时间点").addText((t) => {
@@ -1893,18 +2028,11 @@ export class EventEditModal extends AwModal {
 			tg.setValue(this.initialValues?.done ?? false);
 			tg.onChange((v) => (done = v));
 		});
-		new Setting(this.contentEl).setName("事件").addTextArea((ta) => { // 多行：事件简述（面板内联显示；无名条目面板把它的首行当事件名）
-			ta.setPlaceholder("事件经过简述");
-			ta.setValue(this.initialValues?.event ?? "");
-			ta.inputEl.classList.add("aw-prompt-textarea", "aw-ta-rows"); // 宽度复用既有多行输入类；aw-ta-rows 去掉全局 240px min-height，让 rows 生效
-			ta.inputEl.rows = 2; // 事件＝2 行高（v0.4.7+ 用户要求收窄，多行内容靠框内滚动）
-			ta.onChange((v) => (event = v));
-		});
-		new Setting(this.contentEl).setName("详情").addTextArea((ta) => { // v0.4.7+：补上详情编辑框并更名（旧字段 描述；文档里的 - 描述： 解析兼容、保存后写回 - 详情：）；面板上详情仅悬停 Tip 显示
-			ta.setPlaceholder("详细内容（面板中悬停条目可见）");
+		new Setting(this.contentEl).setName("详情").addTextArea((ta) => { // v0.4.11+ 唯一正文内容字段：原「事件」框已删，旧文档的 - 事件： 内容在解析时并入详情后回填这里；面板内联显示＋悬停 Tip
+			ta.setPlaceholder("事件内容（面板条目中直接显示；旧「事件」字段内容也归这里）");
 			ta.setValue(this.initialValues?.desc ?? "");
-			ta.inputEl.classList.add("aw-prompt-textarea", "aw-ta-rows"); // 同上：宽度复用、去 min-height
-			ta.inputEl.rows = 5; // 描述＝5 行高（v0.4.7+ 用户要求；事件框另收窄为 2 行）
+			ta.inputEl.classList.add("aw-prompt-textarea", "aw-ta-rows"); // 宽度复用既有多行输入类；aw-ta-rows 去掉全局 240px min-height，让 rows 生效
+			ta.inputEl.rows = 5; // 唯一正文框＝5 行高（多行内容靠框内滚动）
 			ta.onChange((v) => (desc = v));
 		});
 		new Setting(this.contentEl).setName("影响").addTextArea((ta) => {
@@ -1924,7 +2052,7 @@ export class EventEditModal extends AwModal {
 				}
 				this.submitted = true;
 				this.close();
-				await this.onSubmit({ timeText, title, chars: getChars.get(), done, event: event.trim(), desc: desc.trim(), impact: impact.trim(), related: getRelated.get(), scope: levelOptions.length ? levelChoice : undefined }); // v0.4.9+ scope＝所选目标文档路径（无级别下拉＝不带＝调用方沿用原口径） // desc＝v0.4.7+ 弹窗内编辑后的值（空＝删除描述）
+				await this.onSubmit({ timeText, title, chars: getChars.get(), done, desc: desc.trim(), impact: impact.trim(), related: getRelated.get(), scope: levelOptions.length ? levelChoice : undefined }); // v0.4.9+ scope＝所选目标文档路径（无级别下拉＝不带＝调用方沿用原口径） // desc＝唯一正文内容字段（空＝删除详情）
 			})
 		);
 		btns.addButton((btn) => btn.setButtonText("取消").onClick(() => this.close())); // onClose 未提交时触发 onCancel

@@ -1389,6 +1389,21 @@
 	pointer-events: none;
 }
 
+/* ===== v0.4.11+ 子时间线倾斜：侧线转折后缓慢向右下走，不再垂直一直向下 =====
+   applyTlSlant 在渲染后按 offsetTop 给每个行/留白块写 --tl-slant-x（根块=0 钉主轴，子块随距根远近右移），
+   块本身用 left 平移（不用 transform＝不给行造层叠上下文，保住 .aw-tl-branch-line 负 z-index 被卡片盖住的效果）；
+   块内的导引线/分叉弧线再按 --tl-slant-deg 做 skewX（原点左上角）＝段末比段首多右移 tan(deg)×段高，正好接上下一段/下一行的左移量，
+   子事件圆点随行一起右移＝始终落在这条斜线上。 */
+.aw-tl-list.is-tl-tree > * {
+	left: var(--tl-slant-x, 0px);
+}
+
+.aw-tl-list.is-tl-tree .aw-tl-branch-line,
+.aw-tl-list.is-tl-tree .aw-tl-branch-out {
+	transform: skewX(var(--tl-slant-deg, 0deg));
+	transform-origin: top left;
+}
+
 /* v0.4.9+（用户两轮要求＝卡片不占满整宽、宽度变小；**卡片左缘从本行时间线的 X 轴起**）树挂趟的事件卡片：
    margin-left＝d×indent−10 ⇒ 卡片盒左缘恰落在本深度列（圆点圆心列＝侧向时间线/主轴的 X）＝卡片**挂在时间线上**，
    盒不再从列表左缘起、不再拖通宽色带；左内衬固定 24px（圆点压左缘角上、caret/徽章从右让开），
@@ -1400,13 +1415,26 @@
 	padding-left: 24px;
 	width: calc(30px + var(--tl-card-w, 240px));
 	background: var(--background-primary); /* 兜底（老渲染器不认 color-mix 时用）；面板主体区是 --background-secondary */
-	background: color-mix(in srgb, var(--tl-lv-color, var(--h2-color, var(--interactive-accent))) 10%, var(--background-primary)); /* v0.4.9+（用户＝不同级别的卡片要不同颜色）：淡染取**级别色变量 --tl-lv-color**＝与圆点/折叠 caret/时间徽章描边同一单一来源（五级＝调色板红/橙/黄/绿/蓝、≥5 归蓝，见上「级别色变量」）＝六级各一色；10% 淡染保证正文可读、整体不透明＝照样盖住穿线（更早的 accent 8% 淡染无级别区分，被此替代） */
 	outline: 1px solid var(--tl-lv-color, var(--h2-color, var(--interactive-accent))); /* v0.4.9+（用户＝给事件卡加边框）：用 outline 不用 border＝不参与布局、卡片宽/列 X/圆点/弧线/列线全部坐标不动，边框画在卡片外缘＝「挂在时间线上」的小卡轮廓一眼可辨；边框色＝级别色＝不同级别的卡轮廓也异色 */
+}
+
+/* v0.4.9+（用户＝不同级别的卡片要不同颜色）：淡染取**级别色变量 --tl-lv-color**＝与圆点/折叠 caret/时间徽章描边同一单一来源（五级＝调色板红/橙/黄/绿/蓝、≥5 归蓝，见上「级别色变量」）＝六级各一色；10% 淡染保证正文可读、整体不透明＝照样盖住穿线（更早的 accent 8% 淡染无级别区分，被此替代）。
+   用 @supports 而非同规则双写 background＝外部检查器把「重复 background」当问题；老渲染器不认 color-mix 时整块不生效、保留上面 --background-primary 兜底 */
+@supports (background: color-mix(in srgb, red 10%, blue)) {
+	.aw-tl-list.is-tl-tree .aw-tl-item {
+		background: color-mix(in srgb, var(--tl-lv-color, var(--h2-color, var(--interactive-accent))) 10%, var(--background-primary));
+	}
 }
 
 .aw-tl-list.is-tl-tree .aw-tl-item:hover {
 	background: var(--background-modifier-hover); /* 兜底 */
-	background: color-mix(in srgb, var(--tl-lv-color, var(--h2-color, var(--interactive-accent))) 18%, var(--background-primary)); /* 悬停＝本级级别色淡染加深一档（常驻底 (0,3,0) 会压过通用 .aw-tl-item:hover (0,2,0)＝须显式补同权重规则） */
+}
+
+/* 悬停＝本级级别色淡染加深一档（常驻底 (0,3,0) 会压过通用 .aw-tl-item:hover (0,2,0)＝须显式补同权重规则）；同样走 @supports 免重复 background */
+@supports (background: color-mix(in srgb, red 10%, blue)) {
+	.aw-tl-list.is-tl-tree .aw-tl-item:hover {
+		background: color-mix(in srgb, var(--tl-lv-color, var(--h2-color, var(--interactive-accent))) 18%, var(--background-primary));
+	}
 }
 
 /* 卡片盒左缘已＝本行列 X ⇒ 树挂趟圆点/分叉弧线一律从盒左缘（＝本行时间线 X）起针，不再按 guide-start 公式（那是盒左缘在列表左缘时的旧坐标） */
@@ -1488,11 +1516,21 @@
 	font-size: 0.8em;
 }
 
-/* 时间线描述 Tip（Obsidian 自绘 .tooltip，setTooltip/aria-label 触发、挂 body 下）：比默认更窄更小（默认 --tooltip-max-width 300px / --font-ui-small） */
+/* 时间线详情 Tip（v0.4.11+：详情不内联在卡片上，仅悬浮 Tip 显示；Obsidian 自绘 .tooltip，setTooltip/aria-label 触发、挂 body 下）
+   比默认更窄更小（默认 --tooltip-max-width 300px / --font-ui-small）；**左对齐**＝核心 .tooltip 默认居中，多行详情读起来参差不齐——
+   同时压住 parent 的 flex 居中（justify/align-items）与内层 .tooltip-content（若该版本有），white-space:pre-wrap 保留详情里的换行 */
 .tooltip.aw-tl-tip {
-	max-width: 220px;
+	max-width: 260px;
 	font-size: var(--font-ui-smaller);
-	text-align: left; /* v0.4.7+：核心 .tooltip 默认居中，多行描述读起来参差不齐——左对齐 */
+	text-align: left;
+	white-space: pre-wrap;
+	justify-content: flex-start;
+	align-items: flex-start;
+}
+
+.tooltip.aw-tl-tip .tooltip-content {
+	text-align: left;
+	white-space: pre-wrap;
 }
 
 /* 时间跳跃标记块：相邻条目间隔超过 90 天时把比例留白压成此定高行（居中「⋯ 约 N 年 ⋯」小字），防极端跨度的孤立时间点拉爆画布；list 竖线自动贯穿；position:relative 供通高导引线挂接（跳跃里层级通道同样不断） */
@@ -1588,6 +1626,12 @@
 	margin-right: 6px;
 	font-size: 0.85em;
 	max-width: 14em;
+}
+
+/* 头部「↶ 撤销」按钮：栈空时只置灰不禁用——保留 hover 提示解释「移动事件后可用、刷新会清空」 */
+.aw-tl-undo.is-disabled {
+	opacity: 0.45;
+	cursor: default;
 }
 
 /* 汇总行下方时间线图例：色点＋名称＋条数，点击切换为该泳道单独显示／恢复全部 */

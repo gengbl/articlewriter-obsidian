@@ -1319,6 +1319,61 @@ export function formatRelationshipBlock(e: RelationshipEntry): string {
 	return lines.join("\n");
 }
 
+/** 在《人物关系.md》原文里定位一条关系块（按角色对匹配 `## A - B` 及等价分隔符写法，注释掩码后匹配；ordinal＝同名角色对的第 N 处，0 起）：
+ *  跳过 ``` 围栏里的 `#` 行；块尾＝下一条标题行（不含）。找不到返回 null。 */
+export function findRelationshipBlock(text: string, a: string, b: string, ordinal = 0): { start: number; end: number } | null {
+	const mLines = maskCommentSpans(text).split("\n");
+	const oLines = text.split("\n");
+	let seen = -1;
+	let start = -1;
+	let inFence = false;
+	for (let i = 0; i < mLines.length; i++) {
+		if (/^\s*```/.test(mLines[i])) { inFence = !inFence; continue; }
+		if (inFence) continue;
+		const t = mLines[i].trim();
+		const hm = /^(#{1,6})\s+(.*)$/.exec(t);
+		if (!hm) continue;
+		const pair = splitRelationshipTitle(hm[2]);
+		if (pair.a !== a.trim() || pair.b !== b.trim()) continue;
+		seen++;
+		if (seen === ordinal) { start = i; break; }
+	}
+	if (start < 0) return null;
+	let end = oLines.length;
+	inFence = false;
+	for (let i = start + 1; i < oLines.length; i++) {
+		if (/^\s*```/.test(oLines[i])) { inFence = !inFence; continue; }
+		if (inFence) continue;
+		if (/^\s*#{1,6}\s+/.test(oLines[i])) { end = i; break; }
+	}
+	return { start, end };
+}
+
+/** 改写《人物关系.md》里的一条关系块（只换自块、其余文档内容原样保留）：按角色对＋出现序号定位，
+ *  校验该块解析出的仍是同一对角色（防快照过期误写）→ 用 formatRelationshipBlock 重写。失败返回 null，调用方应提示刷新重试 */
+export function updateRelationshipBlock(text: string, old: RelationshipEntry, updated: RelationshipEntry, ordinal = 0): string | null {
+	const range = findRelationshipBlock(text, old.a, old.b, ordinal);
+	if (!range) return null;
+	const lines = text.split("\n");
+	const blockLines = lines.slice(range.start, range.end).join("\n");
+	const parsed = parseRelationships(`# 人物关系\n\n${blockLines}`);
+	if (!parsed.length || parsed[0].a !== old.a.trim() || parsed[0].b !== old.b.trim()) return null; // 原文该处已不是这条关系
+	const replacement = formatRelationshipBlock(updated).replace(/\n+$/, "").split("\n");
+	lines.splice(range.start, range.end - range.start, ...replacement, "");
+	return lines.join("\n").replace(/\n{3,}/g, "\n\n").replace(/\s+$/, "") + "\n";
+}
+
+/** 删除《人物关系.md》里的一条关系块（只删自块、其余原样保留）：按角色对＋出现序号定位并校验仍是同一对角色；失败返回 null */
+export function deleteRelationshipBlock(text: string, old: RelationshipEntry, ordinal = 0): string | null {
+	const range = findRelationshipBlock(text, old.a, old.b, ordinal);
+	if (!range) return null;
+	const lines = text.split("\n");
+	const parsed = parseRelationships(`# 人物关系\n\n${lines.slice(range.start, range.end).join("\n")}`);
+	if (!parsed.length || parsed[0].a !== old.a.trim() || parsed[0].b !== old.b.trim()) return null;
+	lines.splice(range.start, range.end - range.start);
+	return lines.join("\n").replace(/\n{3,}/g, "\n\n").replace(/\s+$/, "") + "\n";
+}
+
 /** 关系列表序列化为完整文档（标题恒为 `# 人物关系`） */
 export function formatRelationships(items: RelationshipEntry[]): string {
 	return ["# 人物关系", "", ...items.map((e) => formatRelationshipBlock(e))].join("\n").replace(/\n+$/, "\n");
@@ -1334,8 +1389,7 @@ export interface TimelineEntry {
 	day?: number; // 日期（1-31；未写则缺省）
 	title?: string; // 事件名（标题行时间点之后的空格分隔文本；旧纯时间点标题缺省＝无名）
 	chars: string[]; // 涉及人物（空数组=未标注）
-	event: string; // 事件（简短，面板内联显示；多行原文，已去字段前缀与代码围栏标记）
-	desc?: string; // 详情（v0.4.7+ 字段更名：写回出 `- 详情：`，旧 `- 描述：` 兼容解析；仅面板悬停 Tip 显示、不内联渲染；未写则缺省）
+	desc?: string; // 详情（唯一正文内容字段：面板内联显示＋悬停 Tip；写回出 `- 详情：`。旧 `- 描述：` 与更旧的 `- 事件：` 及其别名都并入这里，不再单独保留「事件」字段；未写则缺省）
 	impact?: string; // 影响（别名 后果/代价/事件影响；合并自大事件列表）
 	related?: string[]; // 关联（别名 相关/关联事件；顿号/逗号分隔的其它事件名，面板 chip 跳转）
 	done?: boolean; // 完成状态（仅 true 时写出 `- 完成：是` 行；缺省＝未完成，面板 ✓/○ 快速切换）
@@ -1344,7 +1398,7 @@ export interface TimelineEntry {
 }
 
 /** 面板/生成侧写回用的时间线条目输入（＝TimelineEntry 去掉原文定位字段；updateTimelineBlock/insertTimelineBlock/formatTimelineBlock 入参） */
-export type TimelineEntryInput = Pick<TimelineEntry, "level" | "time" | "month" | "day" | "title" | "chars" | "event" | "desc" | "impact" | "related" | "done">;
+export type TimelineEntryInput = Pick<TimelineEntry, "level" | "time" | "month" | "day" | "title" | "chars" | "desc" | "impact" | "related" | "done">;
 
 /** 时间点结构化值（标题解析结果；序列化经 timelineTimeText 往返一致） */
 export type TimelinePoint = Pick<TimelineEntry, "time" | "month" | "day">;
@@ -1378,6 +1432,52 @@ export function timelineTimeText(p: TimelinePoint): string {
 	return s;
 }
 
+/** 一天的毫秒数（时间点间隔/拖动换算共用） */
+export const TIMELINE_DAY_MS = 86_400_000;
+
+/** 时间点 → 绝对毫秒时刻（时间线面板间隔与拖动换算共用口径）：缺月按一月、缺日按一号；极端超范围年份得 NaN 时退化为「年 × 365 天」近似，保证结果有限且对升序输入单调不减 */
+export function timelinePointEpochMs(p: TimelinePoint): number {
+	const y = Math.trunc(p.time);
+	const ms = Date.UTC(y, (p.month ?? 1) - 1, p.day ?? 1);
+	return Number.isFinite(ms) ? ms : y * 365 * TIMELINE_DAY_MS;
+}
+
+/** 拖动改时的精度单位（＝条目自身精度：含日＝天、只含月＝月、纯年＝年） */
+export type TimelineUnit = "day" | "month" | "year";
+
+/** 某年某月的天数（用于月/年平移时把 31 日夹到目标月最后一天） */
+function tlDaysInMonth(year: number, month: number): number {
+	const d = new Date(Date.UTC(year, month, 0)).getUTCDate(); // 下月第 0 天＝本月最后一天
+	return Number.isFinite(d) ? d : 31;
+}
+
+/** 按「父事件的精度单位」平移时间点并保持目标自身的精度（日→精确日期、月→年月、年→年）：
+ *  拖动父事件时子事件同步平移用——父含日就整体挪同样天数、父只含月就挪同样月数、父纯年就挪同样年数
+ *  （月/年平移按日历算，闰年与月末自动夹到合法日期；年精度条目只取结果年份）。 */
+export function shiftTimelinePointBy(p: TimelinePoint, unit: TimelineUnit, steps: number): TimelinePoint {
+	if (!steps) return { time: p.time, month: p.month, day: p.day };
+	if (unit === "day") {
+		const dt = new Date(timelinePointEpochMs(p) + steps * TIMELINE_DAY_MS);
+		if (!Number.isFinite(dt.getTime())) return { time: p.time + Math.round(steps / 365), month: p.month, day: p.day }; // 极端年份：退化按年近似
+		const y = dt.getUTCFullYear();
+		if (p.day != null) return { time: y, month: dt.getUTCMonth() + 1, day: dt.getUTCDate() };
+		if (p.month != null) return { time: y, month: dt.getUTCMonth() + 1 };
+		return { time: y };
+	}
+	if (unit === "month") {
+		const nIdx = Math.trunc(p.time) * 12 + ((p.month ?? 1) - 1) + steps;
+		const y = Math.floor(nIdx / 12);
+		const m = ((nIdx % 12) + 12) % 12 + 1;
+		if (p.month == null) return { time: y }; // 年精度：月平移只可能带动年份
+		if (p.day == null) return { time: y, month: m };
+		return { time: y, month: m, day: Math.min(p.day, tlDaysInMonth(y, m)) };
+	}
+	const y = (p.month == null ? p.time : Math.trunc(p.time)) + steps; // 纯年精度保留原值（旧数据可能有小数年）；含月/日先截断为整年
+	if (p.month == null) return { time: y };
+	if (p.day == null) return { time: y, month: p.month };
+	return { time: y, month: p.month, day: Math.min(p.day, tlDaysInMonth(y, p.month)) };
+}
+
 /** 标题行文本解析为「时间点＋可选事件名」（v0.3.3+ 合并大事件）：整串即有效时间点＝旧纯时间点标题（无名）；否则首个空白分隔 token 取时间点、其剩余文本整段为事件名（`120-06-15 黑市陷阱`）。首 token 非有效时间点返回 null（`# 时间线`、「概述」等非时间点标题块） */
 export function parseTimelineHeading(head: string): { point: TimelinePoint; title?: string } | null {
 	const t = head.trim();
@@ -1390,29 +1490,29 @@ export function parseTimelineHeading(head: string): { point: TimelinePoint; titl
 	return { point, title: m[2] };
 }
 
-/** 正文行并入 cur 块最近出现的事件/详情/影响字段（围栏内容与无字段前缀自由文本同口径） */
-function tlPushBody(cur: { target: "event" | "desc" | "impact"; eventLines: string[]; descLines: string[]; impactLines: string[] }, line: string): void {
-	cur[cur.target === "desc" ? "descLines" : cur.target === "impact" ? "impactLines" : "eventLines"].push(line);
+/** 正文行并入 cur 块最近出现的详情/影响字段（围栏内容与无字段前缀自由文本同口径；v0.4.11+ 不再有独立的「事件」字段，旧 `- 事件：` 也并入详情） */
+function tlPushBody(cur: { target: "desc" | "impact"; descLines: string[]; impactLines: string[] }, line: string): void {
+	cur[cur.target === "desc" ? "descLines" : "impactLines"].push(line);
 }
 
 /**
  * 解析《时间线.md》：按 ATX 标题（`# `–`###### `，任意深度）分块，每块一条事件，标题深度即事件级别（#=一级、##=二级、###=三级，可更深）。
  * 标题＝时间点＋可选空格分隔事件名（parseTimelineHeading 口径）——`# 120`、`## 120-06-15 黑市陷阱`、`### -129-06`〔旧纯时间点标题，无名〕；非有效时间点标题的块（文档标题 `# 时间线`、「概述」、月份越界等）整块忽略。
- * 块内字段行（复用 REL_FIELD_RE）：`- 人物：A、B`（别名 角色/登场人物/涉及人物/出场人物）、`- 事件：…`（简短，面板内联显示；别名 经过/简述/说明/详情/备注/简介）、`- 描述：…`（详细，仅面板悬停 Tip 显示）、`- 影响：…`（别名 后果/代价/事件影响）、`- 关联：…`（别名 相关/关联事件/相关事件，顿号/逗号分隔）、`- 完成：是/否`（别名 完成状态/状态/是否完成；是/已完成/完成→true、空值视作勾选、其余→false）。
- * 正文归属：`- 事件：`/`- 详情：`（旧 `- 描述：` 兼容）/`- 影响：` 行后接的文本、```text 围栏内容、无字段前缀的自由文本行，均并入**最近出现**的事件/详情/影响字段（块内尚未出现三者时归事件）；其它字段行与其它列表行不并入。
+ * 块内字段行（复用 REL_FIELD_RE）：`- 人物：A、B`（别名 角色/登场人物/涉及人物/出场人物）、`- 详情：…`（唯一正文内容字段，面板内联显示＋悬停 Tip；别名 描述/事件/经过/简述/说明/备注/简介——旧 `- 事件：` 内容一并并入，不再单独存储）、`- 影响：…`（别名 后果/代价/事件影响）、`- 关联：…`（别名 相关/关联事件/相关事件，顿号/逗号分隔）、`- 完成：是/否`（别名 完成状态/状态/是否完成；是/已完成/完成→true、空值视作勾选、其余→false）。
+ * 正文归属：`- 详情：`（旧 `- 描述：`／`- 事件：` 兼容）/`- 影响：` 行后接的文本、```text 围栏内容、无字段前缀的自由文本行，均并入**最近出现**的详情/影响字段（块内尚未出现两者时归详情）；其它字段行与其它列表行不并入。
  */
 export function parseTimelines(text: string): TimelineEntry[] {
 	const body = stripComments(text || "");
 	const out: TimelineEntry[] = [];
-	let cur: (TimelinePoint & { level: number; title?: string; chars: string[]; eventLines: string[]; descLines: string[]; impactLines: string[]; related: string[]; done: boolean; target: "event" | "desc" | "impact"; rawHead: string; ordinal: number }) | null = null;
+	let cur: (TimelinePoint & { level: number; title?: string; chars: string[]; descLines: string[]; impactLines: string[]; related: string[]; done: boolean; target: "desc" | "impact"; rawHead: string; ordinal: number }) | null = null;
 	let inFence = false;
 	const headSeen = new Map<string, number>(); // 各标题行文本的出现计数（写回时同名重复标题消歧）
 	const flush = (): void => {
 		if (!cur) return;
-		const e: TimelineEntry = { level: cur.level, time: cur.time, chars: [...new Set(cur.chars)], event: cur.eventLines.join("\n").trim() };
+		const e: TimelineEntry = { level: cur.level, time: cur.time, chars: [...new Set(cur.chars)] };
 		if (cur.title) e.title = cur.title; // 旧纯时间点标题保持字段缺省（无名）
 		const d = cur.descLines.join("\n").trim();
-		if (d) e.desc = d; // 未写描述的条目保持字段缺省（面板不挂 Tip）
+		if (d) e.desc = d; // 详情（含旧 `- 事件：` 内容）；未写的条目保持字段缺省
 		const im = cur.impactLines.join("\n").trim();
 		if (im) e.impact = im;
 		if (cur.related.length) e.related = [...cur.related];
@@ -1441,7 +1541,7 @@ export function parseTimelines(text: string): TimelineEntry[] {
 			if (hp === null) continue; // 非有效时间点标题块整块忽略（含文档 H1 标题；cur 已被 flush 置空，其下内容自然丢弃）
 			const ordinal = headSeen.get(line) ?? 0; // 本标题行文本出现序号（写回定位用，同名重复标题消歧）
 			headSeen.set(line, ordinal + 1);
-			cur = { ...hp.point, level: hm[1].length, title: hp.title, chars: [], eventLines: [], descLines: [], impactLines: [], related: [], done: false, target: "event", rawHead: line, ordinal };
+			cur = { ...hp.point, level: hm[1].length, title: hp.title, chars: [], descLines: [], impactLines: [], related: [], done: false, target: "desc", rawHead: line, ordinal };
 			continue;
 		}
 		if (!cur) continue; // 尚未进入任何有效时间点块的内容（如块外散文）忽略
@@ -1453,14 +1553,9 @@ export function parseTimelines(text: string): TimelineEntry[] {
 				for (const c of splitList(val)) if (c && !cur.chars.includes(c)) cur.chars.push(c);
 				continue;
 			}
-			if (/^(事件|经过|简述|说明|备注|简介)$/.test(key)) { // v0.4.7+ 别名「详情」改归描述字段（旧文档详情→desc），不再作事件别名
-				if (val) cur.eventLines.push(val);
-				cur.target = "event"; // 后续自由文本/围栏归事件
-				continue;
-			}
-			if (/^(详情|描述)$/.test(key)) { // v0.4.7+ 字段更名：新格式 `- 详情：`；旧 `- 描述：` 兼容解析（写回统一出 详情）
+			if (/^(详情|描述|事件|经过|简述|说明|备注|简介)$/.test(key)) { // v0.4.11+ 唯一正文内容字段＝详情：旧 `- 事件：` 及其别名、旧 `- 描述：` 一律并入详情（写回统一出 `- 详情：`）
 				if (val) cur.descLines.push(val);
-				cur.target = "desc"; // 后续自由文本/围栏归描述（支持 `- 描述：`＋```text 围栏多行写法）
+				cur.target = "desc"; // 后续自由文本/围栏归详情（支持 ```text 围栏多行写法）
 				continue;
 			}
 			if (/^(影响|后果|代价|事件影响)$/.test(key)) {
@@ -1499,6 +1594,53 @@ function maskCommentSpans(text: string): string {
 }
 
 /** 改写《时间线.md》原文中单条目的时间点（时间线面板拖动更新的写回路径）：先用 maskCommentSpans 掩去注释区，再按 srcHeading 全文精确匹配＋文档内出现序号 srcOrdinal 定位目标标题行；校验该行能反解出 expectOld 后，把标题号之后的时间点部分替换为 timelineTimeText(newPoint) 规范值（保留原标题深度与其后的事件名）。任一环节不满足返回 null——调用方应提示用户刷新重试而非继续。标题行内含行内注释不支持（整行替换会将其丢失），同样返回 null */
+/** 批量改时的一处移动：来源标题行＋出现序号（原样定位）＋旧时间点（防快照过期）＋新时间点 */
+export interface TimelineTimeMove {
+	srcHeading: string;
+	srcOrdinal: number;
+	expectOld: TimelinePoint;
+	newPoint: TimelinePoint;
+}
+
+/** 批量改写多个条目的时间点（拖动父事件时子事件同步平移）：**先按原文本一次性解析全部行号并校验旧值**，再统一替换——
+ *  避免逐条改写后标题文本变化导致同名标题的出现序号漂移。任一条定位失败/旧值不符 → 整批放弃返回 null。 */
+export function rewriteTimelineEntryTimes(text: string, moves: TimelineTimeMove[]): string | null {
+	if (!moves.length) return text;
+	const mLines = maskCommentSpans(text).split("\n");
+	const oLines = text.split("\n");
+	const idxs: number[] = [];
+	const seenIdx = new Set<number>();
+	for (const mv of moves) {
+		let seen = -1;
+		let idx = -1;
+		for (let i = 0; i < mLines.length; i++) {
+			if (mLines[i].trim() !== mv.srcHeading) continue;
+			seen++;
+			if (seen === mv.srcOrdinal) { idx = i; break; }
+		}
+		if (idx < 0) return null; // 原文自解析后已变化（对应标题不存在/位置改变）→ 放弃防误写
+		if (seenIdx.has(idx)) return null; // 同一条目被重复移动＝调用侧数据异常
+		seenIdx.add(idx);
+		const target = oLines[idx];
+		if (/<!--|-->/ .test(target)) return null; // 标题行带行内注释：不做有损替换
+		const hm = /^(#{1,6})\s+(.*)$/.exec(target.trim());
+		if (!hm) return null;
+		const hp = parseTimelineHeading(hm[2]);
+		if (!hp || hp.point.time !== mv.expectOld.time || (hp.point.month ?? 0) !== (mv.expectOld.month ?? 0) || (hp.point.day ?? 0) !== (mv.expectOld.day ?? 0)) return null; // 快照过期：该处时间点与本条目旧值不符
+		idxs.push(idx);
+	}
+	for (let k = 0; k < moves.length; k++) {
+		const idx = idxs[k];
+		const hm = /^(#{1,6})\s+(.*)$/.exec(oLines[idx].trim());
+		if (!hm) return null;
+		const hp = parseTimelineHeading(hm[2]);
+		if (!hp) return null;
+		oLines[idx] = `${hm[1]} ${timelineTimeText(moves[k].newPoint)}${hp.title ? ` ${hp.title}` : ""}`; // 只换时间点、保留其后的事件名
+	}
+	return oLines.join("\n");
+}
+
+/** 改写单个条目的时间点（保留事件名）：rewriteTimelineEntryTimes 的单条特例 */
 export function rewriteTimelineEntryTime(
 	text: string,
 	srcHeading: string,
@@ -1506,27 +1648,10 @@ export function rewriteTimelineEntryTime(
 	expectOld: TimelinePoint,
 	newPoint: TimelinePoint,
 ): string | null {
-	const mLines = maskCommentSpans(text).split("\n");
-	let seen = -1;
-	let idx = -1;
-	for (let i = 0; i < mLines.length; i++) {
-		if (mLines[i].trim() !== srcHeading) continue;
-		seen++;
-		if (seen === srcOrdinal) { idx = i; break; }
-	}
-	if (idx < 0) return null; // 原文自解析后已变化（对应标题不存在/位置改变）→ 放弃防误写
-	const oLines = text.split("\n");
-	const target = oLines[idx];
-	if (/<!--|-->/ .test(target)) return null; // 标题行带行内注释：不做有损替换
-	const hm = /^(#{1,6})\s+(.*)$/.exec(target.trim());
-	if (!hm) return null;
-	const hp = parseTimelineHeading(hm[2]);
-	if (!hp || hp.point.time !== expectOld.time || (hp.point.month ?? 0) !== (expectOld.month ?? 0) || (hp.point.day ?? 0) !== (expectOld.day ?? 0)) return null; // 快照过期：该处时间点与本条目旧值不符
-	oLines[idx] = `${hm[1]} ${timelineTimeText(newPoint)}${hp.title ? ` ${hp.title}` : ""}`; // 只换时间点、保留其后的事件名
-	return oLines.join("\n");
+	return rewriteTimelineEntryTimes(text, [{ srcHeading, srcOrdinal, expectOld, newPoint }]);
 }
 
-/** 时间线条目序列化为文档块（与 parseTimelines 往返一致）：标题行＝`#`×级别＋空格＋规范时间点＋可选空格＋事件名；字段顺序＝人物/完成/事件/详情/影响/关联——人物、关联单行，完成仅 done=true 写出 `- 完成：是`，事件/详情/影响非空时以 `- 字段：`＋```text 围栏写出（多行安全；v0.4.7+ 描述更名详情）。块尾带空行 */
+/** 时间线条目序列化为文档块（与 parseTimelines 往返一致）：标题行＝`#`×级别＋空格＋规范时间点＋可选空格＋事件名；字段顺序＝人物/完成/详情/影响/关联——人物、关联单行，完成仅 done=true 写出 `- 完成：是`，详情/影响非空时以 `- 字段：`＋```text 围栏写出（多行安全；v0.4.11+ 不再写 `- 事件：`，旧文档的事件内容已在解析时并入详情）。块尾带空行 */
 export function formatTimelineBlock(e: TimelineEntryInput): string {
 	const head = `${"#".repeat(Math.max(1, Math.min(6, e.level)))} ${timelineTimeText(e)}`;
 	const lines = [e.title?.trim() ? `${head} ${e.title.trim()}` : head];
@@ -1537,8 +1662,7 @@ export function formatTimelineBlock(e: TimelineEntryInput): string {
 		if (!t) return;
 		lines.push(`- ${label}：`, "```text", t, "```");
 	};
-	pushFenced("事件", e.event);
-	pushFenced("详情", e.desc); // v0.4.7+ 字段更名：序列化统一写「详情」（旧 `- 描述：` 解析兼容，编辑写回即转新格式）
+	pushFenced("详情", e.desc); // v0.4.11+ 唯一正文内容字段：旧 `- 事件：`／`- 描述：` 解析时已并入 desc，写回只出 `- 详情：`
 	pushFenced("影响", e.impact);
 	if (e.related?.length) lines.push(`- 关联：${joinList(e.related)}`);
 	lines.push("");

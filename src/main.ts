@@ -1,11 +1,11 @@
 import { App, Notice, Platform, Plugin, PluginSettingTab, TAbstractFile, TFile, TFolder, View, WorkspaceLeaf, WorkspaceSidedock, type Editor, type MarkdownFileInfo, type MarkdownView, type SettingDefinitionItem } from "obsidian";
-import { ActionItem, ActionMenuModal, AddCharacterModal, AwGuideModal, AwModal, AutoBookConfigInput, AutoBookConfigModal, AutoBookInput, AutoBookModal, BookSkillPhaseModal, ChapterListModal, CharacterEditModal, ConfirmModal, ExportPromptsSelectModal, FixRefsReviewModal, FolderPickerModal, InspirationKitModal, MultiFieldModal, NewFilePickerModal, NewStoryInput, NewStoryModal, PanelLine, SaveReplyModal, SceneEditModal, type SceneEditResult, type SceneRelEdit, SkillEditModal, SkillPickerModal, SkillRangeModal, StoryMetaModal, StoryMetaInput, StoryPickerModal, TextAreaPrompt, TextPanelModal, TextInputModal, VaultFilePickerModal, VolumeBatchCreateModal, ensureParentFolders } from "./modals";
-import type { AddCharacterResult, CharacterEditResult, CharacterScopeOption, MultiSelGroup, SaveReplyResult, SkillEditResult, SkillLevel } from "./modals";
+import { ActionItem, ActionMenuModal, AddCharacterModal, RelationshipModal, AwGuideModal, AwModal, AutoBookConfigInput, AutoBookConfigModal, AutoBookInput, AutoBookModal, BookSkillPhaseModal, ChapterListModal, CharacterEditModal, ConfirmModal, ExportPromptsSelectModal, FixRefsReviewModal, FolderPickerModal, InspirationKitModal, MultiFieldModal, NewFilePickerModal, NewStoryInput, NewStoryModal, PanelLine, SaveReplyModal, SceneEditModal, type SceneEditResult, type SceneRelEdit, SkillEditModal, SkillPickerModal, SkillRangeModal, StoryMetaModal, StoryMetaInput, StoryPickerModal, TextAreaPrompt, TextPanelModal, TextInputModal, VaultFilePickerModal, VolumeBatchCreateModal, ensureParentFolders } from "./modals";
+import type { AddCharacterResult, RelationshipFormResult, CharacterEditResult, CharacterScopeOption, MultiSelGroup, SaveReplyResult, SkillEditResult, SkillLevel } from "./modals";
 import { parseBookSkill, type BookSkillSpec } from "./book_skill"; // v0.4.1+ 旧「案头资料/」建书技能文件解析（仅供一次性迁移；建书配置已并入《故事状态.md》auto_book 块）
 import { LlmChatView } from "./llm_chat_view";
 import { GenProgressView, formatElapsedMs, type WritingStreamSink } from "./gen_progress_view";
 import { StatusView, type StatusAction, type StatusChapterEntry, type StatusDetail, type StatusFileEntry, type StatusFolderEntry, type StatusSnapshot, type StatusStoryEntry, type StatusTyping } from "./status_view";
-import { RelationshipView, REL_SCOPE_WORDS, type RelCharInfo, type RelGroup, type RelRow, type RelSnapshot, type RelStoryEntry } from "./relationship_view";
+import { RelationshipView, REL_SCOPE_WORDS, type RelCharInfo, type RelEdgeEditInfo, type RelGroup, type RelRow, type RelSnapshot, type RelStoryEntry } from "./relationship_view";
 import { TimelineView, tlRowName, type TlDocRef, type TlLane, type TlRow, type TlSnapshot, type TlStoryEntry } from "./timeline_view"; // v0.3.3+ 合并大事件：面板承担事件增删改，构造第三参＝编辑弹窗人物候选；v0.4.7+ TlLane＝多时间线泳道汇总；v0.4.8+ tlRowName＝条目事件名口径（场景挂事件候选/索引共用）
 import { SceneView, sceneDisplayName, type SceneRow, type SceneSnapshot, type SceneScope, type SceneStoryEntry } from "./scene_view"; // v0.4.7+ 场景面板（卡片画布三层《场景.md》）
 import { MAX_TYPE_DELTA, SEGMENT_MIN_DEFAULT, SEGMENT_MIN_MAX, SEGMENT_MIN_MIN, TYPE_STATS_HEADER, diffStats, liveSegStats, nextSegmentStart, normalizeSegmentMinutes, renderStatsRow, segActiveMs, segNetChars, segmentMs, segmentStartOf, summarizeStatsFile, type TypeSeg } from "./typing_stats"; // v0.4.5+ 打字统计纯计算（段长可配/停顿/表格渲染/文件汇总/窗口活跃时长）；采集与落盘在本文件接线
@@ -29,7 +29,7 @@ import { requirementsFor, stagesFrom, type StageId, type StageRequirement } from
 import { assemblePromptFiles, type AssembledPrompt, type PromptFileReader, type PromptSpec } from "./prompt_files";
 import { detectChatAutoRefs } from "./chat_refs";
 import { parseToolArgs, TOOL_RESULT_MAX_CHARS, CHAT_WRITING_TOOLS, CHAT_GENERATION_TOOLS, resolveToolName, unknownToolHint, pickStringArg, pickNumberArg, normalizeDocName, DOC_NAME_ARG_KEYS, CHAPTER_NUM_ARG_KEYS, VOL_NAME_ARG_KEYS } from "./chat_tools";
-import { cnToNum, deleteSceneBlock, DOC_SCOPE_WORDS, docLocationLabel, docRelPath, extractPlannedChapterCount, insertSceneBlock, maxDeclaredVolumeNum, mergeVolOutlineChapters, parseChapterSelection, parseRelationships, parseTimelines, parseVolumeDeclarations, renameSceneBlock, renameSceneRefs, rewriteScenePosition, sliceVolOutlineChapters, splitList, splitVolOutlineByChapter, stripComments, stripForeshadowMarks, timelineGenFormatOk, timelineTimeText, updateSceneBlock, type SceneBlockInput, type TimelineEntry, type VolumeDeclaration, type VolumeInfo } from "./md_docs";
+import { cnToNum, deleteRelationshipBlock, deleteSceneBlock, DOC_SCOPE_WORDS, docLocationLabel, docRelPath, extractPlannedChapterCount, insertSceneBlock, maxDeclaredVolumeNum, mergeVolOutlineChapters, parseChapterSelection, parseRelationships, parseTimelines, parseVolumeDeclarations, renameSceneBlock, renameSceneRefs, rewriteScenePosition, sliceVolOutlineChapters, splitList, splitVolOutlineByChapter, stripComments, stripForeshadowMarks, timelineGenFormatOk, timelineTimeText, updateRelationshipBlock, updateSceneBlock, type SceneBlockInput, type TimelineEntry, type VolumeDeclaration, type VolumeInfo } from "./md_docs";
 import type { RelationshipEntry } from "./md_docs";
 import { CAST_ANALYZE_SYSTEM_PROMPT, CAST_JSON_RETRY_NOTE, aggregateCastAnalyses, buildCastChapterPrompt, buildCharacterWritePlan, buildRelationshipWritePlan, buildSceneWritePlan, castStableChars, parseCastChapterAnalysis, relPairKey } from "./cast_analyzer";
 import { OUTLINE_CAST_APPENDIX_MARK, OutlineCastTracker, outlineCastAppendixInstruction, splitOutlineCastAppendix } from "./outline_cast";
@@ -367,7 +367,7 @@ export default class ArticleWriterPlugin extends Plugin {
 		this.registerView(LlmChatView.VIEW_TYPE, (leaf) => new LlmChatView(leaf, () => this.settings.llm, () => this.getChatSystemPrompt(), () => this.getActiveStoryInfo(), (name) => this.setActiveLlmFromChat(name), () => this.chatSessionDir(), (raw) => this.collectChatAutoRefBlocks(raw), (name, args) => this.chatExecTool(name, args)));
 		this.registerView(GenProgressView.VIEW_TYPE, (leaf) => new GenProgressView(leaf)); // v0.1.4+：摘要延迟生成的工作过程面板（notifyGenProgress 驱动）
 		this.registerView(StatusView.VIEW_TYPE, (leaf) => new StatusView(leaf, () => this.getStatusSnapshot(), (name) => this.statusSwitchStory(name), (story, key) => this.statusActivateChapter(story, key), (a) => this.handleStatusAction(a), () => this.getStatusTyping(), () => this.endTypeSession())); // 第 6＝写字台「码字状态」Tab 数据源；第 7＝写字台打开/重开＝结束上次「本次写作」（下次敲字重新锚定）
-		this.registerView(RelationshipView.VIEW_TYPE, (leaf) => new RelationshipView(leaf, () => this.getRelationshipSnapshot(), () => this.openAddCharacterDialog(), (name) => this.renameCharacterFlow(name), (name) => this.openEditCharacterDialog(name), (name) => this.deleteCharacterFlow(name))); // v0.1.9+：人物关系面板（展示只读，切书在写字台/命令里做；v0.2.0+ 头部「添加人物」注入写动作）
+		this.registerView(RelationshipView.VIEW_TYPE, (leaf) => new RelationshipView(leaf, () => this.getRelationshipSnapshot(), () => this.openAddCharacterDialog(), (seed) => this.openAddRelationshipDialog(seed), (info) => this.openEditRelationshipDialog(info), (info) => this.deleteRelationshipFlow(info), (name) => this.renameCharacterFlow(name), (name) => this.openEditCharacterDialog(name), (name) => this.deleteCharacterFlow(name))); // v0.1.9+：人物关系面板（v0.2.0+ 头部「添加人物」；v0.4.11+ 头部「＋ 关系」＝添加人物关系弹窗，均由 main.ts 注入写动作）
 		this.registerView(TimelineView.VIEW_TYPE, (leaf) => new TimelineView(leaf, () => this.getTimelineSnapshot(), () => this.getTimelineCharOptions())); // v0.2.x+：时间线面板；v0.3.3+ 合并大事件：可编辑（节点增删改写回《时间线.md》），人物候选走 getTimelineCharOptions
 		this.registerView(SceneView.VIEW_TYPE, (leaf) => new SceneView(leaf, () => this.getSceneSnapshot(), (moved) => this.moveSceneFlow(moved), (at) => this.addSceneFlow(undefined, at), (row) => this.editSceneFlow(row), (row) => this.deleteSceneFlow(row), (row, at) => this.addSceneFlow(row, at), (name) => this.openTimelineEventFlow(name))); // v0.4.7+：场景面板（卡片画布；写回＝整组位置拖动/新增/编辑/删除/添加子场景五流程；v0.4.9+ 新增可带画布落点＝空白处右键「在此添加场景」；v0.4.8+ 卡片「🕐」区事件点击＝跳时间线面板定位）
 		this.addRibbonIcon("message-square", "打开 LLM 对话窗口（常驻面板）", () => void this.openLlmPanel());
@@ -3438,9 +3438,16 @@ async cmdRenameChapterFile(): Promise<void> {
 	private async writeUsageQrAsset(docPath: string): Promise<void> {
 		const comma = USAGE_QR_DATA_URL.indexOf(",");
 		if (comma < 0) return;
-		const buf = Buffer.from(USAGE_QR_DATA_URL.slice(comma + 1), "base64");
-		const ab = new ArrayBuffer(buf.length);
-		new Uint8Array(ab).set(buf); // Buffer 可能取自共享池——拷一份干净 ArrayBuffer 再交 writeBinary
+		let bin: string;
+		try {
+			bin = atob(USAGE_QR_DATA_URL.slice(comma + 1)); // 用 atob 而非 Buffer：Obsidian 移动端没有 Node 的 Buffer
+		} catch (e) {
+			console.warn(`[ArticleWriter] 二维码资源解码失败：${e instanceof Error ? e.message : String(e)}`);
+			return;
+		}
+		const ab = new ArrayBuffer(bin.length);
+		const bytes = new Uint8Array(ab);
+		for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
 		await this.app.vault.adapter.writeBinary(this.usageQrAssetPath(docPath), ab);
 	}
 
@@ -3965,6 +3972,102 @@ async cmdRenameChapterFile(): Promise<void> {
 		} catch (e) {
 			this.notifyError("添加失败", e);
 		}
+	}
+
+	/**
+	 * 「添加人物关系」弹窗（v0.4.11+ 人物关系面板头部「＋ 关系」入口，面板右键「新增」之外的独立关系写入路径）：
+	 * 级别（书/卷/章，决定写入哪份《人物关系.md》，同「添加人物」的级别下拉）＋两个人物（可下拉选已登记角色、也允许手填未登记名字）
+	 * ＋类型／状态／描述。写盘统一走 `manager.appendRelationships`（文档缺失按模板起底、已有内容原样保留、新条目追加末尾）。
+	 * @param seedName 面板当前选中的人物（图视图单击节点）——预填为角色1，省一次输入
+	 */
+	async openAddRelationshipDialog(seedName?: string): Promise<void> {
+		const story = await this.activeStory();
+		if (!story) {
+			new Notice("尚未选择当前小说：请先在写字台或命令里切换小说", 6000);
+			return;
+		}
+		let scopes: CharacterScopeOption[] = [];
+		let allNames: string[] = [];
+		let defaultId = "book";
+		try {
+			const choices = await this.characterScopeChoices(story);
+			scopes = choices.scopes;
+			allNames = choices.allNames;
+			defaultId = choices.defaultId;
+		} catch (e) {
+			this.notifyError("读取人物/章节失败", e);
+			return;
+		}
+		if (!scopes.length) scopes = [{ id: "book", kind: "book", label: "书籍级 · 案头资料/人物.md", localCandidates: [] }];
+		const initial = seedName?.trim() ? { a: seedName.trim(), b: "", type: "", status: "", desc: "" } : undefined;
+		const result = await new Promise<RelationshipFormResult | null>((resolve) => {
+			new RelationshipModal(this.app, scopes, allNames, RELATION_TYPE_OPTIONS, defaultId, initial, false, (r) => resolve(r), () => resolve(null)).open();
+		});
+		if (!result) return;
+		try {
+			await this.manager.appendRelationships(story, result.scope.kind, [{
+				a: result.a, b: result.b, type: result.type, status: result.status, desc: result.desc,
+			}], { volId: result.scope.volId, chapterKey: result.scope.chapterKey });
+			new Notice(`已添加关系「${result.a} - ${result.b}」（${result.scope.label}）`, 8000);
+			this.schedulePanelRefresh(300);
+		} catch (e) {
+			this.notifyError("添加关系失败", e);
+		}
+	}
+
+	/**
+	 * 「编辑人物关系」弹窗（v0.4.11+ 人物关系面板：双击图视图连线／右键连线「编辑关系」）：
+	 * 复用添加关系同一份表单（编辑态级别只读），按边的 sourcePath＋角色对定位源《人物关系.md》里的那一条块，
+	 * 用 md_docs.updateRelationshipBlock 只换自块。同一对角色若在多层重复登记（图里合并成一条边）只改首条，提示里说明。
+	 */
+	async openEditRelationshipDialog(info: RelEdgeEditInfo): Promise<void> {
+		const story = await this.activeStory();
+		if (!story) { new Notice("尚未选择当前小说：请先在写字台或命令里切换小说", 6000); return; }
+		const f = this.app.vault.getAbstractFileByPath(info.sourcePath);
+		if (!(f instanceof TFile)) { new Notice(`未找到来源文档：${info.sourcePath}`); return; }
+		let scopes: CharacterScopeOption[] = [];
+		let allNames: string[] = [];
+		let defaultId = "book";
+		try {
+			const choices = await this.characterScopeChoices(story);
+			scopes = choices.scopes;
+			allNames = choices.allNames;
+			defaultId = choices.defaultId;
+		} catch (e) {
+			this.notifyError("读取人物/章节失败", e);
+			return;
+		}
+		if (!scopes.length) scopes = [{ id: "book", kind: "book", label: "书籍级 · 案头资料/人物.md", localCandidates: [] }];
+		const scope = scopes.find((s) => s.kind === info.scope) ?? scopes[0];
+		const result = await new Promise<RelationshipFormResult | null>((resolve) => {
+			new RelationshipModal(this.app, scopes, allNames, RELATION_TYPE_OPTIONS, defaultId, {
+				a: info.a, b: info.b, type: info.type, status: info.status, desc: info.desc, scope,
+			}, true, (r) => resolve(r), () => resolve(null)).open();
+		});
+		if (!result) return;
+		let text: string;
+		try { text = await this.app.vault.adapter.read(f.path); } catch (e) { new Notice(`读取来源文档失败：${e instanceof Error ? e.message : String(e)}`); return; }
+		const old = { a: info.a, b: info.b, type: info.type, status: info.status, desc: info.desc };
+		const newText = updateRelationshipBlock(text, old, { a: result.a, b: result.b, type: result.type, status: result.status, desc: result.desc }, 0);
+		if (newText === null) { new Notice("写回失败：关系文档自面板加载后可能已变化，请点「刷新」后重试"); return; }
+		try { await this.app.vault.adapter.write(f.path, newText); } catch (e) { new Notice(`写入《人物关系.md》失败：${e instanceof Error ? e.message : String(e)}`); return; }
+		new Notice(`已更新关系「${result.a} - ${result.b}」${info.count > 1 ? "（同一对角色有多处登记，本次只改第一处）" : ""}`, 8000);
+		this.schedulePanelRefresh(300);
+	}
+
+	/** 右键连线「删除关系」＝二次确认后按 sourcePath＋角色对定位、在《人物关系.md》里只删该块（其余内容原样保留） */
+	async deleteRelationshipFlow(info: RelEdgeEditInfo): Promise<void> {
+		const ok = await this.confirmBox("删除关系", `确认删除关系「${info.a} - ${info.b}」？${info.count > 1 ? "（同一对角色有多处登记，本次只删第一处。）" : ""}`, "删除");
+		if (!ok) return;
+		const f = this.app.vault.getAbstractFileByPath(info.sourcePath);
+		if (!(f instanceof TFile)) { new Notice(`未找到来源文档：${info.sourcePath}`); return; }
+		let text: string;
+		try { text = await this.app.vault.adapter.read(f.path); } catch (e) { new Notice(`读取来源文档失败：${e instanceof Error ? e.message : String(e)}`); return; }
+		const newText = deleteRelationshipBlock(text, { a: info.a, b: info.b, type: info.type, status: info.status, desc: info.desc }, 0);
+		if (newText === null) { new Notice("删除失败：关系文档自面板加载后可能已变化，请点「刷新」后重试"); return; }
+		try { await this.app.vault.adapter.write(f.path, newText); } catch (e) { new Notice(`写入《人物关系.md》失败：${e instanceof Error ? e.message : String(e)}`); return; }
+		new Notice(`已删除关系「${info.a} - ${info.b}」`);
+		this.schedulePanelRefresh(300);
 	}
 
 	/**

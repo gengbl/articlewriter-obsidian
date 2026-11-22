@@ -1,4 +1,4 @@
-import { ItemView, Menu, TFile, WorkspaceLeaf, setIcon } from "obsidian";
+import { ItemView, Menu, TFile, WorkspaceLeaf, setIcon, setTooltip } from "obsidian";
 import { docLocationLabel, relationshipStatusKind } from "./md_docs";
 import type { RelationshipEntry } from "./md_docs";
 import { adjacencyMap, edgeCurvePath, forceLayout, labelFontSize } from "./graph_layout";
@@ -11,6 +11,18 @@ export type RelScope = "book" | "volume" | "chapter";
 
 /** 面板层级词唯一口径（v0.4.9+ 导出＝main.ts「编辑人物」的级别行也用它拼「所在位置」＝与分组标题/卡片标签同一组词）：书籍级／卷级／章级 */
 export const REL_SCOPE_WORDS: Record<RelScope, string> = { book: "书籍级", volume: "卷级", chapter: "章级" };
+
+/** 图视图一条边（可能合并多处登记）的写操作入参：供 main.ts 的编辑／删除弹窗定位源文档与预填表单 */
+export interface RelEdgeEditInfo {
+	a: string;
+	b: string;
+	type: string;
+	status: string;
+	desc: string;
+	sourcePath: string;
+	scope: RelScope;
+	count: number; // 同一对角色被合并登记的条数（>1 时写操作只作用于首条，提示里说明）
+}
 
 /** 面板展示用关系行：解析结果 + 层级归属与来源路径 */
 export interface RelRow extends RelationshipEntry {
@@ -172,6 +184,9 @@ export class RelationshipView extends ItemView {
 
 	private getData: () => Promise<RelSnapshot>;
 	private onAddCharacter?: () => void | Promise<void>;
+	private onAddRelationship?: (seedName?: string) => void | Promise<void>; // v0.4.11+ 头部「＋ 关系」＝main.ts 的添加人物关系弹窗（seed＝当前选中人物，预填为角色1）
+	private onEditRelationship?: (info: RelEdgeEditInfo) => void | Promise<void>; // v0.4.11+ 双击连线／右键「编辑关系」＝同一份编辑弹窗
+	private onDeleteRelationship?: (info: RelEdgeEditInfo) => void | Promise<void>; // v0.4.11+ 右键「删除关系」＝main.ts 二次确认后删块落盘
 	private onRenameCharacter?: (name: string) => void | Promise<void>;
 	private onEditCharacter?: (name: string) => void | Promise<void>; // v0.4.9+ 双击人物／右键「编辑人物」＝main.ts 的人物编辑弹窗（级别＋设定字段）
 	private onDeleteCharacter?: (name: string) => void | Promise<void>; // v0.4.9+ 右键「删除人物」＝main.ts 的二次确认删除流程（连带清理场景引用）
@@ -210,6 +225,9 @@ export class RelationshipView extends ItemView {
 		leaf: WorkspaceLeaf,
 		getData: () => Promise<RelSnapshot>,
 		onAddCharacter?: () => void | Promise<void>,
+		onAddRelationship?: (seedName?: string) => void | Promise<void>,
+		onEditRelationship?: (info: RelEdgeEditInfo) => void | Promise<void>,
+		onDeleteRelationship?: (info: RelEdgeEditInfo) => void | Promise<void>,
 		onRenameCharacter?: (name: string) => void | Promise<void>,
 		onEditCharacter?: (name: string) => void | Promise<void>,
 		onDeleteCharacter?: (name: string) => void | Promise<void>
@@ -217,6 +235,9 @@ export class RelationshipView extends ItemView {
 		super(leaf);
 		this.getData = getData;
 		this.onAddCharacter = onAddCharacter; // v0.2.0+：头部「添加人物」按钮的动作（弹窗由 main.ts 提供，面板不自持业务逻辑）
+		this.onAddRelationship = onAddRelationship; // v0.4.11+：头部「＋ 关系」按钮的动作（弹窗同样由 main.ts 提供）
+		this.onEditRelationship = onEditRelationship; // v0.4.11+：双击连线／右键菜单「编辑关系」
+		this.onDeleteRelationship = onDeleteRelationship; // v0.4.11+：右键菜单「删除关系」
 		this.onRenameCharacter = onRenameCharacter; // v0.2.x+：人物状态区「改名」动作（全书同步替换 + 自动备份，由 main.ts 提供）
 		this.onEditCharacter = onEditCharacter; // v0.4.9+：双击人物／右键「编辑人物」＝同一弹窗
 		this.onDeleteCharacter = onDeleteCharacter; // v0.4.9+：右键「删除人物」（main.ts 里二次确认后才落盘）
@@ -315,6 +336,12 @@ export class RelationshipView extends ItemView {
 			if (this.lastSnap) this.renderBody(this.lastSnap);
 		});
 		const btns = filterRow.createSpan({ cls: "aw-st-actions" });
+		if (this.onAddRelationship) {
+			const addRel = btns.createEl("button", { text: "＋ 关系", cls: "aw-rel-add" });
+			addRel.disabled = !this.lastSnap?.activeStory; // 未选小说时无处写入
+			setTooltip(addRel, "添加一条人物关系（写入所选层级的《人物关系.md》）");
+			addRel.addEventListener("click", () => void this.onAddRelationship?.(this.selectedChar ?? undefined));
+		}
 		if (this.onAddCharacter) {
 			const add = btns.createEl("button", { text: "添加人物" });
 			add.disabled = !this.lastSnap?.activeStory; // 未选小说时无处写入
@@ -508,7 +535,7 @@ export class RelationshipView extends ItemView {
 				(q ? `（筛选自 ${String(snap.relCount)} 条）` : "") +
 				"；圆点／名字越大＝关系越多" +
 				`；现在居中的人物＝${centerName || "（连线最多者）"}` +
-				"；双击人物＝编辑人物（不带动别的响应），右键人物＝菜单（编辑／改名／打开来源文档／设为中心人物／新增／删除），双击连线打开来源文档，滚轮缩放、拖动平移"
+				"；双击人物＝编辑人物（不带动别的响应），右键人物＝菜单（编辑／改名／打开来源文档／设为中心人物／新增／删除），双击连线＝编辑关系（右键连线＝编辑／删除），滚轮缩放、拖动平移"
 		);
 
 		const NS = "http://www.w3.org/2000/svg";
@@ -567,7 +594,23 @@ export class RelationshipView extends ItemView {
 				this.focusGraph(null, null);
 				this.hideEdgeTip();
 			});
-			g.addEventListener("dblclick", () => void this.openFile(e.sourcePath)); // 双击打开（单击不触发）
+			const editInfo: RelEdgeEditInfo = { a: e.a, b: e.b, type: e.type, status: e.status, desc: e.desc, sourcePath: e.sourcePath, scope: e.scope, count: e.count };
+			g.addEventListener("dblclick", (ev: MouseEvent) => {
+				ev.preventDefault();
+				ev.stopPropagation(); // v0.4.11+ 双击连线＝编辑关系弹窗（不再打开来源文档），也不冒泡到 svg 的拖拽抑制逻辑
+				if (this.onEditRelationship) void this.onEditRelationship(editInfo);
+				else void this.openFile(e.sourcePath); // 未注入编辑回调时保持旧行为
+			});
+			g.addEventListener("contextmenu", (ev: MouseEvent) => {
+				ev.preventDefault();
+				ev.stopPropagation();
+				if (!this.onEditRelationship && !this.onDeleteRelationship) return;
+				const menu = new Menu();
+				const base = "aw-rel-edge";
+				if (this.onEditRelationship) menu.addItem((it) => it.setSection(base).setTitle("编辑关系").setIcon("pencil").onClick(() => void this.onEditRelationship?.(editInfo)));
+				if (this.onDeleteRelationship) menu.addItem((it) => it.setSection("danger").setTitle("删除关系").setIcon("trash").onClick(() => void this.onDeleteRelationship?.(editInfo)));
+				menu.showAtPosition({ x: ev.x, y: ev.y });
+			});
 			svg.appendChild(g);
 			this.graphEdgeEls.push({ el: g, a: e.a, b: e.b });
 		}
@@ -813,7 +856,8 @@ export class RelationshipView extends ItemView {
 	/**
 	 * **人物右键菜单**（v0.4.9+ 用户要求＝图表节点、「人物状态」区、卡片里的角色名同一份菜单，代码重用；菜单顺序也照用户要求定）＝
 	 * **编辑人物「X」**（第一项）→ 改名「X」（全书 MD 同步替换＋自动备份，与「角色改名」命令同流程）→ 打开来源文档（该人物的《人物.md》，没登记则回退关系文档）→
-	 * **设为中心人物**（v0.4.8+ 原「双击节点＝以该人物为中心重画」移到这里；已是中心者这一项变「恢复默认中心」）→ 新增人物（＝头部「添加人物」）→
+	 * **设为中心人物**（v0.4.8+ 原「双击节点＝以该人物为中心重画」移到这里；已是中心者这一项变「恢复默认中心」）→
+	 * **添加关系（以该人物为角色1）**（v0.4.11+）→ 新增人物（＝头部「添加人物」）→
 	 * **删除人物「X」恒排最后**（`danger` 分组＝自动带分隔线且排在末尾，同场景卡片菜单口径）。
 	 * 没注入对应写动作回调时那一项自动不出现（＝面板未接线也不报错）。
 	 */
@@ -835,6 +879,7 @@ export class RelationshipView extends ItemView {
 					if (this.lastSnap) this.renderBody(this.lastSnap);
 				})
 		);
+		if (this.onAddRelationship) menu.addItem((it) => it.setSection(base).setTitle(`添加关系（以「${name}」为角色1）`).setIcon("git-branch").onClick(() => void this.onAddRelationship?.(name)));
 		if (this.onAddCharacter) menu.addItem((it) => it.setSection(base).setTitle("新增人物").setIcon("user-plus").onClick(() => void this.onAddCharacter?.()));
 		if (this.onDeleteCharacter) menu.addItem((it) => it.setSection("danger").setTitle(`删除人物「${name}」`).setIcon("trash").onClick(() => void this.onDeleteCharacter?.(name)));
 		menu.showAtPosition({ x: ev.x, y: ev.y });

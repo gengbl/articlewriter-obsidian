@@ -3,6 +3,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import {
+	deleteRelationshipBlock,
 	deleteTimelineBlock,
 	docLocationLabel,
 	docRelPath,
@@ -10,12 +11,16 @@ import {
 	formatTimelines,
 	insertTimelineBlock,
 	isTimelineDocName,
+	parseRelationships,
 	parseTimelineHeading,
 	parseTimelines,
 	rewriteTimelineEntryTime,
+	rewriteTimelineEntryTimes,
+	shiftTimelinePointBy,
 	sliceVolOutlineChapters,
 	timelineGenFormatOk,
 	timelineLaneOf,
+	updateRelationshipBlock,
 	updateTimelineBlock,
 	type TimelineEntryInput,
 } from "./md_docs";
@@ -43,7 +48,7 @@ void test("parseTimelines reads levels, title, fields and src location; H1 doc t
 	assert.equal(es[0].title, "黑石城之围");
 	assert.equal(es[0].time, 120);
 	assert.deepEqual(es[0].chars, ["张三", "李四"]);
-	assert.equal(es[0].event, "甲起事");
+	assert.equal(es[0].desc, "甲起事"); // 旧 `- 事件：` 内容已并入详情
 	assert.equal(es[0].srcHeading, "# 120 黑石城之围");
 	assert.equal(es[0].srcOrdinal, 0);
 	assert.equal(es[0].done, undefined); // 无 `- 完成：` 行＝字段缺省（往返稳定）
@@ -71,15 +76,14 @@ void test("parseTimelineHeading: bare point, point+title, legacy decimals, inval
 void test("parseTimelines honours field aliases and folds free text into nearest field", () => {
 	const es = parseTimelines("### -5-03 旧事件\n经过：第一行\n第二行自由文本\n后果：影响一\n影响续写\n- 发生章节：第三章\n- 裸列表项不算正文\n");
 	assert.equal(es.length, 1);
-	assert.equal(es[0].event, "第一行\n第二行自由文本");
+	assert.equal(es[0].desc, "第一行\n第二行自由文本"); // 旧「经过」别名并入详情
 	assert.equal(es[0].impact, "影响一\n影响续写");
 });
 
 void test("parseTimelines honours desc fence and ignores heading-like lines inside code fences", () => {
 	const es = parseTimelines("## 10 围栏事件\n- 描述：\n```text\n# 这行不是标题\n围栏正文\n```\n- 事件：事件行\n");
 	assert.equal(es.length, 1);
-	assert.equal(es[0].desc, "# 这行不是标题\n围栏正文");
-	assert.equal(es[0].event, "事件行");
+	assert.equal(es[0].desc, "# 这行不是标题\n围栏正文\n事件行"); // 旧 `- 事件：` 与描述围栏同归详情
 });
 
 void test("parseTimelines disambiguates identical heading lines via srcOrdinal", () => {
@@ -95,7 +99,7 @@ void test("parseTimelines reads done field (aliases and values); empty value cou
 });
 
 void test("formatTimelineBlock round-trips through parseTimelines (title, fields, level clamp)", () => {
-	const e: Tl = { level: 7, time: 100, month: 3, title: " 往返事件 ", chars: ["张三", "李四"], done: true, event: "起头\n续写", desc: "详细描述", impact: "影响一二", related: ["黑石城之围", "旁支丙"] };
+	const e: Tl = { level: 7, time: 100, month: 3, title: " 往返事件 ", chars: ["张三", "李四"], done: true, desc: "起头\n续写", impact: "影响一二", related: ["黑石城之围", "旁支丙"] };
 	const back = parseTimelines(formatTimelineBlock(e));
 	assert.equal(back.length, 1);
 	assert.equal(back[0].level, 6); // 序列化钳制到 ######
@@ -104,23 +108,38 @@ void test("formatTimelineBlock round-trips through parseTimelines (title, fields
 	assert.equal(back[0].title, "往返事件");
 	assert.deepEqual(back[0].chars, ["张三", "李四"]);
 	assert.equal(back[0].done, true);
-	assert.equal(back[0].event, "起头\n续写");
-	assert.equal(back[0].desc, "详细描述");
+	assert.equal(back[0].desc, "起头\n续写");
 	assert.equal(back[0].impact, "影响一二");
 	assert.deepEqual(back[0].related, ["黑石城之围", "旁支丙"]);
 });
 
+void test("旧 `- 事件：`／`- 描述：` 解析时并入详情，写回只出 `- 详情：`", () => {
+	const old = "# 时间线\n\n## 120 甲\n- 人物：A\n- 事件：旧简述\n- 描述：旧详细\n- 影响：代价\n";
+	const es = parseTimelines(old);
+	assert.equal(es.length, 1);
+	assert.equal(es[0].desc, "旧简述\n旧详细"); // 两个旧字段按文档顺序合并
+	assert.ok(!("event" in es[0]), "解析结果不再有独立 event 字段");
+	const upd = updateTimelineBlock(old, "## 120 甲", 0, { level: 2, time: 120, chars: ["A"], desc: es[0].desc, impact: "代价" });
+	assert.ok(upd);
+	assert.ok(upd.includes("- 详情："));
+	assert.ok(!upd.includes("- 事件："), "写回不再落盘事件字段");
+	assert.ok(!upd.includes("- 描述："));
+	assert.equal(parseTimelines(upd)[0].desc, "旧简述\n旧详细"); // 往返内容不丢
+});
+
 void test("formatTimelineBlock keeps old no-title heading and omits undone done-line (round-trip stable)", () => {
-	const plain = formatTimelineBlock({ level: 2, time: 77, chars: [], done: false, event: "经过" });
+	const plain = formatTimelineBlock({ level: 2, time: 77, chars: [], done: false, desc: "详情内容" });
 	assert.ok(plain.startsWith("## 77\n"));
 	assert.ok(!plain.includes("- 完成：")); // 未完成不写行（往返稳定）
+	assert.ok(plain.includes("- 详情：")); // 唯一正文内容字段
+	assert.ok(!plain.includes("- 事件："));
 	const back = parseTimelines(plain);
 	assert.equal(back[0].title, undefined);
 	assert.equal(back[0].done, undefined);
 });
 
 void test("formatTimelines keeps doc title `# 时间线` and all entries parse back", () => {
-	const text = formatTimelines([{ level: 1, time: 1, chars: [], event: "一" }, { level: 2, time: 2, title: "二", chars: [], event: "" }]);
+	const text = formatTimelines([{ level: 1, time: 1, chars: [], desc: "一" }, { level: 2, time: 2, title: "二", chars: [], desc: "" }]);
 	assert.ok(text.startsWith("# 时间线\n"));
 	const es = parseTimelines(text);
 	assert.equal(es.length, 2);
@@ -140,34 +159,88 @@ void test("rewriteTimelineEntryTime replaces point and keeps event name; null on
 	assert.equal(rewriteTimelineEntryTime(doc, "# 不存在", 0, { time: 120 }, { time: 121 }), null);
 });
 
+void test("shiftTimelinePointBy：按父事件精度单位平移、子事件保持自身精度（含月末夹取）", () => {
+	// 天单位：日精度→精确日期（跨月/跨年自动进位），月精度→落到目标月，年精度→只动年份
+	assert.deepEqual(shiftTimelinePointBy({ time: 120, month: 1, day: 31 }, "day", 1), { time: 120, month: 2, day: 1 });
+	assert.deepEqual(shiftTimelinePointBy({ time: 120, month: 12, day: 31 }, "day", 1), { time: 121, month: 1, day: 1 });
+	assert.deepEqual(shiftTimelinePointBy({ time: 120, month: 6 }, "day", 40), { time: 120, month: 7 }); // 月精度不补日
+	assert.deepEqual(shiftTimelinePointBy({ time: 120 }, "day", 400), { time: 121 }); // 年精度只取结果年份
+	// 月单位：整月算术（负年份分解正确），月末夹到目标月最后一天
+	assert.deepEqual(shiftTimelinePointBy({ time: 120, month: 12 }, "month", 1), { time: 121, month: 1 });
+	assert.deepEqual(shiftTimelinePointBy({ time: -1, month: 1 }, "month", -1), { time: -2, month: 12 });
+	assert.deepEqual(shiftTimelinePointBy({ time: 121, month: 1, day: 31 }, "month", 1), { time: 121, month: 2, day: 28 });
+	assert.deepEqual(shiftTimelinePointBy({ time: 120, month: 3, day: 31 }, "month", -1), { time: 120, month: 2, day: 29 }); // 闰年 2 月 29
+	assert.deepEqual(shiftTimelinePointBy({ time: 120 }, "month", 13), { time: 121 }); // 年精度只取年份
+	// 年单位：整年加减，闰日夹到平年 2 月 28
+	assert.deepEqual(shiftTimelinePointBy({ time: 120, month: 2, day: 29 }, "year", 1), { time: 121, month: 2, day: 28 });
+	assert.deepEqual(shiftTimelinePointBy({ time: 120, month: 6 }, "year", 2), { time: 122, month: 6 });
+	assert.deepEqual(shiftTimelinePointBy({ time: 120 }, "year", 3), { time: 123 });
+	// steps=0 原样返回（含精度字段）
+	assert.deepEqual(shiftTimelinePointBy({ time: 120, month: 6, day: 15 }, "year", 0), { time: 120, month: 6, day: 15 });
+});
+
+void test("rewriteTimelineEntryTimes：一次批量改写多条（含同名重复标题按出现序号消歧），任一失败整批放弃", () => {
+	const dup = `# 时间线\n\n## 120-06\n- 事件：一\n\n## 120-06\n- 事件：二\n`;
+	// 两条同名标题：序号 0/1 分别定位到第一/第二条；批量改写不会因先改一条而让另一条的序号漂移
+	const both = rewriteTimelineEntryTimes(dup, [
+		{ srcHeading: "## 120-06", srcOrdinal: 1, expectOld: { time: 120, month: 6 }, newPoint: { time: 121, month: 7 } },
+		{ srcHeading: "## 120-06", srcOrdinal: 0, expectOld: { time: 120, month: 6 }, newPoint: { time: 122, month: 8 } },
+	]);
+	assert.ok(both);
+	const es = parseTimelines(both);
+	assert.deepEqual(es.map((x) => [x.time, x.month]), [[122, 8], [121, 7]], "按原序号各自改到正确位置");
+	assert.deepEqual(es.map((x) => x.desc), ["一", "二"], "正文不动（旧 - 事件：已并入详情）");
+	// 父子同步：父＋两个子事件一起平移
+	const tree = rewriteTimelineEntryTimes(doc, [
+		{ srcHeading: "# 120 黑石城之围", srcOrdinal: 0, expectOld: { time: 120 }, newPoint: { time: 121 } },
+		{ srcHeading: "## 120-06", srcOrdinal: 0, expectOld: { time: 120, month: 6 }, newPoint: { time: 121, month: 6 } },
+		{ srcHeading: "### 120-06-15 旁支丙", srcOrdinal: 0, expectOld: { time: 120, month: 6, day: 15 }, newPoint: { time: 121, month: 6, day: 15 } },
+	]);
+	assert.ok(tree);
+	assert.ok(tree.includes("# 121 黑石城之围") && tree.includes("## 121-06\n") && tree.includes("### 121-06-15 旁支丙"));
+	// 任一条定位失败/旧值不符/重复目标 → 整批 null（不做部分写回）
+	assert.equal(rewriteTimelineEntryTimes(doc, [
+		{ srcHeading: "## 120-06", srcOrdinal: 0, expectOld: { time: 120, month: 6 }, newPoint: { time: 121, month: 6 } },
+		{ srcHeading: "## 不存在", srcOrdinal: 0, expectOld: { time: 120 }, newPoint: { time: 121 } },
+	]), null);
+	assert.equal(rewriteTimelineEntryTimes(doc, [
+		{ srcHeading: "## 120-06", srcOrdinal: 0, expectOld: { time: 999 }, newPoint: { time: 121, month: 6 } },
+	]), null);
+	assert.equal(rewriteTimelineEntryTimes(doc, [
+		{ srcHeading: "## 120-06", srcOrdinal: 0, expectOld: { time: 120, month: 6 }, newPoint: { time: 121, month: 6 } },
+		{ srcHeading: "## 120-06", srcOrdinal: 0, expectOld: { time: 120, month: 6 }, newPoint: { time: 122, month: 6 } },
+	]), null);
+	assert.equal(rewriteTimelineEntryTimes(doc, []), doc, "空批次＝原样返回");
+});
+
 void test("updateTimelineBlock replaces own block keeping children; null on miss", () => {
-	const upd = updateTimelineBlock(doc, "## 120-06", 0, { level: 2, time: 121, month: 1, title: "新名", chars: [], event: "新经过" });
+	const upd = updateTimelineBlock(doc, "## 120-06", 0, { level: 2, time: 121, month: 1, title: "新名", chars: [], desc: "新详情" });
 	assert.ok(upd);
 	const es = parseTimelines(upd);
 	assert.deepEqual(es.map((x) => x.level), [1, 2, 3]);
 	assert.equal(es[1].title, "新名");
 	assert.ok(upd.includes("### 120-06-15 旁支丙")); // 子块保留
 
-	assert.equal(updateTimelineBlock(doc, "## 不存在", 0, { level: 2, time: 1, chars: [], event: "" }), null);
+	assert.equal(updateTimelineBlock(doc, "## 不存在", 0, { level: 2, time: 1, chars: [], desc: "" }), null);
 });
 
 void test("insertTimelineBlock anchors after full subtree (child/sibling) or appends; null on bad anchor", () => {
-	const child = insertTimelineBlock(doc, { level: 2, time: 119, title: "新子事件", chars: [], event: "x" }, "# 120 黑石城之围", 0);
+	const child = insertTimelineBlock(doc, { level: 2, time: 119, title: "新子事件", chars: [], desc: "x" }, "# 120 黑石城之围", 0);
 	assert.ok(child);
 	const es = parseTimelines(child);
 	assert.deepEqual(es.map((x) => x.level), [1, 2, 3, 2]); // 挂在一级块子树末尾（原 ##/### 之后）
 
-	const tail = insertTimelineBlock(doc, { level: 2, time: 200, title: "末尾事件", chars: [], event: "" }, null, 0);
+	const tail = insertTimelineBlock(doc, { level: 2, time: 200, title: "末尾事件", chars: [], desc: "" }, null, 0);
 	assert.ok(tail);
 	const es2 = parseTimelines(tail);
 	assert.equal(es2.length, 4);
 	assert.equal(es2[3].title, "末尾事件");
 
-	const fromEmpty = insertTimelineBlock("", { level: 2, time: 5, chars: [], event: "" }, null, 0);
+	const fromEmpty = insertTimelineBlock("", { level: 2, time: 5, chars: [], desc: "" }, null, 0);
 	assert.ok(fromEmpty);
 	assert.ok(fromEmpty.startsWith("## 5\n"));
 
-	assert.equal(insertTimelineBlock(doc, { level: 2, time: 1, chars: [], event: "" }, "## 不存在", 0), null);
+	assert.equal(insertTimelineBlock(doc, { level: 2, time: 1, chars: [], desc: "" }, "## 不存在", 0), null);
 });
 
 void test("deleteTimelineBlock removes subtree or own block only; null on miss", () => {
@@ -190,9 +263,9 @@ void test("deleteTimelineBlock removes subtree or own block only; null on miss",
 
 void test("write-back results keep single blank line between blocks and trailing newline", () => {
 	for (const res of [
-		updateTimelineBlock(doc, "## 120-06", 0, { level: 2, time: 120, month: 6, chars: [], event: "" }),
+		updateTimelineBlock(doc, "## 120-06", 0, { level: 2, time: 120, month: 6, chars: [], desc: "" }),
 		deleteTimelineBlock(doc, "## 120-06", 0, 2, false),
-		insertTimelineBlock(doc, { level: 2, time: 120, month: 7, chars: [], event: "" }, "# 120 黑石城之围", 0),
+		insertTimelineBlock(doc, { level: 2, time: 120, month: 7, chars: [], desc: "" }, "# 120 黑石城之围", 0),
 	]) {
 		assert.ok(res);
 		assert.ok(!res.includes("\n\n\n"));
@@ -267,18 +340,50 @@ test("多时间线命名口径（v0.4.7+）：时间线开头文档识别与泳�
 	assert.equal(timelineLaneOf("时间线-卷首-序.md"), "卷首-序", "名字里仍可含连字符（只剥第一段前缀）");
 });
 
-test("时间线字段更名 描述→详情（v0.4.7+）：旧格式兼容解析、写回统一出新格式", () => {
+test("时间线字段收敛到详情（v0.4.11+）：旧 事件／描述 兼容解析、写回统一出 `- 详情：`", () => {
 	const legacy = ["## 120 黑市陷阱", "- 人物：张三", "- 事件：潜入黑市", "- 描述：", "```text", "旧式描述正文", "```"].join("\n");
 	const [e] = parseTimelines(legacy);
-	assert.equal(e.desc, "旧式描述正文", "旧 `- 描述：` 仍解析为详情字段");
+	assert.equal(e.desc, "潜入黑市\n旧式描述正文", "旧 `- 事件：` 与 `- 描述：` 都并入详情");
 	const out = formatTimelineBlock(e);
 	assert.ok(out.includes("- 详情："), "写回统一输出 `- 详情：`");
-	assert.ok(!out.includes("- 描述："), "不再输出旧字段名");
+	assert.ok(!out.includes("- 描述：") && !out.includes("- 事件："), "不再输出两个旧字段名");
 	const back = parseTimelines(out);
-	assert.equal(back[0].desc, "旧式描述正文", "新格式解析往返一致");
-	const e2 = parseTimelines("## 121 甲\n- 详情：详情走详情字段\n");
-	assert.equal(e2[0].desc, "详情走详情字段", "「详情」不再作事件别名、归详情字段");
-	assert.equal(e2[0].event, "", "事件字段不被 详情 抢占");
+	assert.equal(back[0].desc, "潜入黑市\n旧式描述正文", "新格式解析往返一致");
+	const e2 = parseTimelines("## 121 甲\n- 事件：旧事件内容\n- 详情：详情走详情字段\n");
+	assert.equal(e2[0].desc, "旧事件内容\n详情走详情字段", "旧「事件」与「详情」同归详情字段（按出现顺序合并）");
+});
+
+void test("updateRelationshipBlock/deleteRelationshipBlock：双击连线编辑/右键删除只改目标块（含旧值校验）", () => {
+	const doc = [
+		"# 人物关系",
+		"",
+		"## 林川 - 苏晚",
+		"- 类型：师徒",
+		"- 状态：进行中",
+		"- 描述：",
+		"```text",
+		"初见",
+		"```",
+		"",
+		"## 甲 - 乙",
+		"- 类型：朋友",
+		"",
+	].join("\n");
+	const old = { a: "林川", b: "苏晚", type: "师徒", status: "进行中", desc: "初见" };
+	const upd = updateRelationshipBlock(doc, old, { ...old, type: "恋人", status: "已结束", desc: "后来" });
+	assert.ok(upd);
+	const es = parseRelationships(upd);
+	assert.equal(es.length, 2, "另一条关系块保留");
+	assert.deepEqual([es[0].a, es[0].b, es[0].type, es[0].status, es[0].desc], ["林川", "苏晚", "恋人", "已结束", "后来"]);
+	assert.equal(es[1].type, "朋友");
+	assert.equal(updateRelationshipBlock(doc, { ...old, a: "不存在" }, old), null, "定位失败返回 null（防快照过期误写）");
+
+	const del = deleteRelationshipBlock(doc, old);
+	assert.ok(del);
+	const left = parseRelationships(del);
+	assert.equal(left.length, 1);
+	assert.deepEqual([left[0].a, left[0].b], ["甲", "乙"]);
+	assert.equal(deleteRelationshipBlock(doc, { ...old, b: "不存在" }), null);
 });
 
 // ---------- v0.4.9+ 「级别／所在文档」文案（场景／时间线／人物关系三个面板的弹窗与行上出处标签共用口径） ----------
