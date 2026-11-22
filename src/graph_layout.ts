@@ -93,15 +93,15 @@ export function hubOf(nodes: GraphRankNode[]): string {
 
 /**
  * 贪心邻接链（**环形摆放顺序**，返回值第一个＝枢纽）：
- * ①起点取连线最多的人物（`hubOf`）；
+ * ①起点取「指定中心人物」（`centerName`，存在时）否则连线最多的人物（`hubOf`）；
  * ②每轮挑「与已排位人物连边最多」的未排人物（并列按度数、再按原顺序），贴到链的**前端或后端**：
  *   谁离链头/链尾有直接关系就贴哪边，都没有则左右交替（保持对称好看）——贴的过程中枢纽可能被顶到链中间，
  *   故收尾把链**旋转**到枢纽在第一位（链按环首尾相接使用，旋转不改变环序）；
  * ③于是枢纽两侧（返回值第 2 个与最后一个）就是它最亲的人物，互相有关系的角色在环上彼此相邻。
  */
-export function chainOrder(nodes: GraphRankNode[], linked: Map<string, Set<string>>): GraphRankNode[] {
+export function chainOrder(nodes: GraphRankNode[], linked: Map<string, Set<string>>, centerName?: string): GraphRankNode[] {
 	if (!nodes.length) return [];
-	const hubName = hubOf(nodes);
+	const hubName = centerName && nodes.some((node) => node.name === centerName) ? centerName : hubOf(nodes);
 	let first = 0;
 	for (let i = 0; i < nodes.length; i++) if (nodes[i].name === hubName) first = i;
 	const chain: GraphRankNode[] = [nodes[first]];
@@ -173,6 +173,8 @@ export interface ForceLayoutParams {
 	iterations?: number;
 	/** 枢纽（连线最多的人物≈主角）最终对齐的高度：相对画布中心往上提的比例，0＝正中、1＝上内框边。默认 0.34＝往上提一档 */
 	hubUp?: number;
+	/** v0.4.8+ 指定「中心人物」：存在该节点时链序/向心引力/锚点都围绕它，且锚到**画布正中心**（不再上提）；缺项或节点不在点集＝回退度数枢纽（hubUp 上提、现状行为） */
+	centerName?: string;
 }
 
 /** 确定性伪随机（同输入同输出：切筛选/重渲染不会跳位） */
@@ -194,6 +196,8 @@ function lcg(seed: number): () => number {
  * ④收尾以**枢纽为锚点**铺满画布：枢纽落到「画布中央偏上」（横向正中、纵向 `hubUp` 高度），其余人物按两轴各自
  *   「刚好不出内框」的最大比例摊开（横向内框已含 `LABEL_ROOM` 给角色名让位，长宽比最多拉 `ASPECT_CAP` 倍）；
  *   摊开后再消解一轮碰撞、把枢纽挪回锚点、最后逐点夹进画布——这就是「把主角提到画面中心」。
+ * ⑤v0.4.8+ `centerName`＝指定中心人物（图表模式双击某角色改以其为中心）：存在该节点时链序起点、向心引力与锚点
+ *   都换围绕它，且锚在**画布正中**（不上提）；节点不在点集＝回退度数枢纽（现状行为不变）。
  * 纯计算：无 DOM、不读盘。
  */
 export function forceLayout(nodes: GraphRankNode[], edges: GraphEdgeLike[], params: ForceLayoutParams): GraphLayoutNode[] {
@@ -203,8 +207,9 @@ export function forceLayout(nodes: GraphRankNode[], edges: GraphEdgeLike[], para
 	const padX = pad + LABEL_ROOM; // 横向再多让一截：角色名挂在节点左右，光让出圆点不够
 	const iterations = params.iterations ?? 320;
 	const hubUp = params.hubUp ?? 0.34;
+	const centerName = params.centerName ?? "";
 	if (!nodes.length) return [];
-	const order = chainOrder(nodes, adjacencyMap(edges));
+	const order = chainOrder(nodes, adjacencyMap(edges), centerName);
 	const n = order.length;
 	const idx = new Map<string, number>();
 	order.forEach((node, i) => idx.set(node.name, i));
@@ -220,7 +225,8 @@ export function forceLayout(nodes: GraphRankNode[], edges: GraphEdgeLike[], para
 	const springs = edges
 		.map((e) => ({ a: idx.get(e.a) ?? -1, b: idx.get(e.b) ?? -1, w: Math.max(1, e.weight) }))
 		.filter((e) => e.a >= 0 && e.b >= 0 && e.a !== e.b);
-	const hub = Math.max(0, order.findIndex((node) => node.name === hubOf(nodes))); // chainOrder 已把枢纽旋到第一位
+	const hasCenter = centerName !== "" && nodes.some((node) => node.name === centerName); // v0.4.8+ 指定中心人物（存在才生效，否则回退度数枢纽）
+	const hub = Math.max(0, order.findIndex((node) => node.name === (hasCenter ? centerName : hubOf(nodes)))); // chainOrder 已把生效枢纽旋到第一位
 	const k = Math.sqrt(((W - 2 * padX) * (H - 2 * pad)) / Math.max(1, n));
 	/** **硬碰撞**消解：斥力只保证「大致散开」，圆点互相压着、名字糊在一起还是难看。
 	 * 每对若比 `r_i + r_j + COLLIDE_GAP` 更近就沿连线各推开一半（完全重合时按固定方向错开，保持确定性）。 */
@@ -298,7 +304,7 @@ export function forceLayout(nodes: GraphRankNode[], edges: GraphEdgeLike[], para
 	// 以枢纽为**锚点**铺满画布：枢纽落到 (画布中央, hubUp 高度)，其余人物按两轴各自「刚好不出内框」的比例摊开
 	// （横向内框已含 LABEL_ROOM 给角色名让位；上下限按锚点分别算，所以「把主角提上去」不会把顶上的人挤出画布）。
 	const anchorX = W / 2;
-	const anchorY = H / 2 - hubUp * (H / 2 - pad); // hubUp＝相对画布中心往上提的比例（屏幕 −y 方向）
+	const anchorY = hasCenter ? H / 2 : H / 2 - hubUp * (H / 2 - pad); // 指定中心人物＝钉在画布正中；度数枢纽沿用 hubUp 上提
 	const hubX = x[hub];
 	const hubY = y[hub];
 	let sx = Infinity;

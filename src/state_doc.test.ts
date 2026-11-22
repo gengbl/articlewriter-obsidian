@@ -6,6 +6,7 @@ import {
 	BOOK_SKILL_PHASE_KEYS,
 	bookSkillPhaseKey,
 	autoBookMissing,
+	findChapterByStateKey,
 	formatStateDoc,
 	parseStateDoc,
 	type StoryState,
@@ -227,4 +228,32 @@ void test("ai_outline_cast format→parse 往返；缺省不写；非布尔值�
 	const bad = parseStateDoc('---\nai_outline_cast: "on"\n---\n');
 	assert.equal(bad.state?.ai_outline_cast, undefined);
 	assert.equal(bad.extra, undefined, "键在白名单内不落 extra");
+});
+
+// ---------- v0.4.9+ findChapterByStateKey（《故事状态.md》current_chapter → 章节清单里的那一章；「新建场景 · 级别」的「章级」候选定位） ----------
+
+const chRows = () => [
+	{ key: "1", num: 1 }, // 书级（未归属卷）章
+	{ key: "v1:2", num: 2, vol: "v1" },
+	{ key: "v2:2", num: 2, vol: "v2" },
+];
+
+void test("findChapterByStateKey：复合键精确命中（含 vol 前缀）", () => {
+	assert.equal(findChapterByStateKey(chRows(), "v2:2")?.key, "v2:2");
+	assert.equal(findChapterByStateKey(chRows(), "1")?.key, "1");
+	assert.equal(findChapterByStateKey(chRows(), "  v1:2 ")?.key, "v1:2", "首尾空白先 trim");
+});
+
+void test("findChapterByStateKey：旧状态残留的裸数字键按章号兜底（不比卷）", () => {
+	// 键 "2" 精确匹配不到（清单里只有 v1:2/v2:2）→ 按章号 2 兜底，取阅读序在前的那条
+	assert.equal(findChapterByStateKey(chRows(), "2")?.key, "v1:2");
+});
+
+void test("findChapterByStateKey：带卷前缀的键不会命中他卷同章号；空/非法键＝undefined", () => {
+	assert.equal(findChapterByStateKey([{ key: "v9:3", num: 3, vol: "v9" }], "v1:3"), undefined, "卷域不同＝不误连");
+	assert.equal(findChapterByStateKey(chRows(), ""), undefined);
+	assert.equal(findChapterByStateKey(chRows(), null), undefined);
+	assert.equal(findChapterByStateKey(chRows(), undefined), undefined);
+	assert.equal(findChapterByStateKey(chRows(), "abc"), undefined, "章号 NaN＝未命中");
+	assert.equal(findChapterByStateKey(chRows(), "v1:x"), undefined);
 });

@@ -26,6 +26,12 @@ export interface SceneDoc {
 	parent?: string;
 	/** v0.4.7+ 场景面板：关联场景 scene_id 列表（同角色口径「、」连接）。写盘行 `- 关联：甲、乙`；卡片上渲染成可点 chip */
 	related?: string[];
+	/** v0.4.8+ 地形/地貌区块（场景面板＝地图着色）：写盘行 `- 地形：森林 / 海洋 / 城市 / 秘境`；包含框衬底按内置色板上色，未识别值＝不涂色仍可解析 */
+	terrain?: string;
+	/** v0.4.8+ 自定义区域色：写盘行 `- 颜色：#rrggbb`（优先于地形色板） */
+	color?: string;
+	/** v0.4.8+ 关联路标：`- 关联：甲（官道·三日路程）` → relatedLabels["甲"]＝"官道·三日路程"（连线中点画路标；编辑弹窗只改 id，路标随 id 保留） */
+	relatedLabels?: Record<string, string>;
 }
 
 export interface CharacterDoc {
@@ -383,6 +389,57 @@ export function maxDeclaredVolumeNum(text: string): number {
 
 // ---------- 场景（场景.md，全局或章节内）----------
 
+/** v0.4.8+ 关联条目 `id（路标）` 语法：括号前＝scene_id、括号内＝连线路标标签（全/半角括号均可；标签内不能含顿号/逗号——`- 关联：` 按顿号/逗号切项，建议用「·」分隔）。无括号＝纯 id */
+export function parseSceneRelItem(item: string): { id: string; label?: string } {
+	const m = /^(.+?)[（(]\s*([^）)]+?)\s*[）)]\s*$/.exec(item.trim());
+	if (!m) return { id: item.trim() };
+	const id = m[1].trim();
+	if (!id) return { id: item.trim() };
+	return { id, label: m[2].trim() };
+}
+
+/** v0.4.9+ 联通性说明净化（写盘前统一走一遍）：括号会让 `id（说明）` 解析错位、顿号/逗号会被 `splitList` 拆成两项＝都换成间隔号「·」；换行/连续空白折叠成一个空格，首尾多余的「·」剥掉。
+ *  这样弹窗里随手写的说明（含中英文标点）写出去一定能原样读回。 */
+export function sanitizeSceneRelNote(note: string): string {
+	return String(note ?? "")
+		.replace(/[（）()]/g, "·")
+		.replace(/[、，,]/g, "·")
+		.replace(/\s+/g, " ")
+		.replace(/·{2,}/g, "·")
+		.replace(/^[·\s]+|[·\s]+$/g, "")
+		.trim();
+}
+
+/** v0.4.8+ 关联条目回写（与 parseSceneRelItem 往返）：有路标＝`id（路标）`；v0.4.9+ 说明先经 `sanitizeSceneRelNote` 净化（保证往返） */
+export function formatSceneRelItem(id: string, label?: string): string {
+	const note = sanitizeSceneRelNote(label ?? "");
+	return note ? `${id}（${note}）` : id;
+}
+
+/** v0.4.8+ 关联行序列化（formatScenes/formatSceneBlock/updateSceneBlock 共用）：id 列表＋按 id 保留的路标 */
+function sceneRelLine(related: readonly string[], labels?: Record<string, string>): string {
+	return `- 关联：${joinList(related.map((id) => formatSceneRelItem(id, labels?.[id])))}`;
+}
+
+/** v0.4.8+ 地形色板（`- 地形：` 值→地图区域色）：先精确后「值含键名」匹配；未识别＝不涂色（默认衬底）。事实源在此＝面板着色与编辑弹窗下拉共用 */
+export const SCENE_TERRAIN_COLORS: Record<string, string> = {
+	森林: "#3f9b46", 丛林: "#2e8b57", 草原: "#8ab648", 平原: "#b3a55b", 丘陵: "#7f9b5a",
+	山脉: "#8a6d4b", 沙漠: "#d2a24c", 雪原: "#5fb2d6", 沼泽: "#5f8f6e", 海洋: "#2f7fd1",
+	湖泊: "#4aa6c9", 岛屿: "#2f9e8f", 城市: "#c07a3a", 秘境: "#9a5cc7", 火山: "#c2554a",
+	峡谷: "#a5773c", 高原: "#a08a63",
+};
+
+/** v0.4.8+ 场景区域色＝`- 颜色：#hex`（合法时优先）→ `- 地形：` 查色板（精确→包含）→ undefined＝默认衬底 */
+export function sceneTerrainColor(row: { terrain?: string; color?: string }): string | undefined {
+	const c = (row.color ?? "").trim();
+	if (/^#[0-9a-fA-F]{3,8}$/.test(c)) return c;
+	const t = (row.terrain ?? "").trim();
+	if (!t) return undefined;
+	const exact = SCENE_TERRAIN_COLORS[t];
+	if (exact) return exact;
+	return Object.entries(SCENE_TERRAIN_COLORS).find(([k]) => t.includes(k))?.[1];
+}
+
 export function parseScenes(text: string, defaultChapter: number): Record<string, SceneDoc> {
 	const result: Record<string, SceneDoc> = {};
 	for (const block of h2Blocks(stripComments(text))) {
@@ -391,9 +448,13 @@ export function parseScenes(text: string, defaultChapter: number): Record<string
 		if (!sid) continue;
 		const scene: SceneDoc = { scene_id: sid, chapter_num: defaultChapter, characters: [] };
 		const contentParts: string[] = [];
+		const descParts: string[] = []; // v0.4.8+ 多行描述：`- 描述：首行`＋两空格缩进续行（面板写回格式）
+		let descContOpen = false;
 		let inFence = false;
 		for (let i = 1; i < lines.length; i++) {
 			const s = lines[i].trim();
+			const cont = descContOpen; // 续行只对「紧接上一条是 描述行或另一续行」的缩进行生效
+			descContOpen = false;
 			if (s.startsWith("```")) {
 				inFence = !inFence;
 				continue;
@@ -409,7 +470,8 @@ export function parseScenes(text: string, defaultChapter: number): Record<string
 			}
 			m = /^-?\s*描述[：:]\s*(.+)$/.exec(s);
 			if (m) {
-				scene.description = m[1].trim();
+				descParts.push(m[1].trim());
+				descContOpen = true;
 				continue;
 			}
 			m = /^-?\s*章节[：:]\s*(\d+)$/.exec(s);
@@ -450,9 +512,37 @@ export function parseScenes(text: string, defaultChapter: number): Record<string
 				scene.parent = m[1].trim();
 				continue;
 			}
-			m = /^-?\s*关联[：:]\s*(.+)$/.exec(s); // v0.4.7+ 关联场景（同角色口径、列表）
-			if (m) scene.related = splitList(m[1]);
+			m = /^-?\s*关联[：:]\s*(.+)$/.exec(s); // v0.4.7+ 关联场景（同角色口径、列表）；v0.4.8+ 支持 `id（路标）` 带标签项
+			if (m) {
+				const ids: string[] = [];
+				const labels: Record<string, string> = {};
+				for (const raw of splitList(m[1])) {
+					const it = parseSceneRelItem(raw);
+					if (!it.id) continue;
+					if (!ids.includes(it.id)) ids.push(it.id);
+					if (it.label) labels[it.id] = it.label;
+				}
+				scene.related = ids;
+				if (Object.keys(labels).length) scene.relatedLabels = labels;
+				continue;
+			}
+			m = /^-?\s*地形[：:]\s*(.+)$/.exec(s); // v0.4.8+ 地形/地貌区块（包含框衬底着色）
+			if (m) {
+				scene.terrain = m[1].trim();
+				continue;
+			}
+			m = /^-?\s*颜色[：:]\s*(.+)$/.exec(s); // v0.4.8+ 自定义区域色（#hex，优先于地形色板）
+			if (m) {
+				const c = m[1].trim();
+				if (/^#[0-9a-fA-F]{3,8}$/.test(c)) scene.color = c;
+				continue;
+			}
+			if (cont && /^[ \t]{2,}\S/.test(lines[i])) { // v0.4.8+ 描述续行（缩进≥2、非字段/围栏/正文标签行）
+				descParts.push(s);
+				descContOpen = true;
+			}
 		}
+		if (descParts.length) scene.description = descParts.join("\n");
 		if (contentParts.length) scene.content = contentParts.join("\n").trim();
 		result[sid] = scene;
 	}
@@ -463,13 +553,15 @@ export function formatScenes(heading: string, scenes: Record<string, SceneDoc>):
 	const lines = [`# ${heading} 场景`, ""];
 	for (const scene of Object.values(scenes).sort((a, b) => a.scene_id.localeCompare(b.scene_id))) {
 		lines.push(`## ${scene.scene_id}`);
-		if (scene.description) lines.push(`- 描述：${scene.description}`);
+		if (scene.description) lines.push(...sceneDescLines(scene.description)); // v0.4.8+ 多行描述（缩进续行）
 		if (scene.chapter_num) lines.push(`- 章节：${scene.chapter_num}`);
 		if (scene.characters.length) lines.push(`- 角色：${joinList(scene.characters)}`);
 		if (scene.notes) lines.push(`- 备注：${scene.notes}`);
 		if (scene.x != null && scene.y != null) lines.push(`- 位置：${String(scene.x)},${String(scene.y)}`); // v0.4.7+ 场景面板画布坐标
 		if (scene.parent) lines.push(`- 父场景：${scene.parent}`); // v0.4.7+ 大场景包含小场景
-		if (scene.related?.length) lines.push(`- 关联：${joinList(scene.related)}`); // v0.4.7+ 关联场景
+		if (scene.terrain) lines.push(`- 地形：${scene.terrain}`); // v0.4.8+ 地图着色（地形/地貌区块）
+		if (scene.color) lines.push(`- 颜色：${scene.color}`);
+		if (scene.related?.length) lines.push(sceneRelLine(scene.related, scene.relatedLabels)); // v0.4.7+ 关联场景
 		if (scene.created_at) lines.push(`- 创建：${scene.created_at}`);
 		if (scene.updated_at) lines.push(`- 更新：${scene.updated_at}`);
 		if (scene.content) lines.push("", "正文：", "```text", scene.content, "```");
@@ -491,6 +583,9 @@ export interface SceneBlockEdit {
 	notes?: string;
 	parent?: string; // 空串＝删除 `- 父场景：` 行（升为顶层）
 	related?: string[]; // v0.4.7+ 关联场景 id 列表（空数组＝删除 `- 关联：` 行）
+	/** v0.4.9+ 关联项的**联通性说明**（id→说明，写盘＝`id（说明）`）：列出的 id 覆盖旧说明（空串＝清掉该行说明）、未列出的 id 沿用原说明；undefined＝整批不动 */
+	relatedNotes?: Record<string, string>;
+	terrain?: string; // v0.4.8+ 地形（弹窗下拉选择；空串＝删除 `- 地形：` 行；undefined＝未触碰原样保留）
 	content?: string; // 多行正文（```text 围栏）
 }
 
@@ -517,17 +612,19 @@ function findSceneBlockLines(text: string, sceneId: string): { start: number; en
 	return null;
 }
 
-/** 场景条目序列化为文档块（与 parseScenes 往返一致）：字段顺序＝标题/描述/章节/角色/备注/位置/父场景/创建/更新＋正文围栏（`正文：`＋```text）。块尾带空行 */
+/** 场景条目序列化为文档块（与 parseScenes 往返一致）：字段顺序＝标题/描述/章节/角色/备注/位置/父场景/地形/颜色/关联/创建/更新＋正文围栏（`正文：`＋```text）。块尾带空行 */
 export function formatSceneBlock(s: SceneBlockInput): string {
 	const lines = [`## ${s.scene_id}`];
 	if (s.title?.trim()) lines.push(`- 标题：${s.title.trim()}`);
-	if (s.description) lines.push(`- 描述：${s.description}`);
+	if (s.description) lines.push(...sceneDescLines(s.description)); // v0.4.8+ 多行描述（缩进续行）
 	if (s.chapter_num) lines.push(`- 章节：${String(s.chapter_num)}`);
 	if (s.characters.length) lines.push(`- 角色：${joinList(s.characters)}`);
 	if (s.notes) lines.push(`- 备注：${s.notes}`);
 	if (s.x != null && s.y != null) lines.push(`- 位置：${String(s.x)},${String(s.y)}`);
 	if (s.parent) lines.push(`- 父场景：${s.parent}`);
-	if (s.related?.length) lines.push(`- 关联：${joinList(s.related)}`);
+	if (s.terrain) lines.push(`- 地形：${s.terrain}`); // v0.4.8+ 地图着色字段（与 parseScenes 往返）
+	if (s.color) lines.push(`- 颜色：${s.color}`);
+	if (s.related?.length) lines.push(sceneRelLine(s.related, s.relatedLabels));
 	if (s.created_at) lines.push(`- 创建：${s.created_at}`);
 	if (s.updated_at) lines.push(`- 更新：${s.updated_at}`);
 	if (s.content) lines.push("", "正文：", "```text", s.content.replace(/\s+$/, ""), "```");
@@ -545,7 +642,15 @@ export function insertSceneBlock(text: string, scene: SceneBlockInput): string |
 }
 
 /** 字段行识别（编辑写回时用于区分「保留的自由/未知行」；正文围栏整体保留或整体替换） */
-const SCENE_FIELD_LINE_RE = /^\s*-?\s*(标题|描述|章节|角色|备注|位置|父场景|关联|创建|更新)\s*[：:]/;
+const SCENE_FIELD_LINE_RE = /^\s*-?\s*(标题|描述|章节|角色|备注|位置|父场景|地形|颜色|关联|创建|更新)\s*[：:]/;
+
+/** v0.4.8+ 多行描述字段序列化＝`- 描述：首行`＋两空格缩进续行（与 parseScenes 续行口径互逆）；返回行数组，调用方逐行 push。空值返回 [] */
+function sceneDescLines(value: string): string[] {
+	const norm = String(value).replace(/\r\n?/g, "\n").replace(/[ \t]+$/gm, "").replace(/^\n+/, "").replace(/\s+$/, "");
+	if (!norm) return [];
+	const ls = norm.split("\n");
+	return [`- 描述：${ls[0]}`, ...ls.slice(1).map((l) => `  ${l}`)];
+}
 
 /** 编辑更新《场景.md》中的场景块：edit 中 undefined 的字段保留原行（含创建/更新/章节与未识别的自由行、围栏外自由文本），给出的字段整行重写（空值＝删除该字段行）；正文围栏按 edit.content 整段替换/删除/保留。定位失败返回 null（＝文档已被外部改动，调用方提示刷新） */
 export function updateSceneBlock(text: string, sceneId: string, edit: SceneBlockEdit): string | null {
@@ -558,26 +663,56 @@ export function updateSceneBlock(text: string, sceneId: string, edit: SceneBlock
 	let fenceHandled = false;
 	const seenKeys = new Set<string>();
 	const pending: string[] = []; // 原文缺该行但编辑给出了值＝补写（插在正文围栏前）
-	const wanted: Array<[string, string | null | undefined]> = [
-		["标题", edit.title === undefined ? undefined : edit.title.trim() ? `- 标题：${edit.title.trim()}` : null],
-		["描述", edit.description === undefined ? undefined : edit.description.trim() ? `- 描述：${edit.description.trim()}` : null],
-		["角色", edit.characters === undefined ? undefined : edit.characters.length ? `- 角色：${joinList(edit.characters)}` : null],
-		["备注", edit.notes === undefined ? undefined : edit.notes.trim() ? `- 备注：${edit.notes.trim()}` : null],
-		["父场景", edit.parent === undefined ? undefined : edit.parent.trim() ? `- 父场景：${edit.parent.trim()}` : null],
-		["关联", edit.related === undefined ? undefined : edit.related.length ? `- 关联：${joinList(edit.related)}` : null],
+	// v0.4.8+ 预扫描旧块的 `- 关联：` 路标（弹窗多选只交 id 列表——重写关联时按 id 找回原路标，地图标签不丢）
+	const oldRelLabels: Record<string, string> = {};
+	{
+		const mL = maskCommentSpans(text).split("\n");
+		let inF0 = false;
+		for (let i = loc.start + 1; i < loc.end; i++) {
+			if (/^\s*```/.test(lines[i])) { inF0 = !inF0; continue; }
+			if (inF0) continue;
+			const rm = /^\s*-?\s*关联\s*[：:]\s*(.+)$/.exec(mL[i]);
+			if (!rm) continue;
+			for (const raw of splitList(rm[1])) {
+				const it = parseSceneRelItem(raw);
+				if (it.id && it.label) oldRelLabels[it.id] = it.label;
+			}
+			break;
+		}
+	}
+	// v0.4.9+ 弹窗交来的联通性说明＝覆盖口径：给出的 id 有非空说明＝写入（经 formatSceneRelItem 净化）、说明为空串＝清掉该 id 原说明、未列出的 id 沿用原说明（＝弹窗只改 id 时地图标注不丢）
+	const relLines = (ids: string[]): string[] => {
+		const labels: Record<string, string> = { ...oldRelLabels };
+		if (edit.relatedNotes) {
+			for (const [id, note] of Object.entries(edit.relatedNotes)) {
+				if (note.trim()) labels[id] = note.trim();
+				else delete labels[id];
+			}
+		}
+		return [sceneRelLine(ids, labels)];
+	};
+	const wanted: Array<[string, string[] | null | undefined]> = [ // 值＝行数组（描述可多行＝首行＋缩进续行）；null＝删除该字段行；undefined＝未触碰
+		["标题", edit.title === undefined ? undefined : edit.title.trim() ? [`- 标题：${edit.title.trim()}`] : null],
+		["描述", edit.description === undefined ? undefined : sceneDescLines(edit.description)],
+		["角色", edit.characters === undefined ? undefined : edit.characters.length ? [`- 角色：${joinList(edit.characters)}`] : null],
+		["备注", edit.notes === undefined ? undefined : edit.notes.trim() ? [`- 备注：${edit.notes.trim()}`] : null],
+		["父场景", edit.parent === undefined ? undefined : edit.parent.trim() ? [`- 父场景：${edit.parent.trim()}`] : null],
+		["地形", edit.terrain === undefined ? undefined : edit.terrain.trim() ? [`- 地形：${edit.terrain.trim()}`] : null],
+		["关联", edit.related === undefined ? undefined : edit.related.length ? relLines(edit.related) : null],
 	];
 	let pendingFlushed = false;
 	const flushPending = (): void => {
 		if (pendingFlushed) return;
 		pendingFlushed = true;
-		for (const [key, line] of wanted) {
-			if (seenKeys.has(key) || line === undefined || line === null) continue;
-			pending.push(line);
+		for (const [key, ls] of wanted) {
+			if (seenKeys.has(key) || ls == null || ls.length === 0) continue;
+			pending.push(...ls);
 			seenKeys.add(key);
 		}
 		out.push(...pending);
 	};
 	let labelSeen = false; // 块内「正文：」标签行（围栏的引导行）：捕获后不直接回写，由本函数统一重排
+	let skipDescCont = false; // v0.4.8+ 描述被重写＝紧随其后的旧缩进续行一并吞掉（与 parseScenes 续行口径一致）
 	const emitContent = (): void => {
 		flushPending(); // 补写的字段行排在正文围栏前
 		if (edit.content === undefined) {
@@ -591,28 +726,33 @@ export function updateSceneBlock(text: string, sceneId: string, edit: SceneBlock
 	for (let i = loc.start + 1; i < loc.end; i++) {
 		const line = lines[i];
 		if (/^\s*```/.test(line)) {
+			skipDescCont = false; // 围栏行中断描述续行链
 			if (!inFence) { inFence = true; fenceBuf = [line]; }
 			else { fenceBuf.push(line); inFence = false; emitContent(); fenceHandled = true; } // 收尾 ``` 也入缓冲（未触碰时原围栏须原样）
 			continue;
 		}
 		if (inFence) { fenceBuf.push(line); continue; }
+		if (skipDescCont && /^[ \t]{2,}\S/.test(line) && !SCENE_FIELD_LINE_RE.test(line)) continue; // 旧描述的续行（随描述重写一并删除；缩进字段行不算续行＝与 parseScenes 口径一致）
+		skipDescCont = false;
 		if (!inFence && !line.trim() && /^正文\s*[：:]\s*$/.test(line.trim())) { labelSeen = true; continue; } // 「正文：」标签行由 emitContent 统一回排
 		const fm = SCENE_FIELD_LINE_RE.test(line);
 		if (!fm) { if (!line.trim() && !fenceHandled) continue; out.push(line); continue; } // 围栏前空行由正文段自带，防重复；围栏后自由文本行原样
 		const key = (/^\s*-?\s*(\S+?)\s*[：:]/.exec(line) ?? [])[1] ?? "";
 		seenKeys.add(key);
-		const written = (() => {
+		if (key === "描述" && edit.description !== undefined) skipDescCont = true;
+		const written: string[] | null = (() => {
 			switch (key) {
-				case "标题": return edit.title === undefined ? line : edit.title.trim() ? `- 标题：${edit.title.trim()}` : null;
-				case "描述": return edit.description === undefined ? line : edit.description.trim() ? `- 描述：${edit.description.trim()}` : null;
-				case "角色": return edit.characters === undefined ? line : edit.characters.length ? `- 角色：${joinList(edit.characters)}` : null;
-				case "备注": return edit.notes === undefined ? line : edit.notes.trim() ? `- 备注：${edit.notes.trim()}` : null;
-				case "父场景": return edit.parent === undefined ? line : edit.parent.trim() ? `- 父场景：${edit.parent.trim()}` : null;
-				case "关联": return edit.related === undefined ? line : edit.related.length ? `- 关联：${joinList(edit.related)}` : null;
-				default: return line; // 标题/章节/位置/创建/更新＝面板不编辑、原样保留（显示名输入已删——场景名即显示名）
+				case "标题": return edit.title === undefined ? [line] : edit.title.trim() ? [`- 标题：${edit.title.trim()}`] : null;
+				case "描述": return edit.description === undefined ? [line] : sceneDescLines(edit.description);
+				case "角色": return edit.characters === undefined ? [line] : edit.characters.length ? [`- 角色：${joinList(edit.characters)}`] : null;
+				case "备注": return edit.notes === undefined ? [line] : edit.notes.trim() ? [`- 备注：${edit.notes.trim()}`] : null;
+				case "父场景": return edit.parent === undefined ? [line] : edit.parent.trim() ? [`- 父场景：${edit.parent.trim()}`] : null;
+				case "地形": return edit.terrain === undefined ? [line] : edit.terrain.trim() ? [`- 地形：${edit.terrain.trim()}`] : null; // v0.4.8+ 弹窗下拉可改（空串＝删行）
+				case "关联": return edit.related === undefined ? [line] : edit.related.length ? relLines(edit.related) : null;
+				default: return [line]; // 标题/章节/位置/地形/颜色/创建/更新＝面板不编辑、原样保留（显示名输入已删——场景名即显示名）
 			}
 		})();
-		if (written !== null) out.push(written);
+		if (written !== null) out.push(...written);
 	}
 	if (inFence) { emitContent(); } // 围栏未闭合（原文残缺）＝按已读内容处理
 	if (!pendingFlushed) flushPending(); // 块内没有围栏时补写行直接落字段区尾
@@ -668,6 +808,54 @@ export function rewriteScenePosition(text: string, sceneId: string, expectOld: {
 		lines.splice(insertAt, 0, posLine);
 	}
 	return lines.join("\n");
+}
+
+/** 同步《场景.md》内对旧场景名的引用（改名收尾）：非围栏行里 `- 父场景：<old>` → `<new>`、`- 关联：…` 列表项 `<old>` → `<new>`（列表去重：new 已存在时只删旧项）。注释区经掩码不参与、围栏内不改动。无任何引用可改时原样返回（调用方可据此跳过写盘） */
+export function renameSceneRefs(text: string, oldId: string, newId: string): string {
+	const old = oldId.trim();
+	const nw = newId.trim();
+	if (!old || !nw || old === nw) return text;
+	const mLines = maskCommentSpans(text).split("\n");
+	const lines = text.split("\n");
+	const parentRe = /^(\s*-?\s*父场景\s*[：:]\s*)(.+)$/;
+	const relRe = /^(\s*-?\s*关联\s*[：:]\s*)(.+)$/;
+	let inFence = false;
+	for (let i = 0; i < lines.length; i++) {
+		if (/^\s*```/.test(lines[i])) { inFence = !inFence; continue; }
+		if (inFence) continue;
+		const m = parentRe.exec(mLines[i]);
+		if (m && m[2].trim() === old) {
+			lines[i] = lines[i].replace(parentRe, (all, p1: string) => p1 + nw);
+			continue;
+		}
+		const r = relRe.exec(mLines[i]);
+		if (!r) continue;
+		const items = splitList(r[2]).map(parseSceneRelItem); // v0.4.8+ 项可带 `（路标）`——比对/映射只看 id，路标原样跟着走
+		if (!items.some((it) => it.id === old)) continue;
+		const mapped: Array<{ id: string; label?: string }> = [];
+		for (const it of items) {
+			const id = it.id === old ? nw : it.id;
+			if (!mapped.some((o) => o.id === id)) mapped.push({ id, label: it.label });
+		}
+		lines[i] = lines[i].replace(relRe, (all, p1: string) => p1 + joinList(mapped.map((o) => formatSceneRelItem(o.id, o.label))));
+	}
+	return lines.join("\n");
+}
+
+/** 改场景名（＝`## <oldId>` 块锚改名）：标题行改 `## <newId>`、块内 `- 标题：` 恰等于旧名时同步（旧文档「标题＝场景名」写法显示名跟着走）、全文档引用同步（renameSceneRefs，同文档引用同文档优先必指向本块）。newId 空/含非法字符、旧块找不到（文档已变）、newId 在同文档已有块（块锚冲突）→ null（调用方拒绝并提示） */
+export function renameSceneBlock(text: string, oldId: string, newId: string): string | null {
+	const old = oldId.trim();
+	const nw = newId.trim();
+	if (!old || !nw || old === nw || /[\\/:*?"<>|]/.test(nw)) return null;
+	const loc = findSceneBlockLines(text, old);
+	if (!loc) return null;
+	if (findSceneBlockLines(text, nw)) return null; // 同文档已有同名块＝块锚冲突
+	const lines = text.split("\n");
+	lines[loc.start] = `## ${nw}`; // 标题行规范化重写（原行可能有尾随空白）
+	const titleRe = /^(\s*-?\s*标题\s*[：:]\s*)(.+)$/;
+	const mTitle = titleRe.exec(lines[loc.start + 1]); // `- 标题：` 行按惯例紧随标题；仅其值恰等于旧名时同步
+	if (mTitle && mTitle[2].trim() === old) lines[loc.start + 1] = mTitle[1] + nw;
+	return renameSceneRefs(lines.join("\n"), old, nw);
 }
 
 // ---------- 人物（人物.md，全局或章节内）----------
@@ -1445,6 +1633,28 @@ export function timelineLaneOf(name: string, prefixes: string[] = []): string {
 	if (base === "时间线") return "默认";
 	if (base.startsWith("时间线-")) return base.slice("时间线-".length) || "默认";
 	return "默认";
+}
+
+/** v0.4.9+ **层级词**默认口径（＝场景面板／时间线面板的「级别」行与级别下拉前缀）：book＝书级／volume＝卷级／chapter＝章级。
+ *  个别面板用别的词（人物关系面板＝书籍级／卷级／章级）＝调 `docLocationLabel` 时传自己的 `words`，三个面板共用同一套拼法（代码重用） */
+export const DOC_SCOPE_WORDS: Record<"book" | "volume" | "chapter", string> = { book: "书级", volume: "卷级", chapter: "章级" };
+
+/** 文档的**书内相对路径**（＝「级别」行与级别下拉里显示的位置，用户要求＝从书籍目录起算、不带仓库里的《工作目录/<书名>/》前缀）：
+ *  `bookDir` 空或路径不在该书目录下＝原样返回（异常/全局文档不吞路径） */
+export function docRelPath(path: string, bookDir: string): string {
+	if (!bookDir) return path;
+	return path.startsWith(`${bookDir}/`) ? path.slice(bookDir.length + 1) : path;
+}
+
+/** 某个文档/条目（事件、场景、人物、关系…）**所在位置**文案＝`层级词 · 书内路径`（场景/时间线/人物关系三个面板的「级别」行同一口径；
+ *  卷名/章名/泳道名本就在路径的目录名与文件名里）；`words`＝该面板的层级词，默认 `DOC_SCOPE_WORDS`（书级／卷级／章级） */
+export function docLocationLabel(
+	scope: "book" | "volume" | "chapter",
+	path: string,
+	bookDir: string,
+	words: Record<"book" | "volume" | "chapter", string> = DOC_SCOPE_WORDS,
+): string {
+	return `${words[scope]} · ${docRelPath(path, bookDir)}`;
 }
 
 export function stripTitleLine(text: string): [string, string] {

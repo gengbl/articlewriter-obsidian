@@ -8,6 +8,8 @@ import {
 	formatSceneBlock,
 	insertSceneBlock,
 	parseScenes,
+	renameSceneBlock,
+	renameSceneRefs,
 	rewriteScenePosition,
 	updateSceneBlock,
 	type SceneBlockInput,
@@ -175,4 +177,107 @@ void test("关联场景（v0.4.7+）：解析为列表、formatSceneBlock 往返
 	assert.ok(keep && keep.includes("- 关联：B、C"), "未触碰 related＝原行保留");
 	const ins = updateSceneBlock("## A\n- 描述：d\n", "A", { related: ["B", "C"] });
 	assert.ok(ins && ins.includes("- 关联：B、C"), "原文缺该行＝补写");
+});
+
+void test("renameSceneBlock（v0.4.8+）：换块锚＋同文档引用/等值标题行同步", () => {
+	const src = `# 场景\n\n## 旧名\n- 标题：旧名\n- 描述：d\n- 位置：1,2\n\n## 子甲\n- 父场景：旧名\n\n## 丙\n- 关联：旧名、别的\n\n## 丁\n- 关联：别的\n\`\`\`text\n正文里也写 旧名 不改\n\`\`\`\n\n<!-- 注释里的 ## 旧名 与 - 关联：旧名 都不改 -->\n`;
+	const out = renameSceneBlock(src, "旧名", "新名");
+	assert.ok(out, "改名成功");
+	assert.ok(out.includes("## 新名"), "块锚换名");
+	assert.ok(!out.includes("## 旧名\n"), "旧块锚标题行不再存在（注释区里的旧名不算）");
+	assert.ok(out.includes("- 标题：新名"), "等值标题行同步");
+	assert.ok(out.includes("- 父场景：新名"), "同文档子场景引用同步");
+	assert.ok(out.includes("- 关联：新名、别的"), "关联列表项同步");
+	assert.ok(out.includes("正文里也写 旧名 不改"), "围栏内不改动");
+	assert.ok(out.includes("注释里的 ## 旧名"), "注释区不改动");
+	assert.ok(out.includes("- 位置：1,2"), "其余字段保留");
+	const parsed = parseScenes(out, 0);
+	assert.equal(parsed["子甲"].parent, "新名");
+	assert.deepEqual(parsed["丙"].related, ["新名", "别的"]);
+	assert.equal(parsed["旧名"], undefined);
+	// 拒绝路径
+	assert.equal(renameSceneBlock(src, "旧名", "子甲"), null, "目标名在同文档已有块＝冲突拒绝");
+	assert.equal(renameSceneBlock(src, "旧名", "非/法"), null, "非法字符拒绝");
+	assert.equal(renameSceneBlock(src, "旧名", "旧名"), null, "同名＝noop 拒绝");
+	assert.equal(renameSceneBlock(src, "不存在", "新名"), null, "旧块找不到（快照过期）拒绝");
+});
+
+void test("renameSceneRefs（v0.4.8+）：跨文档引用同步＋去重＋无引用原样返回", () => {
+	const src = `# 场景\n\n## 甲\n- 父场景：旧名\n\n## 乙\n- 关联：旧名、新名\n\n## 无引用\n- 描述：x\n`;
+	const out = renameSceneRefs(src, "旧名", "新名");
+	assert.ok(out.includes("- 父场景：新名"), "父场景引用同步");
+	assert.ok(out.includes("- 关联：新名"), "关联去重（新名已有＝只删旧项）");
+	assert.ok(!out.includes("旧名"), "旧名全部替换");
+	const same = renameSceneRefs(src, "不存在的引用", "新名");
+	assert.equal(same, src, "无引用可改＝原样返回");
+});
+
+void test("多行描述（v0.4.8+）：解析续行、updateSceneBlock 重写吞旧续行、序列化往返", () => {
+	const src = `# 场景\n\n## 甲\n- 描述：第一行\n  第二行\n  第三行\n- 角色：张三\n\n## 乙\n- 描述：单行\n  续行\n- 位置：1,2\n`;
+	const parsed = parseScenes(src, 0);
+	assert.equal(parsed["甲"].description, "第一行\n第二行\n第三行", "两空格缩进续行归入描述");
+	const upd = updateSceneBlock(src, "甲", { description: "新首行\n新次行" });
+	assert.ok(upd);
+	const back = parseScenes(upd, 0)["甲"];
+	assert.equal(back.description, "新首行\n新次行", "重写后旧续行不残留");
+	assert.ok(!upd.includes("第二行"), "旧续行被吞");
+	assert.ok(upd.includes("  新次行"), "续行两空格缩进写出");
+	assert.deepEqual(back.characters, ["张三"], "其余字段保留");
+	const del = updateSceneBlock(src, "乙", { description: "" });
+	assert.ok(del && !del.includes("- 描述：单行") && !del.includes("续行"), "空描述＝删描述行及续行");
+	assert.ok(del && del.includes("- 位置：1,2"), "删描述不动其它字段");
+	const out = formatSceneBlock({ scene_id: "丙", chapter_num: 0, characters: [], description: "A\nB" });
+	assert.ok(out.includes("- 描述：A\n  B"), "formatSceneBlock 多行序列化");
+	assert.equal(parseScenes(out, 0)["丙"].description, "A\nB", "往返一致");
+});
+
+void test("地形/颜色（v0.4.8+）：解析、非法色忽略、序列化往返、update 未触碰保留", () => {
+	const src = `# 场景\n\n## 甲\n- 地形：森林\n- 颜色：#22aa33\n- 描述：x\n\n## 乙\n- 颜色：#xyz\n- 地形：未知地貌\n`;
+	const parsed = parseScenes(src, 0);
+	assert.equal(parsed["甲"].terrain, "森林");
+	assert.equal(parsed["甲"].color, "#22aa33");
+	assert.equal(parsed["乙"].color, undefined, "非法 #hex 不写入");
+	assert.equal(parsed["乙"].terrain, "未知地貌", "未识别地形值仍可解析");
+	const fmt = formatSceneBlock({ scene_id: "丙", chapter_num: 0, characters: [], terrain: "海洋", color: "#123456" });
+	assert.ok(fmt.includes("- 地形：海洋") && fmt.includes("- 颜色：#123456"), "序列化写出两字段");
+	assert.equal(parseScenes(fmt, 0)["丙"].color, "#123456", "往返一致");
+	const upd = updateSceneBlock(src, "甲", { description: "y" });
+	assert.ok(upd && upd.includes("- 地形：森林") && upd.includes("- 颜色：#22aa33"), "弹窗不编辑＝地形/颜色行原样保留");
+	const setT = updateSceneBlock(src, "甲", { terrain: "海洋" });
+	assert.ok(setT && setT.includes("- 地形：海洋") && !setT.includes("- 地形：森林"), "弹窗下拉改地形＝原位重写该行");
+	const delT = updateSceneBlock(src, "甲", { terrain: "" });
+	assert.ok(delT && !delT.includes("- 地形：森林") && delT.includes("- 颜色：#22aa33"), "空串＝删地形行、颜色行不动");
+	const addT = updateSceneBlock(src.replace("- 地形：未知地貌\n", ""), "乙", { terrain: "城市" });
+	assert.ok(addT && addT.includes("- 地形：城市"), "原文缺地形行＝补写");
+});
+
+void test("关联路标（v0.4.8+）：`id（路标）` 解析与往返、update 重写按 id 保留路标、rename 路标随项走", () => {
+	const src = `# 场景\n\n## 甲\n- 关联：黑风寨（官道·三日路程）、峡谷（传送阵）\n\n## 乙\n`;
+	const parsed = parseScenes(src, 0);
+	assert.deepEqual(parsed["甲"].related, ["黑风寨", "峡谷"], "related 只存 id");
+	assert.equal(parsed["甲"].relatedLabels?.["黑风寨"], "官道·三日路程");
+	assert.equal(parsed["甲"].relatedLabels?.["峡谷"], "传送阵");
+	const fmt = formatSceneBlock({ scene_id: "甲", chapter_num: 0, characters: [], related: ["黑风寨", "峡谷"], relatedLabels: { "峡谷": "传送阵" } });
+	assert.ok(fmt.includes("- 关联：黑风寨、峡谷（传送阵）"), "无路标的项不加括号");
+	const upd = updateSceneBlock(src, "甲", { related: ["峡谷", "乙"] });
+	assert.ok(upd && upd.includes("- 关联：峡谷（传送阵）、乙"), "重写关联按 id 找回原路标；新增项无路标");
+	const ren = renameSceneRefs(src, "黑风寨", "黑风岭");
+	assert.ok(ren.includes("- 关联：黑风岭（官道·三日路程）、峡谷（传送阵）"), "改名只换 id、路标原样保留");
+});
+
+void test("联通性说明（v0.4.9+）：relatedNotes 按行覆盖/清空、未列出的 id 沿用原说明、说明里的括号与顿号写盘前净化保证往返", () => {
+	const src = `# 场景\n\n## 甲\n- 关联：黑风寨（官道·三日路程）、峡谷\n\n## 乙\n`;
+	const upd = updateSceneBlock(src, "甲", {
+		related: ["黑风寨", "峡谷", "乙"],
+		relatedNotes: { "黑风寨": "山间小径，半日", "峡谷": "传送阵（当日可达）", "乙": "" },
+	});
+	assert.ok(upd);
+	assert.ok(upd.includes("- 关联：黑风寨（山间小径·半日）、峡谷（传送阵·当日可达）、乙"), "逗号/括号被换成「·」＝不会被 splitList 拆项、括号不会错位");
+	const reParsed = parseScenes(upd, 0);
+	assert.equal(reParsed["甲"].relatedLabels?.["峡谷"], "传送阵·当日可达", "写出去能原样读回");
+	assert.deepEqual(reParsed["甲"].related, ["黑风寨", "峡谷", "乙"]);
+	const cleared = updateSceneBlock(src, "甲", { related: ["黑风寨", "峡谷"], relatedNotes: { "黑风寨": "" } });
+	assert.ok(cleared && cleared.includes("- 关联：黑风寨、峡谷"), "说明留空＝清掉该行括号说明");
+	const untouched = updateSceneBlock(src, "甲", { description: "换段描述" });
+	assert.ok(untouched && untouched.includes("- 关联：黑风寨（官道·三日路程）、峡谷"), "不提交关联＝原说明原样保留");
 });

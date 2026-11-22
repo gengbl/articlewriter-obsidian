@@ -43,6 +43,20 @@ export function parseChKey(key: string): { vol: string | null; num: number } {
 	return { vol: key.slice(0, i), num: parseInt(key.slice(i + 1), 10) };
 }
 
+/** v0.4.9+ 用《故事状态.md》的 `current_chapter` 在章节清单里定位那一章（泛型＝任何带 key/num/vol 的章节条目，如 `manager.listChapters` 结果）：
+ *  ① 先按复合键精确命中；② 未命中再按 `parseChKey` 拆出的章号兜底——**裸数字键**（旧状态残留）只比章号，
+ *  **带卷前缀的键还要求同卷**（他卷的同章号不会误命中）。空键/非法章号（NaN）＝`undefined`。
+ *  调用方＝「新建场景 · 级别」候选解析（`main.ts:sceneScopeChoices`）：当前激活章决定「章级」候选与其《场景.md》落点。 */
+export function findChapterByStateKey<T extends { key: string; num: number; vol?: string }>(chapters: readonly T[], stateKey: string | null | undefined): T | undefined {
+	const k = String(stateKey ?? "").trim();
+	if (!k) return undefined;
+	const exact = chapters.find((c) => c.key === k);
+	if (exact) return exact;
+	const { vol, num } = parseChKey(k);
+	if (!Number.isFinite(num)) return undefined;
+	return chapters.find((c) => c.num === num && (vol == null || c.vol === vol));
+}
+
 export interface StoryState {
 	version: 2;
 	title: string;

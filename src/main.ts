@@ -1,18 +1,18 @@
 import { App, Notice, Platform, Plugin, PluginSettingTab, TAbstractFile, TFile, TFolder, View, WorkspaceLeaf, WorkspaceSidedock, type Editor, type MarkdownFileInfo, type MarkdownView, type SettingDefinitionItem } from "obsidian";
-import { ActionItem, ActionMenuModal, AddCharacterModal, AwGuideModal, AwModal, AutoBookConfigInput, AutoBookConfigModal, AutoBookInput, AutoBookModal, BookSkillPhaseModal, ChapterListModal, ConfirmModal, ExportPromptsSelectModal, FixRefsReviewModal, FolderPickerModal, InspirationKitModal, MultiFieldModal, NewFilePickerModal, NewStoryInput, NewStoryModal, PanelLine, SaveReplyModal, SceneEditModal, SkillEditModal, SkillPickerModal, SkillRangeModal, StoryMetaModal, StoryMetaInput, StoryPickerModal, TextAreaPrompt, TextPanelModal, TextInputModal, VaultFilePickerModal, VolumeBatchCreateModal, ensureParentFolders } from "./modals";
-import type { AddCharacterResult, CharacterScopeOption, SaveReplyResult, SkillEditResult, SkillLevel } from "./modals";
+import { ActionItem, ActionMenuModal, AddCharacterModal, AwGuideModal, AwModal, AutoBookConfigInput, AutoBookConfigModal, AutoBookInput, AutoBookModal, BookSkillPhaseModal, ChapterListModal, CharacterEditModal, ConfirmModal, ExportPromptsSelectModal, FixRefsReviewModal, FolderPickerModal, InspirationKitModal, MultiFieldModal, NewFilePickerModal, NewStoryInput, NewStoryModal, PanelLine, SaveReplyModal, SceneEditModal, type SceneEditResult, type SceneRelEdit, SkillEditModal, SkillPickerModal, SkillRangeModal, StoryMetaModal, StoryMetaInput, StoryPickerModal, TextAreaPrompt, TextPanelModal, TextInputModal, VaultFilePickerModal, VolumeBatchCreateModal, ensureParentFolders } from "./modals";
+import type { AddCharacterResult, CharacterEditResult, CharacterScopeOption, SaveReplyResult, SkillEditResult, SkillLevel } from "./modals";
 import { parseBookSkill, type BookSkillSpec } from "./book_skill"; // v0.4.1+ 旧「案头资料/」建书技能文件解析（仅供一次性迁移；建书配置已并入《故事状态.md》auto_book 块）
 import { LlmChatView } from "./llm_chat_view";
 import { GenProgressView, formatElapsedMs, type WritingStreamSink } from "./gen_progress_view";
 import { StatusView, type StatusAction, type StatusChapterEntry, type StatusDetail, type StatusFileEntry, type StatusFolderEntry, type StatusSnapshot, type StatusStoryEntry, type StatusTyping } from "./status_view";
-import { RelationshipView, type RelCharInfo, type RelGroup, type RelRow, type RelSnapshot, type RelStoryEntry } from "./relationship_view";
-import { TimelineView, type TlLane, type TlRow, type TlSnapshot, type TlStoryEntry } from "./timeline_view"; // v0.3.3+ 合并大事件：面板承担事件增删改，构造第三参＝编辑弹窗人物候选；v0.4.7+ TlLane＝多时间线泳道汇总
+import { RelationshipView, REL_SCOPE_WORDS, type RelCharInfo, type RelGroup, type RelRow, type RelSnapshot, type RelStoryEntry } from "./relationship_view";
+import { TimelineView, type TlDocRef, type TlLane, type TlRow, type TlSnapshot, type TlStoryEntry } from "./timeline_view"; // v0.3.3+ 合并大事件：面板承担事件增删改，构造第三参＝编辑弹窗人物候选；v0.4.7+ TlLane＝多时间线泳道汇总
 import { SceneView, sceneDisplayName, type SceneRow, type SceneSnapshot, type SceneScope, type SceneStoryEntry } from "./scene_view"; // v0.4.7+ 场景面板（卡片画布三层《场景.md》）
 import { MAX_TYPE_DELTA, SEGMENT_MIN_DEFAULT, SEGMENT_MIN_MAX, SEGMENT_MIN_MIN, TYPE_STATS_HEADER, diffStats, liveSegStats, nextSegmentStart, normalizeSegmentMinutes, renderStatsRow, segActiveMs, segNetChars, segmentMs, segmentStartOf, summarizeStatsFile, type TypeSeg } from "./typing_stats"; // v0.4.5+ 打字统计纯计算（段长可配/停顿/表格渲染/文件汇总/窗口活跃时长）；采集与落盘在本文件接线
 import { chapterOutlineTemplate, countPureWords, FORESHADOW_TEMPLATE, formatLocalDateTime, NOTES_TEMPLATE, outlineTemplate, WORLD_TEMPLATE } from "./story_types";
 import { safeFilename } from "./story_types";
 import { StoryManager, NO_VOL_MODE_MSG, CHAPTER_DIR_RE, PROLOGUE_DIR_NAME, DESK_DOCS_DIR_NAME, MANUSCRIPT_DIR_NAME, type WritingDocPaths } from "./story_manager";
-import { BOOK_SKILL_PHASE_KEYS, bookSkillPhaseKey, WORD_RANGE_DEFAULT, autoBookMissing, type AutoBookConfig, type BookSkillPhase, chKey, parseChKey, type StoryState } from "./state_doc";
+import { BOOK_SKILL_PHASE_KEYS, bookSkillPhaseKey, WORD_RANGE_DEFAULT, autoBookMissing, type AutoBookConfig, type BookSkillPhase, chKey, findChapterByStateKey, parseChKey, type StoryState } from "./state_doc"; // v0.4.9+ findChapterByStateKey＝新建场景「级别」候选里定位当前激活章
 import { BANNED_LIST_SKILL_NAME, buildDefaultLlmConf, CHAT_REF_DOC_CATALOG, CHAT_REF_DOC_DEFAULTS, defaultBaseUrlForProvider, filterEnabledLlmConfigs, getVisibleLlmFields, IDENTITY_BOOST_SKILL_PREFIX, isLlmConfigEnabled, LEGACY_WRITING_TASK_SKILL_NAMES, normalizeLlmProvider, PHASE_CHAPTER_OUTLINE, PHASE_OUTLINE, PHASE_PLANNING, PHASE_REF_DOC_CATALOGS, PHASE_REF_DOC_DEFAULTS, PHASE_WORLDVIEW, PHASE_WRITING, REF_DOC_KEY_RENAMES, REF_DOC_LABELS, renameLlmConfig, selectEnabledLlmName, SENSITIVE_LIST_SKILL_NAME, setLlmConfigEnabled, TENSION_TOOLBOX_SKILL_NAME, toggleLlmConfigEnabled, WRITING_PHASE_LABELS, WRITING_TASK_SKILL_NAME } from "./plugin_config";
 import type { LlmConfigDoc, PluginConfig, WritingPhase } from "./plugin_config";
 import { stampUsageDoc, usageDocNeedsRegen, usageDocVersion } from "./usage_doc_stamp";
@@ -29,7 +29,7 @@ import { requirementsFor, stagesFrom, type StageId, type StageRequirement } from
 import { assemblePromptFiles, type AssembledPrompt, type PromptFileReader, type PromptSpec } from "./prompt_files";
 import { detectChatAutoRefs } from "./chat_refs";
 import { parseToolArgs, TOOL_RESULT_MAX_CHARS, CHAT_WRITING_TOOLS, CHAT_GENERATION_TOOLS, resolveToolName, unknownToolHint, pickStringArg, pickNumberArg, normalizeDocName, DOC_NAME_ARG_KEYS, CHAPTER_NUM_ARG_KEYS, VOL_NAME_ARG_KEYS } from "./chat_tools";
-import { cnToNum, deleteSceneBlock, extractPlannedChapterCount, insertSceneBlock, maxDeclaredVolumeNum, mergeVolOutlineChapters, parseChapterSelection, parseRelationships, parseTimelines, parseVolumeDeclarations, rewriteScenePosition, sliceVolOutlineChapters, splitList, splitVolOutlineByChapter, stripComments, stripForeshadowMarks, timelineGenFormatOk, updateSceneBlock, type SceneBlockInput, type TimelineEntry, type VolumeDeclaration, type VolumeInfo } from "./md_docs";
+import { cnToNum, deleteSceneBlock, DOC_SCOPE_WORDS, docLocationLabel, docRelPath, extractPlannedChapterCount, insertSceneBlock, maxDeclaredVolumeNum, mergeVolOutlineChapters, parseChapterSelection, parseRelationships, parseTimelines, parseVolumeDeclarations, renameSceneBlock, renameSceneRefs, rewriteScenePosition, sliceVolOutlineChapters, splitList, splitVolOutlineByChapter, stripComments, stripForeshadowMarks, timelineGenFormatOk, updateSceneBlock, type SceneBlockInput, type TimelineEntry, type VolumeDeclaration, type VolumeInfo } from "./md_docs";
 import type { RelationshipEntry } from "./md_docs";
 import { CAST_ANALYZE_SYSTEM_PROMPT, CAST_JSON_RETRY_NOTE, aggregateCastAnalyses, buildCastChapterPrompt, buildCharacterWritePlan, buildRelationshipWritePlan, buildSceneWritePlan, castStableChars, parseCastChapterAnalysis, relPairKey } from "./cast_analyzer";
 import { OUTLINE_CAST_APPENDIX_MARK, OutlineCastTracker, outlineCastAppendixInstruction, splitOutlineCastAppendix } from "./outline_cast";
@@ -131,6 +131,23 @@ const SYSTEM_PROMPT_SKILLS: Record<string, string> = {
 	// 经 prompts.ts pt/ptT 取用；读盘口径见 refreshPromptSkillOverrides（任务条目原文直读、不剥标题）
 	...TASK_PROMPTS,
 };
+
+/** v0.4.9+ 新建场景「级别」下拉的两枚小类型（`sceneScopeChoices` 用）：
+ *  `SceneScopeOption`＝弹窗顶部下拉的一项（value＝book/volume/chapter、label＝层级词开头＋当前卷名/章名）；
+ *  `SceneScopeChapter`＝`manager.listChapters` 元素中本流程用到的字段（章级《场景.md》＝`dir.path`/场景.md） */
+interface SceneScopeOption {
+	value: string;
+	label: string;
+}
+/* v0.4.9+ 层级词与「所在位置」文案已统一到 md_docs（`DOC_SCOPE_WORDS`／`docLocationLabel`／`docRelPath`）＝场景、时间线、人物关系三个面板共用同一拼法（代码重用） */
+interface SceneScopeChapter {
+	key: string;
+	num: number;
+	title: string;
+	dir: TFolder;
+	vol?: string;
+	parentPath: string;
+}
 
 export default class ArticleWriterPlugin extends Plugin {
 	settings: ArticleWriterSettings = { ...DEFAULT_SETTINGS };
@@ -350,9 +367,9 @@ export default class ArticleWriterPlugin extends Plugin {
 		this.registerView(LlmChatView.VIEW_TYPE, (leaf) => new LlmChatView(leaf, () => this.settings.llm, () => this.getChatSystemPrompt(), () => this.getActiveStoryInfo(), (name) => this.setActiveLlmFromChat(name), () => this.chatSessionDir(), (raw) => this.collectChatAutoRefBlocks(raw), (name, args) => this.chatExecTool(name, args)));
 		this.registerView(GenProgressView.VIEW_TYPE, (leaf) => new GenProgressView(leaf)); // v0.1.4+：摘要延迟生成的工作过程面板（notifyGenProgress 驱动）
 		this.registerView(StatusView.VIEW_TYPE, (leaf) => new StatusView(leaf, () => this.getStatusSnapshot(), (name) => this.statusSwitchStory(name), (story, key) => this.statusActivateChapter(story, key), (a) => this.handleStatusAction(a), () => this.getStatusTyping(), () => this.endTypeSession())); // 第 6＝写字台「码字状态」Tab 数据源；第 7＝写字台打开/重开＝结束上次「本次写作」（下次敲字重新锚定）
-		this.registerView(RelationshipView.VIEW_TYPE, (leaf) => new RelationshipView(leaf, () => this.getRelationshipSnapshot(), () => this.openAddCharacterDialog(), (name) => this.renameCharacterFlow(name))); // v0.1.9+：人物关系面板（展示只读，切书在写字台/命令里做；v0.2.0+ 头部「添加人物」注入写动作）
+		this.registerView(RelationshipView.VIEW_TYPE, (leaf) => new RelationshipView(leaf, () => this.getRelationshipSnapshot(), () => this.openAddCharacterDialog(), (name) => this.renameCharacterFlow(name), (name) => this.openEditCharacterDialog(name), (name) => this.deleteCharacterFlow(name))); // v0.1.9+：人物关系面板（展示只读，切书在写字台/命令里做；v0.2.0+ 头部「添加人物」注入写动作）
 		this.registerView(TimelineView.VIEW_TYPE, (leaf) => new TimelineView(leaf, () => this.getTimelineSnapshot(), () => this.getTimelineCharOptions())); // v0.2.x+：时间线面板；v0.3.3+ 合并大事件：可编辑（节点增删改写回《时间线.md》），人物候选走 getTimelineCharOptions
-		this.registerView(SceneView.VIEW_TYPE, (leaf) => new SceneView(leaf, () => this.getSceneSnapshot(), (moved) => this.moveSceneFlow(moved), () => this.addSceneFlow(), (row) => this.editSceneFlow(row), (row) => this.deleteSceneFlow(row), (row) => this.addSceneFlow(row))); // v0.4.7+：场景面板（卡片画布；写回＝整组位置拖动/新增/编辑/删除/添加子场景五流程）
+		this.registerView(SceneView.VIEW_TYPE, (leaf) => new SceneView(leaf, () => this.getSceneSnapshot(), (moved) => this.moveSceneFlow(moved), (at) => this.addSceneFlow(undefined, at), (row) => this.editSceneFlow(row), (row) => this.deleteSceneFlow(row), (row, at) => this.addSceneFlow(row, at))); // v0.4.7+：场景面板（卡片画布；写回＝整组位置拖动/新增/编辑/删除/添加子场景五流程；v0.4.9+ 新增可带画布落点＝空白处右键「在此添加场景」）
 		this.addRibbonIcon("message-square", "打开 LLM 对话窗口（常驻面板）", () => void this.openLlmPanel());
 		this.addRibbonIcon("book-open", "打开写字台（当前书/章节/文件）", () => void this.openStatusPanel());
 		this.addRibbonIcon("users", "打开人物关系面板（书/卷/章三层关系）", () => void this.openRelationshipPanel());
@@ -2009,16 +2026,30 @@ await this.promptCreateVolumesIfEmpty(story); // 零卷 → 先弹建卷框（�
 			const target = newName.trim();
 			if (!target) { new Notice("新名字不能为空", 6000); return; }
 			if (target === oldName) { new Notice("新名字与旧名相同，未做修改", 6000); return; }
-			const r = await this.manager.renameCharacter(story, oldName, target);
-			if (!r) { new Notice(`未找到「${oldName}」的任何出现位置，未做修改`, 8000); return; }
-			new Notice(`已将 ${String(r.hits)} 处「${oldName}」替换为「${target}」（涉及 ${String(r.files)} 个文件，原文件已备份到 _backup/角色改名_时间戳/）`, 10000);
-			for (const leaf of this.app.workspace.getLeavesOfType(RelationshipView.VIEW_TYPE)) {
-				if (leaf.view instanceof RelationshipView) leaf.view.handleRenamed(oldName, target); // 同步面板选中名，避免刷新后按旧名筛选为空
-			}
-			this.scheduleRelationshipPanelRefresh(0); // 立即刷新已打开的人物关系面板
+			const r = await this.renameCharacterTo(story, oldName, target);
+			if (!r) return;
 		} catch (e) {
 			this.notifyError("角色改名失败", e);
 		}
+	}
+
+	/**
+	 * 角色改名的唯一落盘实现（v0.4.9+ 代码重用：命令「管理人员 → 改名」与人物关系面板的「编辑人物」弹窗共用）＝
+	 * `manager.renameCharacter`（全书 MD 全量替换 + 原文件备份到 _backup/角色改名_时间戳/）→ Notice → 人物关系面板选中名跟随 + 立即刷新。
+	 * 返回 null＝全书找不到旧名（未做任何修改），调用方据此中止后续写盘。
+	 */
+	private async renameCharacterTo(story: string, oldName: string, newName: string): Promise<{ hits: number; files: number } | null> {
+		const r = await this.manager.renameCharacter(story, oldName, newName);
+		if (!r) {
+			new Notice(`未找到「${oldName}」的任何出现位置，未做修改`, 8000);
+			return null;
+		}
+		new Notice(`已将 ${String(r.hits)} 处「${oldName}」替换为「${newName}」（涉及 ${String(r.files)} 个文件，原文件已备份到 _backup/角色改名_时间戳/）`, 10000);
+		for (const leaf of this.app.workspace.getLeavesOfType(RelationshipView.VIEW_TYPE)) {
+			if (leaf.view instanceof RelationshipView) leaf.view.handleRenamed(oldName, newName); // 同步面板选中名，避免刷新后按旧名筛选为空
+		}
+		this.scheduleRelationshipPanelRefresh(0); // 立即刷新已打开的人物关系面板
+		return r;
 	}
 
 	/** /analyze-cast：逐章 LLM 分析正文（严格 JSON），跨章聚合后按「出现范围」定层——
@@ -2186,29 +2217,8 @@ await this.promptCreateVolumesIfEmpty(story); // 零卷 → 先弹建卷框（�
 					break;
 				}
 				case 1: {
-					const vals = await new Promise<Record<string, string> | null>((resolve) => {
-						new MultiFieldModal(
-							this.app,
-							`编辑「${char.name}」`,
-							[
-								{ key: "identity", label: "身份" },
-								{ key: "age", label: "年龄" },
-								{ key: "gender", label: "性别" },
-								{ key: "personality", label: "性格" },
-								{ key: "appearance", label: "外貌" },
-								{ key: "background", label: "背景" },
-								{ key: "abilities", label: "能力/技能", placeholder: '多个用「、」分隔' },
-								{ key: "notes", label: "备注" },
-							],
-							"保存",
-							(v) => resolve(v),
-							() => resolve(null),
-							{ identity: char.identity ?? "", age: char.age ?? "", gender: char.gender ?? "", personality: char.personality ?? "", appearance: char.appearance ?? "", background: char.background ?? "", abilities: (char.abilities ?? []).join("、"), notes: char.notes ?? "" }
-						).open();
-					});
-					if (!vals) break;
-					await this.manager.updateCharacter(story, char.name, { identity: vals.identity, age: vals.age, gender: vals.gender, personality: vals.personality, appearance: vals.appearance, background: vals.background, abilities: splitList(vals.abilities || ""), notes: vals.notes });
-					new Notice(`已更新「${char.name}」`);
+					// v0.4.9+ 代码重用＝与人物关系面板「编辑人物」同一个弹窗（级别可换层＋姓名可改＋设定字段）
+					await this.openEditCharacterDialog(char.name, story);
 					break;
 				}
 				case 2: {
@@ -2232,10 +2242,7 @@ await this.promptCreateVolumesIfEmpty(story); // 零卷 → 先弹建卷框（�
 					break;
 				}
 				default: {
-					const ok = await this.confirmBox("删除人物？", `将删除「${char.name}」并清理各场景中的引用。如需保留请改用「改名」。`, "删除");
-					if (!ok) break;
-					const done = await this.manager.deleteCharacter(story, char.name);
-					new Notice(done ? "已删除该人物" : "删除失败：人物不存在");
+					await this.deleteCharacterByName(story, char.name); // v0.4.9+ 代码重用＝与人物关系面板右键「删除人物」同一实现
 				}
 			}
 		} catch (e) {
@@ -3837,8 +3844,58 @@ async cmdRenameChapterFile(): Promise<void> {
 	}
 
 	/**
-	 * 「添加人物」弹窗（v0.2.0+）：人物关系面板头部按钮的唯一实现。
-	 * 姓名 + 归属级别（书籍级／卷级／章级，决定写入哪份《人物.md》）+ 设定字段 + 动态关系行；
+	 * v0.4.9+ 「人物级别」候选唯一口径（＝添加／编辑人物弹窗最上方那一行，用户要求＝下拉按**书籍级 → 卷级 → 章级**分组排列，
+	 *  不再把默认项顶到最前；每档文案带清「写进哪一份《人物.md》」＝`书籍级 · 案头资料/人物.md`／`卷级 · <卷名>`／`章级 · 第NN章 章名`）。
+	 * 候选顺序＝书籍级（恒在）→ 每一卷 → 每一章（都按管理器枚举顺序）；`defaultId`＝当前写作位置（激活章 → 激活卷 → 书籍级）。
+	 * 同时带回全书人物名（关系行候选用）与各档「范围内」角色名（＝该层《人物.md》里已有条目，排在下拉最前）。
+	 */
+	private async characterScopeChoices(story: string): Promise<{ scopes: CharacterScopeOption[]; defaultId: string; allNames: string[] }> {
+		const sortZh = (a: string, b: string): number => a.localeCompare(b, "zh");
+		const all = Object.values(await this.manager.loadAllCharacters(story));
+		const allNames = all.map((c) => c.name).sort(sortZh);
+		// 各层级「范围内」角色名：书级=书根全局条目，卷级=该卷卷目录条目，章级=该章目录条目（与 loadAllCharacters 的读取口径一致）
+		const inScope = (pred: (c: (typeof all)[number]) => boolean): string[] => all.filter(pred).map((c) => c.name).sort(sortZh);
+		const bookDir = this.manager.storyPath(story);
+		const scopes: CharacterScopeOption[] = [
+			{ id: "book", kind: "book", label: `书籍级 · ${docRelPath(`${this.manager.deskDocsPath(story)}/人物.md`, bookDir)}`, localCandidates: inScope((c) => c.chapter <= 0 && !c.vol) },
+		];
+		for (const v of await this.manager.volumeList(story)) {
+			scopes.push({ id: `vol:${v.id}`, kind: "volume", label: `卷级 · ${v.name}`, volId: v.id, localCandidates: inScope((c) => c.chapter <= 0 && c.vol === v.id) });
+		}
+		const volNames = await this.volNameMap(story);
+		for (const c of await this.manager.listChapters(story)) {
+			scopes.push({ id: `ch:${c.key}`, kind: "chapter", label: `章级 · ${this.keyLabel(c.key, volNames, c.title)}`, chapterKey: c.key, localCandidates: inScope((cc) => cc.chapter === c.num && (cc.vol ?? "") === (c.vol ?? "")) });
+		}
+		const state = await this.manager.loadState(story).catch(() => null); // 状态读不到＝按书籍级
+		const curKey = state?.current_chapter ?? null;
+		const curVol = state?.current_volume ?? "";
+		const def = (curKey ? scopes.find((x) => x.chapterKey === curKey) : undefined) ?? (curVol ? scopes.find((x) => x.volId === curVol) : undefined) ?? scopes[0];
+		return { scopes, defaultId: def?.id ?? "book", allNames };
+	}
+
+	/** 某条《人物.md》条目（`chapter`＋`vol`）落在哪一档级别＝`characterScopeChoices` 里的候选 id（章级按「章号＋卷」匹配复合键）。找不到＝空串 */
+	private characterScopeIdFor(scopes: readonly CharacterScopeOption[], chapter: number, vol?: string): string {
+		if (chapter <= 0) return vol ? `vol:${vol}` : "book";
+		for (const s of scopes) {
+			if (!s.chapterKey) continue;
+			const p = parseChKey(s.chapterKey);
+			if (p && p.num === chapter && (p.vol ?? "") === (vol ?? "")) return s.id;
+		}
+		return "";
+	}
+
+	/** 级别候选 → `updateCharacter` 的归属补丁（＝把人物条目搬进那一层《人物.md》）：书籍级＝`chapter 0`＋vol 显式清空（管理器约定 `""`＝清除卷归属）；
+	 *  卷级＝`chapter 0`＋该卷 id；章级＝复合键解析出的章号＋卷 id。解不出＝null（不换层） */
+	private scopeMovePatch(s: CharacterScopeOption): { chapter: number; vol: string | undefined } | null {
+		if (s.kind === "book") return { chapter: 0, vol: "" };
+		if (s.kind === "volume") return { chapter: 0, vol: s.volId ?? "" };
+		const p = s.chapterKey ? parseChKey(s.chapterKey) : null;
+		return p ? { chapter: p.num, vol: p.vol ?? "" } : null;
+	}
+
+	/**
+	 * 「添加人物」弹窗（v0.2.0+）：人物关系面板头部按钮与卡片右键「新增」的唯一实现。
+	 * 姓名 + 人物级别（v0.4.9+＝弹窗第一行，候选按书籍级 → 卷级 → 章级排、默认＝当前写作位置，决定写入哪份《人物.md》）+ 设定字段 + 动态关系行；
 	 * 提交后先 addCharacter 落人物，再按同一级别把关系条目追加进对应《人物关系.md》（书根／卷目录／章节目录）。
 	 */
 	async openAddCharacterDialog(): Promise<void> {
@@ -3847,46 +3904,21 @@ async cmdRenameChapterFile(): Promise<void> {
 			new Notice("尚未选择当前小说：请先在写字台或命令里切换小说", 6000);
 			return;
 		}
-		const sortZh = (a: string, b: string): number => a.localeCompare(b, "zh");
 		let scopes: CharacterScopeOption[] = [];
 		let allNames: string[] = [];
+		let defaultId = "book";
 		try {
-			const all = Object.values(await this.manager.loadAllCharacters(story));
-			allNames = all.map((c) => c.name).sort(sortZh);
-			// 各层级「范围内」角色名：书级=书根全局条目，卷级=该卷卷目录条目，章级=该章目录条目（与 loadAllCharacters 的读取口径一致）
-			const inScope = (pred: (c: (typeof all)[number]) => boolean): string[] => all.filter(pred).map((c) => c.name).sort(sortZh);
-			scopes.push({ id: "book", kind: "book", label: "书籍级（书根《人物.md》）", localCandidates: inScope((c) => c.chapter <= 0 && !c.vol) });
-			for (const v of await this.manager.volumeList(story)) {
-				scopes.push({
-					id: `vol:${v.id}`,
-					kind: "volume",
-					label: `卷级 · ${v.name}`,
-					volId: v.id,
-					localCandidates: inScope((c) => c.chapter <= 0 && c.vol === v.id),
-				});
-			}
-			const volNames = await this.volNameMap(story);
-			for (const c of await this.manager.listChapters(story)) {
-				scopes.push({
-					id: `ch:${c.key}`,
-					kind: "chapter",
-					label: `章级 · ${this.keyLabel(c.key, volNames, c.title)}`,
-					chapterKey: c.key,
-					localCandidates: inScope((cc) => cc.chapter === c.num && (cc.vol ?? "") === (c.vol ?? "")),
-				});
-			}
+			const choices = await this.characterScopeChoices(story);
+			scopes = choices.scopes;
+			allNames = choices.allNames;
+			defaultId = choices.defaultId;
 		} catch (e) {
 			this.notifyError("读取人物/章节失败", e);
 			return;
 		}
-		if (!scopes.length) scopes = [{ id: "book", kind: "book", label: "书籍级（书根《人物.md》）", localCandidates: [] }];
-		const state = await this.manager.loadState(story);
-		const curKey = state?.current_chapter ?? null;
-		const curVol = state?.current_volume ?? "";
-		const defScope = (curKey ? scopes.find((s) => s.chapterKey === curKey) : undefined) ?? (curVol ? scopes.find((s) => s.volId === curVol) : undefined) ?? scopes[0];
-		const ordered = [defScope, ...scopes.filter((s) => s !== defScope)]; // 默认项置顶：章级列表很长，默认落在当前写作位置免得翻找
+		if (!scopes.length) scopes = [{ id: "book", kind: "book", label: "书籍级 · 案头资料/人物.md", localCandidates: [] }];
 		const result = await new Promise<AddCharacterResult | null>((resolve) => {
-			new AddCharacterModal(this.app, ordered, allNames, RELATION_TYPE_OPTIONS, (r) => resolve(r), () => resolve(null)).open();
+			new AddCharacterModal(this.app, scopes, allNames, RELATION_TYPE_OPTIONS, defaultId, (r) => resolve(r), () => resolve(null)).open();
 		});
 		if (!result) return;
 		try {
@@ -3913,6 +3945,98 @@ async cmdRenameChapterFile(): Promise<void> {
 		} catch (e) {
 			this.notifyError("添加失败", e);
 		}
+	}
+
+	/**
+	 * 「编辑人物」弹窗（v0.4.9+ 人物关系面板：双击人物卡片/节点、右键菜单「编辑」）：
+	 * 级别（v0.4.9+＝弹窗第一行，候选按书籍级 → 卷级 → 章级排、默认选中该人物现在那一档＝换层＝把条目搬进另一份《人物.md》；
+	 * 拿不到级别候选时退化成只读行＝`REL_SCOPE_WORDS` 口径的「所在位置」）＋姓名（改名＝`manager.renameCharacter` 全书同步替换＋自动备份）
+	 * ＋设定字段。写回一律走 `manager.updateCharacter`：**换层与改字段分两次调用**（管理器的换层分支不套字段补丁，合一次会丢字段改动）。
+	 */
+	async openEditCharacterDialog(name: string, storyArg?: string): Promise<void> {
+		const story = storyArg ?? (await this.activeStory());
+		if (!story) {
+			new Notice("尚未选择当前小说：请先在写字台或命令里切换小说", 6000);
+			return;
+		}
+		try {
+			const entries = await this.manager.loadCharacterEntries(story);
+			const entry = entries.find((e) => e.name === name) ?? entries.find((e) => e.name.toLowerCase() === name.toLowerCase());
+			if (!entry) {
+				new Notice(`找不到人物「${name}」：可能已被删除，请点「刷新」后重试`, 6000);
+				return;
+			}
+			const { scopes } = await this.characterScopeChoices(story);
+			const curId = this.characterScopeIdFor(scopes, entry.chapter, entry.vol);
+			const here = docLocationLabel(entry.scope, entry.sourcePath, this.manager.storyPath(story), REL_SCOPE_WORDS); // 「卷级 · 书稿/第一卷 风起/人物.md」
+			const level = curId ? { options: scopes.map((s) => ({ value: s.id, label: s.label })), value: curId } : { label: here };
+			const res = await new Promise<CharacterEditResult | null>((resolve) => {
+				new CharacterEditModal(
+					this.app,
+					`编辑人物「${entry.name}」`,
+					entry.name,
+					{
+						identity: entry.identity ?? "",
+						age: entry.age ?? "",
+						gender: entry.gender ?? "",
+						personality: entry.personality ?? "",
+						appearance: entry.appearance ?? "",
+						background: entry.background ?? "",
+						abilities: (entry.abilities ?? []).join("、"),
+						notes: entry.notes ?? "",
+					},
+					level,
+					(r) => resolve(r),
+					() => resolve(null)
+				).open();
+			});
+			if (!res) return;
+			let target = entry.name;
+			if (res.name !== entry.name) {
+				// 改名走与命令「管理人员 → 改名」同一条落盘路径（全书 MD 同步替换 + 自动备份 + 面板选中名跟随）
+				const r = await this.renameCharacterTo(story, entry.name, res.name);
+				if (!r) return;
+				target = res.name.trim();
+			}
+			const scope = res.scopeId ? scopes.find((s) => s.id === res.scopeId) : undefined;
+			const move = scope && scope.id !== curId ? this.scopeMovePatch(scope) : null;
+			// 约定（command-reference「移动语义陷阱」）＝updateCharacter 带 chapter 时只搬条目、不套字段补丁＝先写字段，再单独调一次换层
+			await this.manager.updateCharacter(story, target, {
+				identity: res.fields.identity ?? "",
+				age: res.fields.age ?? "",
+				gender: res.fields.gender ?? "",
+				personality: res.fields.personality ?? "",
+				appearance: res.fields.appearance ?? "",
+				background: res.fields.background ?? "",
+				abilities: splitList(res.fields.abilities ?? ""),
+				notes: res.fields.notes ?? "",
+			});
+			if (move) await this.manager.updateCharacter(story, target, move);
+			const movedTo = move ? `（已移到${scope ? scope.label : "新级别"}）` : "";
+			new Notice(`已更新人物「${target}」${movedTo}`, 6000);
+			this.schedulePanelRefresh(300);
+		} catch (e) {
+			this.notifyError("更新人物失败", e);
+		}
+	}
+
+	/** 「删除人物」（v0.4.9+ 人物关系面板右键菜单）＝二次确认后 `manager.deleteCharacter`（连带清理各场景里的引用）；与命令面板「管理人员→删除此人」同一实现 */
+	async deleteCharacterFlow(name: string): Promise<void> {
+		const story = await this.activeStory();
+		if (!story) {
+			new Notice("尚未选择当前小说：请先在写字台或命令里切换小说", 6000);
+			return;
+		}
+		await this.deleteCharacterByName(story, name);
+		this.schedulePanelRefresh(300);
+	}
+
+	/** 删除人物的唯一实现（v0.4.9+ 代码重用：命令面板「管理人员」与人物关系面板右键菜单共用）＝确认框 → `deleteCharacter` → Notice */
+	private async deleteCharacterByName(story: string, name: string): Promise<void> {
+		const ok = await this.confirmBox("删除人物？", `将删除「${name}」并清理各场景中的引用。如需保留请改用「改名」。`, "删除");
+		if (!ok) return;
+		const done = await this.manager.deleteCharacter(story, name);
+		new Notice(done ? "已删除该人物" : "删除失败：人物不存在");
 	}
 
 	// ---------- LLM 写作命令（/write /continue /rewrite /polish /deai /review，对应 Python WritingMixin + writer.py） ----------
@@ -4287,7 +4411,7 @@ async cmdRenameChapterFile(): Promise<void> {
 	 */
 	async getRelationshipSnapshot(): Promise<RelSnapshot> {
 		const root = this.settings.workDir.replace(/\/+$/, "");
-		if (!root) return { workDir: "", stories: [], activeStory: null, activeStoryTitle: "", groups: [], relCount: 0, chars: [] };
+		if (!root) return { workDir: "", stories: [], activeStory: null, activeStoryTitle: "", groups: [], relCount: 0, chars: [], storyDir: "" };
 		const names = await this.manager.listStories();
 		const last = this.settings.lastStory?.trim() ?? "";
 		const stories: RelStoryEntry[] = [];
@@ -4302,7 +4426,7 @@ async cmdRenameChapterFile(): Promise<void> {
 			stories.push({ name, title, active: name === last });
 		}
 		const active = last && names.includes(last) ? last : null;
-		if (!active) return { workDir: root, stories, activeStory: null, activeStoryTitle: "", groups: [], relCount: 0, chars: [] };
+		if (!active) return { workDir: root, stories, activeStory: null, activeStoryTitle: "", groups: [], relCount: 0, chars: [], storyDir: "" };
 		const state = await this.manager.loadState(active);
 		const docs = await this.manager.readRelationshipDocs(active, state?.current_chapter ?? null); // 书/卷/章三层原文（只读）
 		const groups: RelGroup[] = [];
@@ -4321,7 +4445,7 @@ async cmdRenameChapterFile(): Promise<void> {
 		try {
 			chars = await this.manager.loadCharacterEntries(active); // 全部三层《人物.md》设定条目（「人物状态」区用；失败不阻断关系展示）
 		} catch { /* ignore */ }
-		return { workDir: root, stories, activeStory: active, activeStoryTitle: stories.find((s) => s.name === active)?.title ?? active, groups, relCount, chars };
+		return { workDir: root, stories, activeStory: active, activeStoryTitle: stories.find((s) => s.name === active)?.title ?? active, groups, relCount, chars, storyDir: this.manager.storyPath(active) }; // storyDir＝「所在位置」要剥掉的前缀（人物状态区悬停文案用）
 	}
 
 	// ---------- 时间线面板（TimelineView，v0.2.x+） ----------
@@ -4334,7 +4458,7 @@ async cmdRenameChapterFile(): Promise<void> {
 	 */
 	async getTimelineSnapshot(): Promise<TlSnapshot> {
 		const root = this.settings.workDir.replace(/\/+$/, "");
-		if (!root) return { workDir: "", stories: [], activeStory: null, activeStoryTitle: "", useVolumes: false, bookTimelinePath: "", rows: [], totalCount: 0, lanes: [] };
+		if (!root) return { workDir: "", stories: [], activeStory: null, activeStoryTitle: "", useVolumes: false, bookTimelinePath: "", rows: [], totalCount: 0, lanes: [], docs: [], storyDir: "" };
 		const names = await this.manager.listStories();
 		const last = this.settings.lastStory?.trim() ?? "";
 		const stories: TlStoryEntry[] = [];
@@ -4347,12 +4471,12 @@ async cmdRenameChapterFile(): Promise<void> {
 			stories.push({ name, title, active: name === last });
 		}
 		const active = last && names.includes(last) ? last : null;
-		if (!active) return { workDir: root, stories, activeStory: null, activeStoryTitle: "", useVolumes: false, bookTimelinePath: "", rows: [], totalCount: 0, lanes: [] };
+		if (!active) return { workDir: root, stories, activeStory: null, activeStoryTitle: "", useVolumes: false, bookTimelinePath: "", rows: [], totalCount: 0, lanes: [], docs: [], storyDir: "" };
 		const state = await this.manager.loadState(active);
-		const docs = await this.manager.readTimelineDocs(active); // 各层原文（只读），顺序按 manager 约定（有卷模式每卷紧随其成员章）
+		const docsSrc = await this.manager.readTimelineDocs(active); // 各层原文（只读），顺序按 manager 约定（有卷模式每卷紧随其成员章）
 		const laneIdx = new Map<string, number>(); // 泳道名 → 序号（按文档枚举序首次出现；默认泳道排最前）
 		const laneOrder: string[] = [];
-		for (const d of docs) {
+		for (const d of docsSrc) {
 			const lane = d.lane ?? "默认";
 			if (!laneOrder.includes(lane)) laneOrder.push(lane);
 		}
@@ -4360,7 +4484,7 @@ async cmdRenameChapterFile(): Promise<void> {
 		laneOrder.forEach((n, i) => laneIdx.set(n, i));
 		const rows: TlRow[] = [];
 		const lanes: TlLane[] = laneOrder.map((name) => ({ name, count: 0, paths: [] }));
-		for (const d of docs) {
+		for (const d of docsSrc) {
 			let list: TimelineEntry[] = [];
 			try {
 				list = parseTimelines(d.text);
@@ -4371,8 +4495,10 @@ async cmdRenameChapterFile(): Promise<void> {
 			if (this.app.vault.getAbstractFileByPath(d.path) instanceof TFile) lanes[li].paths.push(d.path); // 只登记磁盘上真实存在的文档（候选路径＝尚未创建，不进 lanes.paths；空文档也登记，「＋ 事件」据此能写入该泳道）
 			list.forEach((e, i) => rows.push({ ...e, id: `${d.path}#${i}`, scope: d.scope, sourcePath: d.path, sourceLabel: d.label, lane, laneIndex: li })); // id＝来源路径#文档内序号：稳定标识供折叠状态跨刷新保持
 		}
+		// v0.4.9+ 每份时间线文档都随快照带一份出处（含尚未创建的候选路径）＝时间线弹窗「级别」下拉的候选＋行上「所在文档」提示
+		const docs: TlDocRef[] = docsSrc.map((d) => ({ path: d.path, scope: d.scope, lane: d.lane ?? "默认", exists: this.app.vault.getAbstractFileByPath(d.path) instanceof TFile }));
 		// rows 保持文档枚举顺序（**不按时间全局排序**）：面板据此在**每个文档内部**按「父＝其前最近一条级别更小的条目」挂父——跨文档/跨时间的子事件仍挂在结构父下；时间点升序渲染由面板渲染趟负责
-		return { workDir: root, stories, activeStory: active, activeStoryTitle: stories.find((s) => s.name === active)?.title ?? active, useVolumes: state?.use_volumes === true, bookTimelinePath: this.manager.bookTimelinePath(active), rows, totalCount: rows.length, lanes };
+		return { workDir: root, stories, activeStory: active, activeStoryTitle: stories.find((s) => s.name === active)?.title ?? active, useVolumes: state?.use_volumes === true, bookTimelinePath: this.manager.bookTimelinePath(active), rows, totalCount: rows.length, lanes, docs, storyDir: this.manager.storyPath(active) };
 	}
 
 	/**
@@ -4471,7 +4597,7 @@ async cmdRenameChapterFile(): Promise<void> {
 		const first = moved[0].row;
 		const okMsg = moved.length === 1
 			? `已将「${sceneDisplayName(first)}」移到 (${String(Math.round(moved[0].x))}, ${String(Math.round(moved[0].y))})`
-			: `已移动「${sceneDisplayName(first)}」及其 ${String(moved.length - 1)} 个子场景`;
+			: `已移动「${sceneDisplayName(first)}」及其 ${String(moved.length - 1)} 个场景（含随区域移动的大场景）`; // v0.4.9+ 清单里除被拖的整组子孙，还有被区域口径顺带搬走的大场景（区域头）
 		for (const [docPath, ms] of byDoc) {
 			let failed: SceneRow | undefined; // fn 内捕获首个定位失败的场景（Notice 里点名）
 			await this.mutateSceneDoc(okMsg, docPath, (text) => {
@@ -4490,11 +4616,47 @@ async cmdRenameChapterFile(): Promise<void> {
 		}
 	}
 
+	/** v0.4.9+ 新建场景的「级别」候选（编辑弹窗最上方下拉）＝下拉内容按**书级 → 卷级 → 章级**排列，每档都以层级词开头：
+	 *  `书级 · 案头资料/场景.md`／`卷级 · 当前卷「卷名」`／`章级 · 第NN章 章名`（用户要求＝**卷名与章名必须显示在下拉里**）。缺当前激活卷/章时那一档不进候选（书级恒在）；
+	 *  **默认仍是卷级**（有激活卷＝选它，否则顺延到章级、再否则书级）。
+	 *  同时给出各级别的目标《场景.md》路径（＝打开弹窗那一刻解析，之后切换激活卷/章不影响本次写入）：
+	 *  书级＝`deskDocsPath/场景.md`（案头资料/场景.md）、卷级＝`volumeDocPath(卷)`（卷目录《文档/场景.md》）、章级＝章节目录《场景.md》。
+	 *  激活卷取《故事状态.md》`current_volume`（id 或卷名都可，`findVolumeIn` 口径），激活章取 `current_chapter`（复合键 `volId:N`／裸数字都兜） */
+	private async sceneScopeChoices(story: string): Promise<{ options: SceneScopeOption[]; value: string; paths: Map<string, string> }> {
+		const paths = new Map<string, string>();
+		const labels = new Map<string, string>(); // 下拉文案（用户要求＝卷级带当前卷名、章级带章号＋章名；排列仍是书级 → 卷级 → 章级）
+		const state = await this.manager.loadState(story).catch(() => null); // 状态读不到＝按「无激活卷/章」给候选
+		const volMap = await this.manager.loadVolumes(story).catch((): Record<string, VolumeInfo> => ({})); // 卷清单读不到＝无卷
+		const curVol = state?.current_volume ? this.manager.findVolumeIn(volMap, state.current_volume) : null;
+		if (curVol) {
+			paths.set("volume", this.manager.volumeDocPath(story, curVol, "场景.md"));
+			labels.set("volume", `卷级 · 当前卷「${curVol.name}」`); // 用户要求＝卷级这一项要带当前卷名
+		}
+		const chapters = await this.manager.listChapters(story).catch((): SceneScopeChapter[] => []); // 章清单读不到＝无章
+		const curCh = findChapterByStateKey(chapters, state?.current_chapter); // v0.4.9+ 复合键精确→章号兜底（裸数字旧键只比章号、带卷前缀还要求同卷；非法键＝无章级候选）
+		if (curCh) {
+			paths.set("chapter", `${curCh.dir.path}/场景.md`);
+			labels.set("chapter", `章级 · 第${String(curCh.num).padStart(2, "0")}章 ${curCh.title}`.trim()); // 用户要求＝章级这一项要带当前章号与章名
+		}
+		paths.set("book", `${this.manager.deskDocsPath(story)}/场景.md`); // 书级这一档恒在（写进案头资料/场景.md）
+		labels.set("book", "书级 · 案头资料/场景.md");
+		const options: SceneScopeOption[] = []; // 排列按用户要求＝书级 → 卷级 → 章级
+		for (const value of ["book", "volume", "chapter"] as const) {
+			if (!paths.has(value)) continue; // 没有当前卷/章＝该档不进候选
+			options.push({ value, label: labels.get(value) ?? DOC_SCOPE_WORDS[value] });
+		}
+		const value = paths.has("volume") ? "volume" : paths.has("chapter") ? "chapter" : "book"; // 默认卷级；无激活卷→章级→书级
+		return { options, value, paths };
+	}
+
 	/**
-	 * 场景面板「＋ 场景」根级新增（v0.4.7+）：SceneEditModal 收集 → `md_docs.insertSceneBlock` 追加到**书级**《案头资料/场景.md》
-	 * 文末（文件不存在按 "# 场景" 起底自动创建；目录缺失先 ensureParentFolders——adapter.write 不承诺建父目录）。同名/非法名明确拒绝。
+	 * 场景面板「＋ 场景」根级新增（v0.4.7+）／画布空白处右键「在此添加场景」（v0.4.9+：`at`＝右键处的画布坐标，直接写进新场景 `- 位置：x,y`＝卡片落在点上）：
+	 * SceneEditModal 收集 → `md_docs.insertSceneBlock` 追加到**弹窗顶部「级别」下拉所选那一层**《场景.md》（下拉按书级 → 卷级 → 章级排、默认卷级；
+	 * v0.4.9+ 用户要求，旧口径恒为书级）文末（文件不存在按 "# 场景" 起底自动创建；目录缺失先 ensureParentFolders——adapter.write 不承诺建父目录）。同名/非法名明确拒绝。
+	 * 「添加子场景」（`parentRow`）＝**沿用父场景那份文档**（级别行只读、值＝将写入的位置＝`docLocationLabel(父.scope, 父.sourcePath, 书目录)`＝不跨层拆父子），父下拉预填该父。
+	 * `at`＝画布落点（v0.4.9+ 口径由场景面板给）：画布空白处右键＝就在该点；「＋ 场景」／「添加子场景」＝**先按自动布局**（面板判断自动布局的落点在当前视口内且没压到旧卡片→不带 `at`＝**不写 `- 位置：`**）；只有自动布局会排到视口外或压到旧卡片时，面板才传「视口左上角 +(50,50)」的坐标（带阶梯避让）。
 	 */
-	private async addSceneFlow(parentRow?: SceneRow): Promise<void> {
+	private async addSceneFlow(parentRow?: SceneRow, at?: { x: number; y: number }): Promise<void> {
 		const story = await this.activeStory();
 		if (!story) {
 			new Notice("尚未选择当前小说：请先在写字台或命令里切换小说", 6000);
@@ -4503,30 +4665,63 @@ async cmdRenameChapterFile(): Promise<void> {
 		const charOptions = await this.getTimelineCharOptions();
 		const snap = await this.getSceneSnapshot(); // 父场景候选＝全部场景（新建无需排除自身）
 		const parentOptions = this.sceneParentOptions(snap.rows, null);
+		const scopeChoices = parentRow ? null : await this.sceneScopeChoices(story); // v0.4.9+ 根级新增才给级别下拉
 		new SceneEditModal(
 			this.app,
-			parentRow ? `新建子场景（隶属「${sceneDisplayName(parentRow)}」）` : "新建场景（书级）",
+			parentRow ? `新建子场景（隶属「${sceneDisplayName(parentRow)}」）` : "新建场景",
 			null,
 			parentRow ? { parent: parentRow.scene_id } : undefined,
 			charOptions,
 			parentOptions,
 			this.sceneRelatedOptions(snap.rows, null),
+			parentRow
+				? { label: docLocationLabel(parentRow.scope, parentRow.sourcePath, this.manager.storyPath(story)) } // 添加子场景＝级别随父＝只读，这一行显示「将写入的位置」＝父场景那份《场景.md》（书内路径）
+				: { options: scopeChoices?.options ?? [], value: scopeChoices?.value ?? "book" }, // 根级新增＝级别下拉（书级／卷级／章级）
 			async (res) => {
-				const path = parentRow ? parentRow.sourcePath : `${this.manager.deskDocsPath(story)}/场景.md`; // 子场景与父同文档
+				let path = parentRow ? parentRow.sourcePath : `${this.manager.deskDocsPath(story)}/场景.md`; // 子场景与父同文档；根级新增＝按弹窗选的级别取对应层文档
+				if (scopeChoices) {
+					const chosen = scopeChoices.paths.get(res.scope ?? "") ?? scopeChoices.paths.get(scopeChoices.value);
+					if (chosen) path = chosen;
+				}
 				const input: SceneBlockInput = {
 					scene_id: res.sceneId,
 					description: res.description || undefined,
 					chapter_num: 0,
 					characters: res.characters,
-					notes: res.notes || undefined,
-					content: res.content || undefined,
 					parent: res.parent || undefined,
-					related: res.related.length ? res.related : undefined,
+					related: res.related.length ? res.related.map((x) => x.id) : undefined, // v0.4.9+ 弹窗交的是带说明的行＝取 id 列表
+					relatedLabels: this.sceneRelNotes(res.related), // v0.4.9+ 联通性说明（`- 关联：甲（官道·三日路程）`）
+					terrain: res.terrain || undefined, // v0.4.8+ 地形下拉（空＝不写 `- 地形：` 行）
+					x: at?.x, // v0.4.9+ 空白处右键「在此添加场景」＝直接落在点上的画布坐标（写 `- 位置：x,y`；头部按钮不带＝按自动布局排布）
+					y: at?.y,
 					created_at: new Date().toISOString().slice(0, 10),
-				};
+				}; // v0.4.8+ 弹窗已无「备注/正文」输入＝这两字段不写（文档里手写的这两行仍照常解析展示）
 				await this.mutateSceneDoc(`已新增场景「${res.sceneId}」（${path}）`, path, (text) => insertSceneBlock(text, input), () => `已存在同名场景「${res.sceneId}」或场景名无效`);
 			}
 		).open();
+	}
+
+	/** v0.4.9+ 弹窗关联行 → 新增场景写盘用的说明表（`- 关联：甲（说明）`）：只留有说明的项，全空＝undefined */
+	private sceneRelNotes(related: readonly SceneRelEdit[]): Record<string, string> | undefined {
+		const out: Record<string, string> = {};
+		for (const r of related) {
+			const v = r.note.trim();
+			if (v) out[r.id] = v;
+		}
+		return Object.keys(out).length ? out : undefined;
+	}
+
+	/** v0.4.9+ 弹窗关联行 → 编辑写盘用的说明覆盖表（`updateSceneBlock` 的 relatedNotes）：**全部** id 都列出，
+	 *  说明留空＝清掉该行原有说明（覆盖口径），未列出的 id 才沿用原说明 */
+	private sceneRelNoteEdits(related: readonly SceneRelEdit[]): Record<string, string> {
+		const out: Record<string, string> = {};
+		for (const r of related) out[r.id] = r.note.trim();
+		return out;
+	}
+
+	/** v0.4.9+ 编辑弹窗预填：SceneDoc 的 `related` ＋ `relatedLabels` → 弹窗行（每行＝场景 id＋该行联通性说明） */
+	private sceneRelEdits(row: SceneRow): SceneRelEdit[] {
+		return (row.related ?? []).map((id) => ({ id, note: row.relatedLabels?.[id] ?? "" }));
 	}
 
 	/** 场景编辑弹窗候选基座（v0.4.7+ 复用＝父场景/关联场景共用）：全部场景按 id 去重、label＝显示名口径 */
@@ -4568,7 +4763,7 @@ async cmdRenameChapterFile(): Promise<void> {
 		return out;
 	}
 
-	/** 场景面板 ✎ 编辑：弹窗预填现值 → 共用通道内 `md_docs.updateSceneBlock` 只改该块（未触碰字段/正文围栏/创建时间保留原行） */
+	/** 场景面板 ✎ 编辑：弹窗预填现值 → 共用通道内 `md_docs.updateSceneBlock` 只改该块（未触碰字段/正文围栏/创建时间保留原行）。v0.4.8+：场景名也可改——改名走 renameSceneFlow（换块锚＋同步全部 `- 父场景：`/`- 关联：` 引用） */
 	private async editSceneFlow(row: SceneRow): Promise<void> {
 		const charOptions = await this.getTimelineCharOptions();
 		const snap = await this.getSceneSnapshot();
@@ -4577,19 +4772,26 @@ async cmdRenameChapterFile(): Promise<void> {
 			this.app,
 			`编辑场景「${sceneDisplayName(row)}」`,
 			{ scene_id: row.scene_id },
-			{ sceneId: row.scene_id, description: row.description ?? "", characters: row.characters, notes: row.notes ?? "", content: row.content ?? "", parent: row.parent ?? "", related: row.related ?? [] },
+			{ sceneId: row.scene_id, description: row.description ?? "", characters: row.characters, parent: row.parent ?? "", related: this.sceneRelEdits(row), terrain: row.terrain ?? "" }, // v0.4.9+ 关联预填＝行（id＋联通性说明）
 			charOptions,
 			parentOptions,
 			this.sceneRelatedOptions(snap.rows, row.scene_id),
+			{ label: docLocationLabel(row.scope, row.sourcePath, snap.activeStory ? this.manager.storyPath(snap.activeStory) : "") }, // v0.4.9+ 级别行只读＝只显示「场景所在位置」＝层级 · **书内路径**（从书籍目录起算，不带仓库里的《工作目录/<书名>/》前缀），编辑态不跨层挪块
 			async (res) => {
+				const newId = res.sceneId.trim();
+				if (newId && newId !== row.scene_id) {
+					await this.renameSceneFlow(row, snap, newId, res);
+					return;
+				}
 				await this.mutateSceneDoc(`已更新场景「${row.scene_id}」`, row.sourcePath, (text) =>
 					updateSceneBlock(text, row.scene_id, {
 						description: res.description,
 						characters: res.characters,
-						notes: res.notes,
-						content: res.content,
 						parent: res.parent, // 空串＝删除 `- 父场景：` 行（升为顶层）
-						related: res.related, // v0.4.7+ 关联场景（空数组＝删 `- 关联：` 行）；显示名输入已删——原 `- 标题：` 行未触碰原样保留
+						related: res.related.map((x) => x.id), // v0.4.7+ 关联场景（空数组＝删 `- 关联：` 行）；显示名输入已删——原 `- 标题：` 行未触碰原样保留
+						relatedNotes: this.sceneRelNoteEdits(res.related), // v0.4.9+ 每行联通性说明（空串＝清掉该行说明）；写盘＝`- 关联：甲（说明）`
+						terrain: res.terrain, // v0.4.8+ 地形下拉（空串＝删 `- 地形：` 行；`- 颜色：` 弹窗不编辑＝原样保留）
+						// v0.4.8+ 弹窗无「备注/正文」输入＝这两字段不给出＝原 `- 备注：` 行与 ```text 正文围栏原样保留
 					})
 				);
 			}
@@ -4601,6 +4803,46 @@ async cmdRenameChapterFile(): Promise<void> {
 		const ok = await this.confirmBox("删除场景", `将从《场景.md》删除「${sceneDisplayName(row)}」（整块含正文，不可撤销）。`, "删除");
 		if (!ok) return;
 		await this.mutateSceneDoc(`已删除场景「${sceneDisplayName(row)}」`, row.sourcePath, (text) => deleteSceneBlock(text, row.scene_id));
+	}
+
+	/**
+	 * 场景改名（v0.4.8+）：共用通道内链式 `renameSceneBlock`（换 `## id` 块锚＋同文档 `- 父场景：`/`- 关联：`/等值 `- 标题：` 引用同步）→ `updateSceneBlock`（按新 id 写本次字段）；
+	 * 成功后按快照扫**其余**场景文档，含引用者逐份 `renameSceneRefs` 同步（口径＝同文档优先→全局首个：文档自身有同名块＝其引用指向本地块、不动；
+	 * 别的文档在文档序里更早出现同名块＝全局首个不是本块，跨文档同步会误伤，跳过并提示）。源文档改名失败即整体中止。
+	 */
+	private async renameSceneFlow(row: SceneRow, snap: SceneSnapshot, newId: string, res: SceneEditResult): Promise<void> {
+		const oldId = row.scene_id;
+		const renamed = await this.mutateSceneDoc(`已将场景「${oldId}」改名为「${newId}」`, row.sourcePath, (text) => {
+			const renamedText = renameSceneBlock(text, oldId, newId);
+			if (renamedText === null) return null;
+			return updateSceneBlock(renamedText, newId, {
+				description: res.description,
+				characters: res.characters,
+				parent: res.parent,
+				related: res.related.map((x) => x.id),
+				relatedNotes: this.sceneRelNoteEdits(res.related), // v0.4.9+ 联通性说明随改名一并写回（改名后 id＝新名）
+				terrain: res.terrain, // v0.4.8+ 地形下拉（改名同批写回）
+				// 备注/正文不给出＝改名时原 `- 备注：` 行与正文围栏原样保留（v0.4.8+ 弹窗已无这两输入）
+			});
+		}, () => `改名失败：源文档里未找到「${oldId}」，或「${newId}」在该文档已有同名场景——请点「刷新」后重试`);
+		if (!renamed) return;
+		const firstSame = snap.rows.find((r) => r.scene_id === oldId);
+		if (firstSame && firstSame.sourcePath !== row.sourcePath) {
+			new Notice(`其它文档存在更早的同名场景「${oldId}」：跨文档引用未同步（同名解析优先指向那份文档）`, 8000);
+			return;
+		}
+		const docs = new Map<string, SceneRow[]>();
+		for (const r of snap.rows) {
+			if (r.sourcePath === row.sourcePath) continue;
+			const arr = docs.get(r.sourcePath);
+			if (arr) arr.push(r);
+			else docs.set(r.sourcePath, [r]);
+		}
+		for (const [docPath, rowsIn] of docs) {
+			if (rowsIn.some((r) => r.scene_id === oldId)) continue; // 该文档自有同名块＝其引用指向本地块，不动
+			if (!rowsIn.some((r) => r.parent === oldId || (r.related ?? []).some((x) => x === oldId))) continue; // 无引用可同步
+			await this.mutateSceneDoc(`已同步「${docPath}」中对改名场景的引用`, docPath, (text) => renameSceneRefs(text, oldId, newId));
+		}
 	}
 
 	/** 时间线编辑弹窗「人物」下拉候选（v0.3.3+ 合并大事件）：当前书三层《人物.md》角色名去重排序（与人物关系面板「人物状态」同源）；无当前书/读取失败返回空数组（弹窗退化为无候选） */

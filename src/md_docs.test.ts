@@ -4,6 +4,8 @@ import assert from "node:assert/strict";
 
 import {
 	deleteTimelineBlock,
+	docLocationLabel,
+	docRelPath,
 	formatTimelineBlock,
 	formatTimelines,
 	insertTimelineBlock,
@@ -277,4 +279,34 @@ test("时间线字段更名 描述→详情（v0.4.7+）：旧格式兼容解析
 	const e2 = parseTimelines("## 121 甲\n- 详情：详情走详情字段\n");
 	assert.equal(e2[0].desc, "详情走详情字段", "「详情」不再作事件别名、归详情字段");
 	assert.equal(e2[0].event, "", "事件字段不被 详情 抢占");
+});
+
+// ---------- v0.4.9+ 「级别／所在文档」文案（场景／时间线／人物关系三个面板的弹窗与行上出处标签共用口径） ----------
+
+void test("docRelPath：剥掉书目录前缀＝从书籍目录起算的位置（不带《工作目录/<书名>/》）", () => {
+	const dir = "我的工作/写书计划/曜尽溟回";
+	assert.equal(docRelPath(`${dir}/案头资料/时间线.md`, dir), "案头资料/时间线.md");
+	assert.equal(docRelPath(`${dir}/书稿/风起-时间线.md`, dir), "书稿/风起-时间线.md");
+	assert.equal(docRelPath(`${dir}/案头资料/人物.md`, dir), "案头资料/人物.md", "任何文档同一口径");
+});
+
+void test("docRelPath：bookDir 空／路径不在该书目录下＝原样返回（不把异常路径吞成相对）", () => {
+	const pth = "我的工作/写书计划/曜尽溟回/案头资料/时间线.md";
+	assert.equal(docRelPath(pth, ""), pth, "无书目录＝原样");
+	assert.equal(docRelPath(pth, "我的工作/写书计划/别的书"), pth, "书目录对不上＝原样");
+	assert.equal(docRelPath(pth, pth), pth, "路径恰等于书目录＝原样（不是其子路径）");
+});
+
+void test("docLocationLabel：层级词 · 书内路径（默认书级／卷级／章级＋文件名都在文案里）", () => {
+	const dir = "我的工作/写书计划/曜尽溟回";
+	assert.equal(docLocationLabel("book", `${dir}/案头资料/时间线.md`, dir), "书级 · 案头资料/时间线.md");
+	assert.equal(docLocationLabel("volume", `${dir}/书稿/第一卷 风起/文档/时间线-战斗线.md`, dir), "卷级 · 书稿/第一卷 风起/文档/时间线-战斗线.md");
+	assert.equal(docLocationLabel("chapter", `${dir}/书稿/01-初见/01-初见-时间线.md`, dir), "章级 · 书稿/01-初见/01-初见-时间线.md");
+});
+
+void test("docLocationLabel：面板自带层级词（人物关系面板＝书籍级）＝同一拼法、换词不换口径", () => {
+	const dir = "我的工作/写书计划/曜尽溟回";
+	const words = { book: "书籍级", volume: "卷级", chapter: "章级" };
+	assert.equal(docLocationLabel("book", `${dir}/案头资料/人物.md`, dir, words), "书籍级 · 案头资料/人物.md");
+	assert.equal(docLocationLabel("volume", `${dir}/书稿/第一卷 风起/人物.md`, dir, words), "卷级 · 书稿/第一卷 风起/人物.md");
 });

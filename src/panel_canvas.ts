@@ -6,7 +6,67 @@ export const PANEL_ZOOM_MAX = 3;
 
 export const clampNum = (v: number, lo: number, hi: number): number => (v < lo ? lo : v > hi ? hi : v);
 
+/** **「适应全图」的纯算法**（v0.4.9+，node 可测）：把内容矩形 `rect` 装进视口 `vw×vh`（四周留 `pad`）→ 倍率＋虚拟平移偏移。
+ *  倍率＝min((vw−2pad)/w, (vh−2pad)/h) 再夹到 `[lo, min(hi,1)]`＝**只缩小不放大**（内容比视口小＝100% 居中，不糊卡片）；
+ *  偏移＝包围盒缩放后中心对齐聚中（`pan＝(视口−内容·z)/2 − rect 起点·z`），口径与 `CanvasPanel.toContentPoint` 一致（scroll 取 0）。
+ *  尺寸异常（0/NaN/负）＝返回 null，调用方应保持当前视图不动 */
+export function fitZoomTo(
+	rect: { x: number; y: number; w: number; h: number },
+	vw: number,
+	vh: number,
+	pad: number,
+	lo: number,
+	hi: number,
+): { zoom: number; panX: number; panY: number } | null {
+	if (!Number.isFinite(rect.w) || !Number.isFinite(rect.h) || rect.w <= 0 || rect.h <= 0) return null;
+	if (!Number.isFinite(vw) || !Number.isFinite(vh) || vw <= 0 || vh <= 0) return null;
+	const z = clampNum(Math.min((vw - pad * 2) / rect.w, (vh - pad * 2) / rect.h), lo, Math.min(hi, 1));
+	return { zoom: z, panX: (vw - rect.w * z) / 2 - rect.x * z, panY: (vh - rect.h * z) / 2 - rect.y * z };
+}
+
+/** **以屏幕点（＝鼠标所在位置）为中心缩放的纯算法**（v0.4.9+，node 可测）
+ *  口径：屏幕映射 `m＝pan＋p·z−scroll`，记**虚拟偏移** `v＝pan−scroll`（⇒ `m＝p·z＋v`，与缩放倍率无关）。
+ *  锚点＝鼠标下的内容点 `p`（由 `toContentPoint` 换算），鼠标偏移 `m` **钳进视口** `[0,vw]×[0,vh]`（坐标离谱＝以画面边内一点缩放，不把内容甩飞）。
+ *  保持锚点不动 ⇒ 新虚拟偏移 **`v′＝m−p·z′`**（⚠️ 必须从虚拟偏移出发：只按「目标 scroll＝pan＋p·z′−m」补差＝**把缩放前的滚动量当 0**，
+ *  视图已滚过时缩放中心会整体偏掉一截——v0.4.9 实测就是这个坑）。
+ *  落回两个通道：`scroll′＝clamp(pan−v′, 0, max)`（DOM 只接受 0..max），**余量不够的部分由虚拟平移层补差** `pan′＝v′＋scroll′`。
+ *  不变量（`panel_canvas.test.ts` 逐档断言）：`pan′＋p·z′−scroll′ ≡ m(钳后)` 且 `0 ≤ scroll′ ≤ max` */
+export function zoomAtPointView(
+	p: { x: number; y: number },
+	mx: number,
+	my: number,
+	nz: number,
+	panX: number,
+	panY: number,
+	scrollLeft: number,
+	scrollTop: number,
+	maxX: number,
+	maxY: number,
+	vw: number,
+	vh: number,
+): { panX: number; panY: number; scrollLeft: number; scrollTop: number } {
+	const ax = clampNum(mx, 0, Math.max(0, vw));
+	const ay = clampNum(my, 0, Math.max(0, vh));
+	const vx = ax - p.x * nz;
+	const vy = ay - p.y * nz;
+	const sl = clampNum(panX - vx, 0, Math.max(0, maxX));
+	const st = clampNum(panY - vy, 0, Math.max(0, maxY));
+	return { panX: vx + sl, panY: vy + st, scrollLeft: sl, scrollTop: st };
+}
+
 /** CanvasPanel 构造参数：三层元素的样式类与 transform 的 CSS 变量名（各面板配色/尺寸独立，行为完全一致） */
+/** 视口内偏移（CSS px，相对**视口左上角**）→ **内容坐标系**（＝卡片 `left/top`、场景 `- 位置：x,y` 所用坐标）。
+ *  口径与 `CanvasPanel.toContentPoint` 完全一致＝`(scroll + 偏移 − pan)/z`（v0.4.9+ 抽出共用＝
+ *  新建场景默认落点「视口左上角 +(50,50)」与空白处右键落点走同一换算；`zoom<=0` 按 1 兜底） */
+export function viewPointToContent(
+	v: { scrollLeft: number; scrollTop: number; panX: number; panY: number; zoom: number },
+	offX: number,
+	offY: number,
+): { x: number; y: number } {
+	const z = v.zoom > 0 ? v.zoom : 1;
+	return { x: (v.scrollLeft + offX - v.panX) / z, y: (v.scrollTop + offY - v.panY) / z };
+}
+
 export interface CanvasPanelOptions {
 	bodyCls: string; // 画布容器类（须含 overflow 布局，如 "aw-st-tree aw-tl-body"）
 	sizerCls: string;
@@ -75,6 +135,38 @@ export class CanvasPanel {
 		this.apply();
 	}
 
+	/** 当前视图状态（滚动＋虚拟平移＋倍率）＝`viewPointToContent` 的输入（v0.4.9+ 抽出＝三个换算入口共用同一口径） */
+	private viewState(): { scrollLeft: number; scrollTop: number; panX: number; panY: number; zoom: number } {
+		return { scrollLeft: this.bodyEl.scrollLeft, scrollTop: this.bodyEl.scrollTop, panX: this.panX, panY: this.panY, zoom: this.zoomLevel };
+	}
+
+	/** 屏幕点（clientX/clientY）→ **内容坐标系**（＝卡片 `left/top`、场景 `- 位置：x,y` 所用的坐标）：
+	 *  同一口径换算＝p＝(scroll + m − pan)/z（与滚轮缩放不动点公式一致，v0.4.9+ 抽出共用＝空白处右键「在此添加场景」的落点） */
+	toContentPoint(clientX: number, clientY: number): { x: number; y: number } {
+		const rect = this.bodyEl.getBoundingClientRect();
+		return viewPointToContent(this.viewState(), clientX - rect.left, clientY - rect.top);
+	}
+
+	/** **视口左上角 +(offX,offY)**（CSS px）处的内容坐标（v0.4.9+ 用户要求＝新建场景落在当前视口左上角 (50,50) 处） */
+	viewPoint(offX: number, offY: number): { x: number; y: number } {
+		return viewPointToContent(this.viewState(), offX, offY);
+	}
+
+	/** **适应全图**（v0.4.9+）：把内容坐标矩形（＝卡片/内容包围盒）缩放＋平移到「视口刚好包住它」——
+	 *  倍率与偏移由纯函数 `fitZoomTo` 算（node 可测）；偏移走虚拟平移层（z≤1 时 `apply()` 把滚动限位成 0，居中只能靠 pan）；
+	 *  换算口径同 `toContentPoint`（m＝pan＋p·z−scroll，取 scroll 归零）。
+	 *  返回生效倍率；内容/视口尺寸异常＝返回 null 且不动视图 */
+	fitToRect(rect: { x: number; y: number; w: number; h: number }, pad: number = 14): number | null {
+		const fit = fitZoomTo(rect, this.bodyEl.clientWidth, this.bodyEl.clientHeight, pad, this.opts.min ?? PANEL_ZOOM_MIN, Math.min(this.opts.max ?? PANEL_ZOOM_MAX, 1)); // 适应＝只缩小不放大多余
+		if (!fit) return null;
+		this.zoomLevel = fit.zoom;
+		this.panX = fit.panX;
+		this.panY = fit.panY;
+		this.bodyEl.scrollTo({ left: 0, top: 0 });
+		this.apply();
+		return fit.zoom;
+	}
+
 	/** 应用画布视图状态：sizer 宽高＝内容×缩放（决定可滚动范围）、transform via CSS var、滚动位置限位、倍率标签 class；构造 / 滚轮缩放 / 点击复位 / 重渲染后共用 */
 	apply(): void {
 		const w = Math.max(this.bodyEl.clientWidth, this.contentW); // v0.4.7+：内容宽（setContentWidth）大于视口时按内容宽撑开
@@ -87,8 +179,10 @@ export class CanvasPanel {
 		// 变量用固定名设在 panEl 自身（每面板一个 panEl，互不冲突；CSS 只需认这一对名字）
 		this.panEl.style.setProperty("--aw-canvas-pan-x", `${String(this.panX)}px`);
 		this.panEl.style.setProperty("--aw-canvas-pan-y", `${String(this.panY)}px`);
-		const maxX = Math.max(0, this.sizerEl.clientWidth - w);
-		const maxY = Math.max(0, this.sizerEl.clientHeight - this.bodyEl.clientHeight);
+		// 滚动余量口径唯一来源＝maxScrollX/Y（v0.4.9+ 修正：减**视口宽**、不是内容布局宽——
+		// 此前写成减 w，场景画布 contentW>视口时 z=1 也算出 maxX=0＝横向原生滚动条/滚轮完全滚不动最右侧卡片，只能靠平移层拖）
+		const maxX = this.maxScrollX();
+		const maxY = this.maxScrollY();
 		if (this.bodyEl.scrollLeft > maxX) this.bodyEl.scrollLeft = maxX; // 缩小时把越界的滚动位置拉回
 		if (this.bodyEl.scrollTop > maxY) this.bodyEl.scrollTop = maxY;
 		if (!this.zoomLbl) return; // 头部尚未渲染时跳过标签更新
@@ -128,6 +222,31 @@ export class CanvasPanel {
 		}
 	}
 
+	/** **缩放余量上限**（v0.4.9+ 抽出＝三处共用一个口径）：sizer（内容×缩放）− **视口宽**。
+	 *  注意减的是视口宽、**不是内容布局宽**：场景画布 `contentW > 视口` 时若减布局宽，z=1 也算出 0＝横向根本滚不动 */
+	private maxScrollX(): number {
+		return Math.max(0, this.sizerEl.clientWidth - this.bodyEl.clientWidth);
+	}
+
+	private maxScrollY(): number {
+		return Math.max(0, this.sizerEl.clientHeight - this.bodyEl.clientHeight);
+	}
+
+	/** **以屏幕点（鼠标）为中心缩放**（v0.4.9+，滚轮与任何缩放入口共用）：算法见 `zoomAtPointView`；
+	 *  先 `apply()` 撑出新倍率的 sizer，才知道滚动余量的上下限 */
+	private zoomAtPoint(p: { x: number; y: number }, mx: number, my: number, nz: number): void {
+		const sl = this.bodyEl.scrollLeft; // 缩放前的滚动量也要进算法（＝虚拟偏移 v＝pan−scroll）
+		const st = this.bodyEl.scrollTop;
+		this.zoomLevel = nz;
+		this.apply(); // 先把 sizer 撑成新倍率的尺寸，滚动余量上下限才算得准
+		const v = zoomAtPointView(p, mx, my, nz, this.panX, this.panY, sl, st, this.maxScrollX(), this.maxScrollY(), this.bodyEl.clientWidth, this.bodyEl.clientHeight);
+		this.panX = v.panX;
+		this.panY = v.panY;
+		this.bodyEl.scrollLeft = v.scrollLeft;
+		this.bodyEl.scrollTop = v.scrollTop;
+		this.apply();
+	}
+
 	/** 画布交互（建 UI 时挂一次，元素常驻不随 render 重建） */
 	private setupCanvas(): void {
 		const lo = this.opts.min ?? PANEL_ZOOM_MIN;
@@ -138,16 +257,9 @@ export class CanvasPanel {
 			const d = ev.deltaMode === 1 ? ev.deltaY * 32 : ev.deltaY; // 行模式换算成像素量级
 			const nz = clampNum(this.zoomLevel * Math.exp(-d * 0.0015), lo, hi);
 			if (nz === this.zoomLevel) return;
-			// 以鼠标位置为不动点：屏幕点 m＝pan＋p·z−scroll（v0.4.7+ 含虚拟平移层）→ p＝(m+scroll−pan)/z，缩放后 scroll′＝pan＋p·z′−m
 			const rect = this.bodyEl.getBoundingClientRect();
-			const mx = ev.clientX - rect.left;
-			const my = ev.clientY - rect.top;
-			const px = (this.bodyEl.scrollLeft + mx - this.panX) / this.zoomLevel;
-			const py = (this.bodyEl.scrollTop + my - this.panY) / this.zoomLevel;
-			this.zoomLevel = nz;
-			this.bodyEl.scrollLeft = this.panX + px * nz - mx;
-			this.bodyEl.scrollTop = this.panY + py * nz - my;
-			this.apply();
+			const p = this.toContentPoint(ev.clientX, ev.clientY); // 鼠标处的内容坐标（同一换算口径）
+			this.zoomAtPoint(p, ev.clientX - rect.left, ev.clientY - rect.top, nz);
 		}, { passive: false });
 
 		let dragFrom: { x: number; y: number; sl: number; st: number; px: number; py: number } | null = null;
@@ -158,14 +270,15 @@ export class CanvasPanel {
 		const onDragMove = (ev: PointerEvent): void => {
 			if (!dragFrom) return;
 			// v0.4.7+ 混合平移：滚动余量内驱动容器滚动（与滚轮/滚动条/触屏同一套），到底后剩余量转入虚拟平移层（panEl translate）——内容不超出面板也能挪整个视野
-			const maxX = Math.max(0, this.sizerEl.clientWidth - this.bodyEl.clientWidth);
-			const maxY = Math.max(0, this.sizerEl.clientHeight - this.bodyEl.clientHeight);
+			const maxX = this.maxScrollX(); // 口径唯一来源＝maxScrollX/Y（v0.4.9+：减视口宽，原减内容布局宽＝场景画布 z=1 也滚不动）
+			const maxY = this.maxScrollY();
 			const wantL = dragFrom.sl - (ev.clientX - dragFrom.x);
 			const wantT = dragFrom.st - (ev.clientY - dragFrom.y);
 			this.bodyEl.scrollLeft = clampNum(wantL, 0, maxX);
 			this.bodyEl.scrollTop = clampNum(wantT, 0, maxY);
-			this.panX = dragFrom.px + (wantL - this.bodyEl.scrollLeft);
-			this.panY = dragFrom.py + (wantT - this.bodyEl.scrollTop);
+			// 屏幕位移＝pan − scroll：滚动用不尽的残差要**取反**补给 pan（scroll 多滚＝内容左移，translate 正值＝内容右移）
+			this.panX = dragFrom.px - (wantL - this.bodyEl.scrollLeft);
+			this.panY = dragFrom.py - (wantT - this.bodyEl.scrollTop);
 			this.apply();
 			if (!dragged && Math.abs(ev.clientX - dragFrom.x) + Math.abs(ev.clientY - dragFrom.y) > 3) {
 				dragged = true;

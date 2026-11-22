@@ -1,5 +1,5 @@
 import { ItemView, Menu, Notice, setTooltip, TFile, WorkspaceLeaf, type MarkdownView } from "obsidian";
-import { deleteTimelineBlock, insertTimelineBlock, parseTimelineHeading, parseTimelineTime, rewriteTimelineEntryTime, timelineTimeText, updateTimelineBlock, type TimelineEntry, type TimelineEntryInput, type TimelinePoint } from "./md_docs";
+import { deleteTimelineBlock, insertTimelineBlock, parseTimelineHeading, parseTimelineTime, rewriteTimelineEntryTime, docRelPath, docLocationLabel, timelineTimeText, updateTimelineBlock, type TimelineEntry, type TimelineEntryInput, type TimelinePoint } from "./md_docs";
 import { ConfirmModal, EventEditModal, type EventEditResult } from "./modals"; // v0.3.3+ 合并大事件：面板承担原事件树面板的新增/编辑/删除/完成切换
 import { buildOutlineTree, countSubtree, type OutlineNode } from "./outline_tree"; // v0.3.1+：轮廓树算法与事件树面板共用
 import { CanvasPanel } from "./panel_canvas"; // v0.3.1+：缩放/平移画布设施与事件树面板共用
@@ -16,6 +16,14 @@ export interface TlRow extends TimelineEntry {
 	sourceLabel: string; // 层级标签（书籍级 / 卷 · <卷名> / 章 · 第N章 <标题>），合并展示时随条目显示出处
 	lane: string; // v0.4.7+ 多时间线泳道名（默认《时间线.md》＝"默认"、《时间线-战斗线.md》＝"战斗线"）
 	laneIndex: number; // v0.4.7+ 泳道序号（按快照 lanes 顺序）：驱动行配色 .tl-l<idx>
+}
+
+/** v0.4.9+ 一本书里的**每份时间线文档**（快照带下来＝弹窗「级别」下拉的候选，无需再读盘）：路径＋层级＋泳道＋是否已落盘 */
+export interface TlDocRef {
+	path: string; // vault 相对路径（《时间线.md》／《时间线-战斗线.md》／章级《01-初见-时间线.md》；未创建时＝新格式候选路径）
+	scope: TlScope; // 该文档所属层级（书级／卷级／章级）
+	lane: string; // 泳道名（默认时间线＝"默认"）
+	exists: boolean; // 磁盘上是否已有该文件（候选路径＝false；章级候选路径动辄几十条，下拉里只列已存在的）
 }
 
 /** v0.4.7+ 多时间线泳道：一条时间线（可跨书/卷/章多份同名文档），面板按泳道配色、可单独筛显 */
@@ -52,6 +60,8 @@ export interface TlSnapshot {
 	totalCount: number; // 全部层解析出的事件总条数
 	bookTimelinePath: string; // 书级《时间线.md》路径（＝头部「＋ 事件」根级新增的写入目标；文件可尚不存在，mutate 时自动创建）
 	lanes: TlLane[]; // v0.4.7+ 本书全部时间线泳道（含仅默认一条时），顺序＝行内首次出现序（默认泳道恒最先）
+	docs: TlDocRef[]; // v0.4.9+ 本书全部《时间线*.md》文档（含未创建的候选）＝「＋ 事件」级别下拉的候选
+	storyDir: string; // 当前书的目录（vault 相对）＝位置文案里要剥掉的仓库前缀（空＝无当前书）
 }
 
 /** 某行是否命中筛选词（人物名 + 事件名 + 事件正文匹配） */
@@ -91,7 +101,8 @@ function tlEpochMs(p: Pick<TimelineEntry, "time" | "month" | "day">): number {
  * 把当前小说**书根 / 卷目录 / 章节目录三层全部「时间线开头」的文档**（默认《时间线.md》＋扩展《时间线-***.md》，v0.4.7+ 多时间线）合并成一条自上而下的纵向时间轴——条目按时间点（支持 年 / 年-月 / 年-月-日）升序排列，每条带来源层级标签；标题深度即事件级别（#=一级、##=二级、###=三级，可更深）。**父子关系按文档结构**：同一文档内「父＝其前最近一条级别更小的条目」（跨文档不挂父）；轮廓树仅决定嵌套深度与折叠归属，**渲染是扁平的一条时间升序序列**——子事件即使时间排在别的更大事件之后也仍属于结构父，缩进按轮廓深度、圆点固定在主轴。
  * **多时间线（v0.4.7+）**：同容器内《时间线-战斗线.md》之类文档自动并入面板，与默认时间线**按时间合并绘制**；每条泳道一种配色（徽章描边 + 非默认泳道的彩色名称 chip），底部汇总行下给出「时间线」图例（色点＋名称＋条数，点击＝只看该泳道／恢复全部），头部另有时间线下拉；「＋ 事件」写入当前所选泳道的文档（未选＝书级《时间线.md》）。
  * **时间比例间距**：相邻条目的垂直间隔按其时间差成比例拉开（基准 5px/天、90 天内按真实比例出留白，超过 90 天的间隔压成定高「⋯ 约 N 年 ⋯」时间跳跃标记块防极端点拉爆画布；密度另可用 Ctrl|Shift 滚轮缩放调节）；筛选模式下改紧凑堆叠（命中稀疏不成比例）。汇总行附「跨度 N 年 M 月」（最早到最晚的总时长）。
- * 顶部筛选框可按人物/事件关键词过滤（筛选时显示命中条目及其祖先链、忽略折叠状态）。**双击**条目在编辑器打开来源文件并定位到该时间点标题行（单击不触发，避免误触）；**点击圆点**切换有子事件条目的折叠状态；**右键条目**弹出节点菜单（编辑/添加子事件/添加同级/完成切换/删除）。
+ * 顶部筛选框可按人物/事件关键词过滤（筛选时显示命中条目及其祖先链、忽略折叠状态）。**双击**条目弹出**编辑事件弹窗**（v0.4.9+ 用户要求＝不再在编辑器打开文档＝与场景面板卡片同口径；单击不触发，避免误触）；
+ * **点击圆点**切换有子事件条目的折叠状态；**右键条目**弹出节点菜单（编辑/添加子事件/添加同级/完成切换/**打开来源文档**＝在编辑器打开来源《时间线.md》并定位到该时间点标题行，图标 `file-text`／删除）。
  * **事件编辑（v0.3.3+ 合并大事件后由本面板承担，原「大事件」面板已退场）**：头部「＋ 事件」＝书级《时间线.md》文档末尾追加一级节点；条目行右侧动作组（＋／✎／✓○／🗑）＝添加子事件、编辑、完成状态快速切换、删除（删除经 ConfirmModal，根节点＝整棵子树删除）；条目还可带**影响**行（内联小字）与**关联** chip（点击跳到目标事件所在文档标题，并给该条目 1.2s 高亮闪烁）。所有写回按条目 `sourcePath` 定位（updateTimelineBlock/insertTimelineBlock/deleteTimelineBlock），书级文档不存在时自动创建；子事件级别封顶 6（标题深度上限）。
  * **拖动更新时间点**（仅非筛选比例视图、鼠标左键）：按住条目沿轴上下拖过阈值后整棵子树实时平移、**条目自身的时间徽章立即变为新时间点**、光标旁浮标显示天数差（位移÷画布缩放÷基准比例尺＝Δ天）；松手把新时间写回对应《时间线.md》的标题行——精度跟随原写法（含日按天算、只含月按月吸附、纯年份按年取整），经「注释掩码＋原文标题行全文匹配＋旧值反解校验」防误写，成功后由 vault 变更防抖自动重渲染；源文档已变化则放弃并提示刷新。
  * **画布交互**：主体区 overflow:auto——普通滚轮/滚动条/触屏原生滚动（内容放得下时滚动页面），Ctrl|Shift＋滚轮以鼠标位置为不动点缩放（0.4×–3×），左键按住拖动平移（驱动容器滚动位置），头部倍率标签点击复位。
@@ -264,6 +275,28 @@ export class TimelineView extends ItemView {
 			if (hit) return hit.sourcePath;
 		}
 		return this.lanesOf(snap).find((l) => l.name === this.laneFilter)?.paths[0] ?? snap.bookTimelinePath;
+	}
+
+	/** 某条目/某份文档的**所在位置**（v0.4.9+ 用户要求＝面板与弹窗都要看得到「这条事件在哪份文档」）＝`层级词 · 书内路径`
+	 *  （＝场景面板「场景所在位置」同口径：从书籍目录起算、不带《工作目录/<书名>/》前缀；卷名/章名/泳道名本就在目录名与文件名里） */
+	private locationOf(scope: TlScope, path: string): string {
+		return docLocationLabel(scope, path, this.lastSnap?.storyDir ?? "");
+	}
+
+	/** 「＋ 事件」的**级别**候选（v0.4.9+ 用户要求＝新增事件也要有级别信息，同场景弹窗）＝当前所选泳道下的各层《时间线*.md》：
+	 *  按**书级 → 卷级 → 章级**排，每项文案＝`层级词 · 书内路径`（＝落哪份文档一目了然）；候选＝快照带来的 snap.docs（含尚未创建的卷/章文档＝写入时自动创建），
+	 *  **章级只列磁盘上已存在的文档**（每章的候选路径动辄几十条，全列会淹没下拉）；
+	 *  默认选中＝旧口径（`addTargetPath`＝未选泳道＝书级《时间线.md》／选中泳道＝该泳道已有文档）＝行为不变，只是现在看得见、也能改 */
+	private levelChoices(snap: TlSnapshot): { options: { value: string; label: string }[]; value: string } {
+		const lane = this.laneFilter || "默认";
+		const options: { value: string; label: string }[] = [];
+		for (const scope of ["book", "volume", "chapter"] as const) {
+			for (const d of snap.docs.filter((x) => x.scope === scope && x.lane === lane && (scope !== "chapter" || x.exists))) {
+				options.push({ value: d.path, label: docLocationLabel(scope, d.path, snap.storyDir) });
+			}
+		}
+		const def = this.addTargetPath(snap);
+		return { options, value: options.some((o) => o.value === def) ? def : options[0]?.value ?? "" };
 	}
 
 	/** 主体区：单一合并纵向时间轴（**扁平的一条时间升序序列**、每条带来源标签；缩进＝文档结构轮廓深度、折叠按结构子树整棵隐藏；相邻条目间按时间差插比例间隔——90 天内为留白块 .aw-tl-spacer〔基准 5px/天〕、超出压成定高时间跳跃标记 .aw-tl-skip；筛选模式紧凑堆叠）+ 无有效条目文档的格式提示；汇总行固定显示在底部 sumEl（非筛选视图附「跨度」＝最早到最晚总时长，按可见行 min/max 计算）。
@@ -494,7 +527,12 @@ export class TimelineView extends ItemView {
 			if (!row.title) setTooltip(nameEl, "该事件没有事件名：以「事件」字段首行作为名称显示");
 		}
 		if (row.done) item.createSpan({ text: "✓ 已完成", cls: "aw-tl-done" });
-		if (row.sourceLabel) item.createSpan({ text: row.sourceLabel, cls: "aw-dim aw-tl-src" });
+		if (row.sourceLabel) {
+			// v0.4.9+ 用户要求＝事件要看得到所在文档：默认泳道在标签后补出文档文件名（非默认泳道的标签里已带泳道名），悬停给出完整「层级词 · 书内路径」
+			const docName = row.sourcePath.slice(row.sourcePath.lastIndexOf("/") + 1).replace(/\.md$/, "");
+			const srcEl = item.createSpan({ text: row.lane === "默认" ? `${row.sourceLabel} · ${docName}` : row.sourceLabel, cls: "aw-dim aw-tl-src" });
+			setTooltip(srcEl, this.locationOf(row.scope, row.sourcePath));
+		}
 		if (row.lane && row.lane !== "默认") { // v0.4.7+ 多时间线：非默认泳道挂彩色名称 chip（默认时间线不占位，配色已由圆点/徽章体现）
 			const laneChip = item.createSpan({ text: row.lane, cls: "aw-tl-lane aw-tl-lane-tag" });
 			const color = tlLaneStyle(this.laneNameIdx.get(row.lane) ?? row.laneIndex).color;
@@ -530,7 +568,7 @@ export class TimelineView extends ItemView {
 			bAdd.addEventListener("click", (ev) => { ev.stopPropagation(); void this.openAddChild(row); });
 		}
 		const bEdit = acts.createEl("button", { text: "✎", cls: "aw-tl-act" });
-		setTooltip(bEdit, "编辑事件");
+		setTooltip(bEdit, "编辑事件（与双击条目同）");
 		bEdit.addEventListener("click", (ev) => { ev.stopPropagation(); void this.openEdit(row); });
 		const bDone = acts.createEl("button", { text: row.done ? "✓" : "○", cls: `aw-tl-act ${row.done ? "is-tl-done-on" : "is-tl-done-off"}` });
 		setTooltip(bDone, row.done ? "标记为未完成" : "标记为已完成");
@@ -539,19 +577,19 @@ export class TimelineView extends ItemView {
 		setTooltip(bDel, node.children.length ? "删除事件及全部子事件" : "删除事件");
 		bDel.addEventListener("click", (ev) => { ev.stopPropagation(); this.deleteNode(row, node); });
 		item.addEventListener("contextmenu", (ev: MouseEvent) => { ev.preventDefault(); this.openNodeMenu(ev, row, node); }); // 右键菜单＝编辑动作的替代入口（触屏/长按同用）
-		item.addEventListener("dblclick", () => void this.openAt(row)); // 双击定位功能保留；提示文字不再占用 Tip（Tip 专显描述内容）
+		item.addEventListener("dblclick", () => void this.openEdit(row)); // v0.4.9+ 用户要求＝双击弹**编辑事件弹窗**（不再在编辑器打开文档＝与场景面板同口径）；打开来源文档＝右键「打开来源文档」。提示文字仍不占用 Tip（Tip 专显描述内容）
 		if (q === "") this.attachTlDrag(item, row, node); // 拖动更新时间点仅非筛选比例视图（筛选紧凑布局下位移无比例语义）
 		if (collapsedCount !== null) item.createSpan({ text: `（已折叠 ${String(collapsedCount)} 条子事件）`, cls: "aw-dim aw-tl-collapsed-hint" }); // 折叠提示（按结构子树条数，由 renderBody 判定）
 	}
 
-	/** 条目右键菜单（编辑动作替代入口）：编辑事件 / 添加子事件（级别＜6 时）/ 添加同级 / 标记完成或未完成 / 在编辑器打开 / 删除（含子事件时文案注明） */
+	/** 条目右键菜单（编辑动作替代入口）：编辑事件 / 添加子事件（级别＜6 时）/ 添加同级 / 标记完成或未完成 / 打开来源文档（v0.4.9+ 用户要求＝文案由「在编辑器打开」统一改名，图标 `file-text` 不变） / 删除（含子事件时文案注明） */
 	private openNodeMenu(ev: MouseEvent, row: TlRow, node: TlNode): void {
 		const menu = new Menu();
 		menu.addItem((it) => it.setTitle("编辑事件").setIcon("pencil").onClick(() => void this.openEdit(row)));
 		if (row.level < 6) menu.addItem((it) => it.setTitle("添加子事件").setIcon("plus").onClick(() => void this.openAddChild(row)));
 		menu.addItem((it) => it.setTitle("添加同级事件").setIcon("list-plus").onClick(() => void this.openAddSibling(row)));
 		menu.addItem((it) => it.setTitle(row.done ? "标记为未完成" : "标记为已完成").setIcon("check").onClick(() => void this.toggleDone(row)));
-		menu.addItem((it) => it.setTitle("在编辑器打开").setIcon("file-text").onClick(() => void this.openAt(row)));
+		menu.addItem((it) => it.setTitle("打开来源文档").setIcon("file-text").onClick(() => void this.openAt(row))); // v0.4.9+ 用户要求＝菜单项文案由「在编辑器打开」统一为「打开来源文档」（与人物关系／场景面板菜单同词），图标沿用 `file-text`
 		menu.addSeparator();
 		menu.addItem((it) => it.setTitle(node.children.length ? "删除事件及子事件" : "删除事件").setIcon("trash").onClick(() => this.deleteNode(row, node)));
 		menu.showAtPosition({ x: ev.x, y: ev.y });
@@ -732,35 +770,37 @@ export class TimelineView extends ItemView {
 		void this.refresh();
 	}
 
-	/** 头部「＋ 事件」＝根级新增：level 1、写**当前所选时间线**的文档末尾（未筛选泳道＝书级《时间线.md》；选中某条时间线＝该泳道已有文档，优先书级→卷级→章级；文档不存在时经 mutate 自动创建）。不能用 level 2 追加末尾——buildOutlineTree 父＝前最近更小级别条目，会挂成最后一条一级事件的子事件 */
+	/** 头部「＋ 事件」＝根级新增：level 1、写**弹窗「级别」下拉所选那份**《时间线*.md》的文档末尾（默认＝旧口径：未筛选泳道＝书级《时间线.md》；选中某条时间线＝该泳道已有文档；文档不存在时经 mutate 自动创建）。不能用 level 2 追加末尾——buildOutlineTree 父＝前最近更小级别条目，会挂成最后一条一级事件的子事件 */
 	private async openAddRoot(): Promise<void> {
 		const snap = this.lastSnap;
 		if (!snap) { new Notice("时间线尚未加载，请先点「刷新」"); return; }
-		await this.openAddAt(1, "新增事件", this.addTargetPath(snap), null, 0, undefined, undefined);
+		const lv = this.levelChoices(snap);
+		await this.openAddAt(1, "新增事件", this.addTargetPath(snap), null, 0, undefined, undefined, { options: lv.options, value: lv.value });
 	}
 
 	/** 添加子事件：级别＝父+1（封顶 6），锚点＝该条目自身（insertTimelineBlock 挂整棵子树末尾）、写回该条目所在文档。缺定位信息的条目退化为文档末尾追加 */
 	private async openAddChild(row: TlRow): Promise<void> {
-		await this.openAddAt(Math.min(6, row.level + 1), `添加子事件（父：${tlRowName(row) || timelineTimeText(row)}）`, row.sourcePath, row.srcHeading ?? null, row.srcOrdinal ?? 0, row, row);
+		await this.openAddAt(Math.min(6, row.level + 1), `添加子事件（父：${tlRowName(row) || timelineTimeText(row)}）`, row.sourcePath, row.srcHeading ?? null, row.srcOrdinal ?? 0, row, row, { label: this.locationOf(row.scope, row.sourcePath) }); // v0.4.9+ 级别行只读＝子事件随父同一份文档（时间线的父子按同一文档内的标题序列成立）
 	}
 
 	/** 添加同级事件：级别＝该条目级别，锚点＝该条目自身（插到其整棵子树之后＝其后首个同级）、写回该条目所在文档 */
 	private async openAddSibling(row: TlRow): Promise<void> {
-		await this.openAddAt(row.level, `添加同级事件（同${tlRowName(row) || timelineTimeText(row)}级）`, row.sourcePath, row.srcHeading ?? null, row.srcOrdinal ?? 0, row, row);
+		await this.openAddAt(row.level, `添加同级事件（同${tlRowName(row) || timelineTimeText(row)}级）`, row.sourcePath, row.srcHeading ?? null, row.srcOrdinal ?? 0, row, row, { label: this.locationOf(row.scope, row.sourcePath) }); // v0.4.9+ 级别行只读＝同级随该条同一份文档
 	}
 
 	/** 新增节点公共流程：先取人物候选再开弹窗；弹窗内时间点必填（非法内联报错）；写回按 level/锚点校验——锚点级别必须比新节点浅一级否则标题序列非法（提示先刷新），通过则 insertTimelineBlock 到锚点子树末尾（锚点 null＝文档末尾） */
-	private async openAddAt(level: number, label: string, docPath: string, anchorHeading: string | null, anchorOrdinal: number, anchorRow: TlRow | undefined, defaultTimeRow: TlRow | undefined): Promise<void> {
+	private async openAddAt(level: number, label: string, docPath: string, anchorHeading: string | null, anchorOrdinal: number, anchorRow: TlRow | undefined, defaultTimeRow: TlRow | undefined, levelChoice: { options?: readonly { value: string; label: string }[]; value?: string; label?: string } | undefined = undefined): Promise<void> {
 		if (anchorHeading !== null && level <= (anchorRow?.level ?? 1)) { new Notice("锚点条目级别与新节点不符，请先点「刷新」后重试"); return; }
 		let chars: string[] = [];
 		try { chars = await this.getCharOptions(); } catch { /* 人物候选读取失败：弹窗人物区显示「暂无」 */ }
 		const related = this.eventOptions(anchorRow ? tlRowName(anchorRow) : undefined);
 		const initial: Partial<EventEditResult> = { timeText: defaultTimeRow ? timelineTimeText(defaultTimeRow) : "" };
-		const modal = new EventEditModal(this.app, label, initial, chars, related, (res) => {
+		const modal = new EventEditModal(this.app, label, initial, chars, related, levelChoice, (res) => { // v0.4.9+ levelChoice＝「＋ 事件」的级别下拉（选写入哪份《时间线.md》）／子事件与同级＝只读的位置行
 			const p = parseTimelineTime(res.timeText); // 弹窗已校验；闭包里对 row 的窄化会丢失，这里就地复解析收窄类型
 			if (!p) { new Notice(`时间点无效：「${res.timeText}」`); return; }
 			const entry: TimelineEntryInput = { level, time: p.time, month: p.month, day: p.day, title: res.title, chars: res.chars, event: res.event, desc: res.desc, impact: res.impact, related: res.related, done: res.done };
-			void this.mutate(`已新增事件「${tlRowName(res) || timelineTimeText(p)}」（级别 ${String(level)}）`, docPath, (text) => insertTimelineBlock(text, entry, anchorHeading, anchorOrdinal));
+			const target = res.scope && res.scope.trim() ? res.scope : docPath; // v0.4.9+ 弹窗「级别」下拉所选文档（只读级别行不带回＝沿用锚点所在文档）
+			void this.mutate(`已新增事件「${tlRowName(res) || timelineTimeText(p)}」（${docRelPath(target, this.lastSnap?.storyDir ?? "")}）`, target, (text) => insertTimelineBlock(text, entry, anchorHeading, anchorOrdinal));
 		});
 		modal.open();
 	}
@@ -783,7 +823,7 @@ export class TimelineView extends ItemView {
 			related: row.related ?? [],
 		};
 		const related = this.eventOptions(tlRowName(row));
-		const modal = new EventEditModal(this.app, "编辑事件", initial, chars, related, (res) => {
+		const modal = new EventEditModal(this.app, "编辑事件", initial, chars, related, { label: this.locationOf(row.scope, row.sourcePath) }, (res) => { // v0.4.9+ 级别行只读＝该事件所在位置（层级词 · 书内路径）；跨文档挪块＝去对应《时间线.md》里挪
 			const p = parseTimelineTime(res.timeText);
 			if (!p) { new Notice(`时间点无效：「${res.timeText}」`); return; }
 			const entry: TimelineEntryInput = { level: row.level, time: p.time, month: p.month, day: p.day, title: res.title, chars: res.chars, event: res.event, desc: res.desc, impact: res.impact, related: res.related, done: res.done };
@@ -833,7 +873,7 @@ export class TimelineView extends ItemView {
 		window.setTimeout(() => el.removeClass("is-tl-target"), 1200);
 	}
 
-	/** 双击条目：在编辑器打开来源《时间线.md》并滚动定位到该事件的 ## 标题行 */
+	/** 在编辑器打开来源《时间线.md》并滚动定位到该事件的 ## 标题行（v0.4.9+ 起入口＝右键「打开来源文档」与关联 chip 跳转；双击已改为弹编辑弹窗） */
 	private async openAt(row: TlRow): Promise<void> {
 		const f = this.app.vault.getAbstractFileByPath(row.sourcePath);
 		if (!(f instanceof TFile)) return; // 候选路径（文档尚未创建）静默忽略

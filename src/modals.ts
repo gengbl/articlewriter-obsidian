@@ -1,6 +1,6 @@
 import { App, Modal, Notice, setTooltip, SuggestModal, Setting, TFile, TFolder, ToggleComponent } from "obsidian";
 import { PIPELINE_STAGES, type StageId } from "./pipeline"; // v0.3.0+：AutoBookModal 起始节点下拉（pipeline.ts 纯数据、不 import obsidian，无循环依赖）
-import { parseTimelineTime } from "./md_docs"; // v0.3.3+：EventEditModal 时间点校验（md_docs 纯数据模块，无循环依赖）
+import { parseTimelineTime, SCENE_TERRAIN_COLORS } from "./md_docs"; // v0.3.3+：EventEditModal 时间点校验；v0.4.8+：SceneEditModal「地形」下拉候选（md_docs 纯数据模块，无循环依赖）
 import { type BookSkillPhase } from "./state_doc"; // v0.3.4+：BookSkillPhaseModal 阶段键（state_doc 纯数据模块，无循环依赖）
 import { GENRE_SKILL_NAMES } from "./skills_default"; // v0.3.6+：NewStoryModal 旧四题材回落；v0.4.3+ skills_default 会派生题材/编写类型目录技能（story_types 为单向依赖）
 import { INSPIRATION_SKILL_NAME, inspirationMatches, inspirationPreview, type InspirationBlock } from "./inspiration"; // v0.4.3+ 灵感工具包弹窗（inspiration.ts 纯解析/渲染、不 import obsidian，无循环依赖）
@@ -1187,18 +1187,19 @@ export class AddCharacterModal extends AwModal {
 		private scopes: CharacterScopeOption[],
 		private allCandidates: string[], // 全书角色名（下拉里的补充候选，带层级标注由调用方拼进 label 传入亦可；此处仅名字）
 		private relationTypes: string[],
+		private defaultScopeId: string | undefined, // v0.4.9+ 用户要求＝级别下拉按「书籍级 → 卷级 → 章级」分组排列（默认项**不再顶到最前**），默认选中的那一级由调用方指定＝当前写作位置
 		private onSubmit: (result: AddCharacterResult) => void | Promise<void>,
 		private onCancel?: () => void
 	) {
 		super(app);
-		this.scopeId = scopes[0]?.id ?? "";
+		this.scopeId = defaultScopeId && scopes.some((s) => s.id === defaultScopeId) ? defaultScopeId : scopes[0]?.id ?? "";
 	}
 
 	onOpen(): void {
 		this.contentEl.addClass("aw-form-compact"); // 与 MultiFieldModal 同一紧凑行距类（styles.css .aw-form-compact）
 		this.contentEl.createEl("h3", { text: "添加人物" });
 		this.contentEl.createDiv({
-			text: "归属级别决定人物写入哪一份《人物.md》（书籍级=书根、卷级=卷目录、章级=章节目录）；关系条目写入同层级的《人物关系.md》。",
+			text: "「人物级别」决定人物写入哪一份《人物.md》（下拉里已写出目标文档）；关系条目写入同一层级的《人物关系.md》。",
 			cls: "aw-prompt-hint",
 		});
 		new Setting(this.contentEl).setName("姓名（必填）").addText((t) => {
@@ -1292,6 +1293,109 @@ export class AddCharacterModal extends AwModal {
 			.filter((r) => r.target);
 		this.close();
 		void this.onSubmit({ name: this.name.trim(), scope, fields: this.fields, relations });
+	}
+
+	override onClose(): void {
+		this.contentEl.empty();
+		if (!this.submitted && this.onCancel) this.onCancel();
+	}
+}
+
+/**
+ * 人物编辑弹窗（v0.4.9+ 人物关系面板「编辑人物」）：级别（写进哪一份《人物.md》＝可换层，`manager.updateCharacter` 负责搬条目）
+ * ＋ 姓名（改名＝调用方走 `manager.renameCharacter` 全书同步替换＋自动备份）＋ 设定字段（身份/年龄/性别/性格/外貌/背景/能力/备注）。
+ * 与 `AddCharacterModal` 的区别＝不编辑关系条目（关系在《人物关系.md》里由分析/命令维护，面板上双击连线可打开）。
+ */
+export interface CharacterEditResult {
+	name: string; // 人物名（＝《人物.md》条目键）；改了＝调用方 renameCharacter 全书同步替换
+	fields: Record<string, string>; // identity/age/gender/personality/appearance/background/abilities/notes
+	scopeId?: string; // 有级别下拉才带回＝要写到哪一份《人物.md》（＝`CharacterScopeOption.id`）；undefined＝不换层
+}
+
+/**
+ * `level` 与 `SceneEditModal` 同型（名字不叫 `scope`＝基类 `Modal` 已有公开 `scope`）：
+ * `options`＋`value`＝弹窗最上方「级别」下拉（选项文案＝`书籍级 · 案头资料/人物.md` 一类，按书籍级 → 卷级 → 章级排，value＝选中的 `CharacterScopeOption.id`）；
+ * 只给 `label`＝只读行（＝拿不到级别候选时，这一行只显示该人物现在在哪份文档）。**这一行不放说明文字**（用户既定偏好）。
+ */
+export class CharacterEditModal extends AwModal {
+	private submitted = false;
+
+	constructor(
+		app: App,
+		private title: string,
+		private currentName: string,
+		private initialFields: Record<string, string>,
+		private level: { options?: readonly { value: string; label: string }[]; value?: string; label?: string } | undefined,
+		private onSubmit: (result: CharacterEditResult) => void | Promise<void>,
+		private onCancel?: () => void
+	) {
+		super(app);
+	}
+
+	onOpen(): void {
+		this.contentEl.addClass("aw-form-compact");
+		this.contentEl.createEl("h3", { text: this.title });
+		const scopeOptions = this.level?.options ?? [];
+		let scopeChoice = this.level?.value ?? scopeOptions[0]?.value ?? "";
+		if (scopeOptions.length) {
+			new Setting(this.contentEl)
+				.setName("级别")
+				.addDropdown((d) => {
+					for (const o of scopeOptions) d.addOption(o.value, o.label);
+					d.setValue(scopeChoice);
+					d.onChange((v) => (scopeChoice = v));
+				});
+		} else if (this.level?.label) {
+			const here = this.level.label;
+			new Setting(this.contentEl).setName("级别").addDropdown((d) => {
+				d.addOption("here", here);
+				d.setValue("here");
+				d.setDisabled(true);
+			});
+		}
+		let name = this.currentName;
+		let nameErr: HTMLElement | null = null;
+		new Setting(this.contentEl).setName("姓名").addText((t) => {
+			t.setValue(this.currentName);
+			t.onChange((v) => (name = v.trim()));
+		});
+		nameErr = this.contentEl.createDiv({ cls: "aw-ev-msel-empty" }); // 姓名的内联报错＝紧跟姓名那一行
+		nameErr.hide();
+		const fields: Record<string, string> = {};
+		const FIELDS: Array<[string, string, string?]> = [
+			["identity", "身份"],
+			["age", "年龄"],
+			["gender", "性别"],
+			["personality", "性格"],
+			["appearance", "外貌"],
+			["background", "背景"],
+			["abilities", "能力/技能", "多个用「、」分隔"],
+			["notes", "备注"],
+		];
+		for (const [key, label, ph] of FIELDS) {
+			new Setting(this.contentEl).setName(label).addText((t) => {
+				if (ph) t.setPlaceholder(ph);
+				t.setValue(this.initialFields[key] ?? ""); // 预填现值（setValue 不触发 onChange＝同 EventEditModal 坑位）
+				t.onChange((v) => (fields[key] = v.trim()));
+			});
+		}
+		const btns = new Setting(this.contentEl).addButton((btn) =>
+			btn
+				.setButtonText("保存")
+				.setCta()
+				.onClick(() => {
+					if (!name || /[\\/:*?"<>|]/.test(name)) {
+						nameErr?.setText(name ? `姓名无效：「${name}」不能包含 \\ / : * ? " < > |` : "姓名不能为空");
+						nameErr?.show();
+						return;
+					}
+					this.submitted = true;
+					this.close();
+					void this.onSubmit({ name, fields, scopeId: scopeOptions.length ? scopeChoice : undefined });
+				})
+		);
+		btns.addButton((btn) => btn.setButtonText("取消").onClick(() => this.close()));
+		btns.settingEl.addClass("aw-btns-right");
 	}
 
 	override onClose(): void {
@@ -1573,6 +1677,7 @@ export interface EventEditResult {
 	desc: string; // - 详情：（v0.4.7+ 字段更名；旧 `- 描述：` 兼容解析、写回出 详情。多行保留换行；面板仅悬停 Tip 显示；弹窗内可编辑）
 	impact: string; // - 影响：
 	related: string[]; // - 关联：（其它事件名）
+	scope?: string; // v0.4.9+ 「级别」下拉所选的**目标文档路径**（＝新建事件写进哪一份《时间线.md》；只读级别行不带回＝调用方沿用原口径）。名称用 scope 而非 level＝弹窗里 level 另指标题深度
 }
 
 /**
@@ -1625,6 +1730,77 @@ const makeMultiSelect = (
 };
 
 /**
+ * 行式下拉多选（v0.4.8+ 用户要求）：标签与上方 Setting 字段同一行式布局（左标签列 6.5em 对齐、
+ * 控件区吃满剩余宽度），取代旧「标签独占一行 + makeMultiSelect 整行」写法。
+ * 用法＝传入已建好的 Setting 行：makeMultiSelect 宿主挂进 setting.controlEl，行加 aw-ev-msel-row 类供 CSS 撑开控件列。
+ */
+const makeMultiSelectRow = (
+	setting: Setting,
+	placeholder: string,
+	emptyHint: string,
+	options: readonly string[],
+	initial: readonly string[],
+): { get: () => string[]; render: () => void } => {
+	setting.settingEl.addClass("aw-ev-msel-row");
+	return makeMultiSelect(setting.controlEl, placeholder, emptyHint, options, initial);
+};
+
+/**
+ * **带说明的关联行多选**（v0.4.9+ 用户要求，SceneEditModal「关联场景」用）：每条已选关联**独占一行**
+ * ＝场景名 ＋「联通性说明」输入框（写在名字后面）＋**删除按钮在该行最后**；补选下拉仍单独一行（候选＝options 去已选）。
+ * 说明即写盘的 `- 关联：名（说明）` 括号段＝面板连线中点上的文字。
+ * 返回 get()＝`[{id, note}]`（保持加入顺序、去重；note 已 trim）。
+ */
+const makeRelNoteRowsRow = (
+	setting: Setting,
+	placeholder: string,
+	emptyHint: string,
+	options: readonly { id: string; label: string }[],
+	initial: readonly { id: string; note?: string }[],
+	notePlaceholder: string,
+): (() => Array<{ id: string; note: string }>) => {
+	setting.settingEl.addClass("aw-ev-msel-row");
+	const el = setting.controlEl.createDiv({ cls: "aw-ev-msel aw-rel-rows" });
+	const selected: Array<{ id: string; note: string }> = [];
+	for (const it of initial) {
+		if (!it.id || selected.some((s) => s.id === it.id)) continue;
+		selected.push({ id: it.id, note: (it.note ?? "").trim() });
+	}
+	const render = (): void => {
+		el.empty();
+		for (const item of selected) {
+			const name = options.find((o) => o.id === item.id)?.label ?? item.id; // 候选里没有（改名/快照过期）＝原样显示 id，不让它凭空消失
+			const row = el.createDiv({ cls: "aw-rel-row" });
+			const nameEl = row.createSpan({ text: name, cls: "aw-rel-row-name" });
+			nameEl.title = `${item.id}（写盘值）`;
+			const noteEl = row.createEl("input", { type: "text", cls: "aw-rel-row-note", placeholder: notePlaceholder });
+			noteEl.value = item.note;
+			noteEl.addEventListener("input", () => (item.note = noteEl.value)); // 直写模型＝补选/删除重渲染时不丢输入
+			row.createEl("button", { text: "✕", cls: "aw-addchar-relrm aw-rel-row-x", attr: { "aria-label": `移除关联「${name}」` } }).addEventListener("click", () => {
+				const i = selected.findIndex((s) => s.id === item.id);
+				if (i >= 0) selected.splice(i, 1);
+				render();
+			});
+		}
+		const remaining = options.filter((o) => !selected.some((s) => s.id === o.id));
+		if (!remaining.length) {
+			if (emptyHint) el.createDiv({ text: emptyHint, cls: "aw-dim aw-ev-msel-empty" });
+			return;
+		}
+		const drop = el.createEl("select", { cls: "dropdown aw-addchar-sel aw-rel-row-add" });
+		drop.createEl("option", { text: placeholder, value: "" });
+		for (const o of remaining) drop.createEl("option", { text: o.label, value: o.id });
+		drop.addEventListener("change", () => {
+			if (!drop.value) return;
+			selected.push({ id: drop.value, note: "" });
+			render();
+		});
+	};
+	render();
+	return () => selected.map((s) => ({ id: s.id, note: s.note.trim() }));
+};
+
+/**
  * 时间线事件编辑弹窗（时间线面板「新增/编辑事件」共用）：事件名（可空） + 人物（下拉多选） + 已完成（勾选，完成状态） + 事件（多行） + 详情（多行；v0.4.7+ 更名自「描述」，旧 `- 描述：` 解析兼容、保存写回 `- 详情：`） + 影响（多行） + 关联（下拉多选，其它事件名）。
  * initialValues 预填（编辑=节点现值；新增=空）；charOptions/relatedOptions 为人物/关联下拉候选（面板注入：人物来自三层《人物.md》，关联为既有事件名、已排除自身）。
  * 事件名允许留空（＝旧「纯时间点」标题保持无名）；关闭弹窗即放弃（onCancel）。
@@ -1638,6 +1814,7 @@ export class EventEditModal extends AwModal {
 		private initialValues: Partial<EventEditResult> | undefined,
 		private charOptions: readonly string[],
 		private relatedOptions: readonly string[],
+		private level: { options?: readonly { value: string; label: string }[]; value?: string; label?: string } | undefined = undefined, // v0.4.9+ 「级别」行（同场景弹窗口径）：`options`＋`value`＝可选下拉（value＝目标《时间线.md》路径、label＝层级词＋书内路径）；只给 `label`＝只读行＝该事件所在位置。（不命名 scope＝基类 Modal 已有公开 `scope`；EventEditResult.scope 才是提交字段）
 		private onSubmit: (result: EventEditResult) => void | Promise<void>,
 		private onCancel?: () => void
 	) {
@@ -1647,6 +1824,24 @@ export class EventEditModal extends AwModal {
 	onOpen(): void {
 		this.contentEl.addClass("aw-form-compact"); // 多字段表单统一紧凑行距（同 MultiFieldModal）
 		this.contentEl.createEl("h3", { text: this.title });
+		// v0.4.9+ 用户要求＝**弹窗最上方第一行是「级别」**（同场景弹窗）：新建事件时下拉选「写进哪一份《时间线.md》」（选项文案＝`书级 · 案头资料/时间线.md`／`卷级 · …/文档/时间线.md`／`章级 · …/时间线.md`）；
+		// 编辑已有事件／添加子事件与同级事件＝这一行只读，值＝**该事件所在位置**（层级词 · 书内路径）＝换文档要去对应《时间线.md》里挪块（时间线的父子按同一文档内的标题序列成立）
+		const levelOptions = this.level?.options ?? [];
+		let levelChoice = this.level?.value ?? levelOptions[0]?.value ?? "";
+		if (levelOptions.length) {
+			new Setting(this.contentEl).setName("级别").addDropdown((d) => { // 不放说明文字（同场景弹窗）＝选项文案本身写清落在哪份文档
+				for (const o of levelOptions) d.addOption(o.value, o.label);
+				d.setValue(levelChoice);
+				d.onChange((v) => (levelChoice = v));
+			});
+		} else if (this.level?.label) {
+			const here = this.level.label; // 只读态＝禁用单项下拉（行型与可编辑态一致，只是改不了）
+			new Setting(this.contentEl).setName("级别").addDropdown((d) => {
+				d.addOption("here", here);
+				d.setValue("here");
+				d.setDisabled(true);
+			});
+		}
 		// 字段初始值必须直接取自 initialValues——文本框 setValue 不触发 onChange：
 		// 用户没碰过的字段只靠 onChange 回填会恒为空串（编辑态点保存＝「时间点无效」弹窗关不上、未触碰字段被清空）
 		let timeText = (this.initialValues?.timeText ?? "").trim();
@@ -1668,8 +1863,7 @@ export class EventEditModal extends AwModal {
 			if (this.initialValues?.title) t.setValue(this.initialValues.title);
 			t.onChange((v) => (title = v.trim()));
 		});
-		this.contentEl.createDiv({ text: "人物", cls: "aw-ev-msel-label" }); // 下拉多选（候选＝该书三层《人物.md》角色名）
-		const getChars = makeMultiSelect(this.contentEl, "＋ 选择人物…", this.charOptions.length ? "（候选人物已全部选用）" : "（没有人物候选：先在《人物.md》中登记人物）", this.charOptions, this.initialValues?.chars ?? []);
+		const getChars = makeMultiSelectRow(new Setting(this.contentEl).setName("人物"), "＋ 选择人物…", this.charOptions.length ? "（候选人物已全部选用）" : "（没有人物候选：先在《人物.md》中登记人物）", this.charOptions, this.initialValues?.chars ?? []); // 下拉多选（候选＝该书三层《人物.md》角色名）
 		new Setting(this.contentEl).setName("已完成").addToggle((tg) => { // v0.4.3+：去掉字段说明文字，只留「已完成」标题＋开关
 			tg.setValue(this.initialValues?.done ?? false);
 			tg.onChange((v) => (done = v));
@@ -1695,8 +1889,7 @@ export class EventEditModal extends AwModal {
 			ta.inputEl.rows = 2; // 影响＝2 行高
 			ta.onChange((v) => (impact = v));
 		});
-		this.contentEl.createDiv({ text: "关联", cls: "aw-ev-msel-label" }); // 下拉多选（候选＝面板既有事件名，已排除自身）
-		const getRelated = makeMultiSelect(this.contentEl, "＋ 选择关联事件…", this.relatedOptions.length ? "（既有事件已全部选用）" : "（暂无其它既有事件可关联）", this.relatedOptions, this.initialValues?.related ?? []);
+		const getRelated = makeMultiSelectRow(new Setting(this.contentEl).setName("关联"), "＋ 选择关联事件…", this.relatedOptions.length ? "（既有事件已全部选用）" : "（暂无其它既有事件可关联）", this.relatedOptions, this.initialValues?.related ?? []); // 下拉多选（候选＝面板既有事件名，已排除自身）
 		const btns = new Setting(this.contentEl).addButton((btn) =>
 			btn.setButtonText("保存").setCta().onClick(async () => {
 				if (!parseTimelineTime(timeText)) { // 时间点必填且格式必须可解析（年 / 年-月 / 年-月-日）：非法则内联报错、不关闭弹窗
@@ -1706,7 +1899,7 @@ export class EventEditModal extends AwModal {
 				}
 				this.submitted = true;
 				this.close();
-				await this.onSubmit({ timeText, title, chars: getChars.get(), done, event: event.trim(), desc: desc.trim(), impact: impact.trim(), related: getRelated.get() }); // desc＝v0.4.7+ 弹窗内编辑后的值（空＝删除描述）
+				await this.onSubmit({ timeText, title, chars: getChars.get(), done, event: event.trim(), desc: desc.trim(), impact: impact.trim(), related: getRelated.get(), scope: levelOptions.length ? levelChoice : undefined }); // v0.4.9+ scope＝所选目标文档路径（无级别下拉＝不带＝调用方沿用原口径） // desc＝v0.4.7+ 弹窗内编辑后的值（空＝删除描述）
 			})
 		);
 		btns.addButton((btn) => btn.setButtonText("取消").onClick(() => this.close())); // onClose 未提交时触发 onCancel
@@ -1721,18 +1914,27 @@ export class EventEditModal extends AwModal {
 
 // ---------- 场景面板（v0.4.7+）：场景编辑弹窗（新建/编辑共用） ----------
 
+/** v0.4.9+ 关联场景编辑项：id＝写盘的 scene_id（`- 关联：` 项名）；note＝**联通性说明**（写盘＝`id（说明）` 括号段＝面板连线中点文字） */
+export interface SceneRelEdit {
+	id: string;
+	note: string;
+}
+
 export interface SceneEditResult {
-	sceneId: string; // 新建必填；编辑态忽略（调用方按原 id 定位块）。v0.4.7+ 起**场景名即显示名**（独立「显示名」输入已删）
-	description: string;
+	sceneId: string; // 新建必填；编辑态＝可改的新块锚名（v0.4.8+ 改名）。v0.4.7+ 起**场景名即显示名**（独立「显示名」输入已删）
+	description: string; // v0.4.8+ 多行（rows5），场景的主文本入口
 	characters: string[];
-	notes: string;
-	content: string; // 多行正文（写盘 ```text 围栏）
 	parent: string; // 父场景 scene_id（空＝顶层；写盘 `- 父场景：<id>`／删除该行）
-	related: string[]; // v0.4.7+ 关联场景 scene_id 列表（写盘 `- 关联：甲、乙`／空＝删行）
+	related: SceneRelEdit[]; // v0.4.7+ 关联场景（写盘 `- 关联：甲、乙（联通性说明）`／空＝删行）；v0.4.9+ 由 string[] 改为带说明的行（弹窗每行可编辑说明）
+	terrain: string; // v0.4.8+ 地形（写盘 `- 地形：名`；空串＝删行/不着色）
+	scope?: string; // v0.4.9+ **新建＝写入哪一层《场景.md》**（下拉按书级 → 卷级 → 章级排列，默认卷级）："book"＝案头资料/场景.md | "volume"＝当前激活卷《文档/场景.md》 | "chapter"＝当前激活章《场景.md》；编辑态不带＝不换层（级别行只读显示所在位置）
 }
 
 /**
- * 场景编辑弹窗（场景面板「新增/编辑场景」共用）：场景名（＝显示名；新建必填＝`## id` 块锚、编辑态只读防引用悬空）＋描述＋角色（下拉多选，候选＝三层《人物.md》）＋备注＋正文（多行）＋父场景下拉＋关联场景（下拉多选，候选＝其它场景）。
+ * 场景编辑弹窗（场景面板「新增/编辑场景」共用）：**级别下拉（v0.4.9+，仅新建时出现＝弹窗第一个字段）**＝选写入哪一层《场景.md》
+ * 选项文字只有「书级／卷级／章级」三词（按此顺序排，默认选中卷级；候选由调用方按当前激活卷章算好传入、**这一行不带说明文字**＝用户要求），编辑态只给 `label`＝**该行的值＝场景所在位置**（层级 · 来源《场景.md》路径，禁用下拉、不换层）→
+ * **父场景下拉**（v0.4.9+ 用户要求＝排在场景名上面）→场景名（＝显示名＝`## id` 块锚；**编辑态也可改**——改名由调用方 renameSceneBlock 换块锚＋renameSceneRefs 同步其它场景的 `- 父场景：`/`- 关联：` 引用）→角色（下拉多选，候选＝三层《人物.md》）→**关联场景（v0.4.9+ 行式：每条独占一行＝场景名＋联通性说明输入框＋行末删除按钮，补选下拉单独一行）**→**地形下拉**（v0.4.8+：候选＝md_docs 内置地形色板名＋自定义旧值，写 `- 地形：`）→**描述（多行 rows5，放全部字段最下方）**。
+ * v0.4.8+：**「备注」「正文」输入已删**——弹窗不再提交这两字段，文档里已有的 `- 备注：` 行与 ```text 正文围栏写回时**未触碰原样保留**。
  * initialValues 预填（编辑＝条目现值；新增＝空）；名称非法（空 / 含 `\\ / : * ? " < > |`）内联报错、不关闭弹窗；关闭弹窗即放弃（onCancel）。
  */
 export class SceneEditModal extends AwModal {
@@ -1746,6 +1948,7 @@ export class SceneEditModal extends AwModal {
 		private charOptions: readonly string[],
 		private parentOptions: readonly { id: string; label: string }[] = [], // 父场景候选（调用方给：全部场景去自身与后代防环）
 		private sceneOptions: readonly { id: string; label: string }[] = [], // 关联场景候选（v0.4.7+：全部场景去自身；label 展示、id 为选中值与写盘值）
+		private level: { options?: readonly { value: string; label: string }[]; value?: string; label?: string } | undefined = undefined, // v0.4.9+ 级别：`options`＋`value`＝弹窗最上方「级别」下拉（默认值＝value）；只给 `label`＝只读行（值＝场景所在位置、不换层）。（名字不叫 scope＝基类 Modal 已有公开 `scope`；SceneEditResult.scope 才是提交字段）
 		private onSubmit: (result: SceneEditResult) => void | Promise<void>,
 		private onCancel?: () => void
 	) {
@@ -1755,66 +1958,73 @@ export class SceneEditModal extends AwModal {
 	onOpen(): void {
 		this.contentEl.addClass("aw-form-compact");
 		this.contentEl.createEl("h3", { text: this.title });
+		// v0.4.9+ **级别＝弹窗最上方第一个字段**：新建时下拉按「书级 → 卷级 → 章级」排（默认选中卷级）＝决定写进哪一层《场景.md》
+		//（书级＝案头资料/场景.md、卷级＝当前激活卷的《文档/场景.md》、章级＝当前激活章节的《场景.md》）；编辑态＝该行只读、值＝场景所在位置（层级 · 来源文档路径），不在弹窗里跨层挪块
+		const scopeOptions = this.level?.options ?? [];
+		let scopeChoice = this.level?.value ?? scopeOptions[0]?.value ?? "";
+		if (scopeOptions.length) {
+			new Setting(this.contentEl) // v0.4.9+ 用户要求＝这里**不放任何说明文字**，只一个「级别」标题＋下拉（选项文案本身已写清是哪一层）
+				.setName("级别")
+				.addDropdown((d) => {
+					for (const o of scopeOptions) d.addOption(o.value, o.label);
+					d.setValue(scopeChoice);
+					d.onChange((v) => (scopeChoice = v));
+				});
+		} else if (this.level?.label) {
+			const here = this.level.label; // 只读态（编辑已有场景／添加子场景）＝这一行的值＝**场景所在位置**（层级 · 来源《场景.md》路径；用户要求＝不放解释文字）
+			new Setting(this.contentEl).setName("级别").addDropdown((d) => { // 禁用的单项下拉＝与可编辑态同样的行型，只是改不了（要换层＝到对应文档里挪块）
+				d.addOption("here", here);
+				d.setValue("here");
+				d.setDisabled(true);
+			});
+		}
 		// 预填值必须直接从 initialValues 取（setValue 不触发 onChange——同 EventEditModal 坑位）
 		let sceneId = this.editing?.scene_id ?? "";
 		let nameErr: HTMLElement | null = null;
 		let description = this.initialValues?.description ?? "";
-		let notes = this.initialValues?.notes ?? "";
-		let content = this.initialValues?.content ?? "";
 		let parent = this.initialValues?.parent ?? ""; // v0.4.7+ 大场景包含小场景
+		let terrain = this.initialValues?.terrain ?? ""; // v0.4.8+ 地形下拉（空＝不着色/删行）
 		const ed = this.editing; // 收窄一次（回调闭包里窄化不保留）
-		if (ed) {
-			new Setting(this.contentEl).setName("场景名").addText((t) => {
-				t.setValue(ed.scene_id);
-				t.setDisabled(true); // 编辑态只读：改名会破坏 `## id` 块锚与 `- 父场景：` 引用（场景名即显示名）
-			});
-		} else {
-			new Setting(this.contentEl).setName("场景名").addText((t) => {
-				t.setPlaceholder("如 黑石城（即面板显示名与《场景.md》块锚名）");
-				t.onChange((v) => (sceneId = v.trim()));
-			});
-			nameErr = this.contentEl.createDiv({ cls: "aw-ev-msel-empty" });
-			nameErr.hide();
-		}
-		new Setting(this.contentEl).setName("描述").addTextArea((ta) => {
-			ta.setPlaceholder("一句话场景描述");
-			ta.setValue(this.initialValues?.description ?? "");
-			ta.inputEl.classList.add("aw-prompt-textarea", "aw-ta-rows");
-			ta.inputEl.rows = 2;
-			ta.onChange((v) => (description = v));
-		});
-		this.contentEl.createDiv({ text: "角色", cls: "aw-ev-msel-label" }); // 下拉多选（候选＝该书三层《人物.md》角色名）
-		const getChars = makeMultiSelect(this.contentEl, "＋ 选择角色…", this.charOptions.length ? "（候选人物已全部选用）" : "（没有人物候选：先在《人物.md》中登记人物）", this.charOptions, this.initialValues?.characters ?? []);
-		new Setting(this.contentEl).setName("备注").addText((t) => {
-			t.setPlaceholder("备注（可选）");
-			if (this.initialValues?.notes) t.setValue(this.initialValues.notes);
-			t.onChange((v) => (notes = v.trim()));
-		});
-		new Setting(this.contentEl).setName("父场景").addDropdown((d) => { // v0.4.7+ 大场景包含小场景：写 `- 父场景：<id>`（选「无」＝删除该行、升为顶层）
+		new Setting(this.contentEl).setName("父场景").addDropdown((d) => { // v0.4.7+ 大场景包含小场景：写 `- 父场景：<id>`（选「无」＝删除该行、升为顶层）；v0.4.9+ 用户要求＝**排在场景名上面**（层级先定，再写名字）
 			d.addOption("", "（无 · 顶层场景）");
 			for (const o of this.parentOptions) d.addOption(o.id, o.label);
 			d.setValue(this.initialValues?.parent ?? "");
 			d.onChange((v) => (parent = v));
 		});
-		this.contentEl.createDiv({ text: "关联场景", cls: "aw-ev-msel-label" }); // v0.4.7+ 下拉多选（候选＝其它场景；选中值＝scene_id，写 `- 关联：甲、乙`；卡片 chip 可点跳转）
-		const getRelated = makeMultiSelect(this.contentEl, "＋ 选择关联场景…", this.sceneOptions.length ? "（已全部选用）" : "（还没有其它场景可关联）", this.sceneOptions.map((o) => o.id), this.initialValues?.related ?? []);
-		new Setting(this.contentEl).setName("正文").addTextArea((ta) => { // 多行正文（写盘 ```text 围栏；编辑未触碰时保留原围栏）
-			ta.setPlaceholder("场景正文：氛围、布局、规则等（可多行）");
-			ta.setValue(this.initialValues?.content ?? "");
+		new Setting(this.contentEl).setName("场景名").addText((t) => { // v0.4.8+：编辑态也可改名（＝`## id` 块锚改名）——调用方 renameSceneBlock＋renameSceneRefs 同步全部 `- 父场景：`/`- 关联：` 引用；非法字符内联报错
+			if (ed) t.setValue(ed.scene_id);
+			else t.setPlaceholder("如 黑石城（即面板显示名与《场景.md》块锚名）");
+			t.onChange((v) => (sceneId = v.trim()));
+		});
+		nameErr = this.contentEl.createDiv({ cls: "aw-ev-msel-empty" }); // 场景名的内联报错＝紧跟场景名那一行
+		nameErr.hide();
+		const getChars = makeMultiSelectRow(new Setting(this.contentEl).setName("角色"), "＋ 选择角色…", this.charOptions.length ? "（候选人物已全部选用）" : "（没有人物候选：先在《人物.md》中登记人物）", this.charOptions, this.initialValues?.characters ?? []); // 下拉多选（候选＝该书三层《人物.md》角色名）
+		const getRelated = makeRelNoteRowsRow(new Setting(this.contentEl).setName("关联场景"), "＋ 选择关联场景…", this.sceneOptions.length ? "（已全部选用）" : "（还没有其它场景可关联）", this.sceneOptions, this.initialValues?.related ?? [], "联通性说明（如 官道 · 三日路程）"); // v0.4.9+ 行式关联（用户要求）：每条**独占一行**＝场景名＋联通性说明输入框＋行末 ✕ 删除；补选下拉单独一行（候选＝其它场景，已选自动移出）；写盘 `- 关联：甲（说明）、乙`，空＝删行
+		new Setting(this.contentEl).setName("地形").addDropdown((d) => { // v0.4.8+ 地形下拉：候选＝内置地形色板名（写 `- 地形：名`→地图区域着色）；选「无」＝删除该行
+			d.addOption("", "（无 · 不着色）");
+			const names = Object.keys(SCENE_TERRAIN_COLORS);
+			if (terrain && !names.includes(terrain)) names.push(terrain); // 文档里手写的自定义值（如「森林地带」）补进候选、预填不丢
+			for (const n of names) d.addOption(n, n);
+			d.setValue(terrain);
+			d.onChange((v) => (terrain = v));
+		});
+		new Setting(this.contentEl).setName("描述").addTextArea((ta) => { // v0.4.8+ 描述＝场景主文本（多行 rows5）；放全部字段最下方
+			ta.setPlaceholder("场景描述（可多行）");
+			ta.setValue(this.initialValues?.description ?? "");
 			ta.inputEl.classList.add("aw-prompt-textarea", "aw-ta-rows");
-			ta.inputEl.rows = 6;
-			ta.onChange((v) => (content = v));
+			ta.inputEl.rows = 5;
+			ta.onChange((v) => (description = v));
 		});
 		const btns = new Setting(this.contentEl).addButton((btn) =>
 			btn.setButtonText("保存").setCta().onClick(async () => {
-				if (!ed && (!sceneId || /[\\/:*?"<>|]/.test(sceneId))) {
+				if (!sceneId || /[\\/:*?"<>|]/.test(sceneId)) {
 					nameErr?.setText(sceneId ? `场景名无效：「${sceneId}」不能包含 \\ / : * ? " < > |` : "场景名不能为空");
 					nameErr?.show();
 					return;
 				}
 				this.submitted = true;
 				this.close();
-				await this.onSubmit({ sceneId: ed ? ed.scene_id : sceneId, description: description.trim(), characters: getChars.get(), notes, content: content.replace(/\s+$/, ""), parent, related: getRelated.get() });
+				await this.onSubmit({ sceneId, description: description.trim(), characters: getChars.get(), parent, related: getRelated(), terrain, scope: scopeOptions.length ? scopeChoice : undefined }); // v0.4.9+ 有级别下拉才交 scope（编辑态＝undefined＝来源文档不变）
 			})
 		);
 		btns.addButton((btn) => btn.setButtonText("取消").onClick(() => this.close()));

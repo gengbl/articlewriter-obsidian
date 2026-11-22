@@ -12,7 +12,7 @@ import {
 	nodeRadius,
 	ringLayout,
 } from "./graph_layout";
-import type { GraphEdgeLike, GraphRankNode } from "./graph_layout";
+import type { GraphEdgeLike, GraphLayoutNode, GraphRankNode } from "./graph_layout";
 
 const CX = 380;
 const CY = 280;
@@ -74,6 +74,19 @@ test("hubOf 取连线最多的人物；并列取先出现的；空图返回空�
 	assert.equal(hubOf([{ name: "甲", degree: 1 }, { name: "乙", degree: 3 }]), "乙");
 	assert.equal(hubOf([{ name: "甲", degree: 2 }, { name: "乙", degree: 2 }]), "甲");
 	assert.equal(hubOf([]), "");
+});
+
+test("chainOrder centerName（v0.4.8+）：指定中心人物旋到链首；不存在＝回退度数枢纽", () => {
+	const nodes: GraphRankNode[] = [
+		{ name: "甲", degree: 1 },
+		{ name: "乙", degree: 2 },
+		{ name: "丙", degree: 2 },
+		{ name: "丁", degree: 1 },
+	];
+	const linked = adjacencyMap([{ a: "甲", b: "乙" }, { a: "乙", b: "丙" }, { a: "丙", b: "丁" }]);
+	assert.equal(chainOrder(nodes, linked, "丁")[0].name, "丁", "度数最少者被指定为中心＝排第一");
+	assert.equal(chainOrder(nodes, linked, "不存在")[0].name, "乙", "名字不在点集＝回退度数枢纽");
+	assert.equal(chainOrder(nodes, linked, "")[0].name, "乙", "空串＝现状默认");
 });
 
 test("chainOrder 星形图：枢纽两侧就是它的至亲；空输入返回空；结果确定可复现", () => {
@@ -150,6 +163,42 @@ test("forceLayout 空节点返回空；没有边也不会 NaN", () => {
 	const out = forceLayout([{ name: "甲", degree: 0 }, { name: "乙", degree: 0 }], [], { width: 760, height: 560 });
 	assert.equal(out.length, 2);
 	for (const p of out) assert.ok(Number.isFinite(p.x) && Number.isFinite(p.y));
+});
+
+test("forceLayout centerName（v0.4.8+）：指定人物排第一并钉在画布正中；不存在的名字回退度数枢纽", () => {
+	const nodes: GraphRankNode[] = [
+		{ name: "主角", degree: 6 },
+		{ name: "甲", degree: 2 },
+		{ name: "乙", degree: 2 },
+		{ name: "反派", degree: 1 },
+		{ name: "丙", degree: 1 },
+		{ name: "丁", degree: 1 },
+		{ name: "戊", degree: 1 },
+	];
+	const edges: GraphEdgeLike[] = [
+		{ a: "主角", b: "甲", weight: 3 },
+		{ a: "主角", b: "乙", weight: 1 },
+		{ a: "甲", b: "乙", weight: 1 },
+		{ a: "反派", b: "丙", weight: 1 },
+		{ a: "反派", b: "丁", weight: 1 },
+		{ a: "丙", b: "丁", weight: 1 },
+		{ a: "戊", b: "丙", weight: 1 },
+	];
+	const W = 760;
+	const H = 560;
+	const p = { width: W, height: H, pad: 58 };
+	const out = forceLayout(nodes, edges, { ...p, centerName: "反派" }); // 度数不高的人物被指定为中心
+	assert.equal(out[0].name, "反派", "中心人物旋到链首");
+	assert.ok(Math.abs(out[0].x - W / 2) < 1, `中心横向＝正中，实测 x=${String(out[0].x)}`);
+	assert.ok(Math.abs(out[0].y - H / 2) < 1, `中心纵向＝正中（不再上提），实测 y=${String(out[0].y)}`);
+	const hub = out.find((q) => q.name === "主角") as GraphLayoutNode;
+	const dCenter = Math.hypot(out[0].x - hub.x, out[0].y - hub.y); // 原枢纽被挪开但仍在画布内
+	assert.ok(dCenter > 1, "原度数枢纽让位");
+	const def = forceLayout(nodes, edges, p);
+	assert.equal(def[0].name, "主角", "无 centerName＝度数枢纽居首（现状不变）");
+	const fb = forceLayout(nodes, edges, { ...p, centerName: "不存在" });
+	assert.equal(fb[0].name, "主角", "中心名字不在点集＝回退度数枢纽");
+	assert.deepEqual(fb, def, "回退结果与默认逐字一致");
 });
 
 test("forceLayout 收尾会消解硬碰撞：圆点之间不互相压着", () => {

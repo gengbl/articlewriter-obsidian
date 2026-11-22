@@ -1782,8 +1782,7 @@
 /* 自定义行（非 Setting 渲染）同口径：标签列左对齐、控件列吃满剩余
    （.aw-llm-row/.aw-phase-model-row 已是「标签左＋控件 flex:1」，此处只补默认左对齐，防主题右对齐继承） */
 .aw-form .aw-llm-label,
-.aw-form .aw-phase-model-label,
-.aw-form .aw-ev-msel-label {
+.aw-form .aw-phase-model-label {
 	text-align: left;
 }
 
@@ -1915,10 +1914,11 @@
 }
 
 /* 事件编辑弹窗（EventEditModal）人物/关联下拉多选：v0.4.7+ 已选胶囊排成一行＋行尾下拉补选（溢出横向滚动）；下拉复用 .aw-addchar-sel/.aw-addchar-relrm */
-.aw-ev-msel-label {
-	margin: 10px 0 2px;
-	font-weight: 600;
-	color: var(--text-normal);
+/* v0.4.8+：多选改进行式 Setting 行（标签列与上方字段标签对齐、不再标签独占一行）。
+   control 列已被 .aw-form-compact 撑满剩余宽度，宿主 .aw-ev-msel 只需吃满 control 并去掉外边距 */
+.aw-ev-msel-row .aw-ev-msel {
+	width: 100%;
+	margin: 0;
 }
 
 .aw-ev-msel {
@@ -1976,6 +1976,63 @@
 .aw-ev-msel-empty {
 	font-size: 0.85em;
 	margin: 2px 0;
+}
+
+/* v0.4.9+ 场景编辑弹窗「关联场景」行式多选（用户要求）：每条关联**独占一行**＝场景名 ＋ 联通性说明输入框 ＋ 行末 ✕ 删除按钮；
+   补选下拉单独下一行。宿主仍复用 .aw-ev-msel（列布局＋吃满 control 列） */
+.aw-rel-rows {
+	gap: 6px;
+}
+
+/* 核心 CSS 有 `.setting-item:not(:is(…)) .setting-item-control button:not(.clickable-icon){width:100%}`（特异性 0,4,1）
+   会把 controlEl 内**所有**按钮拉成整行（见本文件 1766 行注释同款坑位）——这里用更高特异性（0,5,1）复位本行按钮，
+   否则「行末 ✕ 删除」会被撑成一整行、把说明输入框挤没 */
+.aw-form .setting-item.aw-ev-msel-row .setting-item-control .aw-rel-row button {
+	width: auto;
+	max-width: 100%;
+	margin-left: 0;
+	flex: 0 0 auto;
+}
+
+.aw-form .setting-item.aw-ev-msel-row .setting-item-control .aw-rel-row input[type="text"] {
+	width: auto;
+	min-width: 0;
+}
+
+.aw-rel-row {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+}
+
+.aw-rel-row-name {
+	flex: 0 1 auto;
+	min-width: 4em;
+	max-width: 11em;
+	font-size: 0.9em;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.aw-rel-row-note {
+	flex: 1 1 auto;
+	min-width: 0;
+	padding: 3px 8px;
+	font-size: 0.9em;
+}
+
+.aw-rel-row-x {
+	padding: 0 6px;
+	font-size: 11px;
+	line-height: 1.4;
+}
+
+.aw-rel-row-add {
+	align-self: flex-start;
+	min-width: 14em;
+	max-width: 100%;
+	margin-top: 2px;
 }
 
 /* ===== 静态样式集中化（原 JS 内联 style 赋值迁移至此）===== */
@@ -2658,17 +2715,12 @@
 	overflow: visible;
 }
 
-.aw-scene-edges path {
-	fill: none;
-	stroke: var(--text-faint);
-	stroke-width: 1.5;
-	stroke-dasharray: 5 4;
-	opacity: 0.8;
-}
+/* v0.4.9+ 这里只剩「关联」连线（父子之间不再画线＝包含关系由上面的框＋框左上角标签表达），
+   所以基础 path 规则删掉了，样式逐类给（.aw-scene-rel-edge／.aw-scene-edge-label／.aw-scene-frame） */
 
 /* 包含框（大场景包含小场景）：每个「有可见子场景的父场景」一个圆角矩形（含父卡片自身），衬在卡片下层；成员拖动时按包围盒重算。
    pointer-events 单独开启＋grab 光标＝**框内空白处按住即可拖动整组**（svg 容器仍 none，卡片在上层先命中） */
-.aw-scene-frame {
+.aw-scene-frame:not(.is-terrain) {
 	fill: var(--background-modifier-hover);
 	fill-opacity: 0.35;
 	stroke: var(--text-faint);
@@ -2677,13 +2729,110 @@
 	opacity: 0.7;
 	pointer-events: none; /* v0.4.7+ 纯衬底：不拦截指针，框内空白＝画布平移热区（此前 auto＋grab 抢走空白手势——框占满画布时根本无处平移） */
 }
+.aw-scene-frame {
+	pointer-events: none;
+	stroke-dasharray: 4 3;
+}
 
-/* 关联场景连线（v0.4.7+）：点线＋主题强调色（区别于层级短划虚线），同一底图下层 */
+/* v0.4.8+ 地形/地貌区块着色：场景块有 `- 地形：`/`- 颜色：` 时 JS 给框挂 fill/stroke 属性＋is-terrain——
+   默认色写在基础规则里、presentation attribute 压不过 CSS，故用 :not(.is-terrain) 让出默认值，着色框只留浅衬底＋同色描边 */
+.aw-scene-frame.is-terrain {
+	fill-opacity: 0.1;
+	stroke-width: 1.2;
+	stroke-opacity: 0.55;
+}
+
+/* v0.4.8+ 地形徽章（卡片头部小字＝`- 地形：` 原值） */
+.aw-scene-terrain-tag {
+	margin-left: 4px;
+	font-size: 0.8em;
+}
+
+/* v0.4.8+ 按地形淡染的卡片（--aw-scene-terrain 由 JS setProperty 注入）：不支持 color-mix 的旧内核自动忽略＝默认底色 */
+.aw-scene-card.aw-scene-terrain {
+	background: color-mix(in srgb, var(--aw-scene-terrain) 12%, var(--background-primary));
+	border-color: color-mix(in srgb, var(--aw-scene-terrain) 38%, var(--background-modifier-border));
+}
+
+/* v0.4.9+ 有子场景的父场景卡片＝「区域头」：虚线边框区分开普通场景；**名字与详情仍写在卡片里**（用户要求＝不要单独挂在框外空白处），
+   「在区域左上角」由 JS 把这张卡片锚到区域左上角（scene_geometry.regionAnchorFor）实现；卡片仍可拖动＝整组（含全部子孙）一起挪 */
+.aw-scene-card.is-region {
+	border-style: dashed;
+}
+
+/* v0.4.9+ 「N 个子场景」小标（有子场景的卡片才有） */
+.aw-scene-kids {
+	margin-left: 4px;
+	font-size: 0.8em;
+}
+
+
+/* v0.4.8+ 地图坐标网格衬底：zoom 层内绝对定位 div（JS 给宽高＝内容＋四向 GRID_EXTENT(3000) 外扩，起点 -3000px＝任何平移/内容很小时视野内都铺满），
+   纯 CSS 网格线随画布缩放/平移同步走；卡片与连线都在其后创建＝恒在底层。颜色加深＝opacity .55（旧 .3 看不出） */
+.aw-scene-grid {
+	position: absolute;
+	left: -3000px;
+	top: -3000px;
+	pointer-events: none;
+	background-image:
+		linear-gradient(var(--background-modifier-border) 1px, transparent 1px),
+		linear-gradient(90deg, var(--background-modifier-border) 1px, transparent 1px);
+	background-size: 44px 44px;
+	opacity: 0.55;
+}
+
+/* v0.4.8+ 关联连线路标（`甲（官道·三日路程）` 括号文字）：SVG text 挂在连线中点，描边光晕保证穿过线/网格也读得出 */
+.aw-scene-edges .aw-scene-edge-label {
+	font-size: 11px;
+	fill: var(--text-normal);
+	text-anchor: middle;
+	dominant-baseline: middle;
+	paint-order: stroke;
+	stroke: var(--background-primary);
+	stroke-width: 3px;
+	stroke-linejoin: round;
+	pointer-events: none;
+}
+
+/* v0.4.8+ 角落罗盘（上北下南左西右东）：固定在面板**左上角**（v0.4.9 用户要求，原右上角）、不参与缩放平移；纯装饰不挡交互 */
+.aw-scene-view {
+	position: relative; /* 罗盘徽章的定位包含块 */
+}
+.aw-scene-compass {
+	position: absolute;
+	top: 46px;
+	left: 12px;
+	opacity: 0.55;
+	pointer-events: none;
+	z-index: 5;
+}
+.aw-scene-compass-ring {
+	fill: none;
+	stroke: var(--text-faint);
+	stroke-width: 1;
+	stroke-dasharray: 3 3;
+}
+.aw-scene-compass-needle {
+	fill: var(--interactive-accent);
+}
+.aw-scene-compass-tail {
+	fill: var(--text-faint);
+	opacity: 0.6;
+}
+.aw-scene-compass-dir {
+	fill: var(--text-muted);
+	font-size: 11px;
+	text-anchor: middle;
+	dominant-baseline: middle;
+}
+
+/* 关联场景连线（v0.4.7+，v0.4.9+ 折线）：强调色**长划拆线**（区别于层级短划），同一底图下层；线中点文字＝联通性说明 */
 .aw-scene-edges .aw-scene-rel-edge {
+	fill: none; /* v0.4.9+ 原通用 `.aw-scene-edges path` 规则已删（父子不再连线）＝这里自带 fill:none */
 	stroke: var(--interactive-accent);
-	stroke-dasharray: 1.5 4;
-	stroke-linecap: round;
-	opacity: 0.65;
+	stroke-width: 2;
+	stroke-dasharray: 9 5;
+	opacity: 0.8;
 }
 
 /* 底部汇总行线型图例 */
@@ -2692,9 +2841,8 @@
 	font-weight: 700;
 }
 
-.aw-scene-legend-mark.is-hier {
+.aw-scene-legend-mark.is-frame {
 	color: var(--text-faint);
-	letter-spacing: -1px;
 }
 
 .aw-scene-legend-mark.is-rel {
@@ -2784,13 +2932,21 @@
 	font-size: 0.8em;
 }
 
-/* 关联场景 chip（v0.4.7+）：可点跳转目标场景来源文档；解析不到置灰。卡片整体 cursor:move，chip 单独指回 pointer */
+/* 关联场景（v0.4.7+，v0.4.9+ 行式）：**每条关联独占一行**＝「⇄ 场景名 · 联通性说明」，可点跳转目标场景来源文档；解析不到置灰。卡片整体 cursor:move，行单独指回 pointer */
 .aw-scene-rels {
+	display: flex;
+	flex-direction: column;
+	align-items: flex-start;
+	gap: 2px;
 	margin-top: 4px;
 }
 
 .aw-scene-rel {
 	cursor: pointer;
+	max-width: 100%;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
 }
 
 .aw-scene-rel:hover {
@@ -2802,11 +2958,6 @@
 	opacity: 0.55;
 	cursor: default;
 	text-decoration: line-through;
-}
-
-.aw-scene-rels-mark {
-	margin-right: 4px;
-	font-size: 0.85em;
 }
 
 .aw-scene-desc {
