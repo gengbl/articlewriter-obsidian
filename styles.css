@@ -1305,11 +1305,12 @@
 	transition: transform 0.15s ease;
 }
 
-/* 级别色变量（v0.3.3+ caret 同色需求收敛的单一来源）：＝同级标题色 --hN-color，供圆点与折叠标识 caret 共用；二级不定义、走使用处 --tl-lv-color 的缺省链（--h2-color→interactive-accent；下列回落值与旧 lv-N .aw-tl-dot 内联配色逐一相同） */
-.aw-tl-item.lv-1 { --tl-lv-color: var(--h1-color, var(--color-red)); }
-.aw-tl-item.lv-3 { --tl-lv-color: var(--h3-color, var(--color-green)); }
-.aw-tl-item.lv-4 { --tl-lv-color: var(--h4-color, var(--color-yellow)); }
-.aw-tl-item.lv-5 { --tl-lv-color: var(--h5-color, var(--text-faint)); }
+/* 级别色变量（v0.3.3+ 收敛的单一来源，圆点/caret/徽章描边/卡片底色共用）：**v0.4.9+ 改调色板**——原＝同级标题色 --hN-color，但多数主题六级标题同色（用户实测＝各级圆点/卡片一个颜色）→ 直接取 Obsidian 核心调色板 --color-*（每主题必定义、天然互相区分）：一级红/二级橙/三级黄/四级绿/五级蓝（≥5 归 lv-5）；hex 兜底＝极端主题缺调色板变量时仍有近色 */
+.aw-tl-item.lv-1 { --tl-lv-color: var(--color-red, #e93147); }
+.aw-tl-item.lv-2 { --tl-lv-color: var(--color-orange, #e36614); }
+.aw-tl-item.lv-3 { --tl-lv-color: var(--color-yellow, #e6a614); }
+.aw-tl-item.lv-4 { --tl-lv-color: var(--color-green, #4d9e4d); }
+.aw-tl-item.lv-5 { --tl-lv-color: var(--color-blue, #4a8ee6); }
 
 /* 有子事件的圆点可点击切换折叠状态；悬停放大一档作可点反馈（v0.4.4+ 美化）。
    v0.4.4+ 追加：底色光晕环外再描一圈级别色细外环（＝一级靶心同款语言）——读作「此行有子事件、可点折叠」；一级 has-kids 走 .lv-1 规则的同值 box-shadow，不冲突 */
@@ -1398,11 +1399,14 @@
 	margin-left: calc(var(--tl-d, 0) * var(--tl-indent, 22px) - 10px);
 	padding-left: 24px;
 	width: calc(30px + var(--tl-card-w, 240px));
-	background: var(--background-secondary); /* v0.4.9+（用户＝卡片要盖住时间线，仍见穿线→补不透明卡底）：线已沉到负层，但卡片原本无底色＝透明、负层的线照样看得见；给卡片铺面板同色不透明底＝真正「盖住」穿过的线段（圆点/出针弧在卡片外缘仍可见，线从卡片上下缘接续） */
+	background: var(--background-primary); /* 兜底（老渲染器不认 color-mix 时用）；面板主体区是 --background-secondary */
+	background: color-mix(in srgb, var(--tl-lv-color, var(--h2-color, var(--interactive-accent))) 10%, var(--background-primary)); /* v0.4.9+（用户＝不同级别的卡片要不同颜色）：淡染取**级别色变量 --tl-lv-color**＝与圆点/折叠 caret/时间徽章描边同一单一来源（五级＝调色板红/橙/黄/绿/蓝、≥5 归蓝，见上「级别色变量」）＝六级各一色；10% 淡染保证正文可读、整体不透明＝照样盖住穿线（更早的 accent 8% 淡染无级别区分，被此替代） */
+	outline: 1px solid var(--tl-lv-color, var(--h2-color, var(--interactive-accent))); /* v0.4.9+（用户＝给事件卡加边框）：用 outline 不用 border＝不参与布局、卡片宽/列 X/圆点/弧线/列线全部坐标不动，边框画在卡片外缘＝「挂在时间线上」的小卡轮廓一眼可辨；边框色＝级别色＝不同级别的卡轮廓也异色 */
 }
 
 .aw-tl-list.is-tl-tree .aw-tl-item:hover {
-	background: var(--background-modifier-hover); /* 悬停态仍要盖线＝显式补一条（上面的常驻底 (0,3,0) 会压过通用 .aw-tl-item:hover (0,2,0)） */
+	background: var(--background-modifier-hover); /* 兜底 */
+	background: color-mix(in srgb, var(--tl-lv-color, var(--h2-color, var(--interactive-accent))) 18%, var(--background-primary)); /* 悬停＝本级级别色淡染加深一档（常驻底 (0,3,0) 会压过通用 .aw-tl-item:hover (0,2,0)＝须显式补同权重规则） */
 }
 
 /* 卡片盒左缘已＝本行列 X ⇒ 树挂趟圆点/分叉弧线一律从盒左缘（＝本行时间线 X）起针，不再按 guide-start 公式（那是盒左缘在列表左缘时的旧坐标） */
@@ -1442,7 +1446,7 @@
 	background-position: -9px 11px; /* x 起点＝主轴右缘（块坐标 −9），刻度向外伸 5px；相位 11px 与各行圆点圆心线同高 */
 }
 
-/* 按事件级别区分（标题深度 #=一级 … ######=六级，lv-5 覆盖 ≥5 级）：圆点尺寸 + 颜色（＝同级标题色 --hN-color）+ 正文强调。
+/* 按事件级别区分（标题深度 #=一级 … ######=六级，lv-5 覆盖 ≥5 级）：圆点尺寸 + 颜色（＝级别色 --tl-lv-color，v0.4.9+ 改核心调色板 --color-*，见上「级别色变量」）+ 正文强调。
    一级＝最大圆点＋加粗正文（顶层主线事件最醒目）；二级＝基准样式（不另写规则）；
    三级起逐级缩小、五级弱化文字（深层子事件退后）。top 随尺寸调整保持圆心同轴（距条目顶 11px） */
 .aw-tl-item.lv-1 .aw-tl-dot {
