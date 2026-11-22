@@ -265,6 +265,25 @@ void test("关联路标（v0.4.8+）：`id（路标）` 解析与往返、update
 	assert.ok(ren.includes("- 关联：黑风岭（官道·三日路程）、峡谷（传送阵）"), "改名只换 id、路标原样保留");
 });
 
+void test("场景挂事件（v0.4.8+）：`- 事件：名（备注）` 解析与序列化往返、update 重写按名字保留备注、空数组删行、缺行补写", () => {
+	const src = `# 场景\n\n## 黑木崖\n- 地形：山脉\n- 事件：黑木崖之战（高潮）、夜袭\n- 描述：x\n\n## 乙\n`;
+	const parsed = parseScenes(src, 0);
+	assert.deepEqual(parsed["黑木崖"].events, ["黑木崖之战", "夜袭"], "events 只存事件名");
+	assert.equal(parsed["黑木崖"].eventLabels?.["黑木崖之战"], "高潮");
+	assert.equal(parsed["黑木崖"].eventLabels?.["夜袭"], undefined, "无备注项不入表");
+	const fmt = formatSceneBlock({ scene_id: "丙", chapter_num: 0, characters: [], events: ["黑木崖之战", "夜袭"], eventLabels: { "黑木崖之战": "高潮" } });
+	assert.ok(fmt.includes("- 事件：黑木崖之战（高潮）、夜袭"), "序列化按名字回填备注、无备注项不加括号");
+	assert.deepEqual(parseScenes(fmt, 0)["丙"].events, ["黑木崖之战", "夜袭"], "往返一致");
+	const keep = updateSceneBlock(src, "黑木崖", { events: ["夜袭", "黑木崖之战"] });
+	assert.ok(keep && keep.includes("- 事件：夜袭、黑木崖之战（高潮）"), "弹窗只交名字＝备注按名字找回、顺序随弹窗");
+	const del = updateSceneBlock(src, "黑木崖", { events: [] });
+	assert.ok(del && !del.includes("- 事件：") && del.includes("- 地形：山脉"), "空数组＝删事件行、其它字段行不动");
+	const addEv = updateSceneBlock(src.replace("- 事件：黑木崖之战（高潮）、夜袭\n", ""), "黑木崖", { events: ["夜袭"] });
+	assert.ok(addEv && addEv.includes("- 事件：夜袭"), "原文缺事件行＝补写");
+	const untouched = updateSceneBlock(src, "黑木崖", { description: "y" });
+	assert.ok(untouched && untouched.includes("- 事件：黑木崖之战（高潮）、夜袭"), "未交 events＝原行原样保留");
+});
+
 void test("联通性说明（v0.4.9+）：relatedNotes 按行覆盖/清空、未列出的 id 沿用原说明、说明里的括号与顿号写盘前净化保证往返", () => {
 	const src = `# 场景\n\n## 甲\n- 关联：黑风寨（官道·三日路程）、峡谷\n\n## 乙\n`;
 	const upd = updateSceneBlock(src, "甲", {

@@ -1687,16 +1687,32 @@ export interface EventEditResult {
  * 无可再选项时显示 emptyHint（传空串＝不显示占位提示）。initial 中的旧值即使不在候选里也保留为已选胶囊（不丢历史数据）。
  * 返回 `{ get, render }`：get＝当前选中项（保持加入顺序、去重）；render＝重画（外部按 tab 切换等场景复用同一节点重渲染）。
  */
+/** v0.4.8+ 多选候选分组（下拉里按组渲染 `<optgroup>`＝树状分类，如「事件按所在《时间线.md》文件分组」）；group 空串＝不分组平铺 */
+export interface MultiSelGroup {
+	group: string;
+	items: readonly string[];
+}
+
 const makeMultiSelect = (
 	parent: HTMLElement,
 	placeholder: string,
 	emptyHint: string,
-	options: readonly string[],
+	options: readonly (string | MultiSelGroup)[], // v0.4.8+ 候选＝纯字符串（平铺）或分组对象（下拉里按 `<optgroup>` 分类）；元素级联合＝调用方两种数组都能直接传，`typeof` 逐元素窄化
 	initial: readonly string[],
 	host?: HTMLElement // 可传入现成宿主节点（不传＝在 parent 内新建并挂载）。外部游离宿主（tab 切换摘下/挂回）须显式调 render() 重画
 ): { get: () => string[]; render: () => void } => {
 	const el = host ?? parent.createDiv({ cls: "aw-ev-msel" });
 	const selected: string[] = [...new Set(initial)];
+	const groups: MultiSelGroup[] = (() => { // 归一化成分组表：纯字符串候选合成一组（group＝空串＝平铺不渲染表头），分组对象原样入表
+		const strs: string[] = [];
+		const gs: MultiSelGroup[] = [];
+		for (const o of options) {
+			if (typeof o === "string") strs.push(o);
+			else gs.push({ group: o.group, items: [...o.items] });
+		}
+		return strs.length ? [{ group: "", items: strs }, ...gs] : gs;
+	})();
+	const grouped = groups.length > 1 || (groups[0]?.group ?? "") !== "";
 	const render = (): void => {
 		el.empty();
 		if (selected.length) { // v0.4.7+（二次调整）：已选胶囊独占一行（横滚动），补选下拉单独下一行；胶囊容器顶部留白防右上角 ✕ 被滚动容器裁掉
@@ -1711,14 +1727,23 @@ const makeMultiSelect = (
 				});
 			}
 		}
-		const remaining = options.filter((o) => !selected.includes(o));
-		if (!remaining.length) {
+		const remGroups = groups.map((g) => ({ group: g.group, items: g.items.filter((o) => !selected.includes(o)) }));
+		if (!remGroups.some((g) => g.items.length)) {
 			if (emptyHint) el.createDiv({ text: emptyHint, cls: "aw-dim aw-ev-msel-empty" }); // 传空串＝全部选完后不显示任何占位提示
 			return;
 		}
 		const drop = el.createEl("select", { cls: "dropdown aw-addchar-sel" });
 		drop.createEl("option", { text: placeholder, value: "" });
-		for (const o of remaining) drop.createEl("option", { text: o, value: o });
+		for (const g of remGroups) {
+			if (!g.items.length) continue;
+			if (!grouped) {
+				for (const o of g.items) drop.createEl("option", { text: o, value: o });
+				continue;
+			}
+			const og = drop.createEl("optgroup"); // DomElementInfo 无 label 字段（obsidian 类型）＝建好再设
+			og.label = g.group; // 组名＝分组表头（不可选、只作分类）
+			for (const o of g.items) og.createEl("option", { text: o, value: o });
+		}
 		drop.addEventListener("change", () => {
 			if (!drop.value) return;
 			selected.push(drop.value);
@@ -1738,7 +1763,7 @@ const makeMultiSelectRow = (
 	setting: Setting,
 	placeholder: string,
 	emptyHint: string,
-	options: readonly string[],
+	options: readonly (string | MultiSelGroup)[],
 	initial: readonly string[],
 ): { get: () => string[]; render: () => void } => {
 	setting.settingEl.addClass("aw-ev-msel-row");
@@ -1926,6 +1951,7 @@ export interface SceneEditResult {
 	characters: string[];
 	parent: string; // 父场景 scene_id（空＝顶层；写盘 `- 父场景：<id>`／删除该行）
 	related: SceneRelEdit[]; // v0.4.7+ 关联场景（写盘 `- 关联：甲、乙（联通性说明）`／空＝删行）；v0.4.9+ 由 string[] 改为带说明的行（弹窗每行可编辑说明）
+	events: string[]; // v0.4.8+ 场景挂载的时间线事件名（写盘 `- 事件：甲、乙（备注）`／空＝删行；括号备注按名字沿用旧值）
 	terrain: string; // v0.4.8+ 地形（写盘 `- 地形：名`；空串＝删行/不着色）
 	scope?: string; // v0.4.9+ **新建＝写入哪一层《场景.md》**（下拉按书级 → 卷级 → 章级排列，默认卷级）："book"＝案头资料/场景.md | "volume"＝当前激活卷《文档/场景.md》 | "chapter"＝当前激活章《场景.md》；编辑态不带＝不换层（级别行只读显示所在位置）
 }
@@ -1933,7 +1959,7 @@ export interface SceneEditResult {
 /**
  * 场景编辑弹窗（场景面板「新增/编辑场景」共用）：**级别下拉（v0.4.9+，仅新建时出现＝弹窗第一个字段）**＝选写入哪一层《场景.md》
  * 选项文字只有「书级／卷级／章级」三词（按此顺序排，默认选中卷级；候选由调用方按当前激活卷章算好传入、**这一行不带说明文字**＝用户要求），编辑态只给 `label`＝**该行的值＝场景所在位置**（层级 · 来源《场景.md》路径，禁用下拉、不换层）→
- * **父场景下拉**（v0.4.9+ 用户要求＝排在场景名上面）→场景名（＝显示名＝`## id` 块锚；**编辑态也可改**——改名由调用方 renameSceneBlock 换块锚＋renameSceneRefs 同步其它场景的 `- 父场景：`/`- 关联：` 引用）→角色（下拉多选，候选＝三层《人物.md》）→**关联场景（v0.4.9+ 行式：每条独占一行＝场景名＋联通性说明输入框＋行末删除按钮，补选下拉单独一行）**→**地形下拉**（v0.4.8+：候选＝md_docs 内置地形色板名＋自定义旧值，写 `- 地形：`）→**描述（多行 rows5，放全部字段最下方）**。
+ * **父场景下拉**（v0.4.9+ 用户要求＝排在场景名上面）→场景名（＝显示名＝`## id` 块锚；**编辑态也可改**——改名由调用方 renameSceneBlock 换块锚＋renameSceneRefs 同步其它场景的 `- 父场景：`/`- 关联：` 引用）→角色（下拉多选，候选＝三层《人物.md》）→**关联场景（v0.4.9+ 行式：每条独占一行＝场景名＋联通性说明输入框＋行末删除按钮，补选下拉单独一行）**→**地形下拉**（v0.4.8+：候选＝md_docs 内置地形色板名＋自定义旧值，写 `- 地形：`）→**事件（v0.4.8+ 多选：候选＝该书各层《时间线.md》事件名、按所在文件分组为 `<optgroup>` 树状分类，写 `- 事件：`）**→**描述（多行 rows5，放全部字段最下方）**。
  * v0.4.8+：**「备注」「正文」输入已删**——弹窗不再提交这两字段，文档里已有的 `- 备注：` 行与 ```text 正文围栏写回时**未触碰原样保留**。
  * initialValues 预填（编辑＝条目现值；新增＝空）；名称非法（空 / 含 `\\ / : * ? " < > |`）内联报错、不关闭弹窗；关闭弹窗即放弃（onCancel）。
  */
@@ -1948,6 +1974,7 @@ export class SceneEditModal extends AwModal {
 		private charOptions: readonly string[],
 		private parentOptions: readonly { id: string; label: string }[] = [], // 父场景候选（调用方给：全部场景去自身与后代防环）
 		private sceneOptions: readonly { id: string; label: string }[] = [], // 关联场景候选（v0.4.7+：全部场景去自身；label 展示、id 为选中值与写盘值）
+		private eventOptions: readonly MultiSelGroup[] = [], // v0.4.8+ 时间线事件候选：按所在《时间线.md》分组（下拉＝optgroup 树状分类；选中值＝事件名）
 		private level: { options?: readonly { value: string; label: string }[]; value?: string; label?: string } | undefined = undefined, // v0.4.9+ 级别：`options`＋`value`＝弹窗最上方「级别」下拉（默认值＝value）；只给 `label`＝只读行（值＝场景所在位置、不换层）。（名字不叫 scope＝基类 Modal 已有公开 `scope`；SceneEditResult.scope 才是提交字段）
 		private onSubmit: (result: SceneEditResult) => void | Promise<void>,
 		private onCancel?: () => void
@@ -2008,6 +2035,7 @@ export class SceneEditModal extends AwModal {
 			d.setValue(terrain);
 			d.onChange((v) => (terrain = v));
 		});
+		const getEvents = makeMultiSelectRow(new Setting(this.contentEl).setName("事件"), "＋ 选择时间线事件…", this.eventOptions.length ? "（已全部选用）" : "（还没有时间线事件：先在《时间线.md》中登记）", this.eventOptions, this.initialValues?.events ?? []); // v0.4.8+ 场景挂事件：候选＝该书各层《时间线.md》的事件名，**按所在文件分组**（下拉＝`<optgroup>` 树状分类）；写盘 `- 事件：甲、乙`，空＝删行
 		new Setting(this.contentEl).setName("描述").addTextArea((ta) => { // v0.4.8+ 描述＝场景主文本（多行 rows5）；放全部字段最下方
 			ta.setPlaceholder("场景描述（可多行）");
 			ta.setValue(this.initialValues?.description ?? "");
@@ -2024,7 +2052,7 @@ export class SceneEditModal extends AwModal {
 				}
 				this.submitted = true;
 				this.close();
-				await this.onSubmit({ sceneId, description: description.trim(), characters: getChars.get(), parent, related: getRelated(), terrain, scope: scopeOptions.length ? scopeChoice : undefined }); // v0.4.9+ 有级别下拉才交 scope（编辑态＝undefined＝来源文档不变）
+				await this.onSubmit({ sceneId, description: description.trim(), characters: getChars.get(), parent, related: getRelated(), terrain, events: getEvents.get(), scope: scopeOptions.length ? scopeChoice : undefined }); // v0.4.9+ 有级别下拉才交 scope（编辑态＝undefined＝来源文档不变）
 			})
 		);
 		btns.addButton((btn) => btn.setButtonText("取消").onClick(() => this.close()));

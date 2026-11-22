@@ -54,6 +54,48 @@ export function zoomAtPointView(
 	return { panX: vx + sl, panY: vy + st, scrollLeft: sl, scrollTop: st };
 }
 
+/** **元素尺寸跟随的共用实现**（v0.4.9+ 从 CanvasPanel 抽出＝画布面板与人物关系面板图面共用一份口径）：
+ *  ResizeObserver 观察元素（面板拖宽/分屏/窗口缩放/移动端抽屉开合都命中，比 ItemView.onResize 可靠——后者在部分分屏场景不触发），
+ *  **防抖 120ms**（连续拖动只处理最后一帧）；首帧 0 宽/0 高（面板尚未展开、布局未就绪）不回调。
+ *  回调收 `{width, height, widthChanged}`：`widthChanged`＝宽度**真的**变了（调用方据此才重排内容/重渲染）；纯高度变化＝只需重算尺寸与可滚/可拖限位。
+ *  返回观察器句柄：`dispose()`（视图关闭时必须调，观察器会持有已移除的 DOM 引用）＋`notify()`（**手动催一次同一套防抖测量**＝
+ *  ItemView.onResize 的兜底入口，也是无 ResizeObserver 环境里唯一的触发路径）。 */
+export interface ElementSizeWatcher {
+	dispose(): void;
+	notify(): void;
+}
+
+export function watchElementSize(
+	el: HTMLElement,
+	onSize: (s: { width: number; height: number; widthChanged: boolean }) => void,
+): ElementSizeWatcher {
+	let timer: number | null = null;
+	let lastW = 0;
+	const measure = (): void => {
+		timer = null;
+		const w = el.clientWidth;
+		const h = el.clientHeight;
+		if (w <= 0 || h <= 0) return;
+		const widthChanged = w !== lastW;
+		lastW = w;
+		onSize({ width: w, height: h, widthChanged });
+	};
+	const schedule = (): void => {
+		if (timer != null) window.clearTimeout(timer);
+		timer = window.setTimeout(measure, 120);
+	};
+	const obs = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(schedule);
+	obs?.observe(el);
+	return {
+		dispose: () => {
+			obs?.disconnect();
+			if (timer != null) window.clearTimeout(timer);
+			timer = null;
+		},
+		notify: schedule,
+	};
+}
+
 /** CanvasPanel 构造参数：三层元素的样式类与 transform 的 CSS 变量名（各面板配色/尺寸独立，行为完全一致） */
 /** 视口内偏移（CSS px，相对**视口左上角**）→ **内容坐标系**（＝卡片 `left/top`、场景 `- 位置：x,y` 所用坐标）。
  *  口径与 `CanvasPanel.toContentPoint` 完全一致＝`(scroll + 偏移 − pan)/z`（v0.4.9+ 抽出共用＝
@@ -93,9 +135,7 @@ export class CanvasPanel {
 	private panY = 0;
 	private zoomLbl: HTMLElement | null = null; // 头部倍率标签（==100% 时隐藏，点击复位）
 	private suppressClickUntil = 0; // 条目拖拽结束后需吞掉紧随 click/dblclick 的时间戳上限
-	private resizeObs: ResizeObserver | null = null; // v0.4.3+：画布容器尺寸观察器（撑满布局后宽度变化即重算尺寸）
-	private resizeTimer: number | null = null; // 尺寸变化防抖定时器（连续拖动只处理最后一帧）
-	private lastBoxW = 0; // 上次处理时的容器宽（宽度真变化才回调 onResize 重渲染内容）
+	private sizeWatcher: ElementSizeWatcher | null = null; // v0.4.9+ 尺寸观察句柄（共用 watchElementSize；dispose 断开、notify＝ItemView.onResize 兜底）
 	private contentW = 0; // 内容真实宽（0＝按视口宽；场景画布等绝对定位内容用它撑出横向可滚动/可拖动范围）
 
 	constructor(parent: HTMLElement, private readonly opts: CanvasPanelOptions) {
@@ -191,35 +231,23 @@ export class CanvasPanel {
 		this.zoomLbl.toggleClass("is-hidden", pct === 100); // toggle class 替代直接设 style.display
 	}
 
-	/** v0.4.3+：观察画布容器尺寸（面板拖宽/分屏/窗口缩放/移动端抽屉开合）——ResizeObserver 比 ItemView.onResize 可靠（后者在部分分屏场景不触发） */
+	/** v0.4.3+：观察画布容器尺寸（面板拖宽/分屏/窗口缩放/移动端抽屉开合）——观察与防抖口径见共用的 `watchElementSize`（人物关系面板图面也用同一份） */
 	private watchResize(): void {
-		if (typeof ResizeObserver === "undefined") return; // 环境无观察器：退回视图自身 onResize 兜底
-		this.resizeObs = new ResizeObserver(() => this.onBoxResize());
-		this.resizeObs.observe(this.bodyEl);
-	}
-
-	/** 尺寸变化处理：防抖 120ms（连续拖侧栏只算最后一帧）→ 先 apply() 对齐画布尺寸，宽度真变化再回调视图重渲染内容 */
-	private onBoxResize(): void {
-		if (this.resizeTimer != null) window.clearTimeout(this.resizeTimer);
-		this.resizeTimer = window.setTimeout(() => {
-			this.resizeTimer = null;
-			const w = this.bodyEl.clientWidth;
-			if (w <= 0) return; // 面板未展开/布局未就绪（观察器首帧常见 0 宽）
-			const widthChanged = w !== this.lastBoxW;
-			this.lastBoxW = w;
+		this.sizeWatcher = watchElementSize(this.bodyEl, ({ widthChanged }) => {
 			this.apply(); // zoomEl 布局宽 / sizer 内容×缩放 / 滚动限位都依赖容器宽高，必须先重算
 			if (widthChanged) this.opts.onResize?.(); // 宽度变化才需要重渲染内容（纯高度变化 apply 已足够）
-		}, 120);
+		});
 	}
 
 	/** 视图关闭时调用：断开尺寸观察器并清防抖定时器（观察器会持有已移除的 DOM 引用） */
 	dispose(): void {
-		this.resizeObs?.disconnect();
-		this.resizeObs = null;
-		if (this.resizeTimer != null) {
-			window.clearTimeout(this.resizeTimer);
-			this.resizeTimer = null;
-		}
+		this.sizeWatcher?.dispose();
+		this.sizeWatcher = null;
+	}
+
+	/** v0.4.9+ 外部（`ItemView.onResize`）告知「容器尺寸可能变了」＝与观察器同一套防抖测量与处理（无 ResizeObserver 环境里这是唯一路径） */
+	notifyResize(): void {
+		this.sizeWatcher?.notify();
 	}
 
 	/** **缩放余量上限**（v0.4.9+ 抽出＝三处共用一个口径）：sizer（内容×缩放）− **视口宽**。

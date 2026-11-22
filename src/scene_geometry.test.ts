@@ -263,6 +263,25 @@ void test("autoSlotUsable：NaN 几何＝不可用（调用方据此走视口左
 	assert.ok(!autoSlotUsable({ x: 0, y: 0 }, { w: Number.NaN, h: 90 }, VP, []));
 });
 
+void test("relEdgePathD：一端完整落在另一端内部（＝端点取的是包含框、另一端的卡片在框里）＝直连到外框最近那条边，不绕外圈", () => {
+	const frame: ScBox = { x: 100, y: 100, w: 500, h: 300 }; // 区域包含框
+	const kid: ScBox = { x: 300, y: 200, w: 100, h: 60 }; // 卡片整块在框内（关联的是本区域的子场景）
+	const p = pts(relEdgePathD(frame, kid));
+	assert.equal(p.length, 2, "内部情形＝只走一段（不该绕到框外再兜回来）");
+	assert.deepEqual(p[0], { x: 350, y: 200 }, "起点＝内块顶边中点");
+	assert.deepEqual(p[1], { x: 350, y: 100 }, "终点＝外框顶边（四边里间距最小的一侧＝上 100 < 下 140 < 左右 200）");
+	const p2 = pts(relEdgePathD(kid, frame));
+	assert.deepEqual(p2, p, "调用序反过来＝同一条线（关联无方向）");
+});
+
+void test("relEdgePathD：卡片在包含框外＝端点落在框的边界中点上（不接到区域头卡片本身）", () => {
+	const card: ScBox = { x: 150, y: 40, w: 100, h: 60 };
+	const frame: ScBox = { x: 100, y: 300, w: 500, h: 300 }; // 卡片竖向完全在框外＝走上下口径
+	const p = pts(relEdgePathD(card, frame));
+	assert.deepEqual(p[0], { x: 200, y: 100 }, "起点＝卡片底边中点");
+	assert.deepEqual(p[p.length - 1], { x: 350, y: 300 }, "终点＝包含框顶边中点（＝整块区域的边界，不是框里那张父卡片）");
+});
+
 void test("freeAnchorFor：落点空闲＝原样；被卡片占住＝按阶梯往右下逐级避让", () => {
 	const old = { x: 100, y: 100, w: 200, h: 90 };
 	assert.deepEqual(freeAnchorFor({ x: 50, y: 50 }, [old], 36), { x: 50, y: 50 }, "点不在卡片内＝不动");

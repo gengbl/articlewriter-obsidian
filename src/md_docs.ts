@@ -32,6 +32,10 @@ export interface SceneDoc {
 	color?: string;
 	/** v0.4.8+ 关联路标：`- 关联：甲（官道·三日路程）` → relatedLabels["甲"]＝"官道·三日路程"（连线中点画路标；编辑弹窗只改 id，路标随 id 保留） */
 	relatedLabels?: Record<string, string>;
+	/** v0.4.8+ 场景挂载的时间线事件名（`- 事件：黑木崖之战、夜袭（高潮）`，名字口径＝时间线条目事件名；卡片「🕐」区展示、点击跳时间线面板定位） */
+	events?: string[];
+	/** v0.4.8+ 事件备注（`名字（备注）` 括号文字）：卡片列表/弹窗展示用，编辑弹窗只改名字、备注随名字保留 */
+	eventLabels?: Record<string, string>;
 }
 
 export interface CharacterDoc {
@@ -416,9 +420,9 @@ export function formatSceneRelItem(id: string, label?: string): string {
 	return note ? `${id}（${note}）` : id;
 }
 
-/** v0.4.8+ 关联行序列化（formatScenes/formatSceneBlock/updateSceneBlock 共用）：id 列表＋按 id 保留的路标 */
-function sceneRelLine(related: readonly string[], labels?: Record<string, string>): string {
-	return `- 关联：${joinList(related.map((id) => formatSceneRelItem(id, labels?.[id])))}`;
+/** v0.4.8+ 列表字段行序列化（formatScenes/formatSceneBlock/updateSceneBlock 共用）：id 列表＋按 id 保留的括号标签；field＝「关联」或「事件」 */
+function sceneRelLine(related: readonly string[], labels?: Record<string, string>, field: "关联" | "事件" = "关联"): string {
+	return `- ${field}：${joinList(related.map((id) => formatSceneRelItem(id, labels?.[id])))}`;
 }
 
 /** v0.4.8+ 地形色板（`- 地形：` 值→地图区域色）：先精确后「值含键名」匹配；未识别＝不涂色（默认衬底）。事实源在此＝面板着色与编辑弹窗下拉共用 */
@@ -537,6 +541,20 @@ export function parseScenes(text: string, defaultChapter: number): Record<string
 				if (/^#[0-9a-fA-F]{3,8}$/.test(c)) scene.color = c;
 				continue;
 			}
+			m = /^-?\s*事件[：:]\s*(.+)$/.exec(s); // v0.4.8+ 场景挂载时间线事件（名字口径＝条目事件名；`名字（备注）` 项＝eventLabels）
+			if (m) {
+				const names: string[] = [];
+				const labels: Record<string, string> = {};
+				for (const raw of splitList(m[1])) {
+					const it = parseSceneRelItem(raw);
+					if (!it.id) continue;
+					if (!names.includes(it.id)) names.push(it.id);
+					if (it.label) labels[it.id] = it.label;
+				}
+				scene.events = names;
+				if (Object.keys(labels).length) scene.eventLabels = labels;
+				continue;
+			}
 			if (cont && /^[ \t]{2,}\S/.test(lines[i])) { // v0.4.8+ 描述续行（缩进≥2、非字段/围栏/正文标签行）
 				descParts.push(s);
 				descContOpen = true;
@@ -562,6 +580,7 @@ export function formatScenes(heading: string, scenes: Record<string, SceneDoc>):
 		if (scene.terrain) lines.push(`- 地形：${scene.terrain}`); // v0.4.8+ 地图着色（地形/地貌区块）
 		if (scene.color) lines.push(`- 颜色：${scene.color}`);
 		if (scene.related?.length) lines.push(sceneRelLine(scene.related, scene.relatedLabels)); // v0.4.7+ 关联场景
+		if (scene.events?.length) lines.push(sceneRelLine(scene.events, scene.eventLabels, "事件")); // v0.4.8+ 场景挂载时间线事件
 		if (scene.created_at) lines.push(`- 创建：${scene.created_at}`);
 		if (scene.updated_at) lines.push(`- 更新：${scene.updated_at}`);
 		if (scene.content) lines.push("", "正文：", "```text", scene.content, "```");
@@ -583,6 +602,7 @@ export interface SceneBlockEdit {
 	notes?: string;
 	parent?: string; // 空串＝删除 `- 父场景：` 行（升为顶层）
 	related?: string[]; // v0.4.7+ 关联场景 id 列表（空数组＝删除 `- 关联：` 行）
+	events?: string[]; // v0.4.8+ 场景挂载时间线事件名列表（空数组＝删除 `- 事件：` 行；按名字保留既有括号备注）
 	/** v0.4.9+ 关联项的**联通性说明**（id→说明，写盘＝`id（说明）`）：列出的 id 覆盖旧说明（空串＝清掉该行说明）、未列出的 id 沿用原说明；undefined＝整批不动 */
 	relatedNotes?: Record<string, string>;
 	terrain?: string; // v0.4.8+ 地形（弹窗下拉选择；空串＝删除 `- 地形：` 行；undefined＝未触碰原样保留）
@@ -625,6 +645,7 @@ export function formatSceneBlock(s: SceneBlockInput): string {
 	if (s.terrain) lines.push(`- 地形：${s.terrain}`); // v0.4.8+ 地图着色字段（与 parseScenes 往返）
 	if (s.color) lines.push(`- 颜色：${s.color}`);
 	if (s.related?.length) lines.push(sceneRelLine(s.related, s.relatedLabels));
+	if (s.events?.length) lines.push(sceneRelLine(s.events, s.eventLabels, "事件")); // v0.4.8+ 场景挂载时间线事件
 	if (s.created_at) lines.push(`- 创建：${s.created_at}`);
 	if (s.updated_at) lines.push(`- 更新：${s.updated_at}`);
 	if (s.content) lines.push("", "正文：", "```text", s.content.replace(/\s+$/, ""), "```");
@@ -642,7 +663,7 @@ export function insertSceneBlock(text: string, scene: SceneBlockInput): string |
 }
 
 /** 字段行识别（编辑写回时用于区分「保留的自由/未知行」；正文围栏整体保留或整体替换） */
-const SCENE_FIELD_LINE_RE = /^\s*-?\s*(标题|描述|章节|角色|备注|位置|父场景|地形|颜色|关联|创建|更新)\s*[：:]/;
+const SCENE_FIELD_LINE_RE = /^\s*-?\s*(标题|描述|章节|角色|备注|位置|父场景|地形|颜色|关联|事件|创建|更新)\s*[：:]/;
 
 /** v0.4.8+ 多行描述字段序列化＝`- 描述：首行`＋两空格缩进续行（与 parseScenes 续行口径互逆）；返回行数组，调用方逐行 push。空值返回 [] */
 function sceneDescLines(value: string): string[] {
@@ -663,21 +684,28 @@ export function updateSceneBlock(text: string, sceneId: string, edit: SceneBlock
 	let fenceHandled = false;
 	const seenKeys = new Set<string>();
 	const pending: string[] = []; // 原文缺该行但编辑给出了值＝补写（插在正文围栏前）
-	// v0.4.8+ 预扫描旧块的 `- 关联：` 路标（弹窗多选只交 id 列表——重写关联时按 id 找回原路标，地图标签不丢）
+	// v0.4.8+ 预扫描旧块的 `- 关联：` 路标与 `- 事件：` 备注（弹窗多选只交名字列表——重写时按名字找回原括号标签，地图标注/事件备注不丢）
 	const oldRelLabels: Record<string, string> = {};
+	const oldEvLabels: Record<string, string> = {};
 	{
 		const mL = maskCommentSpans(text).split("\n");
 		let inF0 = false;
-		for (let i = loc.start + 1; i < loc.end; i++) {
+		let gotRel = false;
+		let gotEv = false;
+		for (let i = loc.start + 1; i < loc.end && !(gotRel && gotEv); i++) {
 			if (/^\s*```/.test(lines[i])) { inF0 = !inF0; continue; }
 			if (inF0) continue;
-			const rm = /^\s*-?\s*关联\s*[：:]\s*(.+)$/.exec(mL[i]);
-			if (!rm) continue;
-			for (const raw of splitList(rm[1])) {
-				const it = parseSceneRelItem(raw);
-				if (it.id && it.label) oldRelLabels[it.id] = it.label;
+			for (const [field, store] of [["关联", oldRelLabels], ["事件", oldEvLabels]] as const) {
+				if ((field === "关联" ? gotRel : gotEv)) continue;
+				const rm = new RegExp("^\\s*-?\\s*" + field + "\\s*[：:]\\s*(.+)$").exec(mL[i]);
+				if (!rm) continue;
+				for (const raw of splitList(rm[1])) {
+					const it = parseSceneRelItem(raw);
+					if (it.id && it.label) store[it.id] = it.label;
+				}
+				if (field === "关联") gotRel = true;
+				else gotEv = true;
 			}
-			break;
 		}
 	}
 	// v0.4.9+ 弹窗交来的联通性说明＝覆盖口径：给出的 id 有非空说明＝写入（经 formatSceneRelItem 净化）、说明为空串＝清掉该 id 原说明、未列出的 id 沿用原说明（＝弹窗只改 id 时地图标注不丢）
@@ -691,6 +719,8 @@ export function updateSceneBlock(text: string, sceneId: string, edit: SceneBlock
 		}
 		return [sceneRelLine(ids, labels)];
 	};
+	// v0.4.8+ 事件行＝弹窗交名字列表；括号备注按名字沿用旧值（同关联口径）
+	const evLines = (names: string[]): string[] => [sceneRelLine(names, oldEvLabels, "事件")];
 	const wanted: Array<[string, string[] | null | undefined]> = [ // 值＝行数组（描述可多行＝首行＋缩进续行）；null＝删除该字段行；undefined＝未触碰
 		["标题", edit.title === undefined ? undefined : edit.title.trim() ? [`- 标题：${edit.title.trim()}`] : null],
 		["描述", edit.description === undefined ? undefined : sceneDescLines(edit.description)],
@@ -698,6 +728,7 @@ export function updateSceneBlock(text: string, sceneId: string, edit: SceneBlock
 		["备注", edit.notes === undefined ? undefined : edit.notes.trim() ? [`- 备注：${edit.notes.trim()}`] : null],
 		["父场景", edit.parent === undefined ? undefined : edit.parent.trim() ? [`- 父场景：${edit.parent.trim()}`] : null],
 		["地形", edit.terrain === undefined ? undefined : edit.terrain.trim() ? [`- 地形：${edit.terrain.trim()}`] : null],
+		["事件", edit.events === undefined ? undefined : edit.events.length ? evLines(edit.events) : null], // v0.4.8+ 场景挂载时间线事件（空数组＝删行）
 		["关联", edit.related === undefined ? undefined : edit.related.length ? relLines(edit.related) : null],
 	];
 	let pendingFlushed = false;
@@ -749,7 +780,8 @@ export function updateSceneBlock(text: string, sceneId: string, edit: SceneBlock
 				case "父场景": return edit.parent === undefined ? [line] : edit.parent.trim() ? [`- 父场景：${edit.parent.trim()}`] : null;
 				case "地形": return edit.terrain === undefined ? [line] : edit.terrain.trim() ? [`- 地形：${edit.terrain.trim()}`] : null; // v0.4.8+ 弹窗下拉可改（空串＝删行）
 				case "关联": return edit.related === undefined ? [line] : edit.related.length ? relLines(edit.related) : null;
-				default: return [line]; // 标题/章节/位置/地形/颜色/创建/更新＝面板不编辑、原样保留（显示名输入已删——场景名即显示名）
+				case "事件": return edit.events === undefined ? [line] : edit.events.length ? evLines(edit.events) : null; // v0.4.8+ 场景挂载时间线事件（弹窗多选；空数组＝删行）
+				default: return [line]; // 标题/章节/位置/颜色/创建/更新＝面板不编辑、原样保留（显示名输入已删——场景名即显示名）
 			}
 		})();
 		if (written !== null) out.push(...written);

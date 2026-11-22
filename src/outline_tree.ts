@@ -24,3 +24,10 @@ export function buildOutlineTree<T extends { level: number }>(items: T[]): Outli
 export function countSubtree<T>(node: OutlineNode<T>): number {
 	return 1 + node.children.reduce((sum, c) => sum + countSubtree(c), 0);
 }
+
+/** 子树（含自身）里是否有满足谓词的条目——树挂视图筛选时用来整支剪掉「自己与全部后代都不命中」的分支
+ *  （否则一条不命中的父节点会带着空的侧向分支占一整屏） */
+export function subtreeHas<T>(node: OutlineNode<T>, pred: (item: T) => boolean): boolean {
+	if (pred(node.item)) return true;
+	return node.children.some((c) => subtreeHas(c, pred));
+}

@@ -1,17 +1,17 @@
 import { App, Notice, Platform, Plugin, PluginSettingTab, TAbstractFile, TFile, TFolder, View, WorkspaceLeaf, WorkspaceSidedock, type Editor, type MarkdownFileInfo, type MarkdownView, type SettingDefinitionItem } from "obsidian";
 import { ActionItem, ActionMenuModal, AddCharacterModal, AwGuideModal, AwModal, AutoBookConfigInput, AutoBookConfigModal, AutoBookInput, AutoBookModal, BookSkillPhaseModal, ChapterListModal, CharacterEditModal, ConfirmModal, ExportPromptsSelectModal, FixRefsReviewModal, FolderPickerModal, InspirationKitModal, MultiFieldModal, NewFilePickerModal, NewStoryInput, NewStoryModal, PanelLine, SaveReplyModal, SceneEditModal, type SceneEditResult, type SceneRelEdit, SkillEditModal, SkillPickerModal, SkillRangeModal, StoryMetaModal, StoryMetaInput, StoryPickerModal, TextAreaPrompt, TextPanelModal, TextInputModal, VaultFilePickerModal, VolumeBatchCreateModal, ensureParentFolders } from "./modals";
-import type { AddCharacterResult, CharacterEditResult, CharacterScopeOption, SaveReplyResult, SkillEditResult, SkillLevel } from "./modals";
+import type { AddCharacterResult, CharacterEditResult, CharacterScopeOption, MultiSelGroup, SaveReplyResult, SkillEditResult, SkillLevel } from "./modals";
 import { parseBookSkill, type BookSkillSpec } from "./book_skill"; // v0.4.1+ 旧「案头资料/」建书技能文件解析（仅供一次性迁移；建书配置已并入《故事状态.md》auto_book 块）
 import { LlmChatView } from "./llm_chat_view";
 import { GenProgressView, formatElapsedMs, type WritingStreamSink } from "./gen_progress_view";
 import { StatusView, type StatusAction, type StatusChapterEntry, type StatusDetail, type StatusFileEntry, type StatusFolderEntry, type StatusSnapshot, type StatusStoryEntry, type StatusTyping } from "./status_view";
 import { RelationshipView, REL_SCOPE_WORDS, type RelCharInfo, type RelGroup, type RelRow, type RelSnapshot, type RelStoryEntry } from "./relationship_view";
-import { TimelineView, type TlDocRef, type TlLane, type TlRow, type TlSnapshot, type TlStoryEntry } from "./timeline_view"; // v0.3.3+ 合并大事件：面板承担事件增删改，构造第三参＝编辑弹窗人物候选；v0.4.7+ TlLane＝多时间线泳道汇总
+import { TimelineView, tlRowName, type TlDocRef, type TlLane, type TlRow, type TlSnapshot, type TlStoryEntry } from "./timeline_view"; // v0.3.3+ 合并大事件：面板承担事件增删改，构造第三参＝编辑弹窗人物候选；v0.4.7+ TlLane＝多时间线泳道汇总；v0.4.8+ tlRowName＝条目事件名口径（场景挂事件候选/索引共用）
 import { SceneView, sceneDisplayName, type SceneRow, type SceneSnapshot, type SceneScope, type SceneStoryEntry } from "./scene_view"; // v0.4.7+ 场景面板（卡片画布三层《场景.md》）
 import { MAX_TYPE_DELTA, SEGMENT_MIN_DEFAULT, SEGMENT_MIN_MAX, SEGMENT_MIN_MIN, TYPE_STATS_HEADER, diffStats, liveSegStats, nextSegmentStart, normalizeSegmentMinutes, renderStatsRow, segActiveMs, segNetChars, segmentMs, segmentStartOf, summarizeStatsFile, type TypeSeg } from "./typing_stats"; // v0.4.5+ 打字统计纯计算（段长可配/停顿/表格渲染/文件汇总/窗口活跃时长）；采集与落盘在本文件接线
 import { chapterOutlineTemplate, countPureWords, FORESHADOW_TEMPLATE, formatLocalDateTime, NOTES_TEMPLATE, outlineTemplate, WORLD_TEMPLATE } from "./story_types";
 import { safeFilename } from "./story_types";
-import { StoryManager, NO_VOL_MODE_MSG, CHAPTER_DIR_RE, PROLOGUE_DIR_NAME, DESK_DOCS_DIR_NAME, MANUSCRIPT_DIR_NAME, type WritingDocPaths } from "./story_manager";
+import { StoryManager, NO_VOL_MODE_MSG, CHAPTER_DIR_RE, PROLOGUE_DIR_NAME, DESK_DOCS_DIR_NAME, MANUSCRIPT_DIR_NAME, type TimelineDocSource, type WritingDocPaths } from "./story_manager";
 import { BOOK_SKILL_PHASE_KEYS, bookSkillPhaseKey, WORD_RANGE_DEFAULT, autoBookMissing, type AutoBookConfig, type BookSkillPhase, chKey, findChapterByStateKey, parseChKey, type StoryState } from "./state_doc"; // v0.4.9+ findChapterByStateKey＝新建场景「级别」候选里定位当前激活章
 import { BANNED_LIST_SKILL_NAME, buildDefaultLlmConf, CHAT_REF_DOC_CATALOG, CHAT_REF_DOC_DEFAULTS, defaultBaseUrlForProvider, filterEnabledLlmConfigs, getVisibleLlmFields, IDENTITY_BOOST_SKILL_PREFIX, isLlmConfigEnabled, LEGACY_WRITING_TASK_SKILL_NAMES, normalizeLlmProvider, PHASE_CHAPTER_OUTLINE, PHASE_OUTLINE, PHASE_PLANNING, PHASE_REF_DOC_CATALOGS, PHASE_REF_DOC_DEFAULTS, PHASE_WORLDVIEW, PHASE_WRITING, REF_DOC_KEY_RENAMES, REF_DOC_LABELS, renameLlmConfig, selectEnabledLlmName, SENSITIVE_LIST_SKILL_NAME, setLlmConfigEnabled, TENSION_TOOLBOX_SKILL_NAME, toggleLlmConfigEnabled, WRITING_PHASE_LABELS, WRITING_TASK_SKILL_NAME } from "./plugin_config";
 import type { LlmConfigDoc, PluginConfig, WritingPhase } from "./plugin_config";
@@ -29,7 +29,7 @@ import { requirementsFor, stagesFrom, type StageId, type StageRequirement } from
 import { assemblePromptFiles, type AssembledPrompt, type PromptFileReader, type PromptSpec } from "./prompt_files";
 import { detectChatAutoRefs } from "./chat_refs";
 import { parseToolArgs, TOOL_RESULT_MAX_CHARS, CHAT_WRITING_TOOLS, CHAT_GENERATION_TOOLS, resolveToolName, unknownToolHint, pickStringArg, pickNumberArg, normalizeDocName, DOC_NAME_ARG_KEYS, CHAPTER_NUM_ARG_KEYS, VOL_NAME_ARG_KEYS } from "./chat_tools";
-import { cnToNum, deleteSceneBlock, DOC_SCOPE_WORDS, docLocationLabel, docRelPath, extractPlannedChapterCount, insertSceneBlock, maxDeclaredVolumeNum, mergeVolOutlineChapters, parseChapterSelection, parseRelationships, parseTimelines, parseVolumeDeclarations, renameSceneBlock, renameSceneRefs, rewriteScenePosition, sliceVolOutlineChapters, splitList, splitVolOutlineByChapter, stripComments, stripForeshadowMarks, timelineGenFormatOk, updateSceneBlock, type SceneBlockInput, type TimelineEntry, type VolumeDeclaration, type VolumeInfo } from "./md_docs";
+import { cnToNum, deleteSceneBlock, DOC_SCOPE_WORDS, docLocationLabel, docRelPath, extractPlannedChapterCount, insertSceneBlock, maxDeclaredVolumeNum, mergeVolOutlineChapters, parseChapterSelection, parseRelationships, parseTimelines, parseVolumeDeclarations, renameSceneBlock, renameSceneRefs, rewriteScenePosition, sliceVolOutlineChapters, splitList, splitVolOutlineByChapter, stripComments, stripForeshadowMarks, timelineGenFormatOk, timelineTimeText, updateSceneBlock, type SceneBlockInput, type TimelineEntry, type VolumeDeclaration, type VolumeInfo } from "./md_docs";
 import type { RelationshipEntry } from "./md_docs";
 import { CAST_ANALYZE_SYSTEM_PROMPT, CAST_JSON_RETRY_NOTE, aggregateCastAnalyses, buildCastChapterPrompt, buildCharacterWritePlan, buildRelationshipWritePlan, buildSceneWritePlan, castStableChars, parseCastChapterAnalysis, relPairKey } from "./cast_analyzer";
 import { OUTLINE_CAST_APPENDIX_MARK, OutlineCastTracker, outlineCastAppendixInstruction, splitOutlineCastAppendix } from "./outline_cast";
@@ -369,7 +369,7 @@ export default class ArticleWriterPlugin extends Plugin {
 		this.registerView(StatusView.VIEW_TYPE, (leaf) => new StatusView(leaf, () => this.getStatusSnapshot(), (name) => this.statusSwitchStory(name), (story, key) => this.statusActivateChapter(story, key), (a) => this.handleStatusAction(a), () => this.getStatusTyping(), () => this.endTypeSession())); // 第 6＝写字台「码字状态」Tab 数据源；第 7＝写字台打开/重开＝结束上次「本次写作」（下次敲字重新锚定）
 		this.registerView(RelationshipView.VIEW_TYPE, (leaf) => new RelationshipView(leaf, () => this.getRelationshipSnapshot(), () => this.openAddCharacterDialog(), (name) => this.renameCharacterFlow(name), (name) => this.openEditCharacterDialog(name), (name) => this.deleteCharacterFlow(name))); // v0.1.9+：人物关系面板（展示只读，切书在写字台/命令里做；v0.2.0+ 头部「添加人物」注入写动作）
 		this.registerView(TimelineView.VIEW_TYPE, (leaf) => new TimelineView(leaf, () => this.getTimelineSnapshot(), () => this.getTimelineCharOptions())); // v0.2.x+：时间线面板；v0.3.3+ 合并大事件：可编辑（节点增删改写回《时间线.md》），人物候选走 getTimelineCharOptions
-		this.registerView(SceneView.VIEW_TYPE, (leaf) => new SceneView(leaf, () => this.getSceneSnapshot(), (moved) => this.moveSceneFlow(moved), (at) => this.addSceneFlow(undefined, at), (row) => this.editSceneFlow(row), (row) => this.deleteSceneFlow(row), (row, at) => this.addSceneFlow(row, at))); // v0.4.7+：场景面板（卡片画布；写回＝整组位置拖动/新增/编辑/删除/添加子场景五流程；v0.4.9+ 新增可带画布落点＝空白处右键「在此添加场景」）
+		this.registerView(SceneView.VIEW_TYPE, (leaf) => new SceneView(leaf, () => this.getSceneSnapshot(), (moved) => this.moveSceneFlow(moved), (at) => this.addSceneFlow(undefined, at), (row) => this.editSceneFlow(row), (row) => this.deleteSceneFlow(row), (row, at) => this.addSceneFlow(row, at), (name) => this.openTimelineEventFlow(name))); // v0.4.7+：场景面板（卡片画布；写回＝整组位置拖动/新增/编辑/删除/添加子场景五流程；v0.4.9+ 新增可带画布落点＝空白处右键「在此添加场景」；v0.4.8+ 卡片「🕐」区事件点击＝跳时间线面板定位）
 		this.addRibbonIcon("message-square", "打开 LLM 对话窗口（常驻面板）", () => void this.openLlmPanel());
 		this.addRibbonIcon("book-open", "打开写字台（当前书/章节/文件）", () => void this.openStatusPanel());
 		this.addRibbonIcon("users", "打开人物关系面板（书/卷/章三层关系）", () => void this.openRelationshipPanel());
@@ -4551,7 +4551,49 @@ async cmdRenameChapterFile(): Promise<void> {
 				rows.push({ ...s, id: `${path}#${s.scene_id}`, scope, sourcePath: path, sourceLabel: label, docIndex: i++ });
 			}
 		}
-		return { workDir: root, stories, activeStory: active, activeStoryTitle: stories.find((s) => s.name === active)?.title ?? active, rows, totalCount: rows.length };
+		return { workDir: root, stories, activeStory: active, activeStoryTitle: stories.find((s) => s.name === active)?.title ?? active, rows, totalCount: rows.length, eventTimes: await this.sceneEventTimes(active) }; // v0.4.8+ eventTimes＝卡片「🕐」区解析 `- 事件：` 用（名字→时间点文本）
+	}
+
+	/** v0.4.8+ 当前小说全部时间线条目的扁平事件表（场景卡片「🕐」区与编辑弹窗「事件」候选的**共用底料**）：
+	 *  `name`＝事件名（口径＝`tlRowName`＝标题里时间点之后的名字，旧「纯时间点」标题回落事件正文首行）；`timeText`＝时间点显示文本；
+	 *  `group`＝该条所在《时间线.md》的出处标签（书籍级 / 卷 · xx / 章 · 第N章 xx〔· 泳道名〕）＝弹窗下拉的分组名。
+	 *  整份读取失败＝空表；某层解析失败＝跳过该层（同 getTimelineSnapshot 口径）——都不拦场景面板渲染 */
+	private async timelineEventList(story: string): Promise<{ name: string; timeText: string; group: string }[]> {
+		const out: { name: string; timeText: string; group: string }[] = [];
+		let docs: TimelineDocSource[];
+		try {
+			docs = await this.manager.readTimelineDocs(story);
+		} catch { return out; }
+		for (const d of docs) {
+			let list: TimelineEntry[] = [];
+			try {
+				list = parseTimelines(d.text);
+			} catch { /* 单层解析失败不影响其余层 */ }
+			for (const e of list) {
+				const n = tlRowName(e);
+				if (n) out.push({ name: n, timeText: timelineTimeText(e), group: d.label });
+			}
+		}
+		return out;
+	}
+
+	/** v0.4.8+ 场景卡片「🕐」区的时间线索引＝**小写事件名 → 时间点显示文本**（同名后者覆盖前者）。
+	 *  面板据此给 chip 加时间徽章；查不到＝该事件已从时间线改名/删除（chip 置灰划掉，点击仍由 `TimelineView.revealEvent` 提示找不到） */
+	private async sceneEventTimes(story: string): Promise<Record<string, string>> {
+		const out: Record<string, string> = {};
+		for (const e of await this.timelineEventList(story)) out[e.name.toLowerCase()] = e.timeText;
+		return out;
+	}
+
+	/** v0.4.8+ 场景编辑弹窗「事件」候选＝按所在《时间线.md》分组（弹窗下拉里＝`<optgroup>` 树状分类，组名＝出处标签），组内按文档序去重 */
+	private async sceneEventOptions(story: string): Promise<MultiSelGroup[]> {
+		const groups = new Map<string, string[]>();
+		for (const e of await this.timelineEventList(story)) {
+			const arr = groups.get(e.group) ?? [];
+			if (!arr.includes(e.name)) arr.push(e.name);
+			groups.set(e.group, arr);
+		}
+		return [...groups.entries()].map(([group, items]) => ({ group, items }));
 	}
 
 	/**
@@ -4666,6 +4708,7 @@ async cmdRenameChapterFile(): Promise<void> {
 		const snap = await this.getSceneSnapshot(); // 父场景候选＝全部场景（新建无需排除自身）
 		const parentOptions = this.sceneParentOptions(snap.rows, null);
 		const scopeChoices = parentRow ? null : await this.sceneScopeChoices(story); // v0.4.9+ 根级新增才给级别下拉
+		const eventOptions = await this.sceneEventOptions(story); // v0.4.8+ 「事件」多选候选＝该书各层《时间线.md》事件名，按所在文件分组
 		new SceneEditModal(
 			this.app,
 			parentRow ? `新建子场景（隶属「${sceneDisplayName(parentRow)}」）` : "新建场景",
@@ -4674,6 +4717,7 @@ async cmdRenameChapterFile(): Promise<void> {
 			charOptions,
 			parentOptions,
 			this.sceneRelatedOptions(snap.rows, null),
+			eventOptions, // v0.4.8+ 事件候选（按《时间线.md》分组＝下拉 optgroup 树状列表）
 			parentRow
 				? { label: docLocationLabel(parentRow.scope, parentRow.sourcePath, this.manager.storyPath(story)) } // 添加子场景＝级别随父＝只读，这一行显示「将写入的位置」＝父场景那份《场景.md》（书内路径）
 				: { options: scopeChoices?.options ?? [], value: scopeChoices?.value ?? "book" }, // 根级新增＝级别下拉（书级／卷级／章级）
@@ -4692,6 +4736,7 @@ async cmdRenameChapterFile(): Promise<void> {
 					related: res.related.length ? res.related.map((x) => x.id) : undefined, // v0.4.9+ 弹窗交的是带说明的行＝取 id 列表
 					relatedLabels: this.sceneRelNotes(res.related), // v0.4.9+ 联通性说明（`- 关联：甲（官道·三日路程）`）
 					terrain: res.terrain || undefined, // v0.4.8+ 地形下拉（空＝不写 `- 地形：` 行）
+					events: res.events.length ? res.events : undefined, // v0.4.8+ 场景挂事件（`- 事件：甲、乙`；弹窗按《时间线.md》分组选）
 					x: at?.x, // v0.4.9+ 空白处右键「在此添加场景」＝直接落在点上的画布坐标（写 `- 位置：x,y`；头部按钮不带＝按自动布局排布）
 					y: at?.y,
 					created_at: new Date().toISOString().slice(0, 10),
@@ -4768,14 +4813,17 @@ async cmdRenameChapterFile(): Promise<void> {
 		const charOptions = await this.getTimelineCharOptions();
 		const snap = await this.getSceneSnapshot();
 		const parentOptions = this.sceneParentOptions(snap.rows, row.scene_id); // 排除自身与后代防环
+		const story = snap.activeStory ?? ""; // v0.4.8+ 事件候选需要当前书（无书＝空候选，弹窗显示「还没有时间线事件」）
+		const eventOptions = story ? await this.sceneEventOptions(story) : [];
 		new SceneEditModal(
 			this.app,
 			`编辑场景「${sceneDisplayName(row)}」`,
 			{ scene_id: row.scene_id },
-			{ sceneId: row.scene_id, description: row.description ?? "", characters: row.characters, parent: row.parent ?? "", related: this.sceneRelEdits(row), terrain: row.terrain ?? "" }, // v0.4.9+ 关联预填＝行（id＋联通性说明）
+			{ sceneId: row.scene_id, description: row.description ?? "", characters: row.characters, parent: row.parent ?? "", related: this.sceneRelEdits(row), terrain: row.terrain ?? "", events: row.events ?? [] }, // v0.4.9+ 关联预填＝行（id＋联通性说明）；v0.4.8+ 事件预填＝`- 事件：` 名字列表
 			charOptions,
 			parentOptions,
 			this.sceneRelatedOptions(snap.rows, row.scene_id),
+			eventOptions, // v0.4.8+ 事件候选（按《时间线.md》分组＝下拉 optgroup 树状列表）
 			{ label: docLocationLabel(row.scope, row.sourcePath, snap.activeStory ? this.manager.storyPath(snap.activeStory) : "") }, // v0.4.9+ 级别行只读＝只显示「场景所在位置」＝层级 · **书内路径**（从书籍目录起算，不带仓库里的《工作目录/<书名>/》前缀），编辑态不跨层挪块
 			async (res) => {
 				const newId = res.sceneId.trim();
@@ -4791,6 +4839,7 @@ async cmdRenameChapterFile(): Promise<void> {
 						related: res.related.map((x) => x.id), // v0.4.7+ 关联场景（空数组＝删 `- 关联：` 行）；显示名输入已删——原 `- 标题：` 行未触碰原样保留
 						relatedNotes: this.sceneRelNoteEdits(res.related), // v0.4.9+ 每行联通性说明（空串＝清掉该行说明）；写盘＝`- 关联：甲（说明）`
 						terrain: res.terrain, // v0.4.8+ 地形下拉（空串＝删 `- 地形：` 行；`- 颜色：` 弹窗不编辑＝原样保留）
+						events: res.events, // v0.4.8+ 场景挂事件（空数组＝删 `- 事件：` 行；既有括号备注按名字沿用）
 						// v0.4.8+ 弹窗无「备注/正文」输入＝这两字段不给出＝原 `- 备注：` 行与 ```text 正文围栏原样保留
 					})
 				);
@@ -4803,6 +4852,15 @@ async cmdRenameChapterFile(): Promise<void> {
 		const ok = await this.confirmBox("删除场景", `将从《场景.md》删除「${sceneDisplayName(row)}」（整块含正文，不可撤销）。`, "删除");
 		if (!ok) return;
 		await this.mutateSceneDoc(`已删除场景「${sceneDisplayName(row)}」`, row.sourcePath, (text) => deleteSceneBlock(text, row.scene_id));
+	}
+
+	/** v0.4.8+ 场景卡片「🕐」区点击事件＝跳时间线：先走常驻面板通道把时间线面板带到前台（未开＝按常驻口径新建），
+	 *  再让面板按事件名定位条目行＝滚动进视口＋闪烁高亮（`TimelineView.revealEvent`；时间线里没有同名事件时由它弹提示） */
+	private async openTimelineEventFlow(name: string): Promise<void> {
+		await this.openTimelinePanel();
+		const leaf = this.app.workspace.getLeavesOfType(TimelineView.VIEW_TYPE)[0];
+		if (!(leaf?.view instanceof TimelineView)) return; // 面板创建失败（openResidentPanel 已弹错）＝静默
+		await leaf.view.revealEvent(name);
 	}
 
 	/**
@@ -4822,6 +4880,7 @@ async cmdRenameChapterFile(): Promise<void> {
 				related: res.related.map((x) => x.id),
 				relatedNotes: this.sceneRelNoteEdits(res.related), // v0.4.9+ 联通性说明随改名一并写回（改名后 id＝新名）
 				terrain: res.terrain, // v0.4.8+ 地形下拉（改名同批写回）
+				events: res.events, // v0.4.8+ 场景挂事件（改名同批写回；空数组＝删行）
 				// 备注/正文不给出＝改名时原 `- 备注：` 行与正文围栏原样保留（v0.4.8+ 弹窗已无这两输入）
 			});
 		}, () => `改名失败：源文档里未找到「${oldId}」，或「${newId}」在该文档已有同名场景——请点「刷新」后重试`);

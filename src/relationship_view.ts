@@ -3,6 +3,8 @@ import { docLocationLabel, relationshipStatusKind } from "./md_docs";
 import type { RelationshipEntry } from "./md_docs";
 import { adjacencyMap, edgeCurvePath, forceLayout, labelFontSize } from "./graph_layout";
 import type { GraphLayoutNode } from "./graph_layout";
+import { watchElementSize } from "./panel_canvas"; // v0.4.9+ 尺寸跟随共用设施（与场景/时间线画布同一份观察＋防抖口径）
+import type { ElementSizeWatcher } from "./panel_canvas";
 
 /** 关系所属层级（书根 / 卷 / 章） */
 export type RelScope = "book" | "volume" | "chapter";
@@ -189,6 +191,10 @@ export class RelationshipView extends ItemView {
 	private graphZoom = 1;
 	/** 图视图拖动平移偏移（屏幕像素，会话内保持；拖动时更新，限位在 applyView 内收敛） */
 	private graphPan = { x: 0, y: 0 };
+	/** v0.4.9+ 本次图渲染的 `applyView` 句柄（面板/窗口尺寸变化时重算可拖限位用；卡片模式与重渲染前清空，绝不去碰已脱离文档的旧 svg） */
+	private graphApplyView: (() => void) | null = null;
+	/** v0.4.9+ 主体区尺寸观察句柄（＝面板随窗口缩放/分屏/侧栏拖拽变化时重算图面限位；与画布面板共用 watchElementSize 一套口径） */
+	private sizeWatcher: ElementSizeWatcher | null = null;
 	/** 图视图渲染物（高亮邻接用；每次重渲染重建） */
 	private graphNodeEls = new Map<string, SVGGElement>();
 	private graphEdgeEls: Array<{ el: SVGElement; a: string; b: string }> = [];
@@ -240,8 +246,16 @@ export class RelationshipView extends ItemView {
 
 	async onClose(): Promise<void> {
 		this.cancelCharPick(); // 「单击选中」还没落地就关面板＝别在背后重渲染
+		this.sizeWatcher?.dispose(); // v0.4.9+ 断开尺寸观察器（观察器会持有已移除的 DOM 引用）
+		this.sizeWatcher = null;
+		this.graphApplyView = null;
 		this.edgeTipEl?.remove(); // tip 浮层挂在 document.body（见 buildUI），view 关闭时手动清理
 		this.edgeTipEl = null;
+	}
+
+	/** v0.4.9+ 视图尺寸变化（Obsidian 直接在部分场景仍会调这里）＝催一次与观察器同一套的防抖测量＝按新视口重算图面可拖限位 */
+	onResize(): void {
+		this.sizeWatcher?.notify();
 	}
 
 	private buildUI(parent: HTMLElement): void {
@@ -249,6 +263,9 @@ export class RelationshipView extends ItemView {
 		this.rootEl = parent.createDiv({ cls: "aw-status-view aw-rel-view" }); // 复用写字台的容器/字体/滚动布局样式
 		this.topEl = this.rootEl.createDiv({ cls: "aw-st-top" }); // 固定头部：筛选框 + 刷新按钮（不显示工作目录/小说列表）
 		this.treeEl = this.rootEl.createDiv({ cls: "aw-st-tree" }); // 滚动主体：关系分组卡片
+		// v0.4.9+ 面板尺寸变化（窗口缩放/分屏/拖侧栏/移动端抽屉）＝重算图面限位：倍率与平移偏移都保持原值（用户要求＝**不自动缩放、也不重新居中**，只把「可拖/可看范围」按新视口重算）。
+		// 卡片模式 graphApplyView＝null＝无事可做（列表本身随容器伸缩）；观察与防抖口径与场景/时间线画布共用 watchElementSize
+		this.sizeWatcher = watchElementSize(this.treeEl, () => this.graphApplyView?.());
 		// 边 tip 浮层（自定义 HTML，不用 SVG <title>）：挂在 document.body 上，避开侧栏祖先的 transform/contain/overflow 把 position:fixed 变成局部定位或裁切导致看不见
 		this.edgeTipEl = document.body.createDiv({ cls: "aw-rel-gtip" });
 	}
@@ -310,6 +327,7 @@ export class RelationshipView extends ItemView {
 	private renderBody(snap: RelSnapshot): void {
 		// 图表模式主体裁剪、不出滚动条（放大后靠拖拽平移查看），卡片模式保持纵向滚动
 		this.treeEl.classList.toggle("is-graph", this.mode === "graph");
+		this.graphApplyView = null; // 每次重渲染先摘掉旧图的 applyView 句柄（旧 svg 已随主体清空＝绝不能再去碰它）
 		if (this.mode === "graph") this.renderGraph(snap);
 		else this.renderTree(snap);
 	}
@@ -650,6 +668,7 @@ export class RelationshipView extends ItemView {
 			applyView();
 		};
 		applyView();
+		this.graphApplyView = applyView; // v0.4.9+ 面板尺寸变化时由尺寸观察器再调一次＝按新视口重算平移限位（倍率/偏移不动）
 
 		// 滚轮缩放：deltaY 累计 |>= 50| 时切一档（向下滑=缩小、上滑=放大），以鼠标位置为不动点
 		let wheelAcc = 0;

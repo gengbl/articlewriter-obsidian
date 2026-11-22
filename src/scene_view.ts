@@ -30,6 +30,9 @@ export interface SceneSnapshot {
 	activeStoryTitle: string;
 	rows: SceneRow[];
 	totalCount: number;
+	/** v0.4.8+ 卡片「🕐」区的时间线索引：**小写事件名 → 时间点显示文本**（main.ts 由该书全部《时间线.md》快照建表，名字口径＝时间线条目事件名）。
+	 *  命中＝事件存在（chip 上带时间徽章、点击跳时间线面板定位）；未命中＝置灰划掉（改名/删除） */
+	eventTimes?: Record<string, string>;
 }
 
 /** 场景显示名（无「标题」字段时回落 scene_id；面板/编辑弹窗统一口径由本函数单一事实源） */
@@ -137,6 +140,10 @@ export class SceneView extends ItemView {
 	private onEditScene?: (row: SceneRow) => void | Promise<void>; // 卡片 ✎／右键「编辑场景」（main.ts：SceneEditModal → updateSceneBlock）
 	private onDeleteScene?: (row: SceneRow) => void | Promise<void>; // 卡片 🗑／右键「删除」（main.ts：ConfirmModal → deleteSceneBlock）
 	private onAddChildScene?: (row: SceneRow, at?: { x: number; y: number }) => void | Promise<void>; // 右键「添加子场景」（main.ts：SceneEditModal 预填父场景 → 写同文档、`- 父场景：` 挂链；v0.4.9+ `at`＝同「＋ 场景」的落点判定（自动布局看不见才给视口左上角））
+	private onOpenTimelineEvent?: (eventName: string) => void | Promise<void>; // v0.4.8+ 卡片「🕐」区点击事件＝main.ts 激活时间线面板并按名字定位该条目（闪烁高亮）
+	private eventTimes: Record<string, string> = {}; // v0.4.8+ 本次渲染的时间线事件索引（小写名→时间点文本），renderBody 每趟从快照取
+	/** v0.4.9+ 当前展开的卡片「🕐」事件列表的收起句柄（同时只可能有一个；未展开＝null）。点画布空白处／右键／按 Esc／重渲染都要走它 */
+	private closeEvList: (() => void) | null = null;
 	private built = false;
 	private needsFit = true; // v0.4.9+：本次面板打开后**首次渲染**自动「适应全图」（包住全部场景），之后保留用户视野
 	private rootEl!: HTMLElement;
@@ -164,7 +171,8 @@ export class SceneView extends ItemView {
 		onAddScene?: (at?: { x: number; y: number }) => void | Promise<void>, // at＝空白处右键的画布落点（头部按钮不带）
 		onEditScene?: (row: SceneRow) => void | Promise<void>,
 		onDeleteScene?: (row: SceneRow) => void | Promise<void>,
-		onAddChildScene?: (row: SceneRow, at?: { x: number; y: number }) => void | Promise<void>
+		onAddChildScene?: (row: SceneRow, at?: { x: number; y: number }) => void | Promise<void>,
+		onOpenTimelineEvent?: (eventName: string) => void | Promise<void> // v0.4.8+ 卡片「🕐」区点击事件名＝跳时间线面板并定位该条目
 	) {
 		super(leaf);
 		this.getData = getData;
@@ -173,6 +181,7 @@ export class SceneView extends ItemView {
 		this.onEditScene = onEditScene;
 		this.onDeleteScene = onDeleteScene;
 		this.onAddChildScene = onAddChildScene;
+		this.onOpenTimelineEvent = onOpenTimelineEvent;
 	}
 
 	getViewType(): string {
@@ -197,6 +206,11 @@ export class SceneView extends ItemView {
 		this.needsFit = true; // v0.4.9+ 面板重开＝重新做一次「适应全图」（上次关之前的视野不留存）
 	}
 
+	/** v0.4.9+ ItemView 尺寸变化钩子＝催画布走**与尺寸观察器同一套**防抖处理（apply 重算画布尺寸与可滚/可拖限位＋宽度真变化才重渲染内容；无 ResizeObserver 环境里这是唯一路径） */
+	onResize(): void {
+		this.canvas?.notifyResize();
+	}
+
 	/** 面板拖宽/分屏/窗口缩放：按缓存快照重渲染（自动布局依赖画布宽度），不重新读盘；拖动中跳过（防清掉手势持有元素） */
 	private handleCanvasResize(): void {
 		if (this.busy || this.drag) return;
@@ -215,11 +229,22 @@ export class SceneView extends ItemView {
 			zoomLabelCls: "aw-dim aw-scene-zoomlbl is-hidden",
 			onResize: () => this.handleCanvasResize(),
 		});
+		// v0.4.9+ 点画布**空白处**＝收起展开的卡片事件列表（用户要求）。
+		// **capture 阶段**＝卡片上的 pointerdown 即使被拖动/按钮手势 stopPropagation 也照样先看到；列表与它的「🕐 N 个事件」按钮都在 `.aw-scene-card` 内＝不动
+		this.canvas.bodyEl.addEventListener("pointerdown", (ev: PointerEvent) => {
+			if ((ev.target as HTMLElement | null)?.closest(".aw-scene-card")) return;
+			this.closeEventList();
+		}, true);
+		// v0.4.9+ Esc＝收起展开的事件列表（挂在画布上＝面板有焦点时生效，不影响 Obsidian 其它 Esc 语义）
+		this.canvas.bodyEl.addEventListener("keydown", (ev: KeyboardEvent) => {
+			if (ev.key === "Escape") this.closeEventList();
+		});
 		this.sumEl = this.rootEl.createDiv({ cls: "aw-dim aw-rel-summary aw-scene-sumrow" }); // 底部固定汇总行（不参与缩放/平移）
 		// v0.4.9+ 画布**空白处右键**菜单（桌面右键／触屏长按同一路径）＝「在此添加场景」（新场景落在点击处的画布坐标）＋「适应全图」＋「刷新」。
 		// 卡片自身的 contextmenu 已 stopPropagation（openCardMenu）＝不会两菜单叠加；包含框/网格都是 pointer-events:none＝都算空白处。
 		this.canvas.bodyEl.addEventListener("contextmenu", (ev: MouseEvent) => {
 			if ((ev.target as HTMLElement | null)?.closest(".aw-scene-card")) return; // 卡片上＝卡片菜单的天下
+			this.closeEventList(); // v0.4.9+ 空白处右键（弹出画布菜单）＝顺手收起事件列表
 			ev.preventDefault();
 			const menu = new Menu();
 			const at = this.canvas.toContentPoint(ev.clientX, ev.clientY); // 落点换算与缩放/平移/滚动同一口径
@@ -352,6 +377,8 @@ export class SceneView extends ItemView {
 	/** 主体区：卡片画布（pass1 建卡测尺寸 → pass2 布局（有 `- 位置：` 按坐标钉住、没有＝父子嵌套自动排）→ pass2.5 区域锚定 → pass3 落位＋包含框＋连线）＋底部汇总行 */
 	private renderBody(snap: SceneSnapshot): void {
 		const zoom = this.canvas.zoomEl;
+		this.eventTimes = snap.eventTimes ?? {}; // v0.4.8+ 本次渲染的事件索引（卡片「🕐」区解析 `- 事件：` 用）
+		this.closeEventList(); // v0.4.9+ 重渲染前收起（列表即将随 zoom.empty() 消失＝别留下过期句柄）
 		zoom.empty();
 		const ph = this.placeholderFor(snap);
 		this.sumEl.empty();
@@ -520,8 +547,8 @@ export class SceneView extends ItemView {
 		// 关联场景连线（v0.4.7+）：强调色长划折线（区别于层级短划），几何就近选边；拖动中同样按 relEdgePathD 实时重算。
 		// v0.4.8+ 带 `（说明）` 的关联＝交通路线：连线中点挂小标签（官道/传送阵…），随拖动重定位；v0.4.9+ 该说明在编辑弹窗「关联场景」行里逐条可编辑
 		for (const pr of relationPairs) {
-			const a = this.posLive.get(pr.from.id);
-			const b = this.posLive.get(pr.to.id);
+			const a = this.edgeBox(pr.from.id); // v0.4.9+ 端点＝包含框（该场景有可见子场景时）或卡片矩形
+			const b = this.edgeBox(pr.to.id);
 			if (!a || !b) continue;
 			const path = edgeSvg.createSvg("path", { cls: "aw-scene-rel-edge", attr: { d: relEdgePathD(a, b) } });
 			const edge: ScEdge = { path, fromId: pr.from.id, toId: pr.to.id };
@@ -628,6 +655,9 @@ export class SceneView extends ItemView {
 			}
 		}
 		if (r.notes) card.createDiv({ text: `备注：${r.notes}`, cls: "aw-tl-impact" });
+		// v0.4.9+ 「🕐」事件行＝常驻一行、排在 **✎／🗑 动作行的上面**（用户要求）＝卡片内容的最后一行信息，
+		// 与动作行同处卡片下缘（动作行 `visibility:hidden` 仍占高度＝两行位置都不会跳）
+		if (r.events?.length) this.renderEventArea(card, r);
 		// 卡片底部动作组（悬停显现，同时间线 .aw-tl-acts 口径）：✎ 编辑 / 🗑 删除；pointerdown 阻止冒泡以免进入拖动位置手势
 		const acts = card.createDiv({ cls: "aw-scene-acts" });
 		if (this.onEditScene) {
@@ -661,6 +691,77 @@ export class SceneView extends ItemView {
 			else void this.openAt(r);
 		});
 		return card;
+	}
+
+	/** v0.4.9+ 收起当前展开的卡片事件列表（没有展开＝空操作）。**点画布空白处／卡片右键／Esc／重渲染都走这里** */
+	private closeEventList(): void {
+		if (!this.closeEvList) return;
+		const off = this.closeEvList;
+		this.closeEvList = null;
+		off();
+	}
+
+	/** 卡片「🕐」事件行（v0.4.8+，`- 事件：` 的展示与跳转；**v0.4.9+ 常驻一行、排在 ✎／🗑 动作行的上面**，不跟动作行一起悬停才显现）：
+	 *  **单事件**＝行里一枚 chip（「🕐 120-06 黑木崖之战」，时间点来自快照 `eventTimes`），点击＝跳时间线面板并定位该条目；
+	 *  **多事件**＝行里显示**第一条事件摘要**（点它＝直接跳过去）＋「N 个事件」数量 chip（▾ 三角**只由 CSS `.is-multi::after` 出**＝文本里绝不再写 ▾，否则两个三角；点它＝在卡片内展开/收起完整列表，每次现建、关闭即移除＝不残留过期数据）；列表项＝时间徽章＋事件名（＋括号备注），点击项＝关闭并跳转；
+	 *  名字在该书时间线里查不到（改名/删除）＝置灰划掉＋悬停提示（同关联场景 chip 的防断链口径），仍可点（由 main.ts 提示找不到） */
+	private renderEventArea(card: HTMLElement, r: SceneRow): void {
+		const names = r.events ?? [];
+		const timeOf = (name: string): string | undefined => this.eventTimes[name.trim().toLowerCase()];
+		const labelOf = (name: string): string => {
+			const t = timeOf(name);
+			const note = r.eventLabels?.[name];
+			return `${t ? `${t} ` : ""}${name}${note ? `（${note}）` : ""}`;
+		};
+		const missing = (name: string): boolean => timeOf(name) === undefined;
+		const open = (name: string): void => { void this.onOpenTimelineEvent?.(name); };
+		// 常驻行（不参与悬停显现）＝按调用位置追加在 ✎／🗑 动作行**之前**＝卡片下缘的信息行；行 `pointerdown` 阻止冒泡＝点事件不进入拖动位置手势
+		const row = card.createDiv({ cls: "aw-scene-evrow-line" });
+		row.addEventListener("pointerdown", (ev: PointerEvent) => ev.stopPropagation());
+		const chipCls = (name: string): string => (missing(name) ? "aw-scene-ev is-missing" : "aw-scene-ev");
+		const first = names[0];
+		const main = row.createSpan({ text: `🕐 ${labelOf(first)}`, cls: chipCls(first) });
+		main.setAttr("aria-label", `在时间线中定位事件「${first}」`);
+		if (missing(first)) main.title = "未在当前时间线中找到同名事件（可能已改名或删除）";
+		main.addEventListener("click", (ev: MouseEvent) => {
+			ev.stopPropagation(); // 别触发卡片拖动/双击语义
+			open(first);
+		});
+		if (names.length === 1) return; // 只有一个事件＝整行就是它，不需要数量 chip
+		const btn = row.createSpan({ text: `${String(names.length)} 个事件`, cls: "aw-scene-ev aw-scene-ev-count is-multi" }); // ▾ 由 CSS `.is-multi::after` 画＝文本里不能再带（带了就两个三角）
+		btn.setAttr("aria-label", "展开/收起事件列表");
+		let panel: HTMLElement | null = null;
+		const close = (): void => {
+			if (!panel) return;
+			panel.remove();
+			panel = null;
+			btn.removeClass("is-active");
+			card.removeClass("is-evopen"); // 列表收起＝卡片不再抬高压在相邻卡片上（v0.4.9+ 事件行本身常驻，不再靠这个类显形）
+			if (this.closeEvList === close) this.closeEvList = null; // 摘掉登记（同一次展开的收起句柄）
+		};
+		btn.addEventListener("click", (ev: MouseEvent) => {
+			ev.stopPropagation();
+			if (panel) { close(); return; }
+			this.closeEventList(); // 同时只开一个列表（别的卡片正开着＝先收掉）
+			panel = row.createDiv({ cls: "aw-scene-evlist" }); // v0.4.9+ 用户要求＝浮层挂在**事件行**上（`top:100%`＝紧贴这一行下面），不是挂在卡片下沿
+			panel.addEventListener("pointerdown", (ev2: PointerEvent) => ev2.stopPropagation()); // 列表内不进入卡片拖动位置手势
+			panel.addEventListener("dblclick", (ev2: MouseEvent) => { ev2.stopPropagation(); close(); }); // 列表上双击＝收起（不弹编辑弹窗）
+			for (const name of names) {
+				const erow = panel.createDiv({ cls: "aw-scene-evrow" });
+				const t = timeOf(name);
+				if (t) erow.createSpan({ text: t, cls: "aw-scene-evtime" });
+				erow.createSpan({ text: `${name}${r.eventLabels?.[name] ? `（${r.eventLabels[name]}）` : ""}`, cls: missing(name) ? "aw-scene-evname is-missing" : "aw-scene-evname" });
+				erow.setAttr("aria-label", `在时间线中定位事件「${name}」`);
+				erow.addEventListener("click", (ev2: MouseEvent) => {
+					ev2.stopPropagation();
+					close();
+					open(name);
+				});
+			}
+			btn.addClass("is-active");
+			card.addClass("is-evopen");
+			this.closeEvList = close; // 登记＝空白处点击/右键/Esc/重渲染都能收掉它
+		});
 	}
 
 	/** 卡片右键菜单（触屏长按同用）：编辑场景／添加子场景（挂在它下面＝`- 父场景：`）／打开来源文档／删除 */
@@ -820,22 +921,36 @@ export class SceneView extends ItemView {
 		for (let i = this.frames.length - 1; i >= 0; i--) this.applyRegion(this.frames[i]);
 	}
 
-	/** 拖动中/收尾：更新被拖卡片在 posLive 的现值，重算所有以它为端点的连线 d 与**全部包含框**（＝各父场景的有效区域一律按成员当前包围盒现算）；
+	/** **关联线端点用哪个矩形**（v0.4.9+ 用户要求＝关联到「有子场景的场景」时，连接点按**包含所有子场景的包含框边界**算，
+	 *  不接到区域头卡片本身）：该场景是某个区域的区域头且框已算出（`f.box`）＝返回**框矩形**；否则＝返回卡片矩形（`posLive`）。
+	 *  渲染与拖动实时重算共用这一口径（＝`relEdgePathD` 可能收到一个大矩形，其内部情形由 `containmentRoute` 兜住） */
+	private edgeBox(id: string): ScBox | undefined {
+		for (const f of this.frames) {
+			if (f.headId !== id) continue;
+			if (f.box) return f.box;
+			break; // 是区域头但本次没有框（没有可见子场景）＝退回卡片矩形
+		}
+		return this.posLive.get(id);
+	}
+
+	/** 拖动中/收尾：更新被拖卡片在 posLive 的现值，**先重算全部包含框**（＝各父场景的有效区域一律按成员当前包围盒现算，区域内父卡片的新位置随之算出），
+	 *  再**全量**重算关联线（端点＝包含框或卡片矩形＝`edgeBox`；区域内子场景被拖动＝那块框动了，不经过被拖卡片的线也要跟着改），
 	 *  随后 `syncExtent(true)` 让内容范围跟着长出去——区域长到旧边界外时既看得见也滚得到 */
 	private moveLive(rowId: string, x: number, y: number): void {
 		const p = this.posLive.get(rowId);
 		if (!p) return;
 		p.x = x;
 		p.y = y;
+		this.applyRegions(); // v0.4.9+ 顺序改成**先区域后连线**：端点矩形可能就是某块包含框＝框没先归位，线会画在旧边界上
+		// v0.4.9+ 端点改成包含框后，**拖动区域内任一子场景都会挪动那块框**＝不经过这条线两端 id 的线也可能变，
+		// 所以这里不再只重算「以被拖卡片为端点」的线＝一律全量重算（关联线数量级很小，代价可忽略）
 		for (const e of this.edges) {
-			if (e.fromId !== rowId && e.toId !== rowId) continue;
-			const a = this.posLive.get(e.fromId);
-			const b = this.posLive.get(e.toId);
+			const a = this.edgeBox(e.fromId);
+			const b = this.edgeBox(e.toId);
 			if (!a || !b) continue;
 			e.path.setAttribute("d", relEdgePathD(a, b)); // 关联线无方向＝relEdgePathD 按几何定端点，反序调用同一形状
 			if (e.labelEl) placeEdgeLabel(e.path, e.labelEl); // v0.4.8+ 路标随连线中点实时重定位
 		}
-		this.applyRegions(); // v0.4.9+ 一律先按子场景重算各区域（含嵌套区域自内向外），区域内父卡片的新位置随之算出
 		this.syncExtent(true);
 	}
 

@@ -47,13 +47,48 @@ function horizontalRoute(ay: number, fromX: number, by: number, toX: number, dir
 	return polylineD([{ x: fromX, y: ay }, { x: midX, y: ay }, { x: midX, y: by }, { x: toX, y: by }]);
 }
 
+/** 外框 `outer` 是否**完整包住**内块 `inner`（四边都 ≥ 且至少一边真有富余＝同尺寸不算包含） */
+function containsBox(outer: ScBox, inner: ScBox): boolean {
+	return (
+		inner.x >= outer.x &&
+		inner.y >= outer.y &&
+		inner.x + inner.w <= outer.x + outer.w &&
+		inner.y + inner.h <= outer.y + outer.h &&
+		(inner.w < outer.w || inner.h < outer.h)
+	);
+}
+
+/** **一端在另一端内部**（＝端点取的是「包含框」而另一端的卡片正落在这块框里＝关联的是本区域的子场景）：
+ *  走**最短的正交一段**＝从内块某边中点直连外框对应边的中点（取四边间距最小的一侧），不绕到框外再兜回来。
+ *  端点仍落在**外框边界上**（用户要求＝关联区域场景时接在包含框边界，不接到区域头卡片本身）。 */
+function containmentRoute(inner: ScBox, outer: ScBox): string {
+	const sides: Array<{ side: "left" | "right" | "top" | "bottom"; d: number }> = [
+		{ side: "left", d: inner.x - outer.x },
+		{ side: "right", d: outer.x + outer.w - (inner.x + inner.w) },
+		{ side: "top", d: inner.y - outer.y },
+		{ side: "bottom", d: outer.y + outer.h - (inner.y + inner.h) },
+	];
+	let best = sides[0];
+	for (const s of sides) if (s.d < best.d) best = s;
+	const midX = inner.x + inner.w / 2;
+	const midY = inner.y + inner.h / 2;
+	if (best.side === "left") return polylineD([{ x: inner.x, y: midY }, { x: outer.x, y: midY }]);
+	if (best.side === "right") return polylineD([{ x: inner.x + inner.w, y: midY }, { x: outer.x + outer.w, y: midY }]);
+	if (best.side === "top") return polylineD([{ x: midX, y: inner.y }, { x: midX, y: outer.y }]);
+	return polylineD([{ x: midX, y: inner.y + inner.h }, { x: midX, y: outer.y + outer.h }]);
+}
+
 /**
  * 关联（`- 关联：`）连线路径——**折线**，按几何就近选边：
- * 竖向不交叠＝走顶/底边（同上下口径）；横向不交叠＝走左右边中点；两轴都交叠（近水平/重叠摆放）＝从两卡片**底边**下垂到同一水平线再横移。
+ * 一方完整落在另一方内部（＝端点之一是**包含框**、另一端的卡片就在框里）＝直连到框边界最近的那条边；
+ * 否则竖向不交叠＝走顶/底边（同上下口径）；横向不交叠＝走左右边中点；两轴都交叠（近水平/重叠摆放）＝从两端**底边**下垂到同一水平线再横移。
  * （v0.4.9+：父子之间的层级连线**不再画**——包含关系由包含框＋框左上角的区域标签表达，
- *  所以原来那份父子连线口径 `edgePathD` 已随之下线，本模块只剩关联线一种。）
+ *  所以原来那份父子连线口径 `edgePathD` 已随之下线，本模块只剩关联线一种。
+ *  v0.4.9+ 端点几何由调用方决定＝**有子场景的场景用它的包含框矩形**（`scene_view.edgeBox`），所以这里可能收到「框」这种大矩形。）
  */
 export function relEdgePathD(a: ScBox, b: ScBox): string {
+	if (containsBox(a, b)) return containmentRoute(b, a); // b 在 a 里＝接在 a 的边界上（同一口径，不分调用序）
+	if (containsBox(b, a)) return containmentRoute(a, b);
 	if (b.y >= a.y + a.h || a.y >= b.y + b.h) { // 竖向不交叠：下方者的顶边 ← 上方者的底边
 		const upper = b.y > a.y ? a : b; // 上行卡片（底边出）
 		const lower = b.y > a.y ? b : a; // 下行卡片（顶边入）

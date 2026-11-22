@@ -1220,7 +1220,7 @@
    --tl-indent＝一个轮廓深度的宽度（行缩进/圆点列间距/导引线列间距/肘形接线宽度共用）；--tl-guide-start＝第 1 层（depth 1）圆点列的横坐标（item 坐标系）——两值联动，改缩进只改 --tl-indent */
 .aw-tl-list {
 	--tl-indent: 22px;
-	--tl-guide-start: 12px;
+	--tl-guide-start: calc(var(--tl-indent, 22px) - 10px); /* v0.4.9+ 修复（用户指出＝树挂动态列距下，子时间线的列线 X 值不在主线/圆点列上）：旧写死 12px 只在 indent=22 时与圆点列公式 k×indent−10 重合；列距按面板宽度动态放大后必须**由 indent 推导**才恒等（列 k＝guide-start＋(k-1)×indent ≡ k×indent−10）。内联 --tl-indent（renderTlTree 写）会自动带动本值重算 */
 	position: relative;
 	margin: 4px 0 6px 10px; /* v0.4.4+：左边距 5→10——has-kids 圆点靶心外环 hover×1.4 后最左伸到 list 坐标 −13.3（一级大点），原 5px 会被画布左缘挡掉几个像素（深度 0 行尤其明显），留出净空 */
 	padding-left: 14px;
@@ -1364,26 +1364,72 @@
 .aw-tl-branch-line:nth-child(5) { left: calc(var(--tl-guide-start, 12px) + 4 * var(--tl-indent, 22px)); }
 .aw-tl-branch-line:nth-child(6) { left: calc(var(--tl-guide-start, 12px) + 5 * var(--tl-indent, 22px)); }
 
-/* 子列短桩（仅本行有子事件）：位于子级列（depth+1），自本行圆点下缘垂到行尾——与下方子行/间隔块的同列导引线接续，父→全部子事件的通道连续不断 */
-.aw-tl-branch-stub {
+/* （v0.4.9+ 退场）旧扁平时间序趟的「子列短桩 .aw-tl-branch-stub」「肘形接线 .aw-tl-elbow」随「时间主线」显示方式一并删除——树挂视图里子行连续挂在侧向时间线上，不需要把四散的子行拉回父列 */
+
+/* ===== v0.4.9+ 树挂分支视图（唯一渲染方式；容器挂 is-tl-tree）=====
+   语义＝向下生长的树：一级事件挂在主轴上（同主线视图），凡有子事件者从**自己的圆点**处引出一条 `.aw-tl-branch-out` 分叉线——
+   横着出圆点、以圆角向下弯到下一层列（＝那条列线就是这批子事件的**侧向时间线**），再垂到行尾；
+   侧向时间线本身由子行/留白的通高 `.aw-tl-branch-line` 接长（主线视图里它只是「层级通道」的暗示，这里升格成一条真正的时间线），
+   子事件的圆点正落在该列上＝挂在侧线上；子事件自己再有子事件＝从它自己的圆点再弯一条更深一层的弧线，逐层同构（数据侧级别封顶 6）。
+   横坐标与圆点/列线同一公式（＝不测像素、纯 CSS 对齐）：本行圆点列＝--tl-guide-start＋(--tl-d−1)×--tl-indent（与 .aw-tl-dot 的 --tl-d×--tl-indent−10px 恒等），
+   宽度＝indent＋1px（2px 描边的中心线正好落在下一层列＝子事件圆点圆心上） */
+.aw-tl-branch-out {
 	position: absolute;
-	top: 17px; /* 圆点下缘＝圆心线 11px＋最大半径 6px（一级 12px 圆点） */
-	bottom: 0;
-	left: calc(var(--tl-guide-start, 12px) + var(--tl-d, 0) * var(--tl-indent, 22px)); /* 列 depth+1：guide-start＋(k-1)×indent，k＝d+1 */
-	width: 1px;
-	background: var(--background-modifier-border);
-	opacity: 0.55;
+	z-index: -1; /* v0.4.9+（用户要求＝事件卡片要在绘制的时间线上面）：沉到负层→弧线/横线画在卡片底色与文字之下（最近层叠上下文＝zoomEl 的 transform），卡片盖住穿过的线段；圆点保持 auto 层＝仍压在弧出针处 */
+	top: 11px; /* 圆点圆心线＝弧线从圆心处出针（与 .aw-tl-dot 的 top:7px＋半高口径一致） */
+	left: calc(var(--tl-guide-start, 12px) + (var(--tl-d, 0) - 1) * var(--tl-indent, 22px));
+	bottom: 0; /* 垂到行尾＝与下方留白/子行的同列通高竖线接续（侧向时间线不断线） */
+	width: calc(var(--tl-indent, 22px) + 1px);
+	box-sizing: border-box; /* 描边计入宽高＝右描边中心线恰落在下一层列（content-box 会外溢 2px） */
+	border-top: 2px solid var(--background-modifier-border);
+	border-right: 2px solid var(--background-modifier-border);
+	border-top-right-radius: max(14px, calc(var(--tl-indent, 22px) * 0.85)); /* ＝向下弯出的那道弧；v0.4.9+（用户要求＝侧向延伸更远＋**开始向下弯曲的位置更早/更小一点**）半径随动态列距放大到 0.85×indent＝横线只留一小段就开始下弯（浏览器还会按行高自动夹小半径＝不会画破行） */
+	opacity: 0.75; /* 比主线淡一档、比列通道实一档：读作「分支出线」而非边框 */
+	pointer-events: none;
 }
 
-/* 肘形接线（仅 depth≥1 行）：从父级列（depth-1）横拉到本行圆点（depth 列），横杆压在圆点圆心线 top:11px 上——读出「挂在谁名下」；depth 0 无需（主轴本身就是其父线） */
-.aw-tl-elbow {
-	position: absolute;
-	top: 11px;
-	left: calc(var(--tl-guide-start, 12px) + (var(--tl-d, 0) - 2) * var(--tl-indent, 22px));
-	width: var(--tl-indent, 22px);
-	height: 1px;
-	background: var(--background-modifier-border);
-	opacity: 0.55;
+/* v0.4.9+（用户两轮要求＝卡片不占满整宽、宽度变小；**卡片左缘从本行时间线的 X 轴起**）树挂趟的事件卡片：
+   margin-left＝d×indent−10 ⇒ 卡片盒左缘恰落在本深度列（圆点圆心列＝侧向时间线/主轴的 X）＝卡片**挂在时间线上**，
+   盒不再从列表左缘起、不再拖通宽色带；左内衬固定 24px（圆点压左缘角上、caret/徽章从右让开），
+   宽＝24px 内衬＋固定卡片宽 --tl-card-w（JS renderTlTree 写入＝240px，兜底同值）＋右边距 6px ⇒ 各深度卡片同宽且更紧凑，
+   长文本在卡片内换行。深度 0 行 margin-left=−10 ⇒ 卡片左缘＝主轴圆心线＝一级事件卡片直接从主轴长出 */
+.aw-tl-list.is-tl-tree .aw-tl-item {
+	box-sizing: border-box;
+	margin-left: calc(var(--tl-d, 0) * var(--tl-indent, 22px) - 10px);
+	padding-left: 24px;
+	width: calc(30px + var(--tl-card-w, 240px));
+	background: var(--background-secondary); /* v0.4.9+（用户＝卡片要盖住时间线，仍见穿线→补不透明卡底）：线已沉到负层，但卡片原本无底色＝透明、负层的线照样看得见；给卡片铺面板同色不透明底＝真正「盖住」穿过的线段（圆点/出针弧在卡片外缘仍可见，线从卡片上下缘接续） */
+}
+
+.aw-tl-list.is-tl-tree .aw-tl-item:hover {
+	background: var(--background-modifier-hover); /* 悬停态仍要盖线＝显式补一条（上面的常驻底 (0,3,0) 会压过通用 .aw-tl-item:hover (0,2,0)） */
+}
+
+/* 卡片盒左缘已＝本行列 X ⇒ 树挂趟圆点/分叉弧线一律从盒左缘（＝本行时间线 X）起针，不再按 guide-start 公式（那是盒左缘在列表左缘时的旧坐标） */
+.aw-tl-list.is-tl-tree .aw-tl-item > .aw-tl-dot {
+	left: 0; /* translateX(-50%) 后圆心恰在卡片左缘＝列 X＝侧向时间线上 */
+}
+
+.aw-tl-list.is-tl-tree .aw-tl-item > .aw-tl-branch-out {
+	left: 0; /* 横线自本行圆点（盒左缘）出针，宽 indent＋1 ⇒ 右描边中心线恰落在下一层列＝子卡片左缘/子圆点 */
+}
+
+/* 行内祖先列线（通高竖线列 1..d）：盒已右移 d×indent−10 ⇒ 盒坐标＝(k−d)×indent（多为负值＝画在卡片左缘之外的通道上），
+   与留白块（盒在列表左缘、left 走旧公式）的列线在同一 list 坐标上首尾相接；留白块内无前缀选择器不命中、仍走原公式 */
+.aw-tl-list.is-tl-tree .aw-tl-item > .aw-tl-branch-line:nth-child(1) { left: calc((1 - var(--tl-d, 0)) * var(--tl-indent, 22px)); }
+.aw-tl-list.is-tl-tree .aw-tl-item > .aw-tl-branch-line:nth-child(2) { left: calc((2 - var(--tl-d, 0)) * var(--tl-indent, 22px)); }
+.aw-tl-list.is-tl-tree .aw-tl-item > .aw-tl-branch-line:nth-child(3) { left: calc((3 - var(--tl-d, 0)) * var(--tl-indent, 22px)); }
+.aw-tl-list.is-tl-tree .aw-tl-item > .aw-tl-branch-line:nth-child(4) { left: calc((4 - var(--tl-d, 0)) * var(--tl-indent, 22px)); }
+.aw-tl-list.is-tl-tree .aw-tl-item > .aw-tl-branch-line:nth-child(5) { left: calc((5 - var(--tl-d, 0)) * var(--tl-indent, 22px)); }
+.aw-tl-list.is-tl-tree .aw-tl-item > .aw-tl-branch-line:nth-child(6) { left: calc((6 - var(--tl-d, 0)) * var(--tl-indent, 22px)); }
+
+/* 树挂趟里列线升格＝各层侧向时间线本身（主线趟里只做 0.55 的通道暗示），加粗到与主轴同宽 */
+.aw-tl-list.is-tl-tree .aw-tl-branch-line {
+	width: 2px;
+	z-index: -1; /* 同分叉弧线＝沉到卡片之下（用户要求＝卡片在时间线上面）：列线穿过卡片/文字/悬停底色处都被盖住，只剩通道里的裸线段 */
+	margin-left: -1px; /* 把 2px 描边**以列 X 为中心**铺开（nth-child 的 left＝列 X＝圆点圆心列）⇒ 子事件圆点端端正正挂在侧向时间线上 */
+	opacity: 0.6;
+	border-radius: 2px;
 }
 
 /* 时间比例留白块（高度由代码按天设置）：position:relative 供通高导引线挂接——空白里层级通道不断（留白＝流逝时间，通道＝结构从属）。
@@ -1971,6 +2017,20 @@
 	font-size: 9px;
 	line-height: 1;
 	border-radius: 50%;
+}
+
+/* ⚠️ 同「行末 ✕ 被拉成整行」那个坑位（见本文件 `.aw-rel-row button` 处注释）：核心 CSS
+   `.setting-item:not(…) .setting-item-control button:not(.clickable-icon){width:100%}`（特异性 0,4,1）**也命中胶囊里的 ✕**
+   ＝它被拉成「胶囊整宽 × 15px」的宽扁块，`border-radius:50%` 在这种宽高比下画出来是**椭圆**（用户报告＝编辑事件／编辑场景弹窗右上角的小删除按钮不是正圆）。
+   ⇒ 用更高特异性（0,6,1）把宽高钉死成正方形并把 ✕ 居中（编辑事件弹窗的人物/关联、编辑场景弹窗的角色/事件四处共用同一份标记类，一起修好） */
+.aw-form .setting-item.aw-ev-msel-row .setting-item-control .aw-ev-msel-chip button.aw-ev-msel-chipx {
+	width: 15px;
+	height: 15px;
+	max-width: none;
+	box-sizing: border-box;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
 }
 
 .aw-ev-msel-empty {
@@ -2957,6 +3017,118 @@
 .aw-scene-rel.is-missing {
 	opacity: 0.55;
 	cursor: default;
+	text-decoration: line-through;
+}
+
+/* 卡片「🕐」区（v0.4.8+，排在 ✎／🗑 之后）：单事件＝chip 直接显示「🕐 120-06 黑木崖之战」；多事件＝chip 只显示数量，点开＝卡片下方浮出事件列表。
+   chip 与按钮同尺寸语言（同边框圆角、透明底），flex:1 min-width:0 让长事件名在 230px 卡片里省略号截断而不是撑破动作行 */
+.aw-scene-ev {
+	flex: 1 1 auto;
+	min-width: 0;
+	height: 22px;
+	display: inline-flex;
+	align-items: center;
+	padding: 0 6px;
+	font-size: 0.8em;
+	line-height: 1;
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 4px;
+	background: transparent;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	cursor: pointer;
+}
+
+.aw-scene-ev:hover {
+	background: var(--background-modifier-hover);
+	border-color: var(--interactive-hover);
+}
+
+.aw-scene-ev.is-multi::after {
+	content: " ▾";
+	opacity: 0.7;
+}
+
+.aw-scene-ev.is-multi.is-active {
+	background: var(--background-modifier-hover);
+	border-color: var(--interactive-accent);
+}
+
+.aw-scene-ev.is-missing {
+	opacity: 0.55;
+	text-decoration: line-through;
+}
+
+/* v0.4.9+ 常驻事件行（用户要求＝事件信息一直显示、**排在 ✎／🗑 动作行的上面**）：卡片下缘的信息行＝内容的一部分＝不受 `visibility`/悬停影响。
+   行的 pointerdown 已在 js 里阻止冒泡＝点事件不进入卡片拖动位置手势 */
+.aw-scene-evrow-line {
+	display: flex;
+	align-items: center;
+	gap: 4px;
+	margin: 4px 0 0;
+	position: relative; /* v0.4.9+ ＝事件列表浮层的定位包含块（浮层贴在这一行下面，不是卡片下面） */
+}
+
+/* 数量 chip（多事件）＝不参与伸缩、按内容占位，剩下的宽度都给事件摘要 chip 省略号截断 */
+.aw-scene-ev-count {
+	flex: 0 0 auto;
+}
+
+/* 列表＝**挂在事件行里**的绝对定位浮层（v0.4.9+ 用户要求＝出现在事件那一行下面，而不是整张卡片下面）：
+   `top:100%`＝紧贴事件行下沿、`left/right:0`＝与事件行同宽（＝卡片内容宽）；卡片没有 `overflow:hidden`＝浮层可以盖过下面的动作行、必要时长到卡片外，都正常。
+   列表开着时卡片挂 is-evopen＝把卡片抬到相邻卡片之上（浮层不被邻卡压住） */
+.aw-scene-evlist {
+	position: absolute;
+	top: 100%;
+	left: 0;
+	right: 0;
+	z-index: 3;
+	margin-top: 2px;
+	padding: 3px;
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 6px;
+	background: var(--background-primary);
+	box-shadow: 0 4px 14px rgba(0, 0, 0, 0.25);
+	cursor: default;
+	max-height: 220px;
+	overflow-y: auto;
+}
+
+.aw-scene-card.is-evopen {
+	z-index: 3;
+}
+
+.aw-scene-evrow {
+	display: flex;
+	align-items: baseline;
+	gap: 5px;
+	padding: 3px 4px;
+	font-size: 0.85em;
+	border-radius: 4px;
+	cursor: pointer;
+}
+
+.aw-scene-evrow:hover {
+	background: var(--background-modifier-hover);
+}
+
+.aw-scene-evtime {
+	flex: 0 0 auto;
+	font-size: 0.85em;
+	color: var(--text-muted);
+	font-variant-numeric: tabular-nums;
+}
+
+.aw-scene-evname {
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.aw-scene-evname.is-missing {
+	opacity: 0.55;
 	text-decoration: line-through;
 }
 
