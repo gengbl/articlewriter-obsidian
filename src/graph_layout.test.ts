@@ -254,7 +254,7 @@ test("edgeCurvePath 生成二次贝塞尔弧（M…Q…），端点不落在节�
 });
 
 test("弧线一律向上拱：弧顶在弦中点之上；竖直弦向侧向拱不退化", () => {
-	const pts = ringLayout(12, CX, CY, RX, RY, new Array(12).fill(2));
+	const pts = ringLayout(12, CX, CY, RX, RY, new Array<number>(12).fill(2));
 	for (let i = 0; i < pts.length; i++) {
 		for (let j = i + 1; j < pts.length; j++) {
 			const a = pts[i];
@@ -273,7 +273,7 @@ test("弧线一律向上拱：弧顶在弦中点之上；竖直弦向侧向拱�
 });
 
 test("弧顶不顶出画布上边界（靠近顶部的边自动变平）", () => {
-	const pts = ringLayout(12, CX, CY, RX, RY, new Array(12).fill(2));
+	const pts = ringLayout(12, CX, CY, RX, RY, new Array<number>(12).fill(2));
 	let flattened = 0;
 	for (let i = 0; i < pts.length; i++) {
 		for (let j = i + 1; j < pts.length; j++) {

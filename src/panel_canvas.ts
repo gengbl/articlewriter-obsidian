@@ -110,7 +110,11 @@ export function viewPointToContent(
 }
 
 export interface CanvasPanelOptions {
-	bodyCls: string; // 画布容器类（须含 overflow 布局，如 "aw-st-tree aw-tl-body"）
+	/** 新建画布容器用的类（须含 overflow 布局，如 "aw-st-tree aw-tl-body"）；与 `parentBodyEl` 二选一 */
+	bodyCls?: string;
+	/** v0.4.11+ **复用视图既有元素当画布容器**（人物关系面板＝主体 `.aw-st-tree` 本身要同时容纳画布层与不缩放的图例/「人物状态」区）；
+	 *  给了它就不再新建 body 元素，sizer/pan/zoom 三层直接建在它内部 */
+	parentBodyEl?: HTMLElement;
 	sizerCls: string;
 	zoomCls: string;
 	zoomVar: string; // transform 经此 CSS 变量更新（no-static-styles-assignment 合规）
@@ -121,6 +125,13 @@ export interface CanvasPanelOptions {
 	/** v0.4.3+：画布容器尺寸变化（拖侧栏 / 分屏 / 窗口缩放 / 移动端抽屉）回调——CanvasPanel 已先 apply() 重算画布尺寸，
 	 *  调用方在此按新宽度重渲染内容（宽度变化会改变换行、层级列坐标等）；缺省＝只重算画布尺寸不重渲染内容 */
 	onResize?: () => void;
+	/** v0.4.11+：平移拖拽**开始**时回调（起拖即触发＝视图可立刻抑制悬停高亮/tip，与旧面板 `dragFrom` 生效时机一致） */
+	onPanStart?: () => void;
+	/** v0.4.11+：平移拖拽收尾时回调（`moved`＝本次真的挪过画面；人物关系面板用它清掉起拖前残留的悬停高亮与 tip） */
+	onPanEnd?: (moved: boolean) => void;
+	/** v0.4.11+：容器内**不参与平移拖拽**的区域选择器（人物关系面板＝「人物状态」区与它的分隔条是画布容器里的固定子项，
+	 *  在那上面按下应走区内自己的手势＝滚动/展开/改高度，绝不该被当成拖图） */
+	panIgnoreSelector?: string;
 }
 
 /** 缩放/平移画布：Ctrl|Shift＋滚轮以鼠标位置为不动点缩放（普通滚轮不拦截、走原生滚动）、左键按住拖动平移（滚动余量内驱动容器滚动、到底后由虚拟平移层继续挪动——内容不超出面板也能挪视野；Alt＋左键/中键＝任意位置平移）、倍率标签点击复位；拖拽后的紧随 click/dblclick 自动吞掉（平移与条目拖拽两种来源） */
@@ -134,12 +145,13 @@ export class CanvasPanel {
 	private panX = 0; // 虚拟平移偏移（布局 px，独立于缩放；滚动余量用尽后由拖动继续累加——无滚动条也挪得动视野）
 	private panY = 0;
 	private zoomLbl: HTMLElement | null = null; // 头部倍率标签（==100% 时隐藏，点击复位）
+	private zoomLblHost: HTMLElement | null = null; // 标签挂载的头部容器（同一容器重复 attach＝只刷新文案，不再新建）
 	private suppressClickUntil = 0; // 条目拖拽结束后需吞掉紧随 click/dblclick 的时间戳上限
 	private sizeWatcher: ElementSizeWatcher | null = null; // v0.4.9+ 尺寸观察句柄（共用 watchElementSize；dispose 断开、notify＝ItemView.onResize 兜底）
 	private contentW = 0; // 内容真实宽（0＝按视口宽；场景画布等绝对定位内容用它撑出横向可滚动/可拖动范围）
 
 	constructor(parent: HTMLElement, private readonly opts: CanvasPanelOptions) {
-		this.bodyEl = parent.createDiv({ cls: opts.bodyCls });
+		this.bodyEl = opts.parentBodyEl ?? parent.createDiv({ cls: opts.bodyCls ?? "aw-canvas-body" });
 		this.sizerEl = this.bodyEl.createDiv({ cls: opts.sizerCls });
 		this.panEl = this.sizerEl.createDiv({ cls: "aw-canvas-pan" });
 		this.zoomEl = this.panEl.createDiv({ cls: opts.zoomCls });
@@ -153,15 +165,24 @@ export class CanvasPanel {
 
 	/** 头部挂倍率标签（每次头部重建都可重挂；旧标签随头部清空自然废弃） */
 	attachZoomLabel(container: HTMLElement): void {
-		this.zoomLbl = container.createSpan({ text: "", cls: this.opts.zoomLabelCls ?? "aw-dim aw-panel-zoomlbl", title: this.opts.zoomLabelTitle ?? "Ctrl|Shift＋滚轮缩放 / 普通滚轮滚动 / 左键拖动平移（Alt＋左键或中键＝任意位置平移）；点击复位为 100%" });
-		this.zoomLbl.addEventListener("click", () => {
-			this.zoomLevel = 1;
-			this.panX = 0; // 虚拟平移一并复位（标签＝「复位视图」而不是只复位倍率）
-			this.panY = 0;
-			this.bodyEl.scrollTo({ left: 0, top: 0 });
+		if (this.zoomLbl && this.zoomLblHost === container) { // 头部没换＝只刷新文案（防止反复重渲染时在同一个头部里堆出多个标签）
 			this.apply();
-		});
+			return;
+		}
+		this.zoomLblHost = container;
+		this.zoomLbl = container.createSpan({ text: "", cls: this.opts.zoomLabelCls ?? "aw-dim aw-panel-zoomlbl", title: this.opts.zoomLabelTitle ?? "Ctrl|Shift＋滚轮缩放 / 普通滚轮滚动 / 左键拖动平移（Alt＋左键或中键＝任意位置平移）；点击复位为 100%" });
+		this.zoomLbl.addEventListener("click", () => this.resetView());
 		this.apply(); // 头部重建后按当前缩放状态恢复倍率标签显示
+	}
+
+	/** v0.4.11+ **复位视图**（倍率标签点击、头部按钮与右键菜单共用这一个口径）＝倍率回 100%＋虚拟平移归零＋滚动位置回原点。
+	 *  元素常驻（不随重渲染销毁）＝永远不会「写到已脱离文档的旧节点」＝旧版「双击也没回来」的那类坑在这里不存在 */
+	resetView(): void {
+		this.zoomLevel = 1;
+		this.panX = 0;
+		this.panY = 0;
+		this.bodyEl.scrollTo({ left: 0, top: 0 });
+		this.apply();
 	}
 
 	/** 吞掉紧随条目拖拽松手的 click/dblclick（否则拖完会误开文档/误切折叠；zoomEl 捕获阶段判定） */
@@ -212,8 +233,12 @@ export class CanvasPanel {
 		const w = Math.max(this.bodyEl.clientWidth, this.contentW); // v0.4.7+：内容宽（setContentWidth）大于视口时按内容宽撑开
 		this.zoomEl.style.width = `${String(w)}px`; // 内容布局宽（transform 不影响布局，须显式给定）
 		const h = this.zoomEl.clientHeight; // 内容布局高（scale=1 时）
-		this.sizerEl.style.width = `${Math.round(w * this.zoomLevel)}px`;
-		this.sizerEl.style.height = `${Math.round(h * this.zoomLevel)}px`;
+		// v0.4.11+（「适应全图后一直闪」修正）＝取整一律**向下**：侧栏含界面缩放时 clientWidth/Height 是 707.6 这类小数，
+		// `Math.round` 可能把 sizer 写得比真实视口宽/高大出零点几 px＝内容明明=视口却冒出滚动条→视口变小→观察器 widthChanged→重渲染→
+		// 滚动条消失→视口又变大……每防抖一轮＝无限闪（人物关系面板 100% 贴边最常踩）。向下取整＝sizer 恒 ≤ 真实视口，反馈环从源头断开；
+		// 少的那不足 1px 只让 maxScroll 早 clamp 一小步，肉眼与交互都无感
+		this.sizerEl.style.width = `${String(Math.floor(w * this.zoomLevel))}px`;
+		this.sizerEl.style.height = `${String(Math.floor(h * this.zoomLevel))}px`;
 		this.zoomEl.style.setProperty(this.opts.zoomVar, `scale(${String(this.zoomLevel)})`);
 		// v0.4.7+ 虚拟平移层：translate（布局 px，独立于缩放，加在 scale 之外）——无滚动余量时拖动视野也能挪动。
 		// 变量用固定名设在 panEl 自身（每面板一个 panEl，互不冲突；CSS 只需认这一对名字）
@@ -280,6 +305,7 @@ export class CanvasPanel {
 		const lo = this.opts.min ?? PANEL_ZOOM_MIN;
 		const hi = this.opts.max ?? PANEL_ZOOM_MAX;
 		this.bodyEl.addEventListener("wheel", (ev: WheelEvent) => {
+			if (this.opts.panIgnoreSelector && (ev.target as HTMLElement | null)?.closest(this.opts.panIgnoreSelector)) return; // v0.4.11+ 「人物状态」区里滚轮＝区内自身滚动（不缩放图面）
 			if (!ev.ctrlKey && !ev.shiftKey) return; // 未按修饰键：不 preventDefault，普通滚轮原生滚动内容/页面
 			ev.preventDefault(); // 拦截 Ctrl|Shift+滚轮（浏览器默认 Ctrl+滚轮是页面级缩放，这里改为画布内缩放）
 			const d = ev.deltaMode === 1 ? ev.deltaY * 32 : ev.deltaY; // 行模式换算成像素量级
@@ -319,12 +345,18 @@ export class CanvasPanel {
 			document.removeEventListener("pointermove", onDragMove);
 			document.removeEventListener("pointerup", endDrag);
 			document.removeEventListener("pointercancel", endDrag);
-			window.setTimeout(() => { dragged = false; }, 0); // 等紧随其后的 click 先被拦下再复位
+			const moved = dragged; // 先取本次是否真的挪过画面（下面会被复位）
+			window.setTimeout(() => {
+				dragged = false; // 等紧随其后的 click 先被拦下再复位
+				this.opts.onPanEnd?.(moved); // v0.4.11+ 通知视图收尾（关系图＝真拖过时清掉起拖前的悬停高亮/tip；放在 click 抑制窗口之后＝视图的「拖拽进行中」标志与抑制同一拍解除）
+			}, 0);
 		};
 		this.bodyEl.addEventListener("pointerdown", (ev: PointerEvent) => {
 			if (!wantsPan(ev)) return; // 左键/中键都可起手；卡片/框手势已 stopPropagation，冒泡到这里＝空白处或 Alt 让位
+			if (this.opts.panIgnoreSelector && (ev.target as HTMLElement | null)?.closest(this.opts.panIgnoreSelector)) return; // v0.4.11+ 状态区/分隔条这类固定子项＝不做平移手势
 			dragFrom = { x: ev.clientX, y: ev.clientY, sl: this.bodyEl.scrollLeft, st: this.bodyEl.scrollTop, px: this.panX, py: this.panY };
 			dragged = false;
+			this.opts.onPanStart?.(); // v0.4.11+ 起拖即通知（关系图＝按下就开始抑制悬停高亮/tip，与旧面板 `dragFrom` 生效时机一致）
 			document.addEventListener("pointermove", onDragMove);
 			document.addEventListener("pointerup", endDrag);
 			document.addEventListener("pointercancel", endDrag); // v0.4.7+：取消事件也收尾，防 dragFrom 残留导致后续裸 pointermove 继续拽视野

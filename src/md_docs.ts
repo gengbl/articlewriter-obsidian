@@ -944,6 +944,146 @@ export function formatCharacterBlock(char: CharacterDoc): string {
 	return lines.join("\n");
 }
 
+// ---------- 人物块的块级手术＋合并（v0.4.11+「合并人物信息」；与时间线/关系块同一套路）----------
+
+/** 定位《人物.md》里某个角色块（`## 名字` 起、到下一个 `#`/`##` 标题前止）。
+ *  与 `findSceneBlockLines` 同口径：先 `maskCommentSpans` 掩掉 HTML 注释（模板里的示例角色标题不误命中）、围栏内不认标题。未找到＝null */
+function findCharacterBlockLines(text: string, name: string): { start: number; end: number } | null {
+	const masked = maskCommentSpans(text).split("\n");
+	const lines = text.split("\n");
+	const want = name.trim();
+	if (!want) return null;
+	let inFence = false;
+	for (let i = 0; i < lines.length; i++) {
+		if (!inFence && /^\s*```/.test(lines[i])) { inFence = true; continue; }
+		if (inFence) {
+			if (/^\s*```/.test(lines[i])) inFence = false;
+			continue;
+		}
+		const hm = /^##\s+(.*)$/.exec(masked[i]);
+		if (!hm || hm[1].trim() !== want) continue;
+		let end = lines.length;
+		let fence = false;
+		for (let j = i + 1; j < lines.length; j++) {
+			if (!fence && /^\s*```/.test(lines[j])) { fence = true; continue; }
+			if (fence) {
+				if (/^\s*```/.test(lines[j])) fence = false;
+				continue;
+			}
+			if (/^#{1,2}\s/.test(masked[j])) { end = j; break; }
+		}
+		return { start: i, end };
+	}
+	return null;
+}
+
+/** 接缝处收口：删块后把块前后多余空白折成「空行＋空行」，文档整体仍保持原换行风格 */
+function joinAround(before: string, after: string): string {
+	const a = before.replace(/\s+$/, "");
+	const b = after.replace(/^\s+/, "");
+	if (!a) return b;
+	if (!b) return `${a}\n`;
+	return `${a}\n\n${b}`;
+}
+
+/** 删掉《人物.md》中某个角色块（连带其前后多余空行与紧随的 `---` 分隔行）＝**只动这一块**，文档其余内容与模板注释原样保留。
+ *  找不到该块＝null（调用方据此提示刷新重试，不做有损写入） */
+export function deleteCharacterBlock(text: string, name: string): string | null {
+	const loc = findCharacterBlockLines(text, name);
+	if (!loc) return null;
+	const lines = text.split("\n");
+	let start = loc.start;
+	let end = loc.end;
+	while (start > 0 && lines[start - 1].trim() === "") start--;
+	while (end < lines.length && lines[end].trim() === "") end++;
+	if (end < lines.length && /^\s*---\s*$/.test(lines[end])) {
+		end++;
+		while (end < lines.length && lines[end].trim() === "") end++;
+	}
+	return joinAround(lines.slice(0, start).join("\n"), lines.slice(end).join("\n"));
+}
+
+/** 写入／替换某个角色块：同文档已有同名块＝原位替换（不打乱既有顺序），否则追加到文档末尾（已有其它角色块时补一条 `---` 分隔行，与 `formatCharacters` 的排版一致）。
+ *  只动目标块＝文档其余内容（含 HTML 注释模板、自定义段落）原样保留——与 `saveCharactersFile` 的整篇重写有意不同 */
+export function upsertCharacterBlock(text: string, char: CharacterDoc): string {
+	const block = formatCharacterBlock(char);
+	const loc = findCharacterBlockLines(text, char.name);
+	const lines = text.split("\n");
+	if (loc) {
+		let end = loc.end;
+		// 块尾的空行与 `---` 分隔行不属于块内容＝留在原地，替换后与下一块之间的排版照旧（与 `deleteCharacterBlock` 同一口径）
+		while (end > loc.start && (lines[end - 1].trim() === "" || /^---\s*$/.test(lines[end - 1]))) end--;
+		const tail = lines.slice(end);
+		const gap = tail.length && tail[0].trim() !== "" ? [""] : []; // 原文没有空行隔开（手写文档）＝补一行，防 `##` 紧贴上一块
+		return [...lines.slice(0, loc.start), ...block.split("\n"), ...gap, ...tail].join("\n");
+	}
+	const hasBlocks = maskCommentSpans(text).split("\n").some((l) => /^##\s+\S/.test(l));
+	const base = text.replace(/\s+$/, "");
+	if (!base) return `${block}\n`;
+	return `${base}\n\n${hasBlocks ? "---\n\n" : ""}${block}\n`;
+}
+
+/** 人物设定字段（合并弹窗逐字段选择来源＝顺序与「编辑人物」弹窗一致） */
+export const CHARACTER_FIELDS: Array<{ key: keyof Omit<CharacterDoc, "name" | "chapter" | "vol">; label: string }> = [
+	{ key: "identity", label: "身份" },
+	{ key: "age", label: "年龄" },
+	{ key: "gender", label: "性别" },
+	{ key: "personality", label: "性格" },
+	{ key: "appearance", label: "外貌" },
+	{ key: "background", label: "背景" },
+	{ key: "abilities", label: "能力" },
+	{ key: "notes", label: "备注" },
+];
+
+/** 合并取值的特殊选择：`__all__`＝各份登记全部保留（文本按「；」拼接去重、能力取并集）、`__empty__`＝留空；数字＝取第 N 份登记的值 */
+export const CHARACTER_MERGE_ALL = "__all__";
+export const CHARACTER_MERGE_EMPTY = "__empty__";
+export type CharacterMergePick = number | typeof CHARACTER_MERGE_ALL | typeof CHARACTER_MERGE_EMPTY;
+export type CharacterMergePicks = Record<string, CharacterMergePick>;
+
+/** 一份待合并的登记（＝某份《人物.md》里该人物的条目＋其所在文档出处） */
+export interface CharacterMergeSource {
+	path: string; // 该登记所在《人物.md》的 vault 相对路径
+	label: string; // 展示出处（书籍级／卷级／章级 · 书内路径）
+	char: CharacterDoc;
+}
+
+/** 该字段在某份登记里的展示值（能力取顿号连接串）＝弹窗候选与预览共用 */
+export function characterFieldValue(char: CharacterDoc, key: (typeof CHARACTER_FIELDS)[number]["key"]): string {
+	return key === "abilities" ? joinList(char.abilities) : String(char[key] ?? "").trim();
+}
+
+/** 按用户逐字段的选择把多份登记合成一条条目（＝纯计算、不碰 Vault；`chapter` 由调用方按目标文档定位时再打） */
+export function applyCharacterMerge(name: string, sources: readonly CharacterMergeSource[], picks: CharacterMergePicks): CharacterDoc {
+	const merged: CharacterDoc = { name, chapter: 0, abilities: [] };
+	for (const { key } of CHARACTER_FIELDS) {
+		const pick = picks[key];
+		if (pick === CHARACTER_MERGE_EMPTY) continue; // 留空＝该字段不写
+		if (pick === CHARACTER_MERGE_ALL) {
+			if (key === "abilities") {
+				const set: string[] = [];
+				for (const s of sources) for (const a of s.char.abilities) if (a.trim() && !set.includes(a.trim())) set.push(a.trim());
+				merged.abilities = set;
+			} else {
+				const parts: string[] = [];
+				for (const s of sources) {
+					const v = characterFieldValue(s.char, key);
+					if (v && !parts.includes(v)) parts.push(v);
+				}
+				merged[key] = parts.join("；");
+			}
+			continue;
+		}
+		if (typeof pick === "number") {
+			const src = sources[pick];
+			if (!src) continue; // 快照过期（该登记已被删）＝当留空处理，不报错打断整次合并
+			if (key === "abilities") merged.abilities = src.char.abilities.map((a) => a.trim()).filter(Boolean);
+			else merged[key] = characterFieldValue(src.char, key);
+		}
+	}
+	return merged;
+}
+
 // ---------- 伏笔（伏笔.md + [伏]...[/] 标记解析，对齐 story/foreshadow.py；v0.0.15 起章节号为复合键「N」/「卷id:N」）----------
 
 const FORESHADOW_BLOCK_RE = /\[伏\]([\s\S]*?)\[\/?(?:伏)?\]/g;

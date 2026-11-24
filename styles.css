@@ -842,45 +842,69 @@
 
 /* ---- 「图表」展示方式：SVG 节点连线图（角色=节点、关系=连线；颜色=类型、线型=状态、粗细=登记处数） ---- */
 
-/* 图表模式的主体（.aw-st-tree 的修饰类）：裁剪、不出滚动条——放大后超出面板的部分靠拖拽平移查看。
-   纵向改由 flex 让图自己收缩（面板不够高时按高度适配），免得图例被裁到面板外 */
+/* 图表模式的主体（.aw-st-tree 的修饰类）＝**纵向 flex 列**（v0.4.11+ 第四轮＝画布视口独立成 `.aw-rel-canvasbody`）：
+   图例两行/分隔条/「人物状态」区＝主体的固定 flex 项（不滚不缩、缩放也不跟着动＝用户要求）；
+   画布视口＝占剩余空间的弹性项，缩放只在视口内部出滚动条；overflow:hidden＝主体自身不出滚动条 */
 .aw-st-tree.is-graph {
 	display: flex;
 	flex-direction: column;
 	overflow: hidden;
+	user-select: none; /* 平移/拖动时不选中文字 */
 }
 
-/* 摘要 / 图例是固定项，不参与收缩 */
-.aw-st-tree.is-graph > .aw-rel-summary,
+/* 画布视口（sizer→pan→zoom 三层的外框）＝恒定弹性项：面板高度变化时它伸缩，**缩放倍率变化时它不动**（sizer 在它内部涨缩）；
+   overflow:auto＝放大后靠视口内原生滚动条/滚轮/拖动查看；min-height:0＝允许被压到剩余高度以内、由 overflow 接管。
+   卡片模式＝display:none（元素常驻＝切模式不销毁画布层，也不占列表空间） */
+.aw-st-tree.is-graph > .aw-rel-canvasbody {
+	flex: 1 1 auto;
+	min-height: 0;
+	overflow: auto;
+	cursor: grab; /* 空白处提示可按住拖动（画布共用交互挂在该视口上，与场景/时间线一致） */
+	touch-action: pan-x pan-y; /* 触屏单指走原生滚动 */
+}
+
+.aw-st-tree:not(.is-graph) > .aw-rel-canvasbody {
+	display: none;
+}
+
+.aw-rel-canvasbody.is-panning {
+	cursor: grabbing;
+}
+
+/* 图例与分隔条是固定项，不参与收缩（v0.4.11+ 起图表模式不再渲染上方的 aw-rel-summary 统计说明行，卡片模式的同名类走通用样式） */
 .aw-st-tree.is-graph > .aw-rel-glegend {
 	flex: 0 0 auto;
 }
 
-/* 图占剩余空间：不够时压缩自身（min-height:0 才允许缩到内容尺寸以下），内部靠 viewBox 等比缩放 */
-.aw-st-tree.is-graph > .aw-rel-graph {
-	flex: 1 1 auto;
-	min-height: 0;
+/* 「线型说明」折叠帮助行（v0.4.11+ 用户要求＝可折叠）＝整行都是切换热区；caret 与正文紧凑相连（正文单 span 自行换行） */
+.aw-st-tree.is-graph > .aw-rel-glegend-help {
+	cursor: pointer;
+	gap: 4px;
 }
 
-/* 布局尺寸恒为「适应面板宽度」（100% 宽 × viewBox 等比高，上限 70vh）；缩放/平移是叠加其上的内联 transform，不改布局故不出滚动条 */
+/* 画布内容层（视口内的画布外框）＝**按 JS 设定的宽高（内容×缩放）占位**：
+   缩放涨缩只发生在视口内部（视口 overflow:auto 出滚动条），下面的图例/状态区不会被顶动 */
+.aw-rel-canvasbody > .aw-rel-sizer {
+	position: relative; /* zoom/pan 层的定位包含块；宽高由 JS 设为 内容×缩放 */
+}
+
+.aw-rel-zoom {
+	position: absolute;
+	left: 0;
+	top: 0;
+	transform-origin: 0 0; /* 缩放围绕内容左上角，以鼠标为不动点由 JS 补偿滚动/虚拟平移（口径见 panel_canvas.zoomAtPointView） */
+	transform: var(--aw-rel-transform, none); /* JS 通过 setProperty("--aw-rel-transform", ...) 更新（no-static-styles-assignment）；宽度也由 JS 设为 max(视口宽, 内容宽) */
+}
+
+/* 图＝固定尺寸画布（width/height 属性＝viewBox 尺寸，100% 时 1:1 显示，不再「宽度拉满面板」＝内容坐标系与 viewBox 坐标系一致）。
+   缩放/平移都由外层画布三层承担＝svg 自身没有任何 transform（旧版在 svg 上挂 translate+scale、transform-origin 居中＝不动点数学易错且已废弃） */
 .aw-rel-graph {
 	display: block;
-	width: 100%;
-	height: auto;
-	max-height: 70vh;
 	margin: 2px 0 6px;
-	transform-origin: center center; /* 缩放围绕图心；pan 已在 js 内按"鼠标不动点"更新（zoomAt 把鼠标 viewport 坐标换算到 svg layout 偏移后与 ecX/ecY 同坐标系） */
-	touch-action: none; /* 触屏拖动时不连带滚动页面 */
-	cursor: grab; /* 提示可按住拖动 */
 	user-select: none; /* 拖动时不选中角色名文字 */
 }
 
-/* 拖动进行中 */
-.aw-rel-graph.is-panning {
-	cursor: grabbing;
-}
-
-/* 边 tip 浮层（自定义 HTML，不用 SVG <title>，避免多行内容被浏览器原生 tooltip 截断）：position:fixed 跟手、pointer-events:none 不抢事件、白底黑字 + 弱化灰边框、pre-wrap 保留换行且自动按词/字符换行 */
+/* 图表 tip 浮层（自定义 HTML＝人物圆点／名字文字与关系连线**共用同一份、同一样式**；不用 SVG <title>，浏览器原生 tooltip 会截断多行内容且样式不统一）：position:fixed 跟手、pointer-events:none 不抢事件、白底黑字 + 弱化灰边框、pre-wrap 保留换行且自动按词/字符换行。右键出菜单时由调用方主动隐藏 */
 .aw-rel-gtip {
 	position: fixed;
 	z-index: 9999;
@@ -990,7 +1014,13 @@
 .aw-rel-gname {
 	fill: var(--text-normal);
 	font-size: 12px; /* 基础字号；实际每个节点按重要度由内联 font-size 覆盖（labelFontSize） */
-	pointer-events: none; /* 文字不抢命中区，点名字也算点节点 */
+	/* v0.4.11+ 用户要求＝**名字文字与圆点行为完全一致**＝参与命中（悬停高亮／单击选中／双击编辑／右键菜单／按住平移）；
+	   事件本来挂在节点 <g> 上，此前这行 pointer-events:none 让文字整块脱离命中区＝只有圆点有反应。
+	   命中范围＝字形轮廓＋下面那圈 3px 描边光晕（paint-order:stroke 的描边也计入 hit-test），光标与圆点同为 pointer，
+	   user-select:none＝按住名字拖动时不会选中文字（svg pointerdown 里也 preventDefault） */
+	pointer-events: auto;
+	cursor: pointer;
+	user-select: none;
 	/* 描边光晕：线从名字底下穿过时也读得出字（paint-order 先描边后填字，比加背景块干净） */
 	paint-order: stroke;
 	stroke: var(--background-primary);
@@ -1022,14 +1052,108 @@
 	stroke-width: 3;
 }
 
-/* 「人物状态」区（图表模式主体底部固定项）：内容多时自身滚动、把图压小而不裁切 */
+/* 「人物状态」区（图表模式主体底部固定项）：**高度恒定＝`--aw-rel-charinfo-h`（口径唯一来源＝RelationshipView.charInfoH，只有拖分隔条会改）**——
+   选中谁、内容多少都不改变它的大小（内容超出就在区内滚动）＝用户要求＝点人物圆圈时图不会被挤得一跳一大截。
+   要改大小＝拖它上缘那条 `.aw-rel-charresizer` 分隔条 */
 .aw-st-tree.is-graph > .aw-rel-charinfo {
-	flex: 0 0 auto;
-	max-height: 42%;
+	flex: 0 0 var(--aw-rel-charinfo-h, 150px);
+	height: var(--aw-rel-charinfo-h, 150px);
+	min-height: 0;
 	overflow-y: auto;
-	border-top: 1px solid var(--background-modifier-border);
-	margin-top: 2px;
 	padding-top: 6px;
+}
+
+/* 状态区上缘分隔条＝唯一改它大小的入口（v0.4.11+ 用户要求＝可鼠标拖动边缘改变大小）；触屏同样可拖（touch-action:none） */
+.aw-st-tree.is-graph > .aw-rel-charresizer {
+	flex: 0 0 auto;
+	height: 9px;
+	margin: 2px 0 0;
+	border-top: 1px solid var(--background-modifier-border);
+	cursor: ns-resize;
+	touch-action: none;
+	position: relative;
+}
+
+.aw-st-tree.is-graph > .aw-rel-charresizer::after {
+	content: "";
+	position: absolute;
+	left: 50%;
+	top: 2px;
+	width: 34px;
+	height: 3px;
+	margin-left: -17px;
+	border-radius: 2px;
+	background: var(--background-modifier-border);
+}
+
+.aw-st-tree.is-graph > .aw-rel-charresizer:hover::after,
+.aw-st-tree.is-graph > .aw-rel-charresizer.is-resizing::after {
+	background: var(--interactive-accent);
+}
+
+/* 多份《人物.md》登记＝**每个文档一个展开项**（v0.4.11+ 用户要求）：折叠＝只有一条折叠头（▸ ＋ 文档位置 ＋「打开文档」/「编辑」），
+   点开哪条看哪条、默认全部折叠＝状态区高度口径始终不变 */
+.aw-rel-chardrawer-head {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	padding: 3px 4px;
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 6px;
+	cursor: pointer;
+	font-size: 0.92em;
+}
+
+.aw-rel-chardrawer-head:hover {
+	border-color: var(--interactive-accent);
+}
+
+.aw-rel-chardrawer-caret {
+	flex-shrink: 0;
+	color: var(--text-muted);
+}
+
+.aw-rel-chardrawer-label {
+	flex: 1 1 auto;
+	min-width: 0; /* 配合下面两条才真的省略号，位置长也不会把「打开文档」挤出去 */
+	color: var(--text-muted);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.aw-rel-chardrawer-head .aw-rel-openfile {
+	flex-shrink: 0;
+}
+
+/* 逐条各一个展开项＝条目之间留缝 */
+.aw-rel-chardrawer + .aw-rel-chardrawer {
+	margin-top: 4px;
+}
+
+.aw-rel-chardrawer.is-open .aw-rel-chardrawer-head {
+	margin-bottom: 2px;
+}
+
+.aw-rel-chardrawer.is-open .aw-rel-chardrawer-label {
+	color: var(--text-normal);
+}
+
+.aw-rel-chardrawer-body .aw-rel-charentry {
+	margin-top: 0;
+}
+
+/* 合并人物弹窗的「合并结果」预览＝落盘时写进目标《人物.md》的条目块原文（保持 Markdown 原样、可核对字段） */
+.aw-merge-preview {
+	margin: 10px 0 4px;
+	padding: 8px 10px;
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 6px;
+	background: var(--background-secondary);
+	font-family: var(--font-monospace);
+	font-size: 0.86em;
+	white-space: pre-wrap;
+	line-height: 1.5;
 }
 
 .aw-rel-charhead {
@@ -1154,6 +1278,16 @@
 /* 时间线面板（TimelineView，v0.2.x+）：容器/头部/滚动布局复用 .aw-status-view + .aw-st-top/.aw-st-tree/.aw-st-chap，筛选行复用 .aw-rel-filter-row/.aw-rel-filter；此处只定义时间轴专属部分 */
 .aw-tl-view .is-hidden { display: none; }
 
+/* 人物关系面板头部的缩放倍率标签（v0.4.11+＝与时间线同一口径与同一套 `.aw-tl-zoomlbl` 外观；本面板不在 `.aw-tl-view` 作用域内，所以单独补一条隐藏规则） */
+.aw-rel-view .aw-rel-zoomlbl.is-hidden { display: none; }
+
+/* 头部「适应全图」按钮里的图标（v0.4.11+＝与场景面板画布菜单同名项）：与文字之间留一点间距 */
+.aw-rel-view button .aw-rel-btnicon {
+	display: inline-block;
+	vertical-align: -2px;
+	margin-right: 4px;
+}
+
 /* 画布主体：overflow:auto——普通滚轮/滚动条/触屏原生滚动（内容放得下时事件冒泡滚动页面），Ctrl|Shift＋滚轮以鼠标位置为不动点缩放、左键按住拖动平移（驱动容器滚动位置）。
    transform scale 加在内部绝对定位的 .aw-tl-zoom 上（transform-origin 左上角，不影响布局）；.aw-tl-sizer 宽高＝内容×缩放（JS 设置）撑出可滚动范围 */
 .aw-st-tree.aw-tl-body {
@@ -1255,12 +1389,23 @@
 	background: var(--background-modifier-hover);
 }
 
-/* 拖动更新时间点（仅非筛选比例视图挂载）：可拖条目行给 move（四向箭头）光标提示，拖动中整块子树高亮置顶 */
+/* 拖动更新时间点（仅非筛选比例视图挂载）——v0.4.11+ 用户要求＝「增加按住 Ctrl 后才能拖动时间卡片的限制，不能随意拖动；手机上长按卡片后再拖动」：
+   常态＝default 光标（不承诺可拖，随手按下＝点击/双击/平移视野照旧）；按住 Ctrl/⌘＝grab（JS 由 document keydown/keyup 给面板根挂 `is-tl-mod`）；拖动中＝grabbing。
+   触屏＝长按卡片上的**时间徽章/圆点**（≥400ms、手指基本不动）＝「抓住」这张卡片（`is-tl-held`＝级别色虚线描边＋提示浮标），之后在这张卡片上上下拖动才改时间 */
 .aw-tl-item.aw-tl-movable {
-	cursor: move;
+	cursor: default;
+}
+
+.aw-tl-view.is-tl-mod .aw-tl-item.aw-tl-movable {
+	cursor: grab;
+}
+
+.aw-tl-view.is-tl-mod .aw-tl-item.aw-tl-movable * {
+	cursor: inherit; /* 按住 Ctrl 时圆点/徽章各自的 pointer 也不抢＝整张卡片读作「可抓」 */
 }
 
 .aw-tl-item.is-dragging {
+	cursor: grabbing;
 	z-index: 2; /* .aw-tl-item 已 position:relative；下移时压住后续重叠的兄弟条目 */
 	background: var(--background-modifier-hover);
 	outline: 1px solid var(--interactive-accent);
@@ -1268,15 +1413,23 @@
 }
 
 .aw-tl-item.is-dragging * {
-	cursor: move; /* 覆盖圆点的 pointer，拖动全程统一 move 光标（不用手形） */
+	cursor: grabbing; /* 覆盖圆点的 pointer，拖动全程统一抓取光标（不用手形） */
+}
+
+/* 手机长按「抓住」的卡片（v0.4.11+）：级别色虚线描边＝一眼看出是哪张卡片被抓住。选择器须带 `.aw-tl-list.is-tl-tree`＝与卡片常驻级别色描边同权重（(0,4,0)＞(0,3,0)）才盖得过 */
+.aw-tl-list.is-tl-tree .aw-tl-item.is-tl-held {
+	outline: 2px dashed var(--tl-lv-color, var(--interactive-accent));
+	z-index: 3; /* 描边要压过相邻卡片与子时间线轨道 */
 }
 
 .aw-tl-item.is-dragging .aw-tl-time {
 	color: var(--interactive-accent); /* 拖动中徽章实时变为目标时间点，用主题强调色标出便于辨认（松手还原/重建） */
 }
 
-/* 拖动期间跟随光标的天数差浮标（「+N 天」/「-N 天」；新日期由条目自身徽章实时显示，不在此重复）：position:fixed 不能挂在有 transform 的 zoomEl 之下 → JS 挂到 rootEl、随 pointermove 更新 left/top */
-.aw-tl-draglbl {
+/* 拖动期间跟随光标的天数差浮标（「+N 天」/「-N 天」；新日期由条目自身徽章实时显示，不在此重复）：position:fixed 不能挂在有 transform 的 zoomEl 之下 → JS 挂到 rootEl、随 pointermove 更新 left/top。
+   `.aw-tl-holdlbl`（v0.4.11+）＝手机长按「抓住」卡片时的提示（「已抓住 · 上下拖动改时间点」）＝同一胶囊语言、走强调色 */
+.aw-tl-draglbl,
+.aw-tl-holdlbl {
 	position: fixed;
 	z-index: 900;
 	pointer-events: none;
@@ -1288,6 +1441,18 @@
 	padding: 2px 8px;
 	box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
 	white-space: nowrap;
+}
+
+.aw-tl-holdlbl {
+	color: var(--interactive-accent);
+	border-color: var(--interactive-accent);
+}
+
+/* 底部汇总行下的拖动手势说明（v0.4.11+＝闸门改了手势，须让用户知道怎么改时间；文案事实源＝timeline_view.ts 的 TL_DRAG_HINT） */
+.aw-tl-draghint {
+	margin-top: 2px;
+	font-size: var(--font-ui-smaller);
+	opacity: 0.75;
 }
 
 /* 节点圆点（真实元素 .aw-tl-dot，替代旧 ::before 伪元素以便点击）：圆心落在**本行深度列**的横坐标（--tl-d × --tl-indent − 10px，与同深度导引线同一列；depth 0＝主轴中心＝list 坐标 4px − padding-left 14px）——父子层级沿竖向通道一眼可辨。translateX(-50%) 让圆心恰在 left 坐标，各级尺寸不同也无需微调 left；默认 8px＝二级基准。颜色＝级别色变量 --tl-lv-color（lv-N 类定义，见下；缺省＝二级 --h2-color），背景走 currentColor——折叠标识 .aw-tl-caret 同用该变量，圆点与 caret 同色成组（经 color＋currentColor 实现，核心默认值 inherit 时正常继承文本色而非透明；变量未定义的旧版 Obsidian 回落旧配色） */
@@ -1306,11 +1471,11 @@
 }
 
 /* 级别色变量（v0.3.3+ 收敛的单一来源，圆点/caret/徽章描边/卡片底色共用）：**v0.4.9+ 改调色板**——原＝同级标题色 --hN-color，但多数主题六级标题同色（用户实测＝各级圆点/卡片一个颜色）→ 直接取 Obsidian 核心调色板 --color-*（每主题必定义、天然互相区分）：一级红/二级橙/三级黄/四级绿/五级蓝（≥5 归 lv-5）；hex 兜底＝极端主题缺调色板变量时仍有近色 */
-.aw-tl-item.lv-1 { --tl-lv-color: var(--color-red, #e93147); }
-.aw-tl-item.lv-2 { --tl-lv-color: var(--color-orange, #e36614); }
-.aw-tl-item.lv-3 { --tl-lv-color: var(--color-yellow, #e6a614); }
-.aw-tl-item.lv-4 { --tl-lv-color: var(--color-green, #4d9e4d); }
-.aw-tl-item.lv-5 { --tl-lv-color: var(--color-blue, #4a8ee6); }
+.aw-tl-item.lv-1, .aw-tl-rail.lv-1 { --tl-lv-color: var(--color-red, #e93147); }
+.aw-tl-item.lv-2, .aw-tl-rail.lv-2 { --tl-lv-color: var(--color-orange, #e36614); }
+.aw-tl-item.lv-3, .aw-tl-rail.lv-3 { --tl-lv-color: var(--color-yellow, #e6a614); }
+.aw-tl-item.lv-4, .aw-tl-rail.lv-4 { --tl-lv-color: var(--color-green, #4d9e4d); }
+.aw-tl-item.lv-5, .aw-tl-rail.lv-5 { --tl-lv-color: var(--color-blue, #4a8ee6); }
 
 /* 有子事件的圆点可点击切换折叠状态；悬停放大一档作可点反馈（v0.4.4+ 美化）。
    v0.4.4+ 追加：底色光晕环外再描一圈级别色细外环（＝一级靶心同款语言）——读作「此行有子事件、可点折叠」；一级 has-kids 走 .lv-1 规则的同值 box-shadow，不冲突 */
@@ -1346,72 +1511,40 @@
 	color: var(--interactive-accent); /* 底色已是级别色，hover 换强调色作可点反馈（旧 text-muted→text-normal 的加深语义不再适用） */
 }
 
-/* 轮廓层级导引线（attachTlGuides，v0.3.3+ 视觉增强）：让扁平时间序里的父子从属关系可见。
-   列 k（1≤k≤封顶 6）横坐标＝--tl-guide-start＋(k-1)×--tl-indent，与行缩进/圆点列同一公式（--tl-guide-start＝--tl-indent−10px，故深度 k 行圆点圆心恰落在列 k）——同一祖先支的子行被同一条竖向通道串起。
-   nth-child 映射＝列号：代码侧恒把 branch-line 生成为行/间隔块的前 depth 个子元素，nth-child(k) 即列 k；depth＞6 已在代码封顶（tl-d6） */
-.aw-tl-branch-line {
-	position: absolute;
-	top: 0;
-	bottom: 0;
-	width: 1px;
-	background: var(--background-modifier-border);
-	opacity: 0.55; /* 比主轴略淡：只做层级通道暗示，不抢主轴的时间流视觉 */
-}
-
-.aw-tl-branch-line:nth-child(1) { left: var(--tl-guide-start, 12px); }
-.aw-tl-branch-line:nth-child(2) { left: calc(var(--tl-guide-start, 12px) + var(--tl-indent, 22px)); }
-.aw-tl-branch-line:nth-child(3) { left: calc(var(--tl-guide-start, 12px) + 2 * var(--tl-indent, 22px)); }
-.aw-tl-branch-line:nth-child(4) { left: calc(var(--tl-guide-start, 12px) + 3 * var(--tl-indent, 22px)); }
-.aw-tl-branch-line:nth-child(5) { left: calc(var(--tl-guide-start, 12px) + 4 * var(--tl-indent, 22px)); }
-.aw-tl-branch-line:nth-child(6) { left: calc(var(--tl-guide-start, 12px) + 5 * var(--tl-indent, 22px)); }
-
-/* （v0.4.9+ 退场）旧扁平时间序趟的「子列短桩 .aw-tl-branch-stub」「肘形接线 .aw-tl-elbow」随「时间主线」显示方式一并删除——树挂视图里子行连续挂在侧向时间线上，不需要把四散的子行拉回父列 */
-
-/* ===== v0.4.9+ 树挂分支视图（唯一渲染方式；容器挂 is-tl-tree）=====
-   语义＝向下生长的树：一级事件挂在主轴上（同主线视图），凡有子事件者从**自己的圆点**处引出一条 `.aw-tl-branch-out` 分叉线——
-   横着出圆点、以圆角向下弯到下一层列（＝那条列线就是这批子事件的**侧向时间线**），再垂到行尾；
-   侧向时间线本身由子行/留白的通高 `.aw-tl-branch-line` 接长（主线视图里它只是「层级通道」的暗示，这里升格成一条真正的时间线），
-   子事件的圆点正落在该列上＝挂在侧线上；子事件自己再有子事件＝从它自己的圆点再弯一条更深一层的弧线，逐层同构（数据侧级别封顶 6）。
-   横坐标与圆点/列线同一公式（＝不测像素、纯 CSS 对齐）：本行圆点列＝--tl-guide-start＋(--tl-d−1)×--tl-indent（与 .aw-tl-dot 的 --tl-d×--tl-indent−10px 恒等），
-   宽度＝indent＋1px（2px 描边的中心线正好落在下一层列＝子事件圆点圆心上） */
-.aw-tl-branch-out {
-	position: absolute;
-	z-index: -1; /* v0.4.9+（用户要求＝事件卡片要在绘制的时间线上面）：沉到负层→弧线/横线画在卡片底色与文字之下（最近层叠上下文＝zoomEl 的 transform），卡片盖住穿过的线段；圆点保持 auto 层＝仍压在弧出针处 */
-	top: 11px; /* 圆点圆心线＝弧线从圆心处出针（与 .aw-tl-dot 的 top:7px＋半高口径一致） */
-	left: calc(var(--tl-guide-start, 12px) + (var(--tl-d, 0) - 1) * var(--tl-indent, 22px));
-	bottom: 0; /* 垂到行尾＝与下方留白/子行的同列通高竖线接续（侧向时间线不断线） */
-	width: calc(var(--tl-indent, 22px) + 1px);
-	box-sizing: border-box; /* 描边计入宽高＝右描边中心线恰落在下一层列（content-box 会外溢 2px） */
-	border-top: 2px solid var(--background-modifier-border);
-	border-right: 2px solid var(--background-modifier-border);
-	border-top-right-radius: max(14px, calc(var(--tl-indent, 22px) * 0.85)); /* ＝向下弯出的那道弧；v0.4.9+（用户要求＝侧向延伸更远＋**开始向下弯曲的位置更早/更小一点**）半径随动态列距放大到 0.85×indent＝横线只留一小段就开始下弯（浏览器还会按行高自动夹小半径＝不会画破行） */
-	opacity: 0.75; /* 比主线淡一档、比列通道实一档：读作「分支出线」而非边框 */
+/* ===== v0.4.11+ 子时间线轨道 `.aw-tl-rail`（连续轨道＋小出针；容器挂 is-tl-tree）=====
+   旧口径（v0.4.9/v0.4.11）＝「按深度共用列线 `.aw-tl-branch-line` ＋ 每个父事件一行的分叉弧线 `.aw-tl-branch-out` ＋ skewX 倾斜」，
+   用户实测＝「子时间轴的绘制和走向很难看」，四处根因：
+   ① 列距按「子线族摊面板 2/3 宽」动态算会涨到 ~150px ⇒ `border-top-right-radius:max(14px,.85×indent)` 被撑成横跨整行的大弯；
+   ② 列线只由「自身深度 ≥ k 的行」逐段画，而 Y 序＝全局时间序 ⇒ 同一条子时间线被别的根事件插成一段段断口（看着像虚线）；
+   ③ 同层不同父事件共用同一个 X ⇒ 两条子时间线糊成一条、分不清归属；
+   ④ skewX 把 elbow 的圆角剪歪 ⇒ 走向别扭。
+   现口径＝**每个有子事件的父事件独占一条连续轨道**：JS 侧 `layoutTlLanes` 实测行块 `offsetTop/offsetHeight` 后写 left/top/width/height＝
+   从父事件圆点圆心水平出针 → **小圆角向下弯** → 一路垂到它最后一个直接子事件的圆点为止（不再垂直一路向下）；
+   同一 X 上时间区间重叠的轨道由 JS 逐条右移一个列距 ⇒ 不同一级事件各自的子时间线在时间上交错时也各占一条通道。
+   卡片左缘＝轨道 X（行内联 `--tl-x`，见下 `.is-tl-tree .aw-tl-item`）＝子事件圆点端正挂在轨道上。
+   宽度口径＝JS 写「子轨道 X − 父 X ＋ 1」＋ `box-sizing:border-box` ⇒ 2px 右描边的**中心线**恰落在轨道 X 上（与主轴/圆点同一口径）。
+   颜色走级别色单一来源（`.aw-tl-rail.lv-N` 与 `.aw-tl-item.lv-N` 共用同一份调色板定义）；`z-index:-1`＝穿过别人卡片的段被不透明卡底盖住（用户口径＝卡片在时间线上面），通道里的段落可见。 */
+.aw-tl-rail {
+	--tl-rail-color: var(--tl-lv-color, var(--background-modifier-border)); /* 极端主题缺调色板时回落旧描边色 */
+	position: absolute; /* 坐标由 JS 按实测布局写（left/top/width/height＝list 内布局 px，缩放由 zoomEl transform 统一放大） */
+	box-sizing: border-box;
+	z-index: -1;
+	border-top: 2px solid var(--tl-rail-color);
+	border-right: 2px solid var(--tl-rail-color);
+	border-top-right-radius: 12px; /* 小出针（旧 max(14px,.85×indent) 的大弧退场）；轨道高/宽不足时浏览器按比例夹小半径＝不会画破 */
+	opacity: 0.7; /* 比主轴淡一档：读作「这一支的侧向时间线」而不是主轴本身 */
 	pointer-events: none;
 }
 
-/* ===== v0.4.11+ 子时间线倾斜：侧线转折后缓慢向右下走，不再垂直一直向下 =====
-   applyTlSlant 在渲染后按 offsetTop 给每个行/留白块写 --tl-slant-x（根块=0 钉主轴，子块随距根远近右移），
-   块本身用 left 平移（不用 transform＝不给行造层叠上下文，保住 .aw-tl-branch-line 负 z-index 被卡片盖住的效果）；
-   块内的导引线/分叉弧线再按 --tl-slant-deg 做 skewX（原点左上角）＝段末比段首多右移 tan(deg)×段高，正好接上下一段/下一行的左移量，
-   子事件圆点随行一起右移＝始终落在这条斜线上。 */
-.aw-tl-list.is-tl-tree > * {
-	left: var(--tl-slant-x, 0px);
-}
-
-.aw-tl-list.is-tl-tree .aw-tl-branch-line,
-.aw-tl-list.is-tl-tree .aw-tl-branch-out {
-	transform: skewX(var(--tl-slant-deg, 0deg));
-	transform-origin: top left;
-}
-
 /* v0.4.9+（用户两轮要求＝卡片不占满整宽、宽度变小；**卡片左缘从本行时间线的 X 轴起**）树挂趟的事件卡片：
-   margin-left＝d×indent−10 ⇒ 卡片盒左缘恰落在本深度列（圆点圆心列＝侧向时间线/主轴的 X）＝卡片**挂在时间线上**，
-   盒不再从列表左缘起、不再拖通宽色带；左内衬固定 24px（圆点压左缘角上、caret/徽章从右让开），
-   宽＝24px 内衬＋固定卡片宽 --tl-card-w（JS renderTlTree 写入＝240px，兜底同值）＋右边距 6px ⇒ 各深度卡片同宽且更紧凑，
-   长文本在卡片内换行。深度 0 行 margin-left=−10 ⇒ 卡片左缘＝主轴圆心线＝一级事件卡片直接从主轴长出 */
+   v0.4.11+ 口径＝`margin-left = --tl-x − 14px`（`--tl-x`＝JS `layoutTlLanes` 按实测布局给每行写的**所挂轨道 X**，list 内 padding-box 坐标；
+   list `padding-left:14px` ⇒ 盒左缘＝14＋margin-left＝轨道 X）＝卡片盒左缘恰落在它挂的那条子时间线上（根事件未写值＝默认主轴 X=4 ⇒ margin-left=−10）
+   ＝卡片**挂在时间线上**、圆点压盒左缘角上；盒不再从列表左缘起、不再拖通宽色带。
+   左内衬固定 24px（圆点压左缘角上、caret/徽章从右让开），宽＝24px 内衬＋固定卡片宽 --tl-card-w（JS renderTlTree 写入＝240px，兜底同值）＋右边距 6px
+   ⇒ **各深度卡片同宽**（＝行高与该行走哪条轨道无关 ⇒ 可以先排版、再实测 Y、最后写 X，坐标不自我循环）；长文本在卡片内换行 */
 .aw-tl-list.is-tl-tree .aw-tl-item {
 	box-sizing: border-box;
-	margin-left: calc(var(--tl-d, 0) * var(--tl-indent, 22px) - 10px);
+	margin-left: calc(var(--tl-x, 4px) - 14px); /* 未被子事件挂到的行＝根事件＝默认主轴 X */
 	padding-left: 24px;
 	width: calc(30px + var(--tl-card-w, 240px));
 	background: var(--background-primary); /* 兜底（老渲染器不认 color-mix 时用）；面板主体区是 --background-secondary */
@@ -1437,31 +1570,9 @@
 	}
 }
 
-/* 卡片盒左缘已＝本行列 X ⇒ 树挂趟圆点/分叉弧线一律从盒左缘（＝本行时间线 X）起针，不再按 guide-start 公式（那是盒左缘在列表左缘时的旧坐标） */
+/* 卡片盒左缘＝本行所挂轨道的 X（`--tl-x`）⇒ 树挂趟圆点一律从盒左缘起针＝圆心恰落在轨道上（轨道由 JS 实测绘制，见 `.aw-tl-rail`） */
 .aw-tl-list.is-tl-tree .aw-tl-item > .aw-tl-dot {
-	left: 0; /* translateX(-50%) 后圆心恰在卡片左缘＝列 X＝侧向时间线上 */
-}
-
-.aw-tl-list.is-tl-tree .aw-tl-item > .aw-tl-branch-out {
-	left: 0; /* 横线自本行圆点（盒左缘）出针，宽 indent＋1 ⇒ 右描边中心线恰落在下一层列＝子卡片左缘/子圆点 */
-}
-
-/* 行内祖先列线（通高竖线列 1..d）：盒已右移 d×indent−10 ⇒ 盒坐标＝(k−d)×indent（多为负值＝画在卡片左缘之外的通道上），
-   与留白块（盒在列表左缘、left 走旧公式）的列线在同一 list 坐标上首尾相接；留白块内无前缀选择器不命中、仍走原公式 */
-.aw-tl-list.is-tl-tree .aw-tl-item > .aw-tl-branch-line:nth-child(1) { left: calc((1 - var(--tl-d, 0)) * var(--tl-indent, 22px)); }
-.aw-tl-list.is-tl-tree .aw-tl-item > .aw-tl-branch-line:nth-child(2) { left: calc((2 - var(--tl-d, 0)) * var(--tl-indent, 22px)); }
-.aw-tl-list.is-tl-tree .aw-tl-item > .aw-tl-branch-line:nth-child(3) { left: calc((3 - var(--tl-d, 0)) * var(--tl-indent, 22px)); }
-.aw-tl-list.is-tl-tree .aw-tl-item > .aw-tl-branch-line:nth-child(4) { left: calc((4 - var(--tl-d, 0)) * var(--tl-indent, 22px)); }
-.aw-tl-list.is-tl-tree .aw-tl-item > .aw-tl-branch-line:nth-child(5) { left: calc((5 - var(--tl-d, 0)) * var(--tl-indent, 22px)); }
-.aw-tl-list.is-tl-tree .aw-tl-item > .aw-tl-branch-line:nth-child(6) { left: calc((6 - var(--tl-d, 0)) * var(--tl-indent, 22px)); }
-
-/* 树挂趟里列线升格＝各层侧向时间线本身（主线趟里只做 0.55 的通道暗示），加粗到与主轴同宽 */
-.aw-tl-list.is-tl-tree .aw-tl-branch-line {
-	width: 2px;
-	z-index: -1; /* 同分叉弧线＝沉到卡片之下（用户要求＝卡片在时间线上面）：列线穿过卡片/文字/悬停底色处都被盖住，只剩通道里的裸线段 */
-	margin-left: -1px; /* 把 2px 描边**以列 X 为中心**铺开（nth-child 的 left＝列 X＝圆点圆心列）⇒ 子事件圆点端端正正挂在侧向时间线上 */
-	opacity: 0.6;
-	border-radius: 2px;
+	left: 0; /* translateX(-50%) 后圆心恰在卡片左缘＝轨道 X */
 }
 
 /* 时间比例留白块（高度由代码按天设置）：position:relative 供通高导引线挂接——空白里层级通道不断（留白＝流逝时间，通道＝结构从属）。

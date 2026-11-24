@@ -1,6 +1,18 @@
 import { App, Modal, Notice, setTooltip, SuggestModal, Setting, TFile, TFolder, ToggleComponent } from "obsidian";
 import { PIPELINE_STAGES, type StageId } from "./pipeline"; // v0.3.0+：AutoBookModal 起始节点下拉（pipeline.ts 纯数据、不 import obsidian，无循环依赖）
-import { parseTimelineTime, SCENE_TERRAIN_COLORS } from "./md_docs"; // v0.3.3+：EventEditModal 时间点校验；v0.4.8+：SceneEditModal「地形」下拉候选（md_docs 纯数据模块，无循环依赖）
+import {
+	applyCharacterMerge,
+	CHARACTER_FIELDS,
+	CHARACTER_MERGE_ALL,
+	CHARACTER_MERGE_EMPTY,
+	characterFieldValue,
+	formatCharacterBlock,
+	parseTimelineTime,
+	SCENE_TERRAIN_COLORS,
+	type CharacterMergePick,
+	type CharacterMergePicks,
+	type CharacterMergeSource,
+} from "./md_docs"; // v0.3.3+：EventEditModal 时间点校验；v0.4.8+：SceneEditModal「地形」下拉候选；v0.4.11+：MergeCharacterModal 合并人物（md_docs 纯数据模块，无循环依赖）
 import { type BookSkillPhase } from "./state_doc"; // v0.3.4+：BookSkillPhaseModal 阶段键（state_doc 纯数据模块，无循环依赖）
 import { GENRE_SKILL_NAMES } from "./skills_default"; // v0.3.6+：NewStoryModal 旧四题材回落；v0.4.3+ skills_default 会派生题材/编写类型目录技能（story_types 为单向依赖）
 import { INSPIRATION_SKILL_NAME, inspirationMatches, inspirationPreview, type InspirationBlock } from "./inspiration"; // v0.4.3+ 灵感工具包弹窗（inspiration.ts 纯解析/渲染、不 import obsidian，无循环依赖）
@@ -1153,6 +1165,8 @@ export interface CharacterScopeOption {
 	label: string; // 展示名：书籍级 / 卷 · 风起 / 章 · 第二卷·第03章 初见
 	volId?: string;
 	chapterKey?: string;
+	/** v0.4.11+ 该级别《人物.md》的实际物理路径（老格式回退名也已解析）＝「合并人物信息」按文档选存储位置用；解析不到＝undefined */
+	path?: string;
 	localCandidates: string[]; // 该级别**范围内**已有角色名（排在下拉最前，体现"在选中级别范围内选择人物"）
 }
 
@@ -1539,6 +1553,127 @@ export class CharacterEditModal extends AwModal {
 		this.contentEl.empty();
 		if (!this.submitted && this.onCancel) this.onCancel();
 	}
+}
+
+// ---------- 合并人物信息（v0.4.11+）----------
+
+/** 「最终存储文档」候选（value＝该层《人物.md》的 vault 相对路径；registered＝该文档此刻已有这个人物的登记） */
+export interface MergeCharacterTargetOption {
+	value: string;
+	label: string;
+	registered: boolean;
+}
+
+/** 合并结果＝用户选定的存储文档＋逐字段取值口径（落盘由调用方走 `manager.mergeCharacter`） */
+export interface MergeCharacterResult {
+	targetPath: string;
+	picks: CharacterMergePicks;
+}
+
+/**
+ * 「合并人物信息」弹窗：同名人物在多份《人物.md》里各有一条登记时，选**最终存储文档**＋逐字段决定取哪一份的值
+ * （候选＝各份登记的非空值 / 全部保留（拼接） / 留空），下方实时预览合并后的条目块。
+ * 纯 UI：不读不写 Vault，落盘、备份、面板刷新全在 main.ts。
+ */
+export class MergeCharacterModal extends AwModal {
+	private submitted = false;
+	private picks: CharacterMergePicks = {};
+	private targetPath = "";
+	private previewEl!: HTMLElement;
+
+	constructor(
+		app: App,
+		private charName: string,
+		private sources: readonly CharacterMergeSource[],
+		private targets: readonly MergeCharacterTargetOption[],
+		defaultTarget: string,
+		private onSubmit: (result: MergeCharacterResult) => void | Promise<void>,
+		private onCancel?: () => void
+	) {
+		super(app);
+		this.targetPath = targets.some((t) => t.value === defaultTarget) ? defaultTarget : targets[0]?.value ?? "";
+	}
+
+	onOpen(): void {
+		this.contentEl.addClass("aw-form-compact");
+		this.contentEl.createEl("h3", { text: `合并人物「${this.charName}」（${String(this.sources.length)} 份登记）` });
+		this.contentEl.createDiv({
+			cls: "aw-prompt-hint",
+			text: "同一人物在多份《人物.md》里各有一条登记。先选**最终存储文档**，再逐字段决定保留哪一份的值（或全部保留、留空）；"
+				+ "合并后其余文档里的这条会被删除，改动的文档先备份到 _backup/人物合并_时间戳/。",
+		});
+		new Setting(this.contentEl)
+			.setName("最终存储文档")
+			.setDesc("合并后的条目写进这一份《人物.md》")
+			.addDropdown((d) => {
+				for (const t of this.targets) d.addOption(t.value, t.registered ? `${t.label}（此处已有登记）` : `${t.label}（新登记）`);
+				d.setValue(this.targetPath);
+				d.onChange((v) => {
+					this.targetPath = v;
+					this.refreshPreview();
+				});
+			});
+		for (const { key, label } of CHARACTER_FIELDS) {
+			const filled = this.sources.map((s, i) => ({ i, v: characterFieldValue(s.char, key) })).filter((x) => x.v !== "");
+			if (!filled.length) {
+				new Setting(this.contentEl).setName(label).setDesc("各处登记都是空");
+				continue;
+			}
+			const opts: Array<{ value: string; label: string }> = filled.map((f) => ({
+				value: `s${String(f.i)}`,
+				label: `${this.sources[f.i].label}：${f.v.length > 30 ? `${f.v.slice(0, 30)}…` : f.v}`,
+			}));
+			if (filled.length > 1) opts.push({ value: CHARACTER_MERGE_ALL, label: "全部保留（按登记顺序拼接、去重）" });
+			opts.push({ value: CHARACTER_MERGE_EMPTY, label: "留空（不写这个字段）" });
+			const targetIdx = this.sources.findIndex((s) => s.path === this.targetPath);
+			const prefer = filled.find((f) => f.i === targetIdx) ?? filled.find((f) => f.v.length > 0);
+			const initial = key === "abilities" && filled.length > 1 ? CHARACTER_MERGE_ALL : filled.some((f) => f.i === (prefer?.i ?? -1)) ? `s${String(prefer?.i)}` : `s${String(filled[0].i)}`;
+			this.picks[key] = decodeMergePick(initial);
+			new Setting(this.contentEl).setName(label).addDropdown((d) => {
+				for (const o of opts) d.addOption(o.value, o.label);
+				d.setValue(initial);
+				d.onChange((v) => {
+					this.picks[key] = decodeMergePick(v);
+					this.refreshPreview();
+				});
+			});
+		}
+		this.previewEl = this.contentEl.createDiv({ cls: "aw-merge-preview" });
+		this.refreshPreview();
+		const btns = new Setting(this.contentEl).addButton((btn) =>
+			btn
+				.setButtonText("合并")
+				.setCta()
+				.onClick(() => {
+					if (!this.targetPath) {
+						new Notice("请先选择最终存储文档", 6000);
+						return;
+					}
+					this.submitted = true;
+					this.close();
+					void this.onSubmit({ targetPath: this.targetPath, picks: this.picks });
+				})
+		);
+		btns.addButton((btn) => btn.setButtonText("取消").onClick(() => this.close()));
+		btns.settingEl.addClass("aw-btns-right");
+	}
+
+	/** 预览＝按当前口径拼出的条目块（＝落盘时 `formatCharacterBlock` 写进目标文档的内容，一字不差） */
+	private refreshPreview(): void {
+		const merged = applyCharacterMerge(this.charName, this.sources, this.picks);
+		this.previewEl.setText(`合并结果：\n${formatCharacterBlock(merged)}`);
+	}
+
+	override onClose(): void {
+		this.contentEl.empty();
+		if (!this.submitted && this.onCancel) this.onCancel();
+	}
+}
+
+/** 下拉值 → 取值口径：`s3`＝取第 4 份登记，其余原样（`__all__`／`__empty__`） */
+function decodeMergePick(v: string): CharacterMergePick {
+	const m = /^s(\d+)$/.exec(v);
+	return m ? Number(m[1]) : v === CHARACTER_MERGE_ALL ? CHARACTER_MERGE_ALL : CHARACTER_MERGE_EMPTY;
 }
 
 // ---------- LLM 对话回复保存到文件 ----------

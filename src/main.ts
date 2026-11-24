@@ -1,6 +1,6 @@
 import { App, Notice, Platform, Plugin, PluginSettingTab, TAbstractFile, TFile, TFolder, View, WorkspaceLeaf, WorkspaceSidedock, type Editor, type MarkdownFileInfo, type MarkdownView, type SettingDefinitionItem } from "obsidian";
-import { ActionItem, ActionMenuModal, AddCharacterModal, RelationshipModal, AwGuideModal, AwModal, AutoBookConfigInput, AutoBookConfigModal, AutoBookInput, AutoBookModal, BookSkillPhaseModal, ChapterListModal, CharacterEditModal, ConfirmModal, ExportPromptsSelectModal, FixRefsReviewModal, FolderPickerModal, InspirationKitModal, MultiFieldModal, NewFilePickerModal, NewStoryInput, NewStoryModal, PanelLine, SaveReplyModal, SceneEditModal, type SceneEditResult, type SceneRelEdit, SkillEditModal, SkillPickerModal, SkillRangeModal, StoryMetaModal, StoryMetaInput, StoryPickerModal, TextAreaPrompt, TextPanelModal, TextInputModal, VaultFilePickerModal, VolumeBatchCreateModal, ensureParentFolders } from "./modals";
-import type { AddCharacterResult, RelationshipFormResult, CharacterEditResult, CharacterScopeOption, MultiSelGroup, SaveReplyResult, SkillEditResult, SkillLevel } from "./modals";
+import { ActionItem, ActionMenuModal, AddCharacterModal, RelationshipModal, AwGuideModal, AwModal, AutoBookConfigInput, AutoBookConfigModal, AutoBookInput, AutoBookModal, BookSkillPhaseModal, ChapterListModal, CharacterEditModal, ConfirmModal, ExportPromptsSelectModal, FixRefsReviewModal, FolderPickerModal, InspirationKitModal, MergeCharacterModal, MultiFieldModal, NewFilePickerModal, NewStoryInput, NewStoryModal, PanelLine, SaveReplyModal, SceneEditModal, type SceneEditResult, type SceneRelEdit, SkillEditModal, SkillPickerModal, SkillRangeModal, StoryMetaModal, StoryMetaInput, StoryPickerModal, TextAreaPrompt, TextPanelModal, TextInputModal, VaultFilePickerModal, VolumeBatchCreateModal, ensureParentFolders } from "./modals";
+import type { AddCharacterResult, RelationshipFormResult, CharacterEditResult, CharacterScopeOption, MergeCharacterResult, MergeCharacterTargetOption, MultiSelGroup, SaveReplyResult, SkillEditResult, SkillLevel } from "./modals";
 import { parseBookSkill, type BookSkillSpec } from "./book_skill"; // v0.4.1+ 旧「案头资料/」建书技能文件解析（仅供一次性迁移；建书配置已并入《故事状态.md》auto_book 块）
 import { LlmChatView } from "./llm_chat_view";
 import { GenProgressView, formatElapsedMs, type WritingStreamSink } from "./gen_progress_view";
@@ -29,7 +29,7 @@ import { requirementsFor, stagesFrom, type StageId, type StageRequirement } from
 import { assemblePromptFiles, type AssembledPrompt, type PromptFileReader, type PromptSpec } from "./prompt_files";
 import { detectChatAutoRefs } from "./chat_refs";
 import { parseToolArgs, TOOL_RESULT_MAX_CHARS, CHAT_WRITING_TOOLS, CHAT_GENERATION_TOOLS, resolveToolName, unknownToolHint, pickStringArg, pickNumberArg, normalizeDocName, DOC_NAME_ARG_KEYS, CHAPTER_NUM_ARG_KEYS, VOL_NAME_ARG_KEYS } from "./chat_tools";
-import { cnToNum, deleteRelationshipBlock, deleteSceneBlock, DOC_SCOPE_WORDS, docLocationLabel, docRelPath, extractPlannedChapterCount, insertSceneBlock, maxDeclaredVolumeNum, mergeVolOutlineChapters, parseChapterSelection, parseRelationships, parseTimelines, parseVolumeDeclarations, renameSceneBlock, renameSceneRefs, rewriteScenePosition, sliceVolOutlineChapters, splitList, splitVolOutlineByChapter, stripComments, stripForeshadowMarks, timelineGenFormatOk, timelineTimeText, updateRelationshipBlock, updateSceneBlock, type SceneBlockInput, type TimelineEntry, type VolumeDeclaration, type VolumeInfo } from "./md_docs";
+import { applyCharacterMerge, cnToNum, deleteRelationshipBlock, deleteSceneBlock, DOC_SCOPE_WORDS, docLocationLabel, docRelPath, extractPlannedChapterCount, insertSceneBlock, maxDeclaredVolumeNum, mergeVolOutlineChapters, parseChapterSelection, parseRelationships, parseTimelines, parseVolumeDeclarations, renameSceneBlock, renameSceneRefs, rewriteScenePosition, sliceVolOutlineChapters, splitList, splitVolOutlineByChapter, stripComments, stripForeshadowMarks, timelineGenFormatOk, timelineTimeText, updateRelationshipBlock, updateSceneBlock, type CharacterMergeSource, type SceneBlockInput, type TimelineEntry, type VolumeDeclaration, type VolumeInfo } from "./md_docs";
 import type { RelationshipEntry } from "./md_docs";
 import { CAST_ANALYZE_SYSTEM_PROMPT, CAST_JSON_RETRY_NOTE, aggregateCastAnalyses, buildCastChapterPrompt, buildCharacterWritePlan, buildRelationshipWritePlan, buildSceneWritePlan, castStableChars, parseCastChapterAnalysis, relPairKey } from "./cast_analyzer";
 import { OUTLINE_CAST_APPENDIX_MARK, OutlineCastTracker, outlineCastAppendixInstruction, splitOutlineCastAppendix } from "./outline_cast";
@@ -302,6 +302,7 @@ export default class ArticleWriterPlugin extends Plugin {
 		this.addCommand({ id: "character-add", name: "新增人物（身份/性别/性格/外貌/背景/能力等）", callback: () => this.cmdCharacterAdd() });
 		this.addCommand({ id: "character-manage", name: "管理人员（查看/编辑/移动/改名/删除）", callback: () => this.cmdCharacterManage() });
 		this.addCommand({ id: "character-rename", name: "角色改名（全书 MD 文档同步替换旧名并自动备份）", callback: () => this.cmdCharacterRename() });
+		this.addCommand({ id: "character-merge", name: "合并人物信息（同名人物在多份《人物.md》的登记 → 选最终存储文档）", callback: () => this.cmdCharacterMerge() }); // v0.4.11+
 		this.addCommand({ id: "analyze-cast", name: "分析人物与场景（/analyze-cast：逐章 LLM 深度分析正文，发现新人物/场景、提取字段，按出现范围定层写入三层文档，新关系追加到对应层《人物关系.md》）", callback: () => void this.cmdAnalyzeCast() });
 
 		this.addCommand({ id: "foreshadow-list", name: "伏笔列表（全书 伏笔.md，含状态）", callback: () => this.cmdForeshadowList() });
@@ -367,7 +368,7 @@ export default class ArticleWriterPlugin extends Plugin {
 		this.registerView(LlmChatView.VIEW_TYPE, (leaf) => new LlmChatView(leaf, () => this.settings.llm, () => this.getChatSystemPrompt(), () => this.getActiveStoryInfo(), (name) => this.setActiveLlmFromChat(name), () => this.chatSessionDir(), (raw) => this.collectChatAutoRefBlocks(raw), (name, args) => this.chatExecTool(name, args)));
 		this.registerView(GenProgressView.VIEW_TYPE, (leaf) => new GenProgressView(leaf)); // v0.1.4+：摘要延迟生成的工作过程面板（notifyGenProgress 驱动）
 		this.registerView(StatusView.VIEW_TYPE, (leaf) => new StatusView(leaf, () => this.getStatusSnapshot(), (name) => this.statusSwitchStory(name), (story, key) => this.statusActivateChapter(story, key), (a) => this.handleStatusAction(a), () => this.getStatusTyping(), () => this.endTypeSession())); // 第 6＝写字台「码字状态」Tab 数据源；第 7＝写字台打开/重开＝结束上次「本次写作」（下次敲字重新锚定）
-		this.registerView(RelationshipView.VIEW_TYPE, (leaf) => new RelationshipView(leaf, () => this.getRelationshipSnapshot(), () => this.openAddCharacterDialog(), (seed) => this.openAddRelationshipDialog(seed), (info) => this.openEditRelationshipDialog(info), (info) => this.deleteRelationshipFlow(info), (name) => this.renameCharacterFlow(name), (name) => this.openEditCharacterDialog(name), (name) => this.deleteCharacterFlow(name))); // v0.1.9+：人物关系面板（v0.2.0+ 头部「添加人物」；v0.4.11+ 头部「＋ 关系」＝添加人物关系弹窗，均由 main.ts 注入写动作）
+		this.registerView(RelationshipView.VIEW_TYPE, (leaf) => new RelationshipView(leaf, () => this.getRelationshipSnapshot(), () => this.openAddCharacterDialog(), (seed) => this.openAddRelationshipDialog(seed), (info) => this.openEditRelationshipDialog(info), (info) => this.deleteRelationshipFlow(info), (name) => this.renameCharacterFlow(name), (name) => this.openEditCharacterDialog(name), (name) => this.deleteCharacterFlow(name), (name) => this.openMergeCharacterFlow(name))); // v0.1.9+：人物关系面板（v0.2.0+ 头部「添加人物」；v0.4.11+ 头部「＋ 关系」＝添加人物关系弹窗、人物菜单「合并 N 处登记」＝合并人物弹窗，均由 main.ts 注入写动作）
 		this.registerView(TimelineView.VIEW_TYPE, (leaf) => new TimelineView(leaf, () => this.getTimelineSnapshot(), () => this.getTimelineCharOptions())); // v0.2.x+：时间线面板；v0.3.3+ 合并大事件：可编辑（节点增删改写回《时间线.md》），人物候选走 getTimelineCharOptions
 		this.registerView(SceneView.VIEW_TYPE, (leaf) => new SceneView(leaf, () => this.getSceneSnapshot(), (moved) => this.moveSceneFlow(moved), (at) => this.addSceneFlow(undefined, at), (row) => this.editSceneFlow(row), (row) => this.deleteSceneFlow(row), (row, at) => this.addSceneFlow(row, at), (name) => this.openTimelineEventFlow(name))); // v0.4.7+：场景面板（卡片画布；写回＝整组位置拖动/新增/编辑/删除/添加子场景五流程；v0.4.9+ 新增可带画布落点＝空白处右键「在此添加场景」；v0.4.8+ 卡片「🕐」区事件点击＝跳时间线面板定位）
 		this.addRibbonIcon("message-square", "打开 LLM 对话窗口（常驻面板）", () => void this.openLlmPanel());
@@ -2201,11 +2202,14 @@ await this.promptCreateVolumesIfEmpty(story); // 零卷 → 先弹建卷框（�
 			);
 			if (idx == null) return;
 			const char = chars[idx];
+			// v0.4.11+ 「合并」条目要给出此人登记在几份《人物.md》里（＝同名多处登记才可合并）
+			const regs = (await this.manager.loadCharacterEntries(story)).filter((e) => e.name === char.name).length;
 			const act = await this.pickAction(`管理人员「${char.name}」`, [
 				{ label: "查看详情" },
 				{ label: "编辑信息（身份/年龄/性格/外貌/背景/能力等）" },
 				{ label: `移动归属章节（当前：${this.refLabel(char.chapter, char.vol, volNames)}）` },
 				{ label: "改名（全小说 MD 同步替换并自动备份）" },
+				{ label: `合并人物信息（同名登记在 ${String(regs)} 份《人物.md》＝合并为一条并选最终存储文档）` },
 				{ label: "删除此人（并清理各场景中的引用）" },
 			]);
 			if (act == null) return;
@@ -2239,6 +2243,10 @@ await this.promptCreateVolumesIfEmpty(story); // 零卷 → 先弹建卷框（�
 				}
 				case 3: {
 					await this.renameCharacterFlow(char.name, story); // 与命令面板「角色改名」/人物关系面板「改名」同一流程
+					break;
+				}
+				case 4: {
+					await this.openMergeCharacterFlow(char.name); // v0.4.11+ 与面板右键「合并 N 处登记」、命令「合并人物信息」同一流程
 					break;
 				}
 				default: {
@@ -3884,14 +3892,14 @@ async cmdRenameChapterFile(): Promise<void> {
 		const inScope = (pred: (c: (typeof all)[number]) => boolean): string[] => all.filter(pred).map((c) => c.name).sort(sortZh);
 		const bookDir = this.manager.storyPath(story);
 		const scopes: CharacterScopeOption[] = [
-			{ id: "book", kind: "book", label: `书籍级 · ${docRelPath(`${this.manager.deskDocsPath(story)}/人物.md`, bookDir)}`, localCandidates: inScope((c) => c.chapter <= 0 && !c.vol) },
+			{ id: "book", kind: "book", label: `书籍级 · ${docRelPath(`${this.manager.deskDocsPath(story)}/人物.md`, bookDir)}`, path: `${this.manager.deskDocsPath(story)}/人物.md`, localCandidates: inScope((c) => c.chapter <= 0 && !c.vol) },
 		];
 		for (const v of await this.manager.volumeList(story)) {
-			scopes.push({ id: `vol:${v.id}`, kind: "volume", label: `卷级 · ${v.name}`, volId: v.id, localCandidates: inScope((c) => c.chapter <= 0 && c.vol === v.id) });
+			scopes.push({ id: `vol:${v.id}`, kind: "volume", label: `卷级 · ${v.name}`, volId: v.id, path: this.manager.volumeDocPath(story, v, "人物.md"), localCandidates: inScope((c) => c.chapter <= 0 && c.vol === v.id) });
 		}
 		const volNames = await this.volNameMap(story);
 		for (const c of await this.manager.listChapters(story)) {
-			scopes.push({ id: `ch:${c.key}`, kind: "chapter", label: `章级 · ${this.keyLabel(c.key, volNames, c.title)}`, chapterKey: c.key, localCandidates: inScope((cc) => cc.chapter === c.num && (cc.vol ?? "") === (c.vol ?? "")) });
+			scopes.push({ id: `ch:${c.key}`, kind: "chapter", label: `章级 · ${this.keyLabel(c.key, volNames, c.title)}`, chapterKey: c.key, path: (await this.manager.chapterDocPath(story, c.key, "人物.md")) ?? undefined, localCandidates: inScope((cc) => cc.chapter === c.num && (cc.vol ?? "") === (c.vol ?? "")) });
 		}
 		const state = await this.manager.loadState(story).catch(() => null); // 状态读不到＝按书籍级
 		const curKey = state?.current_chapter ?? null;
@@ -4160,6 +4168,102 @@ async cmdRenameChapterFile(): Promise<void> {
 		if (!ok) return;
 		const done = await this.manager.deleteCharacter(story, name);
 		new Notice(done ? "已删除该人物" : "删除失败：人物不存在");
+	}
+
+	/**
+	 * 「合并人物信息」（v0.4.11+）＝同名人物在多份《人物.md》里各有一条登记时，把它们合成一条写入**用户选定的存储文档**、
+	 * 其余文档删掉该条目。入口三处共用＝人物关系面板右键菜单／「人物状态」区「合并」链接／命令 `character-merge`。
+	 * 弹窗＝`MergeCharacterModal`（最终存储文档下拉＋逐字段取哪份登记／全部保留／留空＋条目预览）；
+	 * 落盘＝`manager.mergeCharacter`（块级手术只动那一个块，改动前原文备份到 `_backup/人物合并_时间戳/`）。只有一份登记＝直接提示不弹窗。
+	 */
+	async openMergeCharacterFlow(nameArg: string): Promise<void> {
+		if (!(await this.ensureWorkDir())) return;
+		const story = await this.requireStory();
+		if (!story) return;
+		try {
+			const all = await this.manager.loadCharacterEntries(story);
+			const name = all.some((e) => e.name === nameArg)
+				? nameArg
+				: all.find((e) => e.name.toLowerCase() === nameArg.toLowerCase())?.name ?? nameArg;
+			const entries = all.filter((e) => e.name === name);
+			if (entries.length < 2) {
+				new Notice(`「${name}」只在一份《人物.md》里登记，无需合并`, 6000);
+				return;
+			}
+			const bookDir = this.manager.storyPath(story);
+			const sources: CharacterMergeSource[] = entries.map((e) => ({
+				path: e.sourcePath,
+				label: docLocationLabel(e.scope, e.sourcePath, bookDir, REL_SCOPE_WORDS),
+				char: {
+					name: e.name,
+					chapter: e.chapter,
+					vol: e.vol,
+					identity: e.identity,
+					age: e.age,
+					gender: e.gender,
+					personality: e.personality,
+					appearance: e.appearance,
+					background: e.background,
+					abilities: e.abilities ?? [],
+					notes: e.notes,
+				},
+			}));
+			// 候选存储文档＝该人物已登记的那几份（排在前面、标「此处已有登记」）＋本书其余各层《人物.md》（＝要合并到没登记过的级别也行）
+			const registered = new Set(sources.map((s) => s.path));
+			const targets: MergeCharacterTargetOption[] = sources.map((s) => ({ value: s.path, label: s.label, registered: true }));
+			const { scopes } = await this.characterScopeChoices(story);
+			for (const s of scopes) {
+				if (!s.path || registered.has(s.path)) continue;
+				targets.push({ value: s.path, label: docLocationLabel(s.kind, s.path, bookDir, REL_SCOPE_WORDS), registered: false });
+			}
+			// 默认目标＝已填字段最多的那份（＝最完整的登记），同样多则取第一份
+			const filledCount = (s: CharacterMergeSource): number => Object.entries(s.char).filter(([k, v]) => k !== "name" && k !== "chapter" && k !== "vol" && (Array.isArray(v) ? v.length > 0 : String(v ?? "").trim() !== "")).length;
+			const defaultTarget = sources.reduce((best, cur) => (filledCount(cur) > filledCount(best) ? cur : best), sources[0]).path;
+			const res = await new Promise<MergeCharacterResult | null>((resolve) => {
+				new MergeCharacterModal(this.app, name, sources, targets, defaultTarget, (r) => resolve(r), () => resolve(null)).open();
+			});
+			if (!res) return;
+			const targetLabel = targets.find((t) => t.value === res.targetPath)?.label ?? res.targetPath;
+			const others = sources.map((s) => s.path).filter((p) => p !== res.targetPath);
+			const merged = applyCharacterMerge(name, sources, res.picks);
+			const ok = await this.confirmBox(
+				`合并「${name}」的 ${String(sources.length)} 处登记？`,
+				`合并后的条目写入：${targetLabel}\n其余 ${String(others.length)} 份《人物.md》里的该条目将被删除（改动前原文备份到 _backup/人物合并_时间戳/）。`,
+				"合并"
+			);
+			if (!ok) return;
+			const r = await this.manager.mergeCharacter(story, merged, res.targetPath, others);
+			const missed = r.missed.length ? `；${String(r.missed.length)} 份文档里已找不到该条目（未改动）` : "";
+			new Notice(`已合并「${name}」→ ${targetLabel}，清除其余 ${String(r.removed.length)} 处登记${missed}`, 8000);
+			this.schedulePanelRefresh(300);
+		} catch (e) {
+			this.notifyError("合并人物失败", e);
+		}
+	}
+
+	/** 命令「合并人物信息」：列出**登记在两份以上《人物.md》**的名字供选择，再走与面板右键菜单同一个 `openMergeCharacterFlow` */
+	async cmdCharacterMerge(): Promise<void> {
+		if (!(await this.ensureWorkDir())) return;
+		const story = await this.requireStory();
+		if (!story) return;
+		try {
+			const entries = await this.manager.loadCharacterEntries(story);
+			const count = new Map<string, number>();
+			for (const e of entries) count.set(e.name, (count.get(e.name) ?? 0) + 1);
+			const names = [...count.keys()].filter((n) => (count.get(n) ?? 0) > 1).sort((a, b) => a.localeCompare(b, "zh"));
+			if (!names.length) {
+				new Notice("没有需要合并的人物：每个名字都只登记在一份《人物.md》里", 6000);
+				return;
+			}
+			const idx = await this.pickAction(
+				"选择要合并的人物（登记在两份以上《人物.md》）",
+				names.map((n) => ({ label: n, sub: `${String(count.get(n) ?? 0)} 份《人物.md》各有一条` }))
+			);
+			if (idx == null) return;
+			await this.openMergeCharacterFlow(names[idx]);
+		} catch (e) {
+			this.notifyError("读取人物登记失败", e);
+		}
 	}
 
 	// ---------- LLM 写作命令（/write /continue /rewrite /polish /deai /review，对应 Python WritingMixin + writer.py） ----------

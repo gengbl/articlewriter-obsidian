@@ -4,6 +4,7 @@ import { ConfirmModal, EventEditModal, type EventEditResult } from "./modals"; /
 import { buildOutlineTree, countSubtree, flattenOutlineOrdered, subtreeHas, type OutlineNode } from "./outline_tree"; // v0.3.1+：轮廓树算法与事件树面板共用（v0.4.9+ 树挂视图另用 subtreeHas 剪枝；v0.4.11+ flattenOutlineOrdered＝全局时间序压平）
 import { CanvasPanel } from "./panel_canvas"; // v0.3.1+：缩放/平移画布设施与事件树面板共用
 import { revealEditorLine } from "./editor_nav"; // v0.4.3+：「在编辑器里定位到某一行」与灵感工具包/写字台共用
+import { assignTlLaneXs } from "./timeline_lanes"; // v0.4.11+：子时间线轨道的横向通道分配（纯函数＋单测）
 
 /** 时间线条目所属层级（书根 / 卷 / 章） */
 export type TlScope = "book" | "volume" | "chapter";
@@ -94,15 +95,37 @@ function tlTimeCmp(a: { time: number; month?: number; day?: number }, b: { time:
  *  事实源＝此常量：renderTlTree 把同值写进列表容器的 `--tl-card-w`，styles.css 只消费该变量（缺省兜底值与此一致） */
 const TL_TREE_CARD_W = 240;
 
-/** 子时间线倾斜（v0.4.11+ 用户要求＝「转折后缓慢向下向右，不要垂直一直向下」）：各层侧向时间线与落在上面的子事件圆点按同一斜率向右下走，
- *  根事件（depth 0）仍钉在主轴上。角度取 6°（tan≈0.105）——长子树的横向漂移够明显、又不把卡片推出视口太多；渲染后按各行 offsetTop 逐段平移＋导引线 skew 接续 */
-const TL_SLANT_DEG = 6;
+/** v0.4.11+（用户要求＝「子时间轴的绘制和走向很难看」→ 方法一「连续轨道＋小出针」＋列距收窄封顶 56px）：
+ *  一条子时间线＝**父事件独占的一条连续轨道**（`layoutTlLanes` 实测行块坐标后绘制 `.aw-tl-rail`），列距＝父事件所在 X 到其子轨道 X 的水平距离。
+ *  上限 56px（旧口径「子线族摊面板 2/3 宽」会让列距涨到 ~150px、把出针弧撑成横跨整行的大弯＝难看主因之一），面板窄时按层数收缩、下限 28px */
+const TL_LANE_STEP = 56;
+const TL_LANE_STEP_MIN = 28;
+
+/** 主轴圆心的 list 内坐标（`styles.css` `.aw-tl-list::before{left:3px;width:2px}` ⇒ 中心 4px；list `padding-left:14px` ⇒ 深度 0 行 `margin-left = 4 − 14 = −10`） */
+const TL_AXIS_X = 4;
+
+/** 圆点圆心距行块顶部的距离（`styles.css`：默认 dot `top:7px`＋半高 4 ＝ 11；一级 `top:5px`＋半高 6 ＝ 11 ⇒ 各级恒 11，与旧 `.aw-tl-branch-out{top:11px}` 同一口径） */
+const TL_DOT_CY = 11;
+
+/** 判定「两条轨道在时间上重叠」的纵向安全间距：区间相距不足此值就不给它们同一个 X（否则两条子时间线在视觉上糊成一条） */
+const TL_RAIL_VGAP = 8;
+
+/** v0.4.11+（用户要求＝「增加按住 Ctrl 后才能拖动时间卡片的限制，不能随意拖动；手机上长按卡片后再拖动」）：
+ *  桌面＝**按住 Ctrl/⌘ 才能拖动**条目卡片（常态＝普通点击/双击/平移视野，不会一碰就改时间）；
+ *  触屏＝**长按时间点徽章 ≥ 此毫秒数且手指位移小于 TL_HOLD_MOVE_PX** ＝「抓住」这张卡片（描边高亮＋提示），
+ *  之后在这张卡片上按下手指上下拖动＝改时间（本次 pointerdown 会 stopPropagation＝画布不平移，`touch-action:none`＝原生滚动也不抢）。
+ *  取 400ms＝早于 Chromium 长按 contextmenu（约 500ms）＝长按判定先赢、不弹节点菜单；节点菜单仍可从卡片**其它部位**长按唤出 */
+const TL_HOLD_MS = 400;
+const TL_HOLD_MOVE_PX = 10; // 长按判定期间手指允许的最大位移（超过＝用户在滚动页面＝取消「抓住」）
+
+/** 底部汇总行末尾的拖动手势提示（同一文案也写进《使用说明》＝口径唯一） */
+const TL_DRAG_HINT = "改时间点：桌面按住 Ctrl/⌘ 再拖卡片 · 手机长按卡片上的时间徽章再上下拖动";
 
 /**
  * 时间线面板（自定义 ItemView，可停靠任意区域、重载保留位置）：
  * 把当前小说**书根 / 卷目录 / 章节目录三层全部「时间线开头」的文档**（默认《时间线.md》＋扩展《时间线-***.md》，v0.4.7+ 多时间线）合并成一条自上而下的纵向时间轴——一级事件按时间点（支持 年 / 年-月 / 年-月-日）升序挂在主轴上，每条带来源层级标签；标题深度即事件级别（#=一级、##=二级、###=三级，可更深）。**父子关系按文档结构**：同一文档内「父＝其前最近一条级别更小的条目」（跨文档不挂父）。
  * **多时间线（v0.4.7+）**：同容器内《时间线-战斗线.md》之类文档自动并入面板，与默认时间线**按时间合并绘制**；每条泳道一种配色（徽章描边 + 非默认泳道的彩色名称 chip），底部汇总行下给出「时间线」图例（色点＋名称＋条数，点击＝只看该泳道／恢复全部），头部另有时间线下拉；「＋ 事件」写入当前所选泳道的文档（未选＝书级《时间线.md》）。
- * **树挂分支渲染（v0.4.9+ 用户要求＝「按向下生长的树挂事件」，后确认取消显示方式选项＝树挂是唯一渲染）**：**全部事件（一级与各级子事件）按时间点全局升序排成一条纵向序列（v0.4.11+：Y 值只由时间决定，不会出现时间晚的在上、时间早的在下）**；一级事件落在主轴上、子事件按结构深度缩进到各层列上，**凡有子事件者从它自己的圆点处引出一条侧向时间线**——出线横穿一个列距、以圆角向下弯到下一层列，那条列线就是该层子事件的侧向时间线（`.aw-tl-branch-line` 升格为真正的时间线、加粗到与主轴同宽），子事件的圆点正落在该列上＝挂在侧线上，卡片左缘也从该列起（不透明卡底盖住穿过的线段）；**相邻行的留白＝相邻事件的真实时差（各级共用同一条时间尺度，`tlPrevMs` 全局游标）**；子事件自己再有子事件＝从它自己的圆点再弯一条更深一层的弧线，逐层同构（级别封顶 6）。列距按面板宽度动态分配（侧线族摊 2/3 宽、固定宽卡片不越右缘，见 `renderTlTree`）；挂父口径按 `sourcePath` 连续段 `buildOutlineTree`，行序由 `flattenOutlineOrdered` 统一按时间全局排序（同刻保持文档先序＝父先于子）。
+ * **树挂分支渲染（v0.4.9+ 用户要求＝「按向下生长的树挂事件」，后确认取消显示方式选项＝树挂是唯一渲染；v0.4.11+ 改为「连续轨道＋小出针」＝用户投诉「子时间轴的绘制和走向很难看」）**：**全部事件（一级与各级子事件）按时间点全局升序排成一条纵向序列（v0.4.11+：Y 值只由时间决定，不会出现时间晚的在上、时间早的在下）**；一级事件钉在主轴上，**每个有子事件的父事件独占一条连续子时间线轨道**（`.aw-tl-rail`＝`layoutTlLanes` 实测行块坐标后绘制的绝对定位元素：自父事件圆点圆心水平出针、以小圆角（12px）向下弯、一路到**其最后一个直接子事件的圆点**为止，不再垂直一路向下、也没有旧的大半径 swoosh）；子事件的卡片左缘＝该轨道 X（行内联 `--tl-x`）＝圆点端正挂在轨道上；孙事件在更右一层（相对本轨道再进一个列距）。**同一 X 上时间区间重叠的轨道逐条右移一个列距**＝不同一级事件各自有子时间线、它们的子事件在时间上交错时不会糊成一条（v0.4.11+ 用户明确要求处理的重叠问题）。列距＝`TL_LANE_STEP`（上限 56px，面板窄时按层数收缩、下限 28px）；轨道 `z-index:-1` 沉到卡片之下＝穿过别人卡片的部分被不透明卡底盖住、通道里的段落可见（用户既有口径＝卡片在时间线上面）。**相邻行的留白＝相邻事件的真实时差（各级共用同一条时间尺度，`tlPrevMs` 全局游标）**；挂父口径按 `sourcePath` 连续段 `buildOutlineTree`，行序由 `flattenOutlineOrdered` 统一按时间全局排序（同刻保持文档先序＝父先于子）。
  * **时间比例间距**：相邻条目的垂直间隔按其时间差成比例拉开（基准 5px/天、90 天内按真实比例出留白，超过 90 天的间隔压成定高「⋯ 约 N 年 ⋯」时间跳跃标记块防极端点拉爆画布；密度另可用 Ctrl|Shift 滚轮缩放调节）；筛选模式下改紧凑堆叠（命中稀疏不成比例）。汇总行附「跨度 N 年 M 月」（最早到最晚的总时长）。
  * 顶部筛选框可按人物/事件关键词过滤（筛选时显示命中条目及其祖先链、忽略折叠状态）。**双击**条目弹出**编辑事件弹窗**（v0.4.9+ 用户要求＝不再在编辑器打开文档＝与场景面板卡片同口径；单击不触发，避免误触）；
  * **点击圆点**切换有子事件条目的折叠状态；**右键条目**弹出节点菜单（编辑/添加子事件/添加同级/完成切换/**打开来源文档**＝在编辑器打开来源《时间线.md》并定位到该时间点标题行，图标 `file-text`／删除）。
@@ -130,7 +153,7 @@ export class TimelineView extends ItemView {
 	// v0.4.7+ 多时间线：泳道筛选（""＝全部时间线；否则泳道名）＋本次渲染趟的「泳道名→序号」索引（renderBody 每趟重建，条目 laneIndex 与配色/图例同一口径）
 	private laneFilter = "";
 	private laneNameIdx = new Map<string, number>();
-	private tlTreeMaxDepth = 0; // 树挂趟本次渲染画出的最深列（＝侧向时间线层数）：renderTlTree 用它把各层列线摊进横向 2/3 预算
+	private tlTreeMaxDepth = 0; // 树挂趟本次渲染画出的最深深度（≥1 才有一条子轨道）：renderTlTree 用它把列距在面板变窄时按比例收缩
 	// 折叠中的条目 id 集合（圆点点击切换；重渲染不清零、切书重置）
 	private collapsedIds = new Set<string>();
 	private lastStoryKey = "";
@@ -145,6 +168,24 @@ export class TimelineView extends ItemView {
 	private tlDragLive = false; // 本手势是否越过阈值成为有效拖拽（未越界＝普通点击/双击，照常放行）
 	private tlDragSteps = 0; // 拖动中最近一次算出的 Δ 步数（步＝条目自身精度单位：含日＝天、只含月＝月、纯年＝年；松手时据此决定是否写回）
 	private tlDragLbl: HTMLElement | null = null; // 拖动期间跟随光标的目标时间浮标（挂 rootEl——zoomEl 有 transform 会破坏 position:fixed）
+	// v0.4.11+ 拖动闸门（用户要求＝桌面按住 Ctrl 才能拖动／手机长按后再拖动）：手机长按判定中的待定块（定时器 id＋卡片元素）；已「抓住」的卡片（下次在这张上起手＝直接进拖动）；「已抓住」提示浮标；
+	// 长按「抓住」之后要吞掉的那次 contextmenu（**用时间戳而不是布尔**＝最多影响 800ms 内来的那一次菜单，绝不会滞留成「以后右键都没反应」）
+	// ⚠ 硬规矩：**「能不能拖」一律读指针事件自带的 `ev.ctrlKey/ev.metaKey`**（按下那一瞬间的真实状态），不看下面跟踪的 `tlModHeld`；
+	//   `tlModHeld` 只用来切光标手相——Obsidian 弹窗的 Scope 会吞掉某些按键事件（keydown/keyup 不到 document），跟踪标志可能滞留，闸门与节点菜单都不能被它带偏
+	//   （v0.4.11+ 实测坑位＝「添加完事件后不响应右键，再双击打开编辑框后才响应」）
+	private tlModHeld = false;
+	private tlHoldPending: { item: HTMLElement; timer: number } | null = null;
+	private tlHeld: { row: TlRow; node: TlNode; item: HTMLElement } | null = null;
+	private tlHoldLbl: HTMLElement | null = null;
+	private tlHoldMenuBlockUntil = 0;
+	private setTlModHeld(held: boolean): void {
+		if (held === this.tlModHeld) return;
+		this.tlModHeld = held;
+		this.rootEl.toggleClass("is-tl-mod", held);
+	}
+	/** Ctrl/⌘ 按住状态跟踪（document keydown/keyup＋窗口 blur 兜底＋pointerdown 自纠）：**只用于光标手相**，不参与「能不能拖」判定，也不参与任何快捷键语义（撤销另有 onUndoKey） */
+	private readonly onModKeyChange = (ev: KeyboardEvent): void => { this.setTlModHeld(ev.ctrlKey || ev.metaKey); };
+	private readonly onModBlur = (): void => { this.setTlModHeld(false); };
 	// 移动事件撤销栈（v0.4.11+）：每条存源文档路径＋改写前/后整份文本＋可显示的摘要；只由「移动事件」写回压栈，只有头部「刷新」按钮清空
 	private tlUndo: Array<{ path: string; before: string; after: string; label: string }> = [];
 	private tlUndoBtn: HTMLButtonElement | null = null; // 当前头部「↶ 撤销」按钮（renderTop 每次重建头部后重取）
@@ -184,11 +225,16 @@ export class TimelineView extends ItemView {
 
 	async onOpen(): Promise<void> {
 		if (!this.built) this.buildUI(this.contentEl);
+		this.registerTlKeyHooks(); // 每次打开都重挂（先摘再挂＝幂等）：onClose 摘过之后若不重挂，面板「关闭再打开」会丢撤销快捷键与 Ctrl 光标跟踪
 		void this.refresh();
 	}
 
 	async onClose(): Promise<void> {
 		document.removeEventListener("keydown", this.onUndoKey, true); // 撤销快捷键随面板关闭一起摘掉（多实例时各管各的）
+		document.removeEventListener("keydown", this.onModKeyChange); // 拖动闸门的 Ctrl/⌘ 跟踪同摘（否则多实例会重复挂）
+		document.removeEventListener("keyup", this.onModKeyChange);
+		window.removeEventListener("blur", this.onModBlur);
+		this.clearTlHold(); // 关闭前收尾：长按定时器与「已抓住」卡片/提示浮标一并清掉（浮标挂 rootEl，DOM 即将整体拆除）
 		this.canvas?.dispose(); // v0.4.3+：断开尺寸观察器（避免观察器持有已移除的 DOM）
 	}
 
@@ -197,12 +243,26 @@ export class TimelineView extends ItemView {
 		if (this.built) this.canvas.notifyResize();
 	}
 
+	/** 面板级 document/window 监听（撤销快捷键＋Ctrl/⌘ 光标跟踪）：**先摘再挂＝幂等**，`buildUI`（首次）与 `onOpen`（含关闭后重开，此时 `buildUI` 不再跑）都调；`onClose` 统一摘。
+	 *  每个实例持有自己的箭头函数引用，多实例并存互不影响。注意：**「能不能拖」不依赖这里的键盘跟踪**（`attachTlDrag` 读按下事件自带的修饰键），
+	 *  跟踪标志只影响光标手相——Obsidian 弹窗的 `Scope` 会吞掉部分按键事件（不到 document），跟踪标志可能滞留，绝不能拿它当闸门（v0.4.11+ 实测＝添加完事件后右键/拖动失灵） */
+	private registerTlKeyHooks(): void {
+		document.removeEventListener("keydown", this.onUndoKey, true);
+		document.removeEventListener("keydown", this.onModKeyChange);
+		document.removeEventListener("keyup", this.onModKeyChange);
+		window.removeEventListener("blur", this.onModBlur);
+		document.addEventListener("keydown", this.onUndoKey, true); // 面板内 Ctrl/Cmd+Z 撤销最近一次移动（capture 早于 Obsidian 全局热键）
+		document.addEventListener("keydown", this.onModKeyChange); // Ctrl/⌘ 按住＝卡片给 grab 手相（仅此用途）
+		document.addEventListener("keyup", this.onModKeyChange);
+		window.addEventListener("blur", this.onModBlur); // 切窗口时松开过 Ctrl＝浏览器不补 keyup，兜底复位
+	}
+
 	private buildUI(parent: HTMLElement): void {
 		this.built = true;
 		this.rootEl = parent.createDiv({ cls: "aw-status-view aw-tl-view" }); // 复用写字台的容器/字体/滚动布局样式
 		this.rootEl.addEventListener("pointerenter", () => { this.tlPointerIn = true; }); // 光标在面板内＝快捷键意图归属本面板（拖动后焦点可能仍在外面）
 		this.rootEl.addEventListener("pointerleave", () => { this.tlPointerIn = false; });
-		document.addEventListener("keydown", this.onUndoKey, true); // 面板内 Ctrl/Cmd+Z 撤销最近一次移动（capture 早于 Obsidian 全局热键）
+		this.registerTlKeyHooks(); // 撤销快捷键＋Ctrl/⌘ 光标跟踪（onOpen 也调＝关闭再打开时不会丢）
 		this.topEl = this.rootEl.createDiv({ cls: "aw-st-top" }); // 固定头部：倍率标签 + 筛选框 + 刷新按钮
 		this.canvas = new CanvasPanel(this.rootEl, {
 			bodyCls: "aw-st-tree aw-tl-body",
@@ -217,6 +277,7 @@ export class TimelineView extends ItemView {
 		this.bodyEl = this.canvas.bodyEl;
 		this.sizerEl = this.canvas.sizerEl;
 		this.zoomEl = this.canvas.zoomEl;
+		this.bodyEl.addEventListener("pointerdown", () => { this.clearTlHeld(); }); // 在卡片以外（空白/留白/导轨）按下＝取消手机上「已抓住」的那张卡片（卡片起手拖动的分支会 stopPropagation＝不会走到这里；长按待定态由自己的 move/up 监听管＝这里不碰）
 		this.sumEl = this.rootEl.createDiv({ cls: "aw-dim aw-rel-summary aw-tl-sumrow" }); // 底部固定汇总行
 	}
 
@@ -251,6 +312,7 @@ export class TimelineView extends ItemView {
 	/** 重渲染前清主体：条目元素索引与 DOM 同步作废（关联 chip 的旧引用一并失效） */
 	private zoomElClear(): void {
 		this.nodeEls.clear();
+		this.clearTlHold(); // 卡片元素整体重建＝长按待定态与「已抓住」卡片（连同描边/提示浮标）一并作废，否则旧引用会指向已拆除的行
 		this.zoomEl.empty();
 	}
 
@@ -346,7 +408,7 @@ export class TimelineView extends ItemView {
 
 	/** 主体区：单一合并纵向时间轴（**树挂分支**：一级事件按时间升序挂主轴、子事件挂在各节点自己弯出的侧向时间线上，每条带来源标签；折叠按结构子树整棵隐藏；同层相邻条目间按时间差插比例间隔——90 天内为留白块 .aw-tl-spacer〔基准 5px/天〕、超出压成定高时间跳跃标记 .aw-tl-skip；筛选模式紧凑堆叠）+ 无有效条目文档的格式提示；汇总行固定显示在底部 sumEl（非筛选视图附「跨度」＝最早到最晚总时长，按可见行 min/max 计算）。
 	 *  v0.4.7+ 多时间线：同书全部《时间线.md》/《时间线-***.md》合并绘制，每条泳道一种配色（行 `.tl-l<n>` 类 + 非默认泳道的彩色名称 chip）；头部下拉选单条时间线时只显示该泳道条目（时间线 chip 与图例随可见行变化）。重渲染只清 zoomEl——缩放/滚动位置/折叠状态保持。
-	 *  **v0.4.9+ 唯一渲染＝树挂分支**：`buildTlRoots` 取各棵轮廓树的根，交给 `renderTlTree` 经 `flattenOutlineOrdered` 把全部可见条目按时间全局升序压平后逐行渲染（＝一条主轴＋各节点自己弯出去的侧向时间线，逐层同构；**v0.4.11+ Y 值按事件时间安排，子事件不再整块跟在父事件后面插队**），容器恒挂 `is-tl-tree` 类（卡片固定宽挂在时间线 X 上、列距动态、负层级不穿卡片，见 l3 文档）。共用 `renderRow`/`pushTlSpacer`/`attachTlGuides`，筛选与折叠语义＝筛选时忽略折叠、按 `subtreeHas` 整支剪枝（本节点与全部后代都不命中＝整支不画）；折叠＝隐去整棵侧枝并留「已折叠 N 条」提示 */
+	 *  **v0.4.9+ 唯一渲染＝树挂分支**：`buildTlRoots` 取各棵轮廓树的根，交给 `renderTlTree` 经 `flattenOutlineOrdered` 把全部可见条目按时间全局升序压平后逐行渲染（＝一条主轴＋**每个有子事件的父事件自己的一条连续子时间线轨道**；**v0.4.11+ Y 值按事件时间安排，子事件不再整块跟在父事件后面插队**；**v0.4.11+ 轨道＝实测坐标绘制＝见 `layoutTlLanes`**），容器恒挂 `is-tl-tree` 类（卡片固定宽挂在轨道 X 上、负层级不穿卡片，见 l3 文档）。共用 `renderRow`/`pushTlSpacer`，筛选与折叠语义＝筛选时忽略折叠、按 `subtreeHas` 整支剪枝（本节点与全部后代都不命中＝整支不画）；折叠＝隐去整棵侧枝并留「已折叠 N 条」提示 */
 	private renderBody(snap: TlSnapshot): void {
 		this.zoomElClear();
 		// 本次渲染趟的泳道索引：按快照 lanes 序（默认恒 0），缺失名按出现序补号
@@ -411,6 +473,7 @@ export class TimelineView extends ItemView {
 			const scopeTotal = this.laneFilter ? `共 ${String(visible.length)} 条（时间线「${this.laneFilter}」）` : `共 ${String(snap.totalCount)} 条`;
 			this.sumEl.setText(`${scopeTotal}：书籍级 ${String(perScope.book)} · 卷 ${String(perScope.volume)} · 章 ${String(perScope.chapter)}${doneCount ? `｜已完成 ${String(doneCount)}` : ""}${spanTxt}`);
 			this.renderLaneLegend(visible);
+			this.sumEl.createDiv({ cls: "aw-dim aw-tl-draghint", text: TL_DRAG_HINT }); // 拖动闸门说明（筛选趟不挂拖动手势＝不显示本提示）
 		}
 		this.canvas.apply(); // 内容尺寸变化 → 同步 sizer 与滚动限位
 	}
@@ -457,13 +520,11 @@ export class TimelineView extends ItemView {
 	/** v0.4.9+ 树挂视图渲染入口（筛选/非筛选两趟共用）：
 	 *  **先按时间把全部可见条目（一级事件与各级子事件一起）排成一个全局升序行序列**（v0.4.11+ 用户要求＝Y 值按每个事件的时间安排，
 	 *  不得出现「时间晚的在上、时间早的在下」；旧的「子树整块输出、逐层各自排序」会让晚于后一条一级事件的子事件压在它上面）；
-	 *  层级只由深度列表达（缩进/圆点列/列线），不再让整棵子树插队。折叠＝保留本行、不下钻；筛选＝整支不命中剪掉。
-	 *  递归画完后按**面板宽度**给本列表定横向预算——
-	 *  「子时间线（含其下所有更低一级的时间线）占满整个宽度的 2/3」＝各层列线间距 `--tl-indent` 不再是固定 22px，
-	 *  而是把可见视口布局宽的 2/3 摊给本次实际画出的层数（`tlTreeMaxDepth`，只有 1 层侧枝就摊到 2/3÷1，不再挤在主轴旁边）；
-	 *  同时保证**最深一层的固定宽卡片（`TL_TREE_CARD_W`）不越右缘**（fit 上限），下限 28px（面板太窄放不下时宁可横向滚动也不压回细缝）。
+	 *  层级只由「挂在哪条轨道上」表达，不再让整棵子树插队。折叠＝保留本行、不下钻；筛选＝整支不命中剪掉。
+	 *  行画完后取**列距 `step`**（v0.4.11+ 用户要求＝「收窄封顶约 56px」，旧口径「子线族摊面板 2/3 宽」会让列距涨到 ~150px＝弧线撑满整行＝难看主因）
+	 *  ＝ `TL_LANE_STEP`（56）为上限、面板窄时按层数收缩、下限 `TL_LANE_STEP_MIN`（28），交给 `layoutTlLanes` 逐父事件排轨道＋给每行写 `--tl-x`。
 	 *  容器另写 `--tl-card-w`＝卡片固定宽（styles.css `.aw-tl-list.is-tl-tree .aw-tl-item` 消费）。
-	 *  宽度变化（拖宽/分屏/窗口缩放）会走 onCanvasResize→重渲染＝本预算自动重算，无需测完再改 */
+	 *  宽度变化（拖宽/分屏/窗口缩放）会走 onCanvasResize→重渲染＝预算与轨道坐标自动重算 */
 	private renderTlTree(list: HTMLElement, roots: TlNode[], q: string): void {
 		this.tlTreeMaxDepth = 0;
 		const rows = flattenOutlineOrdered(roots, (a, b) => tlTimeCmp(a, b), {
@@ -471,45 +532,89 @@ export class TimelineView extends ItemView {
 			descend: (n) => !(n.children.length > 0 && q === "" && this.collapsedIds.has(n.item.id)), // 折叠：保留本行、不下钻（筛选趟忽略折叠）
 		});
 		for (const r of rows) {
-			const d = Math.min(r.depth, 6); // 深度封顶 6（与 tl-d6 同一口径）：横向预算按实际画出的最深列摊
+			const d = Math.min(r.depth, 6); // 深度封顶 6（与 tl-d6 同一口径）：列距收缩预算按实际画出的最深列摊
 			if (d > this.tlTreeMaxDepth) this.tlTreeMaxDepth = d;
 		}
 		this.tlPrevMs = null; // 全局时间游标：相邻行的留白＝相邻事件真实时差（各级共用同一条时间尺度，Y 值只由时间决定）
 		for (const r of rows) {
 			const hasKids = r.node.children.length > 0;
 			const collapsed = hasKids && q === "" && this.collapsedIds.has(r.node.item.id); // 折叠只在非筛选趟生效（筛选时忽略折叠，命中链一律展开）
-			this.renderRow(list, r.node, Math.min(r.depth, 6), q, collapsed ? this.descendantCount(r.node) : null); // 树挂趟的父子关系写在 DOM 结构里＝深度类给出缩进/圆点列
+			this.renderRow(list, r.node, Math.min(r.depth, 6), q, collapsed ? this.descendantCount(r.node) : null); // 树挂趟的父子关系写在 DOM 结构里＝深度类给出卡片宽度语义，横坐标随后由 layoutTlLanes 写 `--tl-x`
 		}
 		list.style.setProperty("--tl-card-w", `${String(TL_TREE_CARD_W)}px`);
 		const vw = this.bodyEl.clientWidth / (this.canvas.zoom > 0 ? this.canvas.zoom : 1); // 视口宽换算成内容布局 px（缩放态下 sizer 比视口宽）
 		const usable = Math.max(0, vw - 40); // 扣 list 左边距 10＋padding 14＋行右边距 6 等画布留白
 		const levels = Math.max(1, this.tlTreeMaxDepth);
-		const target = Math.round((usable * 2) / 3 / levels); // 目标＝子时间线族合计摊 2/3 宽
-		const fit = Math.round((usable - 4 - TL_TREE_CARD_W) / levels); // 上限＝最深一层卡片右缘不越面板（卡片盒＝24+d×indent−10 起＋30＋cardW ⇒ 44+d×indent+cardW≤vw）
-		const indent = Math.max(28, Math.min(target, fit)); // 下限 28px：面板很窄＋层级很深时宁可横向滚动，也不把侧线压回原来 28px 以下的细缝
-		list.style.setProperty("--tl-indent", `${String(indent)}px`);
-		const slantMax = this.applyTlSlant(list); // 渲染后按实际行高逐段右移（子事件圆点与侧线一起斜）；根事件不动、每棵子树从自己的根起算
-		// 横向滚动范围（画布共用 setContentWidth）：最深一层卡片右缘＋子树末端右漂量超出视口时撑出可滚区（apply 取 max(视口, contentW)）
-		this.canvas.setContentWidth(44 + levels * indent + TL_TREE_CARD_W + 8 + slantMax);
+		const fit = Math.round((usable - 4 - TL_TREE_CARD_W) / levels); // 面板窄时按层数收缩列距，别让最深一层卡片整个推出视口
+		const step = Math.max(TL_LANE_STEP_MIN, Math.min(TL_LANE_STEP, fit));
+		// 轨道布局（v0.4.11+ 方法一）：行块画完后再按实测坐标给每行写 `--tl-x`（＝它挂在哪条轨道的 X 上）＋给每个有子事件的父事件画一条连续轨道
+		const maxX = this.layoutTlLanes(list, roots, step);
+		// 横向滚动范围（画布共用 setContentWidth）：最右一条轨道上的卡片右缘超出视口时撑出可滚区（apply 取 max(视口, contentW)）
+		this.canvas.setContentWidth(maxX + TL_TREE_CARD_W + 38);
 	}
 
-	/** 子时间线倾斜落位（v0.4.11+）：行/留白块画完后按真实 offsetTop 给每个块写 `--tl-slant-x`，根块（depth 0）归零＝钉在主轴上，
-	 *  子块按「距本子树根的距离 × tan(6°)」右移；CSS 再给块内导引线/分叉弧线加同角度 skew——段与段首尾相接＝整条侧线平滑地向右下走，
-	 *  子事件圆点随所在行一起右移、仍落在线上。用 `left` 而非 transform 平移行，避免给行造出新的层叠上下文导致负 z-index 的导引线画到卡片上面 */
-	private applyTlSlant(list: HTMLElement): number {
-		list.style.setProperty("--tl-slant-deg", `${String(TL_SLANT_DEG)}deg`);
-		const kids = Array.from(list.children) as HTMLElement[];
-		let origin = kids[0]?.offsetTop ?? 0; // 当前子树根（最近一条 depth 0 块）的顶部
-		let max = 0;
-		const tan = Math.tan((TL_SLANT_DEG * Math.PI) / 180);
-		for (const el of kids) {
-			const depth = Number(el.dataset.tlDepth ?? "0");
-			if (depth === 0) origin = el.offsetTop; // 根行/根级留白重置基准：主轴不漂
-			const dx = Math.max(0, el.offsetTop - origin) * tan;
-			el.style.setProperty("--tl-slant-x", `${String(dx.toFixed(2))}px`);
-			if (depth > 0 && dx > max) max = dx;
+	/**
+	 * 子时间线轨道布局（v0.4.11+ 方法一「连续轨道＋小出针」，用户要求＝修掉「子时间轴绘制与走向难看」）：
+	 * ① **一条轨道＝一个父事件独占**（旧口径按深度共用同一列 ⇒ 不同一级事件的子时间线并成一条道、分不清归属；这也是「重叠」投诉的根因）；
+	 * ② 轨道 X＝父事件所在 X ＋ `step`，**同一 X 上时间区间重叠的轨道逐条右移一个 `step`**（Y 序＝全局时间序 ⇒ 不同子树的子事件会在时间上交错、纵向区间重叠，若同 X 就糊成一条＝用户要求处理的「不同一级事件的子时间线在时间上重叠」）；
+	 * ③ 轨道从父事件圆点圆心起、水平一段后以小圆角（CSS `.aw-tl-rail` 的 `border-top-right-radius:12px`）向下弯到**其最后一个直接子事件圆点**为止＝不再垂直一路向下、也没有旧的大半径 swoosh；
+	 * ④ 子事件卡片左缘＝该轨道 X（行内联 `--tl-x`，styles.css `.is-tl-tree .aw-tl-item{margin-left:calc(var(--tl-x) - 14px)}`）＝圆点端正挂在轨道上。
+	 * **不测宽度、只测 Y**：卡片宽度与各深度无关（固定 `--tl-card-w`）⇒ 行高与 X 无关，故先按默认 X 排完版再实测 `offsetTop/offsetHeight` 写 X，坐标不会自我循环。
+	 * 返回最右轨道 X（供撑横向滚动区）。折叠中的父事件没有已渲染子行 ⇒ 不画轨道。
+	 */
+	private layoutTlLanes(list: HTMLElement, roots: TlNode[], step: number): number {
+		const geo = new Map<string, { top: number; bottom: number }>(); // rowId → 行块纵向区间（offsetParent＝list，list 已 position:relative）
+		const collect = (ns: TlNode[]): void => {
+			for (const n of ns) {
+				const el = this.nodeEls.get(n.item.id);
+				if (el) geo.set(n.item.id, { top: el.offsetTop, bottom: el.offsetTop + el.offsetHeight });
+				collect(n.children);
+			}
+		};
+		collect(roots);
+		const slots: { node: TlNode; parentId: string | null; kids: TlNode[]; top: number; bottom: number }[] = []; // 先序收集「有已渲染子事件的父事件」＝待分配轨道（父先于子＝assignTlLaneXs 的解析前提）
+		const walk = (node: TlNode, parentId: string | null): void => {
+			const kids = node.children.filter((c) => geo.has(c.item.id)); // 只认已渲染的子行（折叠/筛选剪掉的不上轨）
+			const g = geo.get(node.item.id);
+			if (kids.length > 0 && g) {
+				const cy = g.top + TL_DOT_CY; // 父事件圆点圆心
+				let top = cy;
+				let bottom = cy;
+				for (const c of kids) {
+					const cg = geo.get(c.item.id);
+					if (!cg) continue;
+					const kx = cg.top + TL_DOT_CY;
+					if (kx < top) top = kx; // 子事件时间点早于父事件（数据异常）＝轨道也把它盖进去，不塌成 0 高
+					if (kx > bottom) bottom = kx; // 正常情况＝终点＝最后一个直接子事件的圆点
+				}
+				slots.push({ node, parentId, kids, top, bottom });
+			}
+			for (const c of node.children) if (geo.has(c.item.id)) walk(c, node.item.id);
+		};
+		for (const r of roots) walk(r, null); // 一级事件钉主轴（X＝TL_AXIS_X＝`.aw-tl-list::before` 圆心）
+		const lanes = assignTlLaneXs(slots.map((s) => ({ id: s.node.item.id, parentId: s.parentId, top: s.top, bottom: s.bottom })), TL_AXIS_X, step, TL_RAIL_VGAP);
+		let maxX = TL_AXIS_X;
+		for (const s of slots) {
+			const laneX = lanes.get(s.node.item.id) ?? (TL_AXIS_X + step);
+			const parentX = s.parentId === null ? TL_AXIS_X : (lanes.get(s.parentId) ?? TL_AXIS_X); // 父事件自己挂的 X＝出针起点
+			if (laneX > maxX) maxX = laneX;
+			this.drawTlRail(list, s.node, parentX, laneX, s.top, s.bottom);
+			for (const c of s.kids) {
+				const el = this.nodeEls.get(c.item.id);
+				if (el) el.style.setProperty("--tl-x", `${String(laneX)}px`); // 子卡片左缘＝轨道 X＝子事件圆点端正挂在轨道上
+			}
 		}
-		return Math.ceil(max);
+		return maxX;
+	}
+
+	/** 画一条子时间线轨道：盒子左上角＝父圆点圆心，宽＝到子轨道的水平距离＋1（2px 右描边的**中心线**正好落在轨道 X＝子卡片左缘/子圆点上），高＝父圆点到最后一个子圆点。
+	 *  形状＝`border-top`＋`border-right`＋小圆角（`styles.css` `.aw-tl-rail`）＝「先水平出针、再小圆角向下弯」；`z-index:-1` 沉到卡片之下＝穿过别人卡片的部分被盖住（用户既有口径＝卡片在时间线上面），通道里的段落可见 */
+	private drawTlRail(list: HTMLElement, node: TlNode, fromX: number, laneX: number, top: number, bottom: number): void {
+		const rail = list.createDiv({ cls: `aw-tl-rail lv-${String(Math.min(node.item.level, 5))}` });
+		rail.style.left = `${String(Math.round(fromX))}px`;
+		rail.style.top = `${String(Math.round(top))}px`;
+		rail.style.width = `${String(Math.max(16, Math.round(laneX - fromX) + 1))}px`;
+		rail.style.height = `${String(Math.max(1, Math.round(bottom - top)))}px`;
 	}
 
 	/** 切换某条目的折叠状态（圆点点击；仅对有子事件的条目生效） */
@@ -518,34 +623,20 @@ export class TimelineView extends ItemView {
 		else this.collapsedIds.add(id);
 	}
 
-	/** 树挂层级导引线：列 k（1≤k≤min(depth,6)）画一条通高竖线 `.aw-tl-branch-line`——在树挂视图里它就是**第 k 层侧向时间线本身**（列横坐标＝--tl-guide-start＋(k-1)×--tl-indent ≡ 圆点列 k×--tl-indent−10，样式见 styles.css nth-child 映射；条目行内因卡片盒已移到列 d 上＝走 (k−d)×--tl-indent 变体）。
-	 *  条目行（isRow）另有分叉弧线 `.aw-tl-branch-out`（见下），**没有肘形接线/短桩**（旧扁平趟专属，随「时间主线」显示方式一并退场）。
-	 *  间隔/跳跃块（isRow=false）只画通高竖线：比例留白内各层时间线不断线（留白＝流逝时间，线＝该层时间线延续） */
-	private attachTlGuides(el: HTMLElement, depth: number, hasKids: boolean, isRow: boolean): void {
-		if (!isRow) el.dataset.tlDepth = String(depth); // 留白/跳跃块也带深度：倾斜趟据此让侧线段从上一段末端接着斜下去
-		for (let k = 1; k <= depth; k++) el.createDiv({ cls: "aw-tl-branch-line" });
-		if (!isRow) return;
-		// 通高竖线就是这一层的侧向时间线本身（由同层行/留白把它接长）；**没有肘形接线**，
-		// 有子事件＝画一条**分叉弧线** `.aw-tl-branch-out`＝自本行圆点向右出线、圆角向下弯到下一层列、再垂到行尾（＝「从时间节点分出侧向时间线，以向下的弧度延伸」）
-		if (hasKids) el.createDiv({ cls: "aw-tl-branch-out" });
-	}
-
-	/** 时间比例间距：本条目时刻与上一条已渲染条目之差 Δ，在**当前容器内、本条目之前**插入间隔元素，随后更新 tlPrevMs。Δ≤TL_SPACER_MAX_DAYS 天 → `.aw-tl-spacer` 纯留白定高块（按 TL_PX_PER_DAY px/天 换算，list 的竖线自动贯穿——空白即「故事里流逝的时间」）；Δ＞上限 → `.aw-tl-skip` 定高时间跳跃标记块（居中「⋯ 约 N 年 ⋯」小字），防极端跨度的孤立点把画布拉到无法使用。两类间隔块同样贯穿本行的轮廓导引线（attachTlGuides，depth＝本行轮廓深度）。渲染行序列已按 (年,月,日) **全局**升序（v0.4.11+；timelinePointEpochMs 缺月日按年初/一号＝同序）→ 渲染顺序恒为时间非降序 → Δ≥0；同刻条目不插块自然堆叠；折叠隐藏的条目被跳过后，其前后可见行之间的间隔＝两者真实时差；筛选趟（tlSpacingOn=false）整体跳过保持紧凑布局 */
-	private pushTlSpacer(parent: HTMLElement, row: TlRow, depth: number): void {
+	/** 时间比例间距：本条目时刻与上一条已渲染条目之差 Δ，在**当前容器内、本条目之前**插入间隔元素，随后更新 tlPrevMs。Δ≤TL_SPACER_MAX_DAYS 天 → `.aw-tl-spacer` 纯留白定高块（按 TL_PX_PER_DAY px/天 换算，空白即「故事里流逝的时间」）；Δ＞上限 → `.aw-tl-skip` 定高时间跳跃标记块（居中「⋯ 约 N 年 ⋯」小字），防极端跨度的孤立点把画布拉到无法使用。v0.4.11+：间隔块**自身不再画任何层级导引线**——子时间线是 list 级绝对定位的连续轨道（`drawTlRail`），本来就一整条贯穿留白，不需要逐块接长。渲染行序列已按 (年,月,日) **全局**升序（v0.4.11+；timelinePointEpochMs 缺月日按年初/一号＝同序）→ 渲染顺序恒为时间非降序 → Δ≥0；同刻条目不插块自然堆叠；折叠隐藏的条目被跳过后，其前后可见行之间的间隔＝两者真实时差；筛选趟（tlSpacingOn=false）整体跳过保持紧凑布局 */
+	private pushTlSpacer(parent: HTMLElement, row: TlRow): void {
 		if (!this.tlSpacingOn) return; // 筛选模式紧凑堆叠
 		const ms = timelinePointEpochMs(row);
 		if (this.tlPrevMs !== null && ms > this.tlPrevMs) {
 			const days = (ms - this.tlPrevMs) / TIMELINE_DAY_MS;
 			if (days > TL_SPACER_MAX_DAYS) {
-				const sk = parent.createDiv({ cls: "aw-tl-skip" });
-				this.attachTlGuides(sk, depth, false, false);
+				const sk = parent.createDiv({ cls: "aw-tl-skip" }); // 轨道（绝对定位、通段）自 list 坐标系贯穿留白＝比例留白里子时间线不断线，块本身不再画层级导引
 				sk.createSpan({ text: `⋯ 约 ${String(this.formatTlSpan(Math.round(days)))} ⋯`, cls: "aw-dim aw-tl-skiplbl" });
 			} else {
 				const px = Math.round(days * TL_PX_PER_DAY);
 				if (px > 0) {
 					const sp = parent.createDiv({ cls: "aw-tl-spacer" });
 					sp.style.height = `${String(px)}px`; // 动态值（与 sizer 宽高同一模式）
-					this.attachTlGuides(sp, depth, false, false);
 				}
 			}
 		}
@@ -578,7 +669,7 @@ export class TimelineView extends ItemView {
 	}
 
 	/** 渲染树挂时间轴的一个条目行（DOM＝list 下的兄弟行序列，父子关系由行深度类＋层级导引线表达，不建嵌套容器；**行序＝全局时间升序**，由 `renderTlTree` 统一给出）。
-	 * 条目带 `lv-<级别>` 类（级别＝标题深度，≥5 归入 lv-5）——圆点大小/颜色与正文强调按级别区分；另带 `tl-d<深度>` 类（≥6 归入 6）驱动卡片左缘列与层级列坐标（--tl-d × --tl-indent，样式见 styles.css `.aw-tl-list.is-tl-tree .aw-tl-item`）；**圆点落在本行深度列**（根＝主轴、子级挂在各层侧向时间线上），配合 attachTlGuides 画的通高列线与分叉弧线，父子从属关系一眼可辨；有子事件另挂 `.aw-tl-caret` 折叠标识（▾展开/▸折叠，点击切换、Tip 带子事件条数）。
+	 * 条目带 `lv-<级别>` 类（级别＝标题深度，≥5 归入 lv-5）——圆点大小/颜色与正文强调按级别区分；另带 `tl-d<深度>` 类（≥6 归入 6＝深度语义与旧口径的兜底）。**行横坐标不再由深度公式推导**：v0.4.11+ 由 `layoutTlLanes` 按实测布局给每行写内联 `--tl-x`＝它挂在哪个父事件的那条子时间线轨道的 X 上（根事件＝主轴 `TL_AXIS_X`；styles.css `.aw-tl-list.is-tl-tree .aw-tl-item{margin-left:calc(var(--tl-x,4px) - 14px)}`）＝圆点端正挂在轨道上；有子事件另挂 `.aw-tl-caret` 折叠标识（▾展开/▸折叠，点击切换、Tip 带子事件条数）。
 	 * **详情内容（row.desc）＝唯一正文内容字段（v0.4.11+；用户要求＝不内联显示在卡片上，仅悬浮 Tip 展示）**：非空时用 setTooltip（aria-label 驱动 Obsidian 自绘 .tooltip，可 CSS 定制）给条目与圆点挂同一份 Tip（类 aw-tl-tip，CSS 里左对齐＋保留换行）——卡片上不再出现详情正文，圆点仅 5–12px、悬停稍有偏差落到条目上也能看到详情；无详情则不挂 Tip。圆点为真实元素 .aw-tl-dot、有子事件时可点击切换折叠状态（折叠隐藏＝全部结构后代，无论其时间排在何处）；**双击**条目在编辑器打开来源文档并定位到该时间点。**拖动更新时间点**（q==="" 时 attachTlDrag 挂载、鼠标左键沿轴上下拖）：该条目＋其全部**已渲染**后代行实时平移＋浮标提示目标时间，松手写回源《时间线.md》标题行。
 	 * collapsedCount 非 null（仅非筛选趟、本条折叠且有后代时由 renderBody 给出）→ 行尾追加「（已折叠 N 条子事件）」。
 	 * **编辑态元素**：条目行注册进 nodeEls（关联 chip 跳转闪烁定位 + 拖动收集后代行）；有事件名时渲染 `.aw-tl-name` 名称徽章、done 时渲染「✓ 已完成」徽章（`.aw-tl-done`）；有 `- 影响：` 时内联一行 `.aw-tl-impact`；`- 关联：` 每项渲染可点 chip（`.aw-tl-rel`，索引未命中加 `is-tl-dead` 置灰）。动作组 `.aw-tl-acts`（v0.4.7+：不再绝对定位右上角，改为**事件内容下方独占一行**——`.aw-tl-item` 内、`.aw-tl-evwrap` 之后，左缘随条目缩进；CSS 悬停显现＝＋子事件（级别＜6）/✎ 编辑/✓○ 完成切换/🗑 删除）；右键条目弹节点菜单。动作组 pointerdown 阻止冒泡以免进入拖动改时手势。
@@ -587,11 +678,9 @@ export class TimelineView extends ItemView {
 		const row = node.item;
 		const cappedDepth = Math.min(depth, 6); // 深度封顶 6（与 tl-d6 深度类同一口径）：卡片左缘列、导引线列数、圆点列都按它
 		const hasKids = node.children.length > 0;
-		this.pushTlSpacer(parent, row, cappedDepth); // 时间比例间距（筛选趟/首条为 no-op），随同贯穿本行深度的层级导引线
-		const item = parent.createDiv({ cls: `aw-tl-item lv-${String(Math.min(row.level, 5))} tl-d${String(cappedDepth)}${row.done ? " is-tl-done-row" : ""} ${tlLaneStyle(this.laneNameIdx.get(row.lane) ?? row.laneIndex).cls}` }); // 级别类＝圆点样式；深度类＝行缩进＋圆点所在层级列；done 行另挂 is-tl-done-row（条目名弱化样式用，替代 :has 选择器）；v0.4.7+ 泳道类＝该时间线配色（圆点/时间徽章着色）
-		item.dataset.tlDepth = String(cappedDepth); // 倾斜趟按深度判「根钉主轴、子级右下漂」（见 applyTlSlant）
-		this.attachTlGuides(item, cappedDepth, hasKids && collapsedCount === null, true); // 层级导引线必须是 item 的前 cappedDepth 个子元素（styles.css 按 nth-child 映射列坐标），圆点/折叠标在其后；本条正折叠着＝不画向子列引出的线（短桩/分叉弧线下面没有挂出来的子行）
-		this.nodeEls.set(row.id, item); // 条目行索引（关联 chip 跳转后高亮闪烁定位；拖动时按结构子树收集后代行）
+		this.pushTlSpacer(parent, row); // 时间比例间距（筛选趟/首条为 no-op）——子时间线由 list 级轨道元素贯穿留白，间隔块自身不再画导引
+		const item = parent.createDiv({ cls: `aw-tl-item lv-${String(Math.min(row.level, 5))} tl-d${String(cappedDepth)}${row.done ? " is-tl-done-row" : ""} ${tlLaneStyle(this.laneNameIdx.get(row.lane) ?? row.laneIndex).cls}` }); // 级别类＝圆点样式；深度类＝语义/回落；done 行另挂 is-tl-done-row（条目名弱化样式用，替代 :has 选择器）；v0.4.7+ 泳道类＝该时间线配色（圆点/时间徽章着色）
+		this.nodeEls.set(row.id, item); // 条目行索引（关联 chip 跳转后高亮闪烁定位；拖动时按结构子树收集后代行；轨道布局趟按它实测行块坐标）
 		const dot = item.createSpan({ cls: "aw-tl-dot" }); // 节点圆点：落在本行深度列的圆心（与竖向层级通道同一坐标），有子事件时可点击切换折叠
 		const toggleKids = () => {
 			this.toggleCollapse(row.id);
@@ -669,7 +758,13 @@ export class TimelineView extends ItemView {
 		const bDel = acts.createEl("button", { text: "🗑", cls: "aw-tl-act is-tl-danger" });
 		setTooltip(bDel, node.children.length ? "删除事件及全部子事件" : "删除事件");
 		bDel.addEventListener("click", (ev) => { ev.stopPropagation(); this.deleteNode(row, node); });
-		item.addEventListener("contextmenu", (ev: MouseEvent) => { ev.preventDefault(); this.openNodeMenu(ev, row, node); }); // 右键菜单＝编辑动作的替代入口（触屏/长按同用）
+		item.addEventListener("contextmenu", (ev: MouseEvent) => {
+			ev.preventDefault();
+			if (this.tlDragLive && !this.tlDrag) this.tlDragLive = false; // 陈旧标志自愈＝手势早已松手（tlDrag 已清空）却仍标着「在拖动」，一律作废：菜单永不被滞留标志吞掉
+			if (this.tlDrag && this.tlDragLive) return; // 只在**这一次手势真的在拖动**（tlDrag 在飞＋已越过 5px 阈值）时不弹菜单；不按 Ctrl／只按下没移动／松手之后＝一律照常弹菜单（v0.4.11+ 两次实测坑位＝「添加完事件后不响应右键」＝吞菜单的条件用了一次性布尔，标志滞留＝以后每次右键都没菜单）
+			if (Date.now() < this.tlHoldMenuBlockUntil) return; // 这一次长按已经用来「抓住」卡片（手机）＝它紧随的 contextmenu 不再弹菜单。时间戳口径＝最多影响 800ms 内那一次，绝不会滞留成「以后右键都没反应」
+			this.openNodeMenu(ev, row, node);
+		}); // 右键菜单＝编辑动作的替代入口（触屏/长按同用）
 		item.addEventListener("dblclick", () => void this.openEdit(row)); // v0.4.9+ 用户要求＝双击弹**编辑事件弹窗**（不再在编辑器打开文档＝与场景面板同口径）；打开来源文档＝右键「打开来源文档」。提示文字仍不占用 Tip（Tip 专显描述内容）
 		if (q === "") this.attachTlDrag(item, row, node); // 拖动更新时间点仅非筛选比例视图（筛选紧凑布局下位移无比例语义）
 		if (collapsedCount !== null) item.createSpan({ text: `（已折叠 ${String(collapsedCount)} 条子事件）`, cls: "aw-dim aw-tl-collapsed-hint" }); // 折叠提示（按结构子树条数，由 renderBody 判定）
@@ -688,21 +783,117 @@ export class TimelineView extends ItemView {
 		menu.showAtPosition({ x: ev.x, y: ev.y });
 	}
 
-	/** 给条目行挂「拖动更新时间点」手势（仅非筛选比例视图调用）：左键按下起候选、pointermove 越过 5px 阈值才激活（未越界＝普通点击/双击，语义不受影响），期间该条目＋其全部**已渲染**结构后代行随光标平移＋浮标提示按条目精度单位增减的步数；松手时按位移算出的新时间点≠原值才写回源文档。stopPropagation 使本手势优先于画布平移（bodyEl pointerdown）独占 */
+	/** 给条目行挂「拖动更新时间点」手势（仅非筛选比例视图调用）。**拖动闸门（v0.4.11+ 用户要求＝「不能随意拖动」）**：
+	 *  ① 鼠标＝**必须按住 Ctrl/⌘**（判定读 `ev.ctrlKey || ev.metaKey`＝按下那一瞬间的真实状态）才进入拖动，否则按下＝普通点击/双击/画布平移照旧；
+	 *  ② 触屏/手写笔＝**长按卡片上的时间徽章**（`.aw-tl-time`／圆点 `.aw-tl-dot`，≥`TL_HOLD_MS` 毫秒且手指位移 <`TL_HOLD_MOVE_PX`）＝「抓住」这张卡片（描边高亮＋提示浮标，并吃掉紧随其后的长按 contextmenu＝不弹节点菜单），
+	 *     随后**在这张卡片上再按下手指上下拖动**＝改时间。分两步是必需的：长按之前那次 pointerdown 已经交给画布平移与原生滚动，同一次手势里再拖动会把整幅画面一起拽走；
+	 *     「抓住」时给该卡片写 `touch-action:none`＝下一次从这张卡片起手既不平移也不滚动＝整根手指归拖动。卡片其它部位的长按仍是右键菜单（编辑/删除/打开来源文档）
+	 *  ③ 进入拖动后：pointermove 越过 5px 阈值才激活（未越界＝普通点击/双击，语义不受影响），期间该条目＋其全部**已渲染**结构后代行随光标平移＋浮标提示按条目精度单位增减的步数；松手时按位移算出的新时间点≠原值才写回源文档。stopPropagation 使本手势优先于画布平移（bodyEl pointerdown）独占 */
 	private attachTlDrag(item: HTMLElement, row: TlRow, node: TlNode): void {
-		item.addClass("aw-tl-movable"); // grab 光标提示（样式见 styles.css）
+		item.addClass("aw-tl-movable"); // 光标提示（常态 default／按住 Ctrl＝grab／拖动中＝grabbing，样式见 styles.css）
 		item.addEventListener("pointerdown", (ev: PointerEvent) => {
-			if (ev.button !== 0 || ev.pointerType !== "mouse") return; // 只响应鼠标左键（触屏保持原生滚动手势）
-			ev.stopPropagation(); // 拦掉画布平移对本手势的接管
-			ev.preventDefault(); // 不触发文字选中等副作用
-			this.tlDrag = { row, node, startY: ev.clientY, els: [item], badge: item.querySelector<HTMLElement>(".aw-tl-time") ?? null, kids: [] };
-			this.collectTlDescendantEls(node, this.tlDrag.els, this.tlDrag.kids); // 结构后代行一并位移（v0.4.11+ 行序＝全局时间序，后代可能被其它事件隔开＝按结构递归收集条目行，不依赖 DOM 连续段）
-			this.tlDragLive = false;
-			this.tlDragSteps = 0;
-			document.addEventListener("pointermove", this.onTlDragMove);
-			document.addEventListener("pointerup", this.endTlDrag);
-			document.addEventListener("pointercancel", this.endTlDrag);
+			this.setTlModHeld(ev.ctrlKey || ev.metaKey); // 光标手相跟着按下事件自纠（键盘 keyup 被弹窗/Obsidian Scope 吞掉时也不会滞留）
+			if (ev.button !== 0) return; // 右键＝交给 contextmenu（本监听只管左键手势）
+			if (ev.pointerType === "mouse") {
+				if (!(ev.ctrlKey || ev.metaKey)) return; // 桌面闸门＝**读按下事件自带的修饰键**（不看跟踪标志，标志可能滞留）；没按住 Ctrl/⌘＝不拖，点击/双击/平移视野完全照旧
+				ev.stopPropagation(); // 拦掉画布平移对本手势的接管
+				ev.preventDefault(); // 不触发文字选中等副作用
+				this.beginTlDrag(item, row, node, ev.clientY);
+				return;
+			}
+			if (this.tlHeld && this.tlHeld.item !== item) this.clearTlHeld(); // 按到别的卡片＝上一张「已抓住」作废
+			if (this.tlHeld && this.tlHeld.item === item) {
+				ev.stopPropagation(); // 已抓住的卡片被再次按下＝本次起手专用于拖动（不平移视野）
+				this.beginTlDrag(item, row, node, ev.clientY);
+				return;
+			}
+			if (!this.tlHoldPending) {
+				const zone = (ev.target as HTMLElement | null)?.closest(".aw-tl-time, .aw-tl-dot"); // 只有长按「时间点」才判定抓住＝卡片别处的长按留给右键菜单（长按＝菜单是触屏既有习惯）
+				if (!zone) return;
+				this.beginTlHoldWatch(item, row, node, ev);
+			}
 		});
+	}
+
+	/** 触屏长按看门狗：定时器到点＝`armTlHold`；期间手指位移超阈值或松手/取消＝作废（＝正常滚动/长按菜单语义不受影响） */
+	private beginTlHoldWatch(item: HTMLElement, row: TlRow, node: TlNode, ev: PointerEvent): void {
+		const pid = ev.pointerId;
+		const sx = ev.clientX;
+		const sy = ev.clientY;
+		const cancel = (): void => {
+			const p = this.tlHoldPending;
+			if (p) {
+				window.clearTimeout(p.timer);
+				this.tlHoldPending = null;
+			}
+			item.removeEventListener("pointermove", mv);
+			item.removeEventListener("pointerup", cancel);
+			item.removeEventListener("pointercancel", cancel);
+		};
+		const mv = (e: PointerEvent): void => {
+			if (e.pointerId !== pid) return;
+			if (Math.abs(e.clientY - sy) > TL_HOLD_MOVE_PX || Math.abs(e.clientX - sx) > TL_HOLD_MOVE_PX) cancel();
+		};
+		const timer = window.setTimeout(() => {
+			this.tlHoldPending = null;
+			item.removeEventListener("pointermove", mv);
+			item.removeEventListener("pointerup", cancel);
+			item.removeEventListener("pointercancel", cancel);
+			if (!item.isConnected) return; // 长按期间视图重渲染／面板关闭＝行元素已拆除
+			this.armTlHold(item, row, node);
+		}, TL_HOLD_MS);
+		this.tlHoldPending = { item, timer };
+		item.addEventListener("pointermove", mv);
+		item.addEventListener("pointerup", cancel);
+		item.addEventListener("pointercancel", cancel);
+	}
+
+	/** 「抓住」该卡片（手机长按判定通过）＝描边高亮＋提示浮标＋`touch-action:none`；同时置标志吃掉紧随其后的长按 contextmenu（否则弹节点菜单）。真正拖动从**下一次在这张卡片上的 pointerdown** 开始 */
+	private armTlHold(item: HTMLElement, row: TlRow, node: TlNode): void {
+		this.clearTlHeld();
+		this.tlHeld = { row, node, item };
+		this.tlHoldMenuBlockUntil = Date.now() + 800;
+		item.addClass("is-tl-held");
+		item.style.setProperty("touch-action", "none"); // 之后从这张卡片起手＝视野不平移、页面不滚动＝手指位移全部归拖动
+		const r = item.getBoundingClientRect();
+		this.tlHoldLbl = this.rootEl.createDiv({ cls: "aw-tl-holdlbl", text: "已抓住 · 上下拖动改时间点" });
+		this.tlHoldLbl.style.left = `${String(Math.round(r.left + 16))}px`;
+		this.tlHoldLbl.style.top = `${String(Math.max(4, Math.round(r.top - 26)))}px`;
+	}
+
+	/** 取消「已抓住」状态（去描边、撤 touch-action、摘提示浮标）：在别处按下／重渲染／完成一次真实拖动时调用 */
+	private clearTlHeld(): void {
+		const h = this.tlHeld;
+		this.tlHeld = null;
+		if (h) {
+			h.item.removeClass("is-tl-held");
+			h.item.style.removeProperty("touch-action");
+		}
+		const lbl = this.tlHoldLbl;
+		this.tlHoldLbl = null;
+		lbl?.remove();
+	}
+
+	/** 长按待定态＋已抓住态全清（重渲染/面板关闭/一次真实拖动收尾用） */
+	private clearTlHold(): void {
+		const p = this.tlHoldPending;
+		if (p) {
+			window.clearTimeout(p.timer);
+			this.tlHoldPending = null;
+		}
+		this.tlHoldMenuBlockUntil = 0;
+		this.clearTlHeld();
+	}
+
+	/** 起手进入拖动：记录条目行＋其全部已渲染结构后代行（位移与预览徽章一起走）、挂 document 的 move/up/cancel 监听。startY＝起手点（屏幕 px） */
+	private beginTlDrag(item: HTMLElement, row: TlRow, node: TlNode, startY: number): void {
+		this.tlDrag = { row, node, startY, els: [item], badge: item.querySelector<HTMLElement>(".aw-tl-time") ?? null, kids: [] };
+		this.collectTlDescendantEls(node, this.tlDrag.els, this.tlDrag.kids); // 结构后代行一并位移（v0.4.11+ 行序＝全局时间序，后代可能被其它事件隔开＝按结构递归收集条目行，不依赖 DOM 连续段）
+		this.tlDragLive = false;
+		this.tlDragSteps = 0;
+		document.addEventListener("pointermove", this.onTlDragMove);
+		document.addEventListener("pointerup", this.endTlDrag);
+		document.addEventListener("pointercancel", this.endTlDrag);
 	}
 
 	/** 拖动位移收集：深度优先遍历结构子树，把**已渲染**（在 nodeEls 中＝未被祖先折叠隐藏）的后代行元素加入位移集合（kids 另记各自时间徽章，供拖动预览同步显示新时间点）。被折叠的后代不在 DOM，天然跳过；递归只在可见节点内继续 */
@@ -758,12 +949,15 @@ export class TimelineView extends ItemView {
 		document.removeEventListener("pointercancel", this.endTlDrag);
 		const d = this.tlDrag;
 		this.tlDrag = null;
+		const live = this.tlDragLive; // 本次手势是否成为真拖动——先取值，随后**必须把标志复位**
+		this.tlDragLive = false; // ⚠ 硬规矩：闸门标志一律在松手时归零。它若滞留成 true，节点菜单的「正在拖动」判定会把之后**每一次**右键全部吞掉（＝「拖过一次之后右键再没反应」，与 v0.4.11+ 旧的 tlModHeld 滞留同类的坑）
 		const lbl = this.tlDragLbl;
 		this.tlDragLbl = null;
 		lbl?.remove(); // 手势中途视图已关闭时节点不在 DOM——remove() 对未连接节点是安全 no-op
 		if (!d) return;
 		d.els.forEach((el) => el.removeClass("is-dragging"));
-		if (!this.tlDragLive) return; // 点击级手势 → click/dblclick 语义完全不动
+		if (!live) return; // 点击级手势 → click/dblclick 语义完全不动（手机上「已抓住」状态保留＝用户可能只是摸了一下）
+		this.clearTlHeld(); // 真的拖动过＝这张卡片的「已抓住」状态用完即弃（下次要改时间＝重新长按抓住）
 		this.canvas.suppressClicks(400); // 吞掉紧随的 click/dblclick（zoomEl 捕获阶段判定）
 		d.els.forEach((el) => el.style.removeProperty("transform")); // 拖动中的平移只是手势预览：一律先还原（removeProperty 而非赋空串，no-static-styles-assignment）——写回成功后由 refresh 按新间隔重建布局；未写回或写回失败则保持原位不留残影
 		d.badge?.setText(timelineTimeText(d.row)); // 徽章同步还原原值（写回成功时 refresh 会整体重建，此处保证失败路径显示正确）

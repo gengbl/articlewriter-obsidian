@@ -3,14 +3,20 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import {
+	applyCharacterMerge,
+	CHARACTER_MERGE_ALL,
+	CHARACTER_MERGE_EMPTY,
+	deleteCharacterBlock,
 	deleteRelationshipBlock,
 	deleteTimelineBlock,
 	docLocationLabel,
 	docRelPath,
+	formatCharacterBlock,
 	formatTimelineBlock,
 	formatTimelines,
 	insertTimelineBlock,
 	isTimelineDocName,
+	parseCharacters,
 	parseRelationships,
 	parseTimelineHeading,
 	parseTimelines,
@@ -22,6 +28,8 @@ import {
 	timelineLaneOf,
 	updateRelationshipBlock,
 	updateTimelineBlock,
+	upsertCharacterBlock,
+	type CharacterMergeSource,
 	type TimelineEntryInput,
 } from "./md_docs";
 
@@ -414,4 +422,84 @@ void test("docLocationLabel：面板自带层级词（人物关系面板＝书�
 	const words = { book: "书籍级", volume: "卷级", chapter: "章级" };
 	assert.equal(docLocationLabel("book", `${dir}/案头资料/人物.md`, dir, words), "书籍级 · 案头资料/人物.md");
 	assert.equal(docLocationLabel("volume", `${dir}/书稿/第一卷 风起/人物.md`, dir, words), "卷级 · 书稿/第一卷 风起/人物.md");
+});
+
+// ---------- 人物块级手术＋合并（v0.4.11+「合并人物信息」）----------
+
+const CHAR_DOC = [
+	"# 曜尽溟回 人物",
+	"",
+	"<!-- 示例：## 角色名 / - 身份： -->",
+	"",
+	"## 沈砚",
+	"- 身份：青云宗外门弟子",
+	"- 能力：剑诀、轻身术",
+	"",
+	"---",
+	"",
+	"## 柳青娘",
+	"- 身份：黑市牙婆",
+	"",
+].join("\n");
+
+void test("deleteCharacterBlock：只删目标块（连带分隔线），其余块与模板注释原样保留", () => {
+	const out = deleteCharacterBlock(CHAR_DOC, "沈砚");
+	assert.ok(out, "目标块存在＝应删掉");
+	assert.ok(!out.includes("## 沈砚"), "目标块已消失");
+	assert.ok(!out.includes("- 身份：青云宗外门弟子"), "其字段行随块一起删");
+	assert.ok(out.includes("<!-- 示例"), "HTML 注释模板不受影响");
+	assert.ok(out.includes("## 柳青娘"), "邻块原样保留");
+	assert.ok(!out.includes("---"), "块尾 `---` 分隔线一并吃掉、不留孤立分隔线");
+	const chars = parseCharacters(out, 0);
+	assert.deepEqual(Object.keys(chars), ["柳青娘"], "删后解析只剩邻块");
+});
+
+void test("deleteCharacterBlock：注释里的同名示例不误命中；找不到＝null（调用方不写盘）", () => {
+	assert.equal(deleteCharacterBlock("# 书 人物\n\n<!-- ## 沈砚 -->\n", "沈砚"), null);
+	assert.equal(deleteCharacterBlock(CHAR_DOC, "不存在的人"), null);
+});
+
+void test("upsertCharacterBlock：已有同名块＝原位替换（顺序不乱）；没有＝追加末尾并补分隔线", () => {
+	const replaced = upsertCharacterBlock(CHAR_DOC, { name: "沈砚", chapter: 0, identity: "青云宗内门弟子", abilities: ["剑诀"] });
+	assert.ok(replaced.indexOf("## 沈砚") < replaced.indexOf("## 柳青娘"), "沈砚仍在柳青娘之前＝原位替换");
+	assert.ok(replaced.includes("- 身份：青云宗内门弟子"), "新值写入");
+	assert.ok(!replaced.includes("- 能力：剑诀、轻身术"), "旧字段行被整块换掉");
+	assert.ok(replaced.includes("- 能力：剑诀\n\n---\n\n## 柳青娘"), "块间 `---` 分隔行留在原地＝排版不乱");
+	assert.deepEqual(Object.keys(parseCharacters(replaced, 0)), ["沈砚", "柳青娘"], "替换后两块都照旧可解析");
+	assert.equal(parseCharacters(replaced, 0)["沈砚"].identity, "青云宗内门弟子", "往返可解析");
+	const appended = upsertCharacterBlock(CHAR_DOC, { name: "新来的", chapter: 0, notes: "客卿", abilities: [] });
+	assert.ok(appended.includes("## 新来的") && appended.indexOf("## 新来的") > appended.indexOf("## 柳青娘"), "追加在末尾");
+	assert.ok(appended.split("---").length === CHAR_DOC.split("---").length + 1, "追加时补一条 `---` 分隔行");
+	assert.equal(parseCharacters(appended, 0)["新来的"].notes, "客卿", "新块可解析");
+});
+
+void test("upsertCharacterBlock：只有注释的空文档＝直接落块、不加分隔线（往返一致）", () => {
+	const base = "# 书 人物\n\n<!-- 示例写法：## 角色名\n- 身份：xxx\n-->\n";
+	const out = upsertCharacterBlock(base, { name: "阿箬", chapter: 0, abilities: [], gender: "女" });
+	assert.ok(!out.includes("---"), "文档里还没有角色块＝不加分隔线");
+	const back = parseCharacters(out, 0);
+	assert.deepEqual(Object.keys(back), ["阿箬"], "注释示例不算条目、新块算条目");
+	assert.equal(formatCharacterBlock(back["阿箬"]), "## 阿箬\n- 性别：女", "序列化往返一致");
+});
+
+void test("applyCharacterMerge：逐字段取指定登记／全部保留（去重）／留空；能力取并集", () => {
+	const mk = (identity: string, abilities: string[], notes: string) => ({
+		path: `p${identity}`,
+		label: identity,
+		char: { name: "沈砚", chapter: 0, identity, abilities, notes },
+	});
+	const sources: CharacterMergeSource[] = [
+		mk("青云宗外门弟子", ["剑诀"], "话少"),
+		mk("青云宗内门弟子", ["剑诀", "轻身术"], "话少"),
+	];
+	const picked = applyCharacterMerge("沈砚", sources, { identity: 1, notes: CHARACTER_MERGE_EMPTY, abilities: 0 });
+	assert.equal(picked.identity, "青云宗内门弟子", "取第 2 份登记的字段");
+	assert.equal(picked.notes, undefined, "留空＝字段不写（formatCharacterBlock 会跳过）");
+	assert.deepEqual(picked.abilities, ["剑诀"], "能力取指定那份");
+	const all = applyCharacterMerge("沈砚", sources, { identity: CHARACTER_MERGE_ALL, notes: CHARACTER_MERGE_ALL, abilities: CHARACTER_MERGE_ALL });
+	assert.equal(all.identity, "青云宗外门弟子；青云宗内门弟子", "文本按「；」拼接");
+	assert.equal(all.notes, "话少", "两份相同值只留一次");
+	assert.deepEqual(all.abilities, ["剑诀", "轻身术"], "能力并集去重");
+	const stale = applyCharacterMerge("沈砚", sources, { identity: 9 });
+	assert.equal(stale.identity, undefined, "序号越界（快照过期）＝按留空处理、不抛错");
 });

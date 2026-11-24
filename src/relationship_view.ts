@@ -3,8 +3,7 @@ import { docLocationLabel, relationshipStatusKind } from "./md_docs";
 import type { RelationshipEntry } from "./md_docs";
 import { adjacencyMap, edgeCurvePath, forceLayout, labelFontSize } from "./graph_layout";
 import type { GraphLayoutNode } from "./graph_layout";
-import { watchElementSize } from "./panel_canvas"; // v0.4.9+ 尺寸跟随共用设施（与场景/时间线画布同一份观察＋防抖口径）
-import type { ElementSizeWatcher } from "./panel_canvas";
+import { CanvasPanel, PANEL_ZOOM_MAX, PANEL_ZOOM_MIN } from "./panel_canvas"; // v0.4.11+ 图面缩放/平移**整体改用画布共用设施**（与场景/时间线同一份实现，不再自写 transform 数学）
 
 /** 关系所属层级（书根 / 卷 / 章） */
 export type RelScope = "book" | "volume" | "chapter";
@@ -118,20 +117,38 @@ const TYPE_CLASS_LABELS: Array<[string, string]> = [
 	["is-other", "其它"],
 ];
 
-/** 图视图缩放档位（倍数；1＝适应面板宽度，其余为相对基准宽 760px 的百分比） */
-const GRAPH_ZOOMS: number[] = [0.5, 0.75, 1, 1.25, 1.5, 2, 3];
+/** 图视图缩放范围＝**直接用画布共用常量**（`panel_canvas.ts` 的 `PANEL_ZOOM_MIN`/`PANEL_ZOOM_MAX`＋其滚轮算法，与时间线/场景面板一字不差）
+ *  ——v0.4.11+ 用户要求＝「滚动一次重新计算一次（不累加 deltaY）」＋「参考场景面板的放缩」，故废弃旧的固定档位表 `GRAPH_ZOOMS` 与面板内自写的滚轮/平移数学 */
 
-/** 图视图基准画布（viewBox 尺寸；缩放靠 CSS transform，不重算布局） */
-const GRAPH_BASE_W = 760;
-const GRAPH_BASE_H = 560;
+/** 图视图画布尺寸口径（v0.4.11+ 改写）：图按**当前画布可视区**取尺寸（＝viewBox 与真实像素 1:1＝画布设施的滚动/缩放换算与图内坐标同一坐标系，
+ *  不再靠 CSS 把固定 760×560 硬塞进面板）；下面两个常量＝**设计上限/默认量级**，另给下限防止面板被压到不可用 */
+const GRAPH_BASE_W = 760; // 默认画布宽（面板更宽时也按可视宽取，见 graphBoxSize）
+const GRAPH_BASE_H = 560; // 默认画布高
+const GRAPH_MIN_W = 320; // 画布下限（窄侧栏也不至于把图挤成一团）
+const GRAPH_MIN_H = 260; // 画布下限（短面板时宁可让画布区出滚动条）
 
 /** 力导向布局参数：pad＝四周留白（节点名要落在画布内），hubUp＝枢纽（连线最多的人物≈主角）从画布中心往上提的比例 */
 const GRAPH_FORCE_PAD = 58;
 const GRAPH_FORCE_ITERS = 340;
 const GRAPH_HUB_UP = 0.34;
 
-/** 数值限位（拖动平移的边界收敛用） */
+/** 数值限位（状态区分隔条拖动的高度收敛用；v0.4.11+ 起图面平移不再限位） */
 const clampNum = (v: number, lo: number, hi: number): number => (v < lo ? lo : v > hi ? hi : v);
+
+/** 「人物状态」区高度口径（v0.4.11+ 用户要求＝该区**不随选中内容自行改变大小**，只能拖它上缘的分隔条改）：
+ *  默认 150px；下限 56px（至少露出「人物状态」标题行＋一行字段）；拖动时给上方图面至少留 CHARINFO_GRAPH_MIN px */
+const CHARINFO_H_DEFAULT = 150;
+const CHARINFO_H_MIN = 56;
+const CHARINFO_GRAPH_MIN = 120;
+
+/** v0.4.11+（「适应全图后一直闪」修正）＝视口宽度变化超过这个量才重排力导向布局：
+ *  滚动条出现/消失只带来十几 px 的宽度抖动，低于该阈值就交给 `apply()` 重算尺寸即可（见 `lastGraphBoxW`） */
+const GRAPH_RELAYOUT_MIN_DX = 20;
+
+/** 「线型说明」图例行折叠口径（v0.4.11+ 用户要求＝该行可折叠）：收起态只剩线型一句话，
+ *  加粗规则与滚轮/拖动/双击等操作说明收进点开部分；默认收起＝把竖直空间还给图面（图尺寸＝固定行之外剩余高度） */
+const LEGEND2_SHORT = "线型：实线=进行中 · 虚线=铺垫中 · 点线=已结束";
+const LEGEND2_REST = "；加粗=同一对角色在多处登记；Ctrl＋滚轮＝以鼠标为中心缩放（同场景/时间线面板，普通滚轮＝滚动画面）· 按住图面拖动＝平移（拖过边缘也能继续挪，双击空白处＝适应全图）· 空白处右键＝适应全图/刷新 · 头部倍率标签点一下＝回 100% · 鼠标停在人物上＝显示该人物的设定信息，单击＝下方「人物状态」区展示";
 
 /** 关系类型 → 图视图边色 class */
 export function relationshipTypeClass(type: string): string {
@@ -172,9 +189,9 @@ function matchRow(r: RelRow, q: string): boolean {
  * 人物关系面板（自定义 ItemView，可停靠任意区域、重载保留位置）：
  * 汇总展示当前小说 书/卷/章 三层《人物关系.md》的关系，**两种展示方式**（顶部「卡片 / 图表」按钮切换，会话内保持、不落盘）——
  * ①卡片：按层级分组的关系卡片（角色对 + 类型徽章 + 状态指示点 + 描述）；
- * ②图表：环形布局的节点连线图（角色=节点、关系=连线，按类型着色、按状态变线型，悬停高亮邻接）；
+ * ②图表：环形布局的节点连线图（角色=节点、关系=连线，按类型着色、按状态变线型，悬停高亮邻接）；**节点圆点与旁边的名字文字是同一命中体**（v0.4.11+ 用户要求＝文字行为跟圆点完全一样，事件挂节点 `<g>`、放开 `.aw-rel-gname` 的 `pointer-events`）；图面交互＝**整体由画布共用设施 `CanvasPanel` 承担**（v0.4.11+ 重写＝与场景/时间线面板同一份代码：`Ctrl|Shift＋滚轮` 以鼠标为不动点连续缩放、倍率夹在 `PANEL_ZOOM_MIN/MAX`，普通滚轮＝原生滚动画面；按住拖动＝平移——滚动余量内驱动滚动条、用尽后虚拟平移层继续挪＝**任意方向无限位**，用户要求＝随意拖动；`双击图面空白处`＝适应全图＝`CanvasPanel.resetView()`；空白处右键菜单＝「适应全图／刷新」，照场景面板画布菜单；倍率标签挂在头部由 `attachZoomLabel` 负责）；图表上方不再渲染「角色 N 个 · 关系 M 条 …」统计＋操作说明行（v0.4.11+ 用户要求），口径改写到图下方图例行；**svg／节点／连线一律不挂 `<title>`**＝浏览器原生长条 tooltip 会与自定义方块 tip 同时出现（v0.4.11+ 用户要求＝只留方块那一份）；
  * 两者都支持按角色/类型/状态筛选，**双击**关系卡片/连线在编辑器打开来源文件（单击不触发，避免误触）；
- * **人物**（图表节点、「人物状态」区、卡片里的角色名）上有统一的**右键菜单**（`openCharMenu`＝编辑人物／改名／打开来源文档／设为中心人物／新增人物／**删除恒排最后**）；
+ * **人物**（图表节点、「人物状态」区、卡片里的角色名）上有统一的**右键菜单**（`openCharMenu`＝编辑人物／改名／**合并 N 处登记**（只在该人物登记在两份以上《人物.md》时出现，v0.4.11+）／打开来源文档／设为中心人物／新增人物／**删除恒排最后**）；
  * **双击人物＝只弹编辑人物弹窗**（v0.4.9+，不带动别的响应：旧「以该人物为中心重画」移入右键菜单「设为中心人物」＝`graphCenter`，默认中心＝《人物.md》标注的主角，无标注则连线最多者，几何在 graph_layout.ts `forceLayout` 的 `centerName`；「单击＝选中人物」延后 220ms 落地，双击到达即取消＝双击不会顺带选中与重绘）。
  * 数据经构造注入的 getter 实时读取；文件变更由 main.ts 防抖调 refresh()。
  * 渲染陷阱同 StatusView / LlmChatView：UI 必须建在 onOpen 的 contentEl（本环境不调用 getEmptyStateElement）。
@@ -190,26 +207,35 @@ export class RelationshipView extends ItemView {
 	private onRenameCharacter?: (name: string) => void | Promise<void>;
 	private onEditCharacter?: (name: string) => void | Promise<void>; // v0.4.9+ 双击人物／右键「编辑人物」＝main.ts 的人物编辑弹窗（级别＋设定字段）
 	private onDeleteCharacter?: (name: string) => void | Promise<void>; // v0.4.9+ 右键「删除人物」＝main.ts 的二次确认删除流程（连带清理场景引用）
+	private onMergeCharacter?: (name: string) => void | Promise<void>; // v0.4.11+ 右键「合并人物信息」／状态区「合并」链接＝main.ts 的合并弹窗（选最终存储文档＋逐字段取值）
 	private built = false;
 	private rootEl!: HTMLElement;
 	private topEl!: HTMLElement;
 	private treeEl!: HTMLElement;
-	private edgeTipEl: HTMLDivElement | null = null;
+	/** 图表自定义 tip 浮层（挂在 document.body）＝**人物节点（圆点／名字文字）与关系连线共用同一份、同一样式**（v0.4.11+ 用户要求＝节点不再走 SVG `<title>`） */
+	private graphTipEl: HTMLDivElement | null = null;
+	/** 当前 tip 的归属（节点 `<g>`／连线 `<g>` 的元素引用）＝共用一份浮层后，节点与连线在交叠处彼此进出时只隐藏「自己那一份」，不会把对方刚显示的 tip 误关掉 */
+	private graphTipOwner: Element | null = null;
 	private busy = false;
 	private lastSnap: RelSnapshot | null = null;
+	/** v0.4.11+（「适应全图后一直闪」修正）＝上次建图时画布视口的 clientWidth：观察器回调里宽度变化小于
+	 *  `GRAPH_RELAYOUT_MIN_DX` 不重渲染＝滚动条出现/消失带来的十几 px 抖动不再触发「重渲染→再抖动」的反馈环 */
+	private lastGraphBoxW = 0;
+	/** v0.4.11+ 「线型说明」图例行是否展开（用户要求＝可折叠；会话内保持不落盘，默认收起）＝收起态只留线型一句话，点开补出加粗规则与操作口径；
+	 *  切换走整帧重渲染＝图高按新固定行高度重取（力导向确定性＝节点位置不跳，只是画布拉高/压矮） */
+	private legendHelpOpen = false;
 	private filterText = "";
 	/** 分组收起态（会话内保持，不落盘；键 "rel:<scope>"） */
 	private collapsed = new Set<string>();
 	/** 展示方式（会话内保持，不落盘）：卡片列表 / 节点连线图；v0.4.8+ 默认＝图表 */
 	private mode: "list" | "graph" = "graph";
-	/** 图视图缩放倍数（会话内保持，不落盘；1＝适应面板宽度，>1 放大后靠拖动查看） */
-	private graphZoom = 1;
-	/** 图视图拖动平移偏移（屏幕像素，会话内保持；拖动时更新，限位在 applyView 内收敛） */
-	private graphPan = { x: 0, y: 0 };
-	/** v0.4.9+ 本次图渲染的 `applyView` 句柄（面板/窗口尺寸变化时重算可拖限位用；卡片模式与重渲染前清空，绝不去碰已脱离文档的旧 svg） */
-	private graphApplyView: (() => void) | null = null;
-	/** v0.4.9+ 主体区尺寸观察句柄（＝面板随窗口缩放/分屏/侧栏拖拽变化时重算图面限位；与画布面板共用 watchElementSize 一套口径） */
-	private sizeWatcher: ElementSizeWatcher | null = null;
+	/** v0.4.11+ **图面缩放/平移整体改用画布共用设施 `CanvasPanel`**（与场景/时间线面板同一份实现：倍率、虚拟平移、滚动、
+	 *  以鼠标为不动点的缩放、倍率标签全部由它负责；元素常驻＝不随重渲染销毁，彻底告别旧版「写到已脱离文档的旧 svg」那类坑） */
+	private graphCanvas: CanvasPanel | null = null;
+	/** v0.4.11+ 画布平移拖拽是否进行中（起拖期间不弹 tip、不高亮，沿用旧口径）；真拖过松手由 `onPanEnd` 回调清残留 */
+	private graphPanning = false;
+	/** v0.4.11+ 头部筛选行（倍率标签挂它上面；`renderTop` 每次重建时刷新引用） */
+	private graphZoomHost: HTMLElement | null = null;
 	/** 图视图渲染物（高亮邻接用；每次重渲染重建） */
 	private graphNodeEls = new Map<string, SVGGElement>();
 	private graphEdgeEls: Array<{ el: SVGElement; a: string; b: string }> = [];
@@ -220,6 +246,17 @@ export class RelationshipView extends ItemView {
 	private graphCenter: string | null = null;
 	/** v0.4.9+ 「单击选中」的延后定时器（＝用户要求＝**双击人物只响应编辑弹窗**：选中＋重绘先压一拍，双击到达即取消；再次点击/面板关闭时清掉） */
 	private charPickTimer: number | null = null;
+	/** v0.4.11+ 「人物状态」区高度（px，会话内保持不落盘）＝用户要求＝**点人物圆圈时状态区大小一律不动**（内容多它在自身内滚动，图不被挤得一跳），
+	 *  要改大小只能拖动它上缘的分隔条（见 `beginCharResize`） */
+	private charInfoH = CHARINFO_H_DEFAULT;
+	/** v0.4.11+ 状态区与拖动分隔条的本次渲染物（`renderGraph` 每次重建；卡片模式与重渲染前置 null＝绝不去碰已脱离文档的旧节点） */
+	private charInfoEl: HTMLElement | null = null;
+	private charResizerEl: HTMLElement | null = null;
+	/** v0.4.11+ 多文档展开态（用户要求＝**每个文档一个展开项**、默认折叠）＝已展开条目的键集合（键＝`sourcePath#该文档内第几条`，会话内保持；
+	 *  选中别的人物即清空＝全部回到折叠，同一次选中内逐条各管各的） */
+	private charDrawerOpenKeys = new Set<string>();
+	/** v0.4.11+ 正在拖动分隔条的手势（起手 Y＋起始高度；document 级 move/up 收尾） */
+	private charResize: { startY: number; startH: number } | null = null;
 
 	constructor(
 		leaf: WorkspaceLeaf,
@@ -230,7 +267,8 @@ export class RelationshipView extends ItemView {
 		onDeleteRelationship?: (info: RelEdgeEditInfo) => void | Promise<void>,
 		onRenameCharacter?: (name: string) => void | Promise<void>,
 		onEditCharacter?: (name: string) => void | Promise<void>,
-		onDeleteCharacter?: (name: string) => void | Promise<void>
+		onDeleteCharacter?: (name: string) => void | Promise<void>,
+		onMergeCharacter?: (name: string) => void | Promise<void>
 	) {
 		super(leaf);
 		this.getData = getData;
@@ -241,6 +279,7 @@ export class RelationshipView extends ItemView {
 		this.onRenameCharacter = onRenameCharacter; // v0.2.x+：人物状态区「改名」动作（全书同步替换 + 自动备份，由 main.ts 提供）
 		this.onEditCharacter = onEditCharacter; // v0.4.9+：双击人物／右键「编辑人物」＝同一弹窗
 		this.onDeleteCharacter = onDeleteCharacter; // v0.4.9+：右键「删除人物」（main.ts 里二次确认后才落盘）
+		this.onMergeCharacter = onMergeCharacter; // v0.4.11+：右键「合并 N 处登记」／状态区「合并」链接＝main.ts 的合并弹窗（选最终存储文档＋逐字段取值＋备份后块级写回）
 	}
 
 	/** 角色改名成功后同步「人物状态」区的选中名（避免刷新后仍按旧名筛选而显示为空）；数据刷新由 main.ts 统一调度 */
@@ -267,28 +306,62 @@ export class RelationshipView extends ItemView {
 
 	async onClose(): Promise<void> {
 		this.cancelCharPick(); // 「单击选中」还没落地就关面板＝别在背后重渲染
-		this.sizeWatcher?.dispose(); // v0.4.9+ 断开尺寸观察器（观察器会持有已移除的 DOM 引用）
-		this.sizeWatcher = null;
-		this.graphApplyView = null;
-		this.edgeTipEl?.remove(); // tip 浮层挂在 document.body（见 buildUI），view 关闭时手动清理
-		this.edgeTipEl = null;
+		this.endCharResize(); // v0.4.11+ 正在拖状态区分隔条就关面板＝摘掉 document 级 move/up（否则残留监听会指向已拆除的分隔条）
+		this.graphCanvas?.dispose(); // v0.4.11+ 断开画布尺寸观察器（观察器会持有已移除的 DOM 引用）
+		this.graphCanvas = null;
+		this.graphTipEl?.remove(); // tip 浮层挂在 document.body（见 buildUI），view 关闭时手动清理
+		this.graphTipEl = null;
 	}
 
-	/** v0.4.9+ 视图尺寸变化（Obsidian 直接在部分场景仍会调这里）＝催一次与观察器同一套的防抖测量＝按新视口重算图面可拖限位 */
+	/** v0.4.11+ 视图尺寸变化（Obsidian 直接在部分场景仍会调这里）＝交给画布设施同一套防抖测量（sizer 尺寸依赖视口宽高） */
 	onResize(): void {
-		this.sizeWatcher?.notify();
+		this.graphCanvas?.notifyResize();
 	}
 
 	private buildUI(parent: HTMLElement): void {
 		this.built = true;
 		this.rootEl = parent.createDiv({ cls: "aw-status-view aw-rel-view" }); // 复用写字台的容器/字体/滚动布局样式
 		this.topEl = this.rootEl.createDiv({ cls: "aw-st-top" }); // 固定头部：筛选框 + 刷新按钮（不显示工作目录/小说列表）
-		this.treeEl = this.rootEl.createDiv({ cls: "aw-st-tree" }); // 滚动主体：关系分组卡片
-		// v0.4.9+ 面板尺寸变化（窗口缩放/分屏/拖侧栏/移动端抽屉）＝重算图面限位：倍率与平移偏移都保持原值（用户要求＝**不自动缩放、也不重新居中**，只把「可拖/可看范围」按新视口重算）。
-		// 卡片模式 graphApplyView＝null＝无事可做（列表本身随容器伸缩）；观察与防抖口径与场景/时间线画布共用 watchElementSize
-		this.sizeWatcher = watchElementSize(this.treeEl, () => this.graphApplyView?.());
-		// 边 tip 浮层（自定义 HTML，不用 SVG <title>）：挂在 document.body 上，避开侧栏祖先的 transform/contain/overflow 把 position:fixed 变成局部定位或裁切导致看不见
-		this.edgeTipEl = document.body.createDiv({ cls: "aw-rel-gtip" });
+		this.treeEl = this.rootEl.createDiv({ cls: "aw-st-tree" }); // 滚动主体：关系分组卡片 / 图表模式的画布容器
+		// v0.4.11+ **缩放/平移整体换用 `CanvasPanel`**（用户三轮反馈后重写＝不再自写 transform 数学）：
+		//  画布视口＝**独立的 `.aw-rel-canvasbody`**（v0.4.11+ 第四轮改回独立容器：不再 `parentBodyEl` 复用 treeEl＝
+		//  sizer 高度随倍率涨缩会把下面的图例行/状态区上下顶动；现在视口是恒定 flex 项，缩放只在视口内出滚动条，固定行纹丝不动＝用户要求）：
+		//  滚轮缩放（每次事件独立换算、以鼠标为不动点）、拖动平移（滚动余量内驱动原生滚动、用尽后虚拟平移层继续挪＝无限位）、
+		//  倍率标签、尺寸观察全部走与场景/时间线面板**同一份代码**（`panel_canvas.ts`，其纯函数有 node 单测覆盖）。
+		this.graphCanvas = new CanvasPanel(this.treeEl, {
+			bodyCls: "aw-rel-canvasbody", // 画布视口＝treeEl 的 flex 子项（占剩余高度；卡片模式 display:none 但不销毁＝切模式不丢画布层）
+			sizerCls: "aw-rel-sizer",
+			zoomCls: "aw-rel-zoom",
+			zoomVar: "--aw-rel-transform",
+			zoomLabelCls: "aw-dim aw-tl-zoomlbl aw-rel-zoomlbl",
+			zoomLabelTitle: "当前缩放倍率（Ctrl|Shift＋滚轮＝以鼠标位置为中心缩放；普通滚轮＝滚动画面）；点一下恢复 100% 并回到原位",
+			min: PANEL_ZOOM_MIN,
+			max: PANEL_ZOOM_MAX,
+			// v0.4.11+ 画布可视区尺寸变了＝重画一次（图尺寸跟着视口走，与场景面板按宽度重排同理）；纯高度变化由 apply() 重算 sizer 已足够。
+			//  阈值门卫（「适应全图后一直闪」修正）＝变化不足一个滚动条宽度不重排：否则「100% 贴边→滚动条抖动→widthChanged→重渲染→再抖动」会闪个不停
+			onResize: () => {
+				if (this.mode !== "graph" || !this.lastSnap) return;
+				const w = this.graphCanvas?.bodyEl.clientWidth ?? 0;
+				if (Math.abs(w - this.lastGraphBoxW) < GRAPH_RELAYOUT_MIN_DX) return;
+				this.renderGraph(this.lastSnap);
+			},
+			onPanStart: () => { this.graphPanning = true; },
+			onPanEnd: (moved) => {
+				this.graphPanning = false;
+				if (moved) { // v0.4.8+ 起拖期间高亮被抑制→可能残留按下前的那份邻接高亮/边 tip，真拖过就在松手时统一清掉（纯点击不动）
+					this.focusGraph(null, null);
+					this.hideGraphTip();
+				}
+			},
+		});
+		// 图表 tip 浮层（自定义 HTML＝人物节点与连线共用同一份同一样式，不用 SVG <title>）：挂在 document.body 上，避开侧栏祖先的 transform/contain/overflow 把 position:fixed 变成局部定位或裁切导致看不见
+		this.graphTipEl = document.body.createDiv({ cls: "aw-rel-gtip" });
+		// 主体空白双击＝适应全图的兜底监听（挂在常驻 treeEl＝一次绑定，不随重渲染累加）
+		this.treeEl.addEventListener("dblclick", (ev: MouseEvent) => {
+			if (this.mode !== "graph") return;
+			if (ev.target instanceof Element && ev.target.closest(".aw-rel-graph, .aw-rel-charinfo, .aw-rel-charresizer")) return;
+			this.resetGraphView();
+		});
 	}
 
 	/** 重新拉取快照并重渲染（「刷新」按钮与插件侧文件变更防抖都会调到这里） */
@@ -302,7 +375,7 @@ export class RelationshipView extends ItemView {
 		} catch (e) {
 			this.lastSnap = null;
 			this.topEl.empty();
-			this.treeEl.empty();
+			this.clearBodyKeepingCanvas(); // 出错也不能销毁常驻画布层（否则下次刷新错误分支后再切图表就再也建不出图）
 			this.topEl.createDiv({ text: `加载失败：${e instanceof Error ? e.message : String(e)}`, cls: "aw-st-error" });
 		} finally {
 			this.busy = false;
@@ -331,6 +404,8 @@ export class RelationshipView extends ItemView {
 		}
 		const input = filterRow.createEl("input", { type: "text", cls: "aw-rel-filter", placeholder: "筛选角色 / 类型 / 状态…" });
 		input.value = this.filterText;
+		// v0.4.11+ 头部倍率标签＝画布设施的 `attachZoomLabel`（与场景/时间线完全同一实现：`Math.round(zoom×100)%`、100% 隐藏、点它＝复位视图）
+		this.graphZoomHost = this.mode === "graph" ? filterRow : null;
 		input.addEventListener("input", () => {
 			this.filterText = input.value; // 只重渲染主体区（头部保持不动，输入焦点与光标不丢）
 			if (this.lastSnap) this.renderBody(this.lastSnap);
@@ -347,22 +422,42 @@ export class RelationshipView extends ItemView {
 			add.disabled = !this.lastSnap?.activeStory; // 未选小说时无处写入
 			add.addEventListener("click", () => void this.onAddCharacter?.());
 		}
+		if (this.mode === "graph") {
+			// v0.4.11+ 找回画面的常驻入口（放在头部＝图面被推到哪儿头部一定还在）。名称与图标照场景面板画布菜单＝「适应全图」，
+			//  动作＝`CanvasPanel.resetView()`（倍率回 100%＋虚拟平移归零＋滚动回原点；元素常驻，永远不会复位到「已脱离文档的旧节点」上）
+			const reset = btns.createEl("button", { text: "适应全图", cls: "aw-rel-reset" });
+			setIcon(reset.createSpan({ cls: "aw-rel-btnicon" }), "frame"); // 图标＋文字（与场景面板画布菜单同一项名＝「适应全图」）
+			setTooltip(reset, "把图恢复 100% 并回到原位（也可双击图面空白处、或在空白处右键选「适应全图」，或点头部倍率标签）");
+			reset.addEventListener("click", () => this.resetGraphView());
+		}
 		btns.createEl("button", { text: "刷新" }).addEventListener("click", () => void this.refresh());
+	}
+
+	/** v0.4.11+ **复位图面视图**＝直接调画布设施的 `resetView()`（倍率回 100%＋虚拟平移归零＋滚动回原点）。
+	 *  画布三层元素常驻不随重渲染销毁＝不需要再「重画一次图来兜底」（旧版只往可能已脱离文档的旧 svg 写 transform＝「双击也没回来」的成因，
+	 *  换设施后该坑在结构上不存在）。入口＝头部「适应全图」按钮、双击图面空白处、图面空白处右键菜单、头部倍率标签点击 */
+	private resetGraphView(): void {
+		this.graphCanvas?.resetView();
 	}
 
 	/** 主体区按当前展示方式分派：卡片列表（renderTree）或节点连线图（renderGraph） */
 	private renderBody(snap: RelSnapshot): void {
-		// 图表模式主体裁剪、不出滚动条（放大后靠拖拽平移查看），卡片模式保持纵向滚动
+		// 图表模式＝画布容器（滚动＋缩放层），卡片模式＝普通纵向滚动列表
 		this.treeEl.classList.toggle("is-graph", this.mode === "graph");
-		this.graphApplyView = null; // 每次重渲染先摘掉旧图的 applyView 句柄（旧 svg 已随主体清空＝绝不能再去碰它）
+		this.charInfoEl = null; // 旧的「人物状态」区与分隔条随主体清空（高度值 charInfoH 本身保留＝大小不会被渲染改变）
+		this.charResizerEl = null;
+		this.hideGraphTip(); // tip 浮层挂在 document.body＝不随主体清空，重渲染（刷新/筛选/切模式）时旧节点或连线消失前留下的那一套必须主动收掉
 		if (this.mode === "graph") this.renderGraph(snap);
 		else this.renderTree(snap);
+		// v0.4.11+ 倍率标签：头部只在整体刷新时重建（筛选输入不重建＝焦点不丢），所以本地重渲染后也要在这里补挂一次；
+		//  `attachZoomLabel` 内部会按当前倍率刷新显示（与场景/时间线面板同一入口）
+		if (this.mode === "graph" && this.graphCanvas && this.graphZoomHost) this.graphCanvas.attachZoomLabel(this.graphZoomHost);
 	}
 
 	/** 卡片列表主体：汇总行 + 各层级分组（书籍/卷/章） */
 	private renderTree(snap: RelSnapshot): void {
 		const savedScroll = this.treeEl.scrollTop;
-		this.treeEl.empty();
+		this.clearBodyKeepingCanvas(); // 卡片模式＝sizer 暂时离档（引用不丢），切回「图表」时再挂回＝卡片↔图表反复切换不会杀死画布层
 		const ph = this.placeholderFor(snap);
 		if (ph) {
 			this.treeEl.createDiv({ text: ph, cls: "aw-dim aw-st-hint" });
@@ -508,13 +603,48 @@ export class RelationshipView extends ItemView {
 	 * 节点按邻接链**倒序**绘制，让枢纽叠在最上层；邻接表 `graphAdj` 改由共用的 `adjacencyMap` 生成。
 	 * 布局与交互全本地计算（不读盘、不加依赖），沿用 `lastSnap` 重渲染。
 	 */
+	/** v0.4.11+（第四轮）画布可视区尺寸＝图的实际尺寸（viewBox＝真实像素，1:1）：直接量独立画布视口 `.aw-rel-canvasbody`
+	 *  （它是恒定 flex 项＝面板高 − 头部/两行图例/分隔条/状态区，sizer 涨缩不影响它）。
+	 *  **前提＝测量前图例/分隔条/状态区已先建好**（flex 分配才到位）。取不到有效值时回落默认 760×560 */
+	private graphBoxSize(): { W: number; H: number } {
+		const body = this.graphCanvas?.bodyEl;
+		const availW = body?.clientWidth ?? 0;
+		const availH = body?.clientHeight ?? 0;
+		const W = availW > 0 ? Math.max(GRAPH_MIN_W, availW) : GRAPH_BASE_W;
+		const H = availH > 0 ? Math.max(GRAPH_MIN_H, availH) : GRAPH_BASE_H;
+		return { W, H };
+	}
+
+	/** v0.4.11+（用户报告＝「图表看不到图、只有人物状态区、画面拖不动」的事故修正＋第四轮视口独立化）＝**清空主体时绝不销毁常驻画布视口**。
+	 *  画布视口 `.aw-rel-canvasbody`（内含 sizer/pan/zoom 三层）是 treeEl 的常驻子项，
+	 *  旧写法 `treeEl.empty()` 把它清掉＝svg 写进已脱离文档的 zoomEl（图彻底看不见）、视口脱离后 clientHeight=0（滚动/平移余量全 0＝怎么拖都不动）。
+	 *  现在＝视口之外的普通子项（图例/分隔条/状态区/占位文案）全部移除，视口原地留下、只清 zoomEl 里的图内容
+	 *  （与场景/时间线面板「重渲染只清 zoomEl」同一口径；卡片模式下视口由 CSS `display:none` 藏起来、同样不销毁） */
+	private clearBodyKeepingCanvas(): void {
+		const body = this.graphCanvas?.bodyEl ?? null;
+		for (const child of Array.from(this.treeEl.children)) if (child !== body) child.remove();
+		this.graphCanvas?.zoomEl.empty();
+	}
+
+	/** 「线型说明」折叠行的内容重建（▸/▾ caret＋线型一句话＋点开部分）＝renderGraph 建该行时调一次，整行点击切换后走重渲染重建 */
+	private renderLegendHelp(row: HTMLElement): void {
+		row.empty();
+		row.toggleClass("is-open", this.legendHelpOpen);
+		row.setAttribute("title", this.legendHelpOpen ? "收起这段说明（把空间还给图面）" : "展开完整说明：加粗规则与滚轮/拖动/双击等操作口径");
+		row.createSpan({ cls: "aw-rel-chardrawer-caret aw-rel-glegend-caret", text: this.legendHelpOpen ? "▾" : "▸" });
+		const body = row.createSpan({ text: LEGEND2_SHORT });
+		if (this.legendHelpOpen) body.appendText(LEGEND2_REST); // 同一 span＝flex gap 不会在句中插出大空隙
+		else body.appendText(" …（点开看操作说明）");
+	}
+
 	private renderGraph(snap: RelSnapshot): void {
-		this.treeEl.empty();
+		this.clearBodyKeepingCanvas();
 		this.graphNodeEls.clear();
 		this.graphEdgeEls = [];
 		this.graphAdj.clear();
 		const ph = this.placeholderFor(snap);
 		if (ph) {
+			this.graphCanvas?.setContentWidth(0); // 无图＝sizer 收回视口宽×0 高（空视口不占地方也不出滚动条）
 			this.treeEl.createDiv({ text: ph, cls: "aw-dim aw-st-hint" });
 			return;
 		}
@@ -525,27 +655,55 @@ export class RelationshipView extends ItemView {
 		if (this.selectedChar && !nodes.some((n) => n.name === this.selectedChar)) this.selectedChar = null; // 筛选后选中角色不在图内则清除
 		if (this.graphCenter && !nodes.some((n) => n.name === this.graphCenter)) this.graphCenter = null; // 中心人物被筛掉＝回默认
 		if (!nodes.length) {
+			this.graphCanvas?.setContentWidth(0);
 			this.treeEl.createDiv({ text: `没有匹配「${this.filterText.trim()}」的关系。`, cls: "aw-dim aw-st-hint" });
 			return;
 		}
 		const centerName = this.graphCenter ?? this.defaultCenterName(nodes, snap);
-		const summary = this.treeEl.createDiv({ cls: "aw-dim aw-rel-summary" });
-		summary.setText(
-			`角色 ${String(nodes.length)} 个 · 关系 ${String(edges.length)} 条` +
-				(q ? `（筛选自 ${String(snap.relCount)} 条）` : "") +
-				"；圆点／名字越大＝关系越多" +
-				`；现在居中的人物＝${centerName || "（连线最多者）"}` +
-				"；双击人物＝编辑人物（不带动别的响应），右键人物＝菜单（编辑／改名／打开来源文档／设为中心人物／新增／删除），双击连线＝编辑关系（右键连线＝编辑／删除），滚轮缩放、拖动平移"
-		);
+		// （v0.4.11+ 用户要求＝图表上方那行「角色 N 个 · 关系 M 条 …」说明文字不再展示；
+		//  交互口径改写到图下方的图例行；**svg/节点/连线都不挂 `<title>`**＝浏览器原生长条提示会与自定义 tip 同时弹出＝用户明确不要）
+
+		// v0.4.11+（第四轮）＝**先建下面的固定行**（两行图例＋分隔条＋「人物状态」区），再量画布视口建图：
+		//  flex 分配此刻已到位＝图尺寸＝视口真实大小；缩放时 sizer 只在视口内部涨缩＝下面的文字与状态区不动（用户要求）
+		const used = new Set(edges.map((e) => relationshipTypeClass(e.type)));
+		const legend = this.treeEl.createDiv({ cls: "aw-dim aw-rel-glegend" });
+		legend.createSpan({ text: "边色：" });
+		for (const [cls, label] of TYPE_CLASS_LABELS) {
+			if (!used.has(cls)) continue;
+			const item = legend.createSpan({ cls: "aw-rel-glegend-item" });
+			item.createSpan({ cls: `aw-rel-glegend-swatch ${cls}` });
+			item.appendText(label);
+		}
+		// v0.4.11+（用户要求＝「线型说明」可折叠）＝该行＝折叠头：▸/▾＋线型一句话，点开补出「加粗＝多处登记」与滚轮/拖动/双击等操作口径
+		//  （交互口径仍写在这里而不是 svg 的 `<title>`＝不会与自定义 tip 撞成两个悬浮提示；默认收起＝把行高还给图面）
+		const legend2 = this.treeEl.createDiv({ cls: "aw-dim aw-rel-glegend aw-rel-glegend-help" });
+		this.renderLegendHelp(legend2);
+		legend2.addEventListener("click", () => {
+			this.legendHelpOpen = !this.legendHelpOpen;
+			if (this.lastSnap) this.renderGraph(this.lastSnap); // 整帧重排＝图面尺寸跟着固定行高度变化（CanvasPanel 保留倍率/平移/滚动限位口径）
+		});
+
+		// 「人物状态」区：固定在图下方，展示单击选中角色的设定信息（来自《人物.md》，未选中时给引导文案）。
+		// v0.4.11+（用户要求）＝该区**高度恒定**（内容多则在自身内滚动）＝选中/取消选中人物时图的大小一律不动；上缘一条分隔条可拖动改高度。
+		const resizer = this.treeEl.createDiv({ cls: "aw-rel-charresizer" });
+		resizer.setAttribute("title", "拖动改「人物状态」区高度（该区不会自己变大变小）");
+		resizer.addEventListener("pointerdown", (ev: PointerEvent) => this.beginCharResize(ev));
+		this.charResizerEl = resizer;
+		const info = this.treeEl.createDiv({ cls: "aw-rel-charinfo" });
+		this.charInfoEl = info;
+		this.applyCharInfoHeight();
+		this.renderCharInfo(info, snap);
 
 		const NS = "http://www.w3.org/2000/svg";
 		const mk = (tag: string): SVGElement => document.createElementNS(NS, tag);
-		const W = GRAPH_BASE_W;
-		const H = GRAPH_BASE_H;
+		const { W, H } = this.graphBoxSize(); // v0.4.11+＝图按画布可视区取尺寸（viewBox＝真实像素＝画布换算与力导向坐标同一坐标系）
+		this.lastGraphBoxW = this.graphCanvas?.bodyEl.clientWidth ?? 0; // 记住本次建图的视口宽＝观察器阈值门卫的基准
 		const cx = W / 2;
 		const cy = H / 2;
 		const svg = mk("svg");
 		svg.setAttribute("class", "aw-rel-graph");
+		svg.setAttribute("width", String(W)); // v0.4.11+ **真实像素尺寸＝viewBox 尺寸**（画布设施的 zoom 层宽会设成 max(视口, W)，
+		svg.setAttribute("height", String(H)); //  两者在常见侧栏宽度下一致＝内容坐标系与 viewBox 坐标系 1:1＝`toContentPoint`/滚轮不动点直接落在图内坐标上）
 		svg.setAttribute("viewBox", `0 0 ${String(W)} ${String(H)}`);
 		svg.setAttribute("preserveAspectRatio", "xMidYMid meet");
 		// 力导向布局（几何全在 graph_layout.ts）：中心人物（双击选定，默认＝主角）钉在画布正中、至亲聚在身边、次要人物散到外圈
@@ -582,17 +740,17 @@ export class RelationshipView extends ItemView {
 			const tipText = tipLines.join("\n");
 			g.appendChild(hit);
 			g.appendChild(curve);
-			// 不用 SVG <title>（浏览器原生 tooltip 截断多行内容、desc 长就显示不全），改用自定义 HTML tip 浮层：position:fixed + 跟手 + 自适应换行
+			// 不用 SVG <title>（浏览器原生 tooltip 截断多行内容、desc 长就显示不全），改用自定义 HTML tip 浮层：position:fixed + 跟手 + 自适应换行（v0.4.11+ 起人物节点也用这同一份浮层＝样式一致）
 			g.addEventListener("mouseenter", (ev: MouseEvent) => {
-				if (dragFrom) return; // v0.4.8+ 按下起拖后不再响应悬停：拖图扫过节点/连线不高亮、不弹边 tip
+				if (this.graphPanning) return; // v0.4.8+ 按下起拖后不再响应悬停：拖图扫过节点/连线不高亮、不弹 tip
 				this.focusGraph(e.a, e.b);
-				this.showEdgeTip(tipText, ev);
+				this.showGraphTip(g, tipText, ev);
 			});
-			g.addEventListener("mousemove", (ev: MouseEvent) => { if (dragFrom) return; this.moveEdgeTip(ev); });
+			g.addEventListener("mousemove", (ev: MouseEvent) => { if (this.graphPanning) return; this.moveGraphTip(ev); });
 			g.addEventListener("mouseleave", () => {
-				if (dragFrom) return;
+				if (this.graphPanning) return;
 				this.focusGraph(null, null);
-				this.hideEdgeTip();
+				this.hideGraphTip(g);
 			});
 			const editInfo: RelEdgeEditInfo = { a: e.a, b: e.b, type: e.type, status: e.status, desc: e.desc, sourcePath: e.sourcePath, scope: e.scope, count: e.count };
 			g.addEventListener("dblclick", (ev: MouseEvent) => {
@@ -604,6 +762,7 @@ export class RelationshipView extends ItemView {
 			g.addEventListener("contextmenu", (ev: MouseEvent) => {
 				ev.preventDefault();
 				ev.stopPropagation();
+				this.hideGraphTip(); // v0.4.11+ 用户要求＝右键时 tip 立刻消失（右键不产生 mouseleave，否则浮层会一直挂在菜单旁边）
 				if (!this.onEditRelationship && !this.onDeleteRelationship) return;
 				const menu = new Menu();
 				const base = "aw-rel-edge";
@@ -640,14 +799,23 @@ export class RelationshipView extends ItemView {
 			label.setAttribute("y", String(stacked ? (p.y >= cy ? p.y + p.r + fs + 1 : p.y - p.r - 7) : p.y + fs * 0.36));
 			label.setAttribute("text-anchor", stacked ? "middle" : dir > 0 ? "start" : "end");
 			label.textContent = n.name.length > 8 ? `${n.name.slice(0, 7)}…` : n.name;
-			const tip = mk("title");
-			tip.textContent = `${n.name}：${String(n.degree)} 条关系\n双击＝编辑人物（无别的响应）；右键＝菜单（编辑／改名／打开来源文档／设为中心人物／新增／删除）`;
+			// 节点 tip＝与连线**同一份浮层、同一样式**（`.aw-rel-gtip`）。不再挂 SVG `<title>` 子元素（浏览器原生 tooltip 会截断多行、样式也跟连线不一致，v0.4.11+ 用户要求）
+			// v0.4.11+ 用户要求＝tip 里只放**人物信息**（《人物.md》里的设定字段），不要「双击＝编辑／右键＝菜单」这类操作口径
+			const nodeTip = this.charTipText(n.name, n.degree);
 			g.appendChild(dot);
 			g.appendChild(label);
-			g.appendChild(tip);
-			g.addEventListener("mouseenter", () => { if (dragFrom) return; this.focusGraph(n.name, null); }); // v0.4.8+ 起拖期间不高亮
-			g.addEventListener("mouseleave", () => { if (dragFrom) return; this.focusGraph(null, null); });
-			// 单击＝选中并在下方「人物状态」区展示该角色详情（拖拽平移后的伪点击已被 svg 捕获阶段拦下，不会走到这里）；再次点同一节点保持选中不变。
+			g.addEventListener("mouseenter", (ev: MouseEvent) => {
+				if (this.graphPanning) return; // 起拖期间不高亮、不弹 tip
+				this.focusGraph(n.name, null);
+				this.showGraphTip(g, nodeTip, ev);
+			});
+			g.addEventListener("mousemove", (ev: MouseEvent) => { if (this.graphPanning) return; this.moveGraphTip(ev); });
+			g.addEventListener("mouseleave", () => {
+				if (this.graphPanning) return;
+				this.focusGraph(null, null);
+				this.hideGraphTip(g);
+			});
+			// 单击＝选中并在下方「人物状态」区展示该角色详情（拖拽平移后的伪点击已被画布容器捕获阶段拦下，不会走到这里）；再次点同一节点保持选中不变。
 			// v0.4.9+ 用户要求＝**双击人物只响应编辑弹窗**＝选中（含整图重绘）压 220ms，双击到达时取消＝双击不会顺带选中/重画，也不会触发浏览器选中文字
 			g.addEventListener("click", (ev: MouseEvent) => {
 				if (ev.detail > 1) return; // 双击的第二下不再排一次选中
@@ -662,126 +830,41 @@ export class RelationshipView extends ItemView {
 			g.addEventListener("contextmenu", (ev: MouseEvent) => {
 				ev.preventDefault();
 				ev.stopPropagation(); // 别一路冒泡到 svg／面板（那里另有空白处菜单语义时也不叠加）
+				this.hideGraphTip(); // v0.4.11+ 用户要求＝在圆点／名字文字上右键时 tip 立刻消失
 				this.openCharMenu(ev, n.name, n.sources[0]); // v0.4.9+ 用户要求＝右键出菜单
 			});
 			svg.appendChild(g);
 			this.graphNodeEls.set(n.name, g as SVGGElement);
 		}
-		this.treeEl.appendChild(svg);
-
-		// 缩放与平移都走 CSS transform（保留 viewBox，故图形与角色名文字一起等比缩放、不重算布局、不重建 DOM）：
-		// scale 以 svg 自身中心为原点，translate 是屏幕像素偏移；滚轮触发缩放（以鼠标位置为不动点更新 pan，mx 已在 svg layout 内坐标系），按住图面拖动可平移查看被裁部分（容器 overflow:hidden，不出滚动条）。
-		const applyView = (): void => {
-			const z = this.graphZoom;
-			const w = this.treeEl.clientWidth;
-			const h = this.treeEl.clientHeight;
-			const bw = svg.clientWidth; // 布局尺寸（未 transform），视觉尺寸 = 布局尺寸 × 倍率
-			const bh = svg.clientHeight;
-			const vw = bw * z;
-			const vh = bh * z;
-			const baseX = (bw - vw) / 2; // 未平移时视觉框左上角（scale 以 svg 中心为原点）
-			const baseY = (bh - vh) / 2;
-			const loX = Math.min(-baseX, w - vw - baseX);
-			const hiX = Math.max(-baseX, w - vw - baseX);
-			const loY = Math.min(-baseY, h - vh - baseY);
-			const hiY = Math.max(-baseY, h - vh - baseY);
-			this.graphPan.x = clampNum(this.graphPan.x, loX, hiX); // 限位：图形不会被拖到视野外找不回来
-			this.graphPan.y = clampNum(this.graphPan.y, loY, hiY);
-			svg.style.transform = `translate(${this.graphPan.x.toFixed(1)}px, ${this.graphPan.y.toFixed(1)}px) scale(${String(z)})`;
-		};
-		// 缩放到下一档并以鼠标位置为不动点更新 pan——保持鼠标下的图点在缩放前后屏幕位置不变。
-		// 输入 mxView/myView 是 viewport 坐标（ev.clientX/Y），需先换算到 svg 元素 layout 偏移与 ecX/ecY 同坐标系（都是 layout 像素、与 pan 单位一致），否则 mix viewport + layout 像素会让"鼠标不动点"偏移。
-		const zoomAt = (dir: number, mxView: number, myView: number): void => {
-			const i = GRAPH_ZOOMS.indexOf(this.graphZoom);
-			const cur = i < 0 ? GRAPH_ZOOMS.indexOf(1) : i;
-			const nextIdx = Math.min(GRAPH_ZOOMS.length - 1, Math.max(0, cur + dir));
-			const next = GRAPH_ZOOMS[nextIdx];
-			if (next === this.graphZoom) return;
-			const rect = svg.getBoundingClientRect(); // viewport 坐标系下的 svg 盒矩形（视觉尺寸，已包含 scale）
-			const bw = svg.clientWidth; // 布局尺寸（不受 transform 影响，与 rect.width 在 z=1 时一致；z!=1 时 rect.width = bw*z）
-			const bh = svg.clientHeight;
-			const mx = mxView - rect.left; // 鼠标在 svg 元素内的水平 layout 偏移
-			const my = myView - rect.top;
-			const ecX = bw / 2; // svg 布局中心（layout 坐标）
-			const ecY = bh / 2;
-			const k = next / this.graphZoom;
-			this.graphPan.x = mx - ecX - k * (mx - ecX - this.graphPan.x);
-			this.graphPan.y = my - ecY - k * (my - ecY - this.graphPan.y);
-			this.graphZoom = next;
-			applyView();
-		};
-		applyView();
-		this.graphApplyView = applyView; // v0.4.9+ 面板尺寸变化时由尺寸观察器再调一次＝按新视口重算平移限位（倍率/偏移不动）
-
-		// 滚轮缩放：deltaY 累计 |>= 50| 时切一档（向下滑=缩小、上滑=放大），以鼠标位置为不动点
-		let wheelAcc = 0;
-		const WHEEL_STEP = 50;
-		svg.addEventListener("wheel", (ev: WheelEvent) => {
-			ev.preventDefault(); // 防止滚轮冒泡触发 Obsidian 主滚动条跳
-			wheelAcc += ev.deltaY;
-			if (Math.abs(wheelAcc) < WHEEL_STEP) return;
-			zoomAt(wheelAcc > 0 ? -1 : 1, ev.clientX, ev.clientY);
-			wheelAcc = 0;
-		}, { passive: false });
-
-		// 鼠标拖动平移：按下起拖（记住屏幕起点与当次偏移），pointermove/pointerup 挂到 document 上，拖出面板也跟手
-		let dragFrom: { x: number; y: number; tx: number; ty: number } | null = null;
-		let dragged = false; // 本次手势是否真的拖过：用于吃掉松手时紧随的 click，避免拖完误打开角色/关系文档
-		const onDragMove = (ev: PointerEvent): void => {
-			if (!dragFrom) return;
-			this.graphPan.x = dragFrom.tx + (ev.clientX - dragFrom.x);
-			this.graphPan.y = dragFrom.ty + (ev.clientY - dragFrom.y);
-			if (!dragged && Math.abs(ev.clientX - dragFrom.x) + Math.abs(ev.clientY - dragFrom.y) > 3) {
-				dragged = true;
-				svg.classList.add("is-panning");
-			}
-			applyView();
-		};
-		const endDrag = (): void => {
-			dragFrom = null;
-			if (dragged) { // v0.4.8+ 起拖期间高亮被抑制→可能残留按下前的那份邻接高亮/边 tip，真拖过就在松手时统一清掉（纯点击不动）
-				this.focusGraph(null, null);
-				this.hideEdgeTip();
-			}
-			svg.classList.remove("is-panning");
-			document.removeEventListener("pointermove", onDragMove);
-			document.removeEventListener("pointerup", endDrag);
-			window.setTimeout(() => { dragged = false; }, 0); // 等紧随其后的 click 先被拦下再复位
-		};
-		svg.addEventListener("pointerdown", (ev: PointerEvent) => {
-			if (ev.button !== 0) return; // 只响应左键
-			dragFrom = { x: ev.clientX, y: ev.clientY, tx: this.graphPan.x, ty: this.graphPan.y };
-			dragged = false;
-			document.addEventListener("pointermove", onDragMove);
-			document.addEventListener("pointerup", endDrag);
-			ev.preventDefault(); // 拖动期间不选中文字
-		});
-		svg.addEventListener("click", (ev: MouseEvent) => {
-			if (!dragged) return;
-			ev.stopPropagation(); // 捕获阶段拦下：拖到一半松手不该被当成点击/双击打开文档
-			ev.preventDefault();
-			dragged = false;
-		}, true);
-		svg.addEventListener("dblclick", (ev: MouseEvent) => {
-			if (!dragged) return;
-			ev.stopPropagation();
-			ev.preventDefault();
-		}, true);
-
-		const used = new Set(edges.map((e) => relationshipTypeClass(e.type)));
-		const legend = this.treeEl.createDiv({ cls: "aw-dim aw-rel-glegend" });
-		legend.createSpan({ text: "边色：" });
-		for (const [cls, label] of TYPE_CLASS_LABELS) {
-			if (!used.has(cls)) continue;
-			const item = legend.createSpan({ cls: "aw-rel-glegend-item" });
-			item.createSpan({ cls: `aw-rel-glegend-swatch ${cls}` });
-			item.appendText(label);
+		// v0.4.11+ **缩放/平移全部交给 `CanvasPanel`（用户三轮反馈后整体重写）**：svg 以真实像素尺寸（=viewBox 尺寸）放进 zoom 层，
+		//  sizer 撑出「内容×倍率」的可滚动范围，缩放走 transform-origin 左上角＋JS 补偿滚动/虚拟平移＝`panel_canvas` 那套**有单测覆盖**的换算。
+		//  旧实现＝svg 自身挂 `translate(pan) scale(z)`（transform-origin 居中）＋面板内手推不动点公式：依赖 `svg.clientWidth`（Blink 对无
+		//  width/height 属性的 <svg> 偶尔读到 0＝公式算出荒谬 pan＝画面一步推出视野），且 pan 无限位、没有任何找回机制＝用户投诉的根源。
+		//  svg 上不挂任何 `<title>`（浏览器原生长条 tooltip 会与自定义方块 tip 同时弹出＝用户明确不要），交互口径写在图下方图例行。
+		if (this.graphCanvas) {
+			this.graphCanvas.setContentWidth(W); // 面板比画布窄时也要撑出横向滚动/拖动范围（apply 取 max(视口宽, 内容宽)＝侧栏较窄时图右缘不会滚不到）
+			this.graphCanvas.zoomEl.appendChild(svg);
+			this.graphCanvas.apply(); // 重渲染后按当前倍率重算 sizer 尺寸（画布视口与三层元素常驻＝倍率与平移在筛选/刷新后保持，跟场景/时间线面板一致）
 		}
-		const legend2 = this.treeEl.createDiv({ cls: "aw-dim aw-rel-glegend" });
-		legend2.setText("线型：实线=进行中 · 虚线=铺垫中 · 点线=已结束；加粗=同一对角色在多处登记");
 
-		// 「人物状态」区：固定在图下方，展示单击选中角色的设定信息（来自《人物.md》，未选中时给引导文案）
-		this.renderCharInfo(this.treeEl.createDiv({ cls: "aw-rel-charinfo" }), snap);
+		// 双击**图面空白处**＝适应全图（`CanvasPanel.resetView()`＝倍率 100%＋平移归零＋滚动回原点）。
+		// 挂在冒泡阶段＝只有落在图本身的双击会走到这里（人物节点／连线的 dblclick 各自 stopPropagation，不会误触发复位）；
+		//  刚拖完那一下的双击由 `CanvasPanel` 在容器捕获阶段统一吞掉（不需要本面板自己记 `dragged` 标志）
+		svg.addEventListener("dblclick", () => this.resetGraphView());
+
+		// v0.4.11+ **图面空白处右键菜单＝照搬场景面板的画布菜单**（「适应全图」＋「刷新」）：视图跑偏或放大后想退回看全貌＝一键找回（与头部按钮同一动作）
+		svg.addEventListener("contextmenu", (ev: MouseEvent) => {
+			ev.preventDefault();
+			this.hideGraphTip(); // 空白处一般没有 tip，但刚离开节点时可能还留着＝一并收掉
+			const menu = new Menu();
+			menu.addItem((it) => it.setSection("aw-rel-canvas").setTitle("适应全图").setIcon("frame").onClick(() => this.resetGraphView()));
+			menu.addItem((it) => it.setSection("aw-rel-canvas").setTitle("刷新").setIcon("refresh").onClick(() => void this.refresh()));
+			menu.showAtPosition({ x: ev.x, y: ev.y });
+		});
+
+		// v0.4.11+ 复位兜底（用户投诉＝图跑丢后「双击也没回来」）：图面 svg 之外的主体空白（图例行上、图例下方、状态区上方的空隙）双击也复位；
+		//  落在图本身／「人物状态」区／分隔条上的双击不算（图自己的 dblclick 已处理，状态区里有「编辑」等各自的手势）
+		//  （v0.4.11+ 修＝挂在常驻的 treeEl 上＝只绑一次，不再每帧渲染各加一份监听；见 buildUI）
 	}
 
 	/**
@@ -812,11 +895,16 @@ export class RelationshipView extends ItemView {
 		return this.charEntry(name)?.sourcePath ?? null;
 	}
 
+	/** 该人物登记在几份《人物.md》里（＝快照 `chars` 同名条目数）＝右键菜单「合并 N 处登记」与状态区「合并」链接的显示条件（v0.4.11+） */
+	private charEntryCount(name: string): number {
+		return this.lastSnap ? this.lastSnap.chars.filter((c) => c.name === name).length : 0;
+	}
+
 	/** 卡片里的角色名等普通元素挂人物菜单（v0.4.9+）＝右键弹 `openCharMenu`、双击＝编辑人物；名字为空（未命名角色）不挂 */
 	private bindCharMenu(el: HTMLElement, name: string, fallbackPath?: string): void {
 		const n = name.trim();
 		if (!n) return;
-		el.setAttribute("title", `双击＝编辑人物（无别的响应）；右键＝菜单（编辑／改名／打开来源文档／设为中心人物／新增／删除）：${n}`);
+		el.setAttribute("title", `双击＝编辑人物（无别的响应）；右键＝菜单（编辑／改名／合并多处登记／打开来源文档／设为中心人物／新增／删除）：${n}`);
 		el.addEventListener("contextmenu", (ev: MouseEvent) => {
 			ev.preventDefault();
 			ev.stopPropagation(); // 不叠加到卡片/面板
@@ -841,7 +929,11 @@ export class RelationshipView extends ItemView {
 			this.charPickTimer = null;
 			if (this.selectedChar === name) return;
 			this.selectedChar = name;
-			if (this.lastSnap && this.mode === "graph") this.renderBody(this.lastSnap);
+			this.charDrawerOpenKeys.clear(); // 换人＝全部展开项回到默认折叠（v0.4.11+）
+			// v0.4.11+ 局部刷新＝只给节点加选中描边＋重画「人物状态」区。旧口径这里调 `renderBody`＝整张图重建
+			// （力导向重跑＋状态区把图挤掉一截）＝用户投诉的「点人物圆圈时下面人物状态的大小在动」＝图与区一起跳
+			this.applySelClass();
+			this.refreshCharInfo();
 		}, 220);
 	}
 
@@ -866,6 +958,8 @@ export class RelationshipView extends ItemView {
 		const base = "aw-rel-char"; // 前五项同一 section＝中间不画分隔线；「删除」单列 danger 组＝排在最后（scene_view 卡片菜单同口径）
 		if (this.onEditCharacter) menu.addItem((it) => it.setSection(base).setTitle(`编辑人物「${name}」`).setIcon("pencil").onClick(() => void this.onEditCharacter?.(name)));
 		if (this.onRenameCharacter) menu.addItem((it) => it.setSection(base).setTitle(`改名「${name}」`).setIcon("text-cursor").onClick(() => void this.onRenameCharacter?.(name)));
+		const regs = this.charEntryCount(name); // v0.4.11+ 只有**登记在两份以上《人物.md》**的人物才有「合并」可做
+		if (this.onMergeCharacter && regs > 1) menu.addItem((it) => it.setSection(base).setTitle(`合并「${name}」的 ${String(regs)} 处登记`).setIcon("git-merge").onClick(() => void this.onMergeCharacter?.(name)));
 		const docPath = this.charDocPathOf(name) ?? fallbackPath ?? "";
 		if (docPath) menu.addItem((it) => it.setSection(base).setTitle("打开来源文档").setIcon("file-text").onClick(() => void this.openFile(docPath))); // 图标＝`file-text`（与场景/时间线面板同一份「打开来源文档」图标口径）
 		const isCenter = this.graphCenter === name;
@@ -894,65 +988,202 @@ export class RelationshipView extends ItemView {
 			return;
 		}
 		head.createSpan({ text: name, cls: "aw-rel-charselect" });
-		if (this.onRenameCharacter) {
-			const rename = head.createSpan({ text: "改名", cls: "aw-rel-openfile" });
-			rename.setAttribute("title", "全书 MD 同步替换旧名并自动备份");
-			rename.addEventListener("click", (ev: MouseEvent) => {
-				if (ev.detail > 1) return; // 连点两下＝只当双击用＝只弹一次改名输入框
-				void this.onRenameCharacter?.(name);
-			});
+		const entries = snap.chars.filter((c) => c.name === name); // 该人物在各层《人物.md》里的登记（＝多文档判定与下面渲染共用）
+		if (this.onRenameCharacter) this.charLink(head, "改名", "全书 MD 同步替换旧名并自动备份", () => void this.onRenameCharacter?.(name));
+		if (this.onMergeCharacter && entries.length > 1) {
+			this.charLink(head, `合并（${String(entries.length)} 处登记）`, "同名人物在多份《人物.md》里各有一条登记＝合并为一条并选定最终存储文档", () => void this.onMergeCharacter?.(name));
 		}
 		const close = head.createSpan({ text: "×", cls: "aw-rel-charclose" });
 		close.setAttribute("title", "清除选中");
 		close.addEventListener("click", () => {
 			this.cancelCharPick(); // v0.4.9+ 「单击选中」还在 220ms 等待期就点 ×＝别在背后把人又选回来
 			this.selectedChar = null;
-			if (this.lastSnap && this.mode === "graph") this.renderBody(this.lastSnap);
+			this.charDrawerOpenKeys.clear();
+			this.applySelClass(); // v0.4.11+ 局部刷新＝图面一动不动（旧口径 renderBody＝整张图重建）
+			this.refreshCharInfo();
 		});
-		const entries = snap.chars.filter((c) => c.name === name);
 		if (!entries.length) {
 			parent.createDiv({ text: "《人物.md》里还没有这个人物的设定（可用顶部「添加人物」补录）。", cls: "aw-dim aw-st-hint" });
 			return;
 		}
-		for (const e of entries) this.renderCharEntry(parent, e);
+		if (entries.length === 1) {
+			entries.forEach((e) => this.renderCharEntry(parent, e));
+			return;
+		}
+		// **多份《人物.md》登记＝每个文档一个展开项**（v0.4.11+ 用户要求＝「人物在多个文档时，每个文档一个展开项」）：
+		// 逐条各一个折叠条（标题＝该文档所在位置＋「打开文档」/「编辑」），默认全部折叠、点开哪条看哪条＝状态区高度口径始终不变
+		const seq = new Map<string, number>(); // 同一文档里同名登记多次时给键加序号（键只在本轮渲染内生成，展开态存 charDrawerOpenKeys）
+		for (const e of entries) {
+			const n = (seq.get(e.sourcePath) ?? 0) + 1;
+			seq.set(e.sourcePath, n);
+			this.renderCharDrawer(parent, e, `${e.sourcePath}#${String(n)}`);
+		}
 	}
 
-	/** 「人物状态」区单块：层级标签＋「打开文档」链接＋非空字段行（能力多项以顿号连接） */
-	private renderCharEntry(parent: HTMLElement, e: RelCharInfo): void {
-		const box = parent.createDiv({ cls: "aw-rel-charentry" });
-		const head = box.createDiv({ cls: "aw-rel-charenty-head" });
-		head.createSpan({ text: e.label, cls: "aw-dim aw-rel-charscope" });
-		const link = head.createSpan({ text: "打开文档", cls: "aw-rel-openfile" });
-		link.setAttribute("title", e.sourcePath);
-		link.addEventListener("click", (ev: MouseEvent) => {
-			if (ev.detail > 1) return; // 连点两下＝只当双击用（＝只弹一次编辑弹窗，见下面「编辑」链接）
-			void this.openFile(e.sourcePath);
-		});
+	/** v0.4.11+ 状态区里「一个文档 ＝ 一个展开项」：折叠＝只有一条折叠头（▸ ＋ `层级词 · 书内路径` ＋「打开文档」/「编辑」），
+	 *  展开＝其下出该文档的设定块（`renderCharEntry`，块内不再重复文档头＝`hideHead`）。点折叠头（圆角箭头或位置文案）＝翻展开态，
+	 *  点头上的「打开文档」/「编辑」＝不翻展开态（走各自动作）。展开态按 `charDrawerOpenKeys` 记住（选中别的人物即清空＝默认折叠） */
+	private renderCharDrawer(parent: HTMLElement, e: RelCharInfo, key: string): void {
+		const open = this.charDrawerOpenKeys.has(key);
+		const drawer = parent.createDiv({ cls: "aw-rel-chardrawer" });
+		if (open) drawer.addClass("is-open");
+		const head = drawer.createDiv({ cls: "aw-rel-chardrawer-head" });
+		head.setAttribute("title", open ? "收起该文档的登记" : "展开查看该文档的登记");
+		const toggle = (): void => {
+			if (open) this.charDrawerOpenKeys.delete(key);
+			else this.charDrawerOpenKeys.add(key);
+			this.refreshCharInfo(); // 只重画状态区这一块（图面一动不动）
+		};
+		head.createSpan({ text: open ? "▾" : "▸", cls: "aw-rel-chardrawer-caret" });
+		head.createSpan({ text: docLocationLabel(e.scope, e.sourcePath, this.lastSnap?.storyDir ?? "", REL_SCOPE_WORDS), cls: "aw-rel-chardrawer-label" });
+		this.charLink(head, "打开文档", e.sourcePath, () => void this.openFile(e.sourcePath));
 		if (this.onEditCharacter) {
-			const edit = head.createSpan({ text: "编辑", cls: "aw-rel-openfile" }); // v0.4.9+ 与双击图表节点／右键「编辑人物」同一个弹窗（卡片模式也用得上）
-			edit.setAttribute("title", docLocationLabel(e.scope, e.sourcePath, this.lastSnap?.storyDir ?? "", REL_SCOPE_WORDS)); // 悬停给出「书籍级/卷级/章级 · 书内路径」
-			edit.addEventListener("click", (ev: MouseEvent) => {
-				if (ev.detail > 1) return; // 双击这里＝只弹一个编辑弹窗（第二下不再叠一个）
-				void this.onEditCharacter?.(e.name);
-			});
+			this.charLink(head, "编辑", docLocationLabel(e.scope, e.sourcePath, this.lastSnap?.storyDir ?? "", REL_SCOPE_WORDS), () => void this.onEditCharacter?.(e.name));
+		}
+		head.addEventListener("click", (ev: MouseEvent) => {
+			if ((ev.target as HTMLElement | null)?.closest(".aw-rel-openfile")) return; // 点头上的「打开文档」/「编辑」＝走动作、不翻展开态
+			toggle(); // 整条折叠头都是热区（箭头与位置文案同样生效）
+		});
+		if (!open) return; // 默认折叠
+		const body = drawer.createDiv({ cls: "aw-rel-chardrawer-body" });
+		this.renderCharEntry(body, e, true);
+	}
+
+	/** v0.4.11+ 设定字段的**取数口径唯一来源**（未填字段返回空串＝调用方自行跳过；能力多项以顿号连接）＝「人物状态」区与节点 tip 共用（代码重用） */
+	private charInfoFields(e: RelCharInfo): Array<[string, string]> {
+		const abilities = (e.abilities ?? []).join("、");
+		return [
+			["身份", e.identity?.trim() ?? ""], ["年龄", e.age?.trim() ?? ""], ["性别", e.gender?.trim() ?? ""],
+			["性格", e.personality?.trim() ?? ""], ["外貌", e.appearance?.trim() ?? ""], ["背景", e.background?.trim() ?? ""],
+			["能力", abilities], ["备注", e.notes?.trim() ?? ""],
+		];
+	}
+
+	/** **节点 tip 的正文**（v0.4.11+ 用户要求＝人物身上弹的那份要显示**人物信息**、不要「双击＝编辑／右键＝菜单」这类操作提示）＝
+	 *  第一行「名字 · N 条关系」＋《人物.md》里各层登记的设定字段（与「人物状态」区同一套 `charInfoFields` 取数）。
+	 *  多文档登记＝每份文档一段（标题＝`层级 · 书内位置`）；单文档不重复标题。字段值过长只截断展示（完整内容在下方「人物状态」区／编辑弹窗里看），
+	 *  否则 tip 会拉成一长条；《人物.md》里没有该人物时只给一行提示（操作口径统一写在图下方图例行里） */
+	private charTipText(name: string, degree: number): string {
+		const entries = this.lastSnap ? this.lastSnap.chars.filter((c) => c.name === name) : [];
+		const lines: string[] = [`${name} · ${String(degree)} 条关系`];
+		if (!entries.length) {
+			lines.push("《人物.md》里还没有这个人物的设定");
+			return lines.join("\n");
+		}
+		const multi = entries.length > 1;
+		for (const e of entries) {
+			if (multi) lines.push("", `${REL_SCOPE_WORDS[e.scope]} · ${docLocationLabel(e.scope, e.sourcePath, this.lastSnap?.storyDir ?? "", REL_SCOPE_WORDS)}`);
+			for (const [k, v] of this.charInfoFields(e)) {
+				if (!v) continue;
+				lines.push(`${k}：${v.length > 60 ? `${v.slice(0, 60)}…` : v}`);
+			}
+		}
+		return lines.join("\n");
+	}
+
+	/** 状态区头部的文字小链接（「打开文档」/「编辑」＝条目头与抽屉头两处共用＝代码重用）；连点两下只当一次双击用（与旧口径一致） */
+	private charLink(parent: HTMLElement, text: string, title: string, run: () => void): HTMLElement {
+		const el = parent.createSpan({ text, cls: "aw-rel-openfile" });
+		el.setAttribute("title", title);
+		el.addEventListener("click", (ev: MouseEvent) => {
+			if (ev.detail > 1) return;
+			run();
+		});
+		return el;
+	}
+
+	/** 「人物状态」区单块：层级标签＋「打开文档」/「编辑」链接＋非空字段行（能力多项以顿号连接）。
+	 *  `hideHead`＝多文档展开项里用（文档位置与两个动作已经在折叠头上，块内不再重复一遍） */
+	private renderCharEntry(parent: HTMLElement, e: RelCharInfo, hideHead: boolean = false): void {
+		const box = parent.createDiv({ cls: "aw-rel-charentry" });
+		if (!hideHead) {
+			const head = box.createDiv({ cls: "aw-rel-charenty-head" });
+			head.createSpan({ text: e.label, cls: "aw-dim aw-rel-charscope" });
+			this.charLink(head, "打开文档", e.sourcePath, () => void this.openFile(e.sourcePath)); // 连点两下＝只当双击用（与旧口径一致）
+			if (this.onEditCharacter) {
+				this.charLink(head, "编辑", docLocationLabel(e.scope, e.sourcePath, this.lastSnap?.storyDir ?? "", REL_SCOPE_WORDS), () => void this.onEditCharacter?.(e.name)); // v0.4.9+ 与双击图表节点／右键「编辑人物」同一个弹窗
+			}
 		}
 		box.addEventListener("contextmenu", (ev: MouseEvent) => {
 			ev.preventDefault();
 			ev.stopPropagation();
 			this.openCharMenu(ev, e.name, e.sourcePath); // v0.4.9+ 右键这一块的菜单＝与图表节点同一份
 		});
-		const abilities = (e.abilities ?? []).join("、");
-		const fields: Array<[string, string | undefined]> = [
-			["身份", e.identity], ["年龄", e.age], ["性别", e.gender], ["性格", e.personality],
-			["外貌", e.appearance], ["背景", e.background], ["能力", abilities || undefined], ["备注", e.notes],
-		];
-		for (const [k, v] of fields) {
-			if (!v?.trim()) continue; // 未填字段不占位（含空数组的能力）
+		this.renderCharFields(box, e);
+	}
+
+	/** 设定块的字段行（未填字段不占位、能力多项以顿号连接）＝普通块与抽屉展开块共用；取数走 `charInfoFields`（与节点 tip 同一口径） */
+	private renderCharFields(box: HTMLElement, e: RelCharInfo): void {
+		for (const [k, v] of this.charInfoFields(e)) {
+			if (!v) continue; // 未填字段不占位（含空数组的能力）
 			const row = box.createDiv({ cls: "aw-rel-charfield" });
 			row.createSpan({ text: k, cls: "aw-rel-charflabel" });
-			row.appendText(v.trim());
+			row.appendText(v);
 		}
 	}
+
+	/** v0.4.11+ 状态区高度写进 CSS 变量（styles.css `.aw-st-tree.is-graph > .aw-rel-charinfo` 消费）＝**高度口径唯一来源**。
+	 *  只有 `beginCharResize`（拖分隔条）会改 `charInfoH`；任何渲染、选中、内容增减都不动它＝用户要求＝状态区不自己变大变小 */
+	private applyCharInfoHeight(): void {
+		this.treeEl.style.setProperty("--aw-rel-charinfo-h", `${String(this.charInfoH)}px`);
+	}
+
+	/** v0.4.11+ **只重画「人物状态」这一块**（＋节点选中描边），不再整块重渲染主体。
+	 *  旧口径＝单击人物走 `renderBody`＝重建整张图（力导向重跑＋状态区把图挤得一跳一大截）＝用户投诉「点人物圆圈时下面人物状态的大小在动」；
+	 *  现在图面完全不动（连节点位置都不变），只换状态区内容 */
+	private refreshCharInfo(): void {
+		const el = this.charInfoEl;
+		if (!el || !this.lastSnap) return;
+		el.empty();
+		this.renderCharInfo(el, this.lastSnap);
+	}
+
+	/** v0.4.11+ 只改节点上的选中描边类（与 `refreshCharInfo` 配成「局部刷新」） */
+	private applySelClass(): void {
+		for (const [name, el] of this.graphNodeEls) el.toggleClass("is-sel", name === this.selectedChar);
+	}
+
+	/** v0.4.11+ 拖动状态区上缘分隔条改高度（用户要求＝该区大小只能由用户拖边缘改）：左键按下起手势＋document 级 move/up 收尾。
+	 *  限位＝下限 `CHARINFO_H_MIN`（至少露出标题行）、上限＝主体高度 − `CHARINFO_GRAPH_MIN`（给图面留住看得见的部分）。触屏同样可拖（CSS 给分隔条 `touch-action:none`） */
+	private beginCharResize(ev: PointerEvent): void {
+		if (ev.button !== 0) return; // 右键＝留给菜单语义，不起手势
+		ev.preventDefault(); // 不选中文字
+		ev.stopPropagation();
+		this.charResize = { startY: ev.clientY, startH: this.charInfoH };
+		this.charResizerEl?.addClass("is-resizing");
+		document.addEventListener("pointermove", this.onCharResizeMove);
+		document.addEventListener("pointerup", this.endCharResize);
+		document.addEventListener("pointercancel", this.endCharResize);
+	}
+
+	private onCharResizeMove = (ev: PointerEvent): void => {
+		const s = this.charResize;
+		if (!s) return;
+		ev.preventDefault();
+		this.charInfoH = Math.round(clampNum(s.startH - (ev.clientY - s.startY), CHARINFO_H_MIN, this.charInfoMaxH())); // 向上拖＝区变高、图变矮
+		this.applyCharInfoHeight();
+	};
+
+	/** 状态区可拖到的上限＝主体高度 − 其余各行（摘要行＋两行图例＋分隔条，实测）− `CHARINFO_GRAPH_MIN`（给图面留住看得见的部分）。
+	 *  图本身（`.aw-rel-graph`）与被调的区（`charInfoEl`）都不计入＝两者分摊剩下的空间 */
+	private charInfoMaxH(): number {
+		let others = 0;
+		for (const child of Array.from(this.treeEl.children)) {
+			const el = child as HTMLElement;
+			// 画布视口（内含 sizer＝图面＋滚动范围，随剩余空间伸缩）与图本身都不计入＝两者分摊剩下的空间；只数图例/分隔条这类固定行
+			if (el === this.charInfoEl || el.classList.contains("aw-rel-graph") || el.classList.contains("aw-rel-canvasbody")) continue;
+			others += el.offsetHeight;
+		}
+		return Math.max(CHARINFO_H_MIN, this.treeEl.clientHeight - others - CHARINFO_GRAPH_MIN);
+	}
+
+	private endCharResize = (): void => {
+		document.removeEventListener("pointermove", this.onCharResizeMove);
+		document.removeEventListener("pointerup", this.endCharResize);
+		document.removeEventListener("pointercancel", this.endCharResize);
+		this.charResize = null;
+		this.charResizerEl?.removeClass("is-resizing");
+	};
 
 	/** 悬停高亮：a=角色名（悬停节点，连带其邻接）或边的两端；两者皆空则复原 */
 	private focusGraph(a: string | null, b: string | null): void {
@@ -980,18 +1211,19 @@ export class RelationshipView extends ItemView {
 		await this.app.workspace.getLeaf().openFile(f);
 	}
 
-	/** 自定义边 tip：填内容并显示，跟手定位；越界则翻向鼠标左/上避免被视口裁切。必须先 addClass 显示，否则 display:none 下读到的 offsetWidth/Height 恒为 0，翻转判断失效会让长 tip 溢出视口底部看不见 */
-	private showEdgeTip(text: string, ev: MouseEvent): void {
-		const el = this.edgeTipEl;
+	/** 自定义图 tip（人物节点／关系连线共用同一份浮层与样式）：填内容并显示，跟手定位；越界则翻向鼠标左/上避免被视口裁切。必须先 addClass 显示，否则 display:none 下读到的 offsetWidth/Height 恒为 0，翻转判断失效会让长 tip 溢出视口底部看不见。`owner`＝触发它的 `<g>`（记进 `graphTipOwner`，供 `hideGraphTip` 判归属） */
+	private showGraphTip(owner: Element, text: string, ev: MouseEvent): void {
+		const el = this.graphTipEl;
 		if (!el) return;
 		el.setText(text);
 		el.addClass("is-show"); // 先显示才能读到真实尺寸
-		this.moveEdgeTip(ev);
+		this.graphTipOwner = owner;
+		this.moveGraphTip(ev);
 	}
 
-	/** 边 tip 跟手：默认放鼠标右下，右侧/下方越界则翻到左/上 */
-	private moveEdgeTip(ev: MouseEvent): void {
-		const el = this.edgeTipEl;
+	/** 图 tip 跟手：默认放鼠标右下，右侧/下方越界则翻到左/上 */
+	private moveGraphTip(ev: MouseEvent): void {
+		const el = this.graphTipEl;
 		if (!el || !el.hasClass("is-show")) return;
 		const tipW = el.offsetWidth;
 		const tipH = el.offsetHeight;
@@ -1008,8 +1240,10 @@ export class RelationshipView extends ItemView {
 		el.style.top = `${String(y)}px`;
 	}
 
-	/** 隐藏边 tip */
-	private hideEdgeTip(): void {
-		this.edgeTipEl?.removeClass("is-show");
+	/** 隐藏图 tip（节点／连线共用＝同一时刻只会有一份）。传 `owner`＝只有「当前显示的就是它那一套」时才隐藏（节点与连线在交叠处进出时不误伤对方）；不传＝无条件清（拖图松手、右键出菜单、视图卸载） */
+	private hideGraphTip(owner?: Element): void {
+		if (owner && this.graphTipOwner !== owner) return;
+		this.graphTipOwner = null;
+		this.graphTipEl?.removeClass("is-show");
 	}
 }

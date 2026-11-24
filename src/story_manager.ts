@@ -1378,23 +1378,25 @@ private emptyState(storyName: string): StoryState {
 	async loadCharacterEntries(storyName: string): Promise<CharacterInfoEntry[]> {
 		const out: CharacterInfoEntry[] = [];
 		const base = this.deskDocsPath(storyName); // 书级《人物》在「案头资料/」
-		const collect = (text: string, chapNum: number, scope: "book" | "volume" | "chapter", label: string, path: string): void => {
+		const collect = (text: string, chapNum: number, scope: "book" | "volume" | "chapter", label: string, path: string, vol?: string): void => {
 			let chars: Record<string, doc.CharacterDoc>;
 			try {
 				chars = doc.parseCharacters(text, chapNum);
 			} catch {
 				return; // 单层格式异常不影响其余层
 			}
-			for (const c of Object.values(chars)) out.push({ ...c, scope, label, sourcePath: path });
+			// v0.4.11+ 卷标签照打（旧口径只打 chapter＝卷级／卷内章级的条目认不出自己在哪份文档，
+			// 「编辑人物」弹窗的级别行与「合并人物信息」的落盘都靠 chapter＋vol 这一对定位）
+			for (const c of Object.values(chars)) out.push(vol ? { ...c, vol, scope, label, sourcePath: path } : { ...c, scope, label, sourcePath: path });
 		};
 		collect(await this.readDoc(`${base}/人物.md`), 0, "book", "书籍级", `${base}/人物.md`);
 		for (const [, vol] of Object.entries(await this.loadVolumes(storyName))) {
 			const path = this.resolveVolumeDocPath(this.volumeDirPath(storyName, vol), vol.name, "人物.md");
-			collect(await this.readDoc(path), 0, "volume", `卷 · ${vol.name}`, path);
+			collect(await this.readDoc(path), 0, "volume", `卷 · ${vol.name}`, path, vol.id);
 		}
 		for (const ch of await this.listChapters(storyName)) {
 			const path = this.resolveChapterDocPath(`${ch.dir.path}/人物.md`);
-			collect(await this.readDoc(path), ch.num, "chapter", `章 · 第${ch.num}章 ${ch.title}`.trim(), path);
+			collect(await this.readDoc(path), ch.num, "chapter", `章 · 第${ch.num}章 ${ch.title}`.trim(), path, ch.vol);
 		}
 		return out;
 	}
@@ -2638,10 +2640,7 @@ private emptyState(storyName: string): StoryState {
 			}
 		}
 		if (hits === 0) return null;
-		const d = new Date();
-		const pad = (n: number) => String(n).padStart(2, "0");
-		const ts = `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}_${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
-		const backupDir = `${storyBase}/_backup/角色改名_${ts}`;
+		const backupDir = `${storyBase}/_backup/角色改名_${this.backupStamp()}`;
 		for (const item of changed) {
 			const rel = item.file.path.substring(storyBase.length + 1);
 			await this.writeDoc(`${backupDir}/${rel}`, item.text);
@@ -2650,6 +2649,55 @@ private emptyState(storyName: string): StoryState {
 			await this.vault.modify(item.file, item.text.split(oldN).join(newN));
 		}
 		return { hits, files: changed.length };
+	}
+
+	/** 备份目录名后缀时间戳（`yyyyMMdd_HHmmss`）＝角色改名／合并人物等「先备份再改」的路径共用（v0.4.11+ 代码重用） */
+	private backupStamp(): string {
+		const d = new Date();
+		const pad = (n: number) => String(n).padStart(2, "0");
+		return `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}_${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
+	}
+
+	/**
+	 * 合并人物信息（v0.4.11+）：把同名人物在多份《人物.md》里的登记合并为一条写入 `targetPath`，并从其余各份里删掉该人物的条目。
+	 * 落盘走块级手术（`md_docs.upsertCharacterBlock`／`deleteCharacterBlock`）＝**只动那一个块**，文档内其它条目、自定义段落与模板注释原样保留
+	 * （有意不同于 `saveCharactersFile` 的整篇重排重写）。改动前把涉及文档原文备份到 `<书根>/_backup/人物合并_<时间戳>/`（与角色改名同一口径）。
+	 * 返回：`removed`＝已清除该条目的文档、`missed`＝快照过期（该文档里已找不到此人名）因而未改动的文档。
+	 */
+	async mergeCharacter(
+		storyName: string,
+		merged: doc.CharacterDoc,
+		targetPath: string,
+		sourcePaths: readonly string[]
+	): Promise<{ removed: string[]; missed: string[] }> {
+		const folder = this.storyFolder(storyName);
+		if (!folder) throw new Error(`小说不存在：${storyName}`);
+		const storyBase = this.storyPath(storyName);
+		const paths = [...new Set([targetPath, ...sourcePaths])];
+		const texts = new Map<string, string>();
+		for (const p of paths) texts.set(p, await this.readDoc(p));
+		const backupDir = `${storyBase}/_backup/人物合并_${this.backupStamp()}`;
+		for (const p of paths) {
+			if (!(this.vault.getAbstractFileByPath(p) instanceof TFile)) continue; // 不存在的文档无需备份（写入时才创建）
+			await this.writeDoc(`${backupDir}/${p.substring(storyBase.length + 1)}`, texts.get(p) ?? "");
+		}
+		const removed: string[] = [];
+		const missed: string[] = [];
+		for (const p of paths) {
+			const text = texts.get(p) ?? "";
+			if (p === targetPath) {
+				await this.writeDoc(p, doc.upsertCharacterBlock(text, merged));
+				continue;
+			}
+			const next = doc.deleteCharacterBlock(text, merged.name);
+			if (next === null) {
+				missed.push(p); // 期间被别人删过／改名过＝不硬写，如实汇报
+				continue;
+			}
+			await this.writeDoc(p, next);
+			removed.push(p);
+		}
+		return { removed, missed };
 	}
 
 	// ---------- 伏笔（根目录 伏笔.md；v0.0.15 章节号为复合键「N」/「卷id:N」）----------
