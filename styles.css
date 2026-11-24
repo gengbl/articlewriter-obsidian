@@ -1991,6 +1991,31 @@
 	text-align: left;
 }
 
+/* v0.4.11+ 手机端弹窗「自然排布」（用户要求＝和 PC 端一样、不必占满整个窗口的高度）：
+   根因——Obsidian 手机版核心（实测 app 包内 CSS）把 .is-phone .modal-content 强制成
+   display:flex;flex-direction:column 且吃 flex:1 1 auto（撑满弹窗全高），又把每个普通
+   Setting 行强制 flex-direction:column；插件 .aw-form .setting-item-control{flex:1 1 auto}
+   本是横向撑满，行被改 column 后同一声明变成纵向 grow/shrink——叠加出「内容沿高度平均分布」。
+   作用域＝本插件弹窗（AwModal 基类在 modalEl 挂 .aw-modal；SuggestModal 搜索类弹窗不沾）。
+   修正＝内容层只占自然高度、行高按内容不拉伸，行仍保留手机版「标签上/控件下」排布（触摸友好，不动）。 */
+.is-phone .aw-modal {
+	height: auto;
+	min-height: 0;
+}
+
+.is-phone .aw-modal .modal-content {
+	flex: 0 1 auto; /* 不再撑满弹窗高度＝内容多高弹窗多高（上限仍是核心的 --dialog-max-height） */
+	justify-content: flex-start; /* 兜底：万一高度受限也不平均分布，从顶部自然顺排 */
+}
+
+.is-phone .aw-modal .modal-content > .setting-item {
+	flex: 0 0 auto; /* 行高＝内容：不增长也不被滚动容器压缩 */
+}
+
+.is-phone .aw-modal .modal-content > .setting-item .setting-item-control {
+	flex: 0 0 auto; /* 行已是 column（核心改的），控件 flex 复位＝防本文件 .aw-form 的纵向 grow 残留 */
+}
+
 /* 多字段表单统一紧凑行距（MultiFieldModal「新增/编辑人物」等 + AddCharacterModal「添加人物」）：
    Obsidian .setting-item 默认 padding 0.75em≈12px 且带行间分隔线、input 高度约 32px，十几行叠加就非常占纵向空间；
    这里把 padding/分隔线/标签行高/控件高度一起压，并限定作用域不外溢到设置页与其它 Modal */

@@ -34,6 +34,9 @@ export class AwModal extends Modal {
 	constructor(app: App) {
 		super(app);
 		this.contentEl.addClass("aw-form");
+		// v0.4.11+ 弹窗根元素作用域类：styles.css 手机端「自然排布」修正（.is-phone .aw-modal）需要选中弹窗本体，
+		// 而 `.aw-form` 挂在 contentEl（= .modal-content）没法向上选，故在 modalEl 另挂一类
+		this.modalEl.addClass("aw-modal");
 	}
 }
 

@@ -2,87 +2,109 @@
 
 > Chinese version: [README_ZN.md](./README_ZN.md)
 
+> Current release: **0.4.11** — grab `main.js` / `manifest.json` / `styles.css` from the [GitHub Release](https://github.com/gengbl/articlewriter-obsidian/releases/latest).
+
 ## ⚠️ Disclosures & Security Statement
 
 **Network requests.** This plugin performs no network activity except LLM chat. All outbound traffic goes exclusively through the official `openai` SDK to the OpenAI-compatible endpoint **that you configure yourself in settings** (a local server such as Ollama / LM Studio / llama.cpp, or a provider API like DeepSeek or Qwen DashScope). At runtime the plugin makes exactly three kinds of calls — non-streaming and streaming chat completions, plus one optional `GET /models` issued only when you run the LLM connection test to confirm your endpoint works; any additional request-related call sites flagged by scanners belong to the bundled SDK's generic HTTP layer and are not used elsewhere by this plugin. There is **no telemetry, no analytics, no update checking, and no connection to any author-operated server**. Your API key is entered by you in the settings panel, stored locally inside your vault with the rest of the plugin settings, and transmitted only as an authentication header to the endpoint you chose; when left empty (the normal case for local servers) a fixed placeholder value (`local-no-auth`) stands in its place, so no real secret ever leaves your machine.
 
-**Base64 usage (`atob` / `btoa`).** The plugin's own source code contains **zero** base64 encode/decode calls. Every occurrence present in the shipped bundle originates from third-party libraries that esbuild bundles: the `yaml` parser (its standard handler for YAML `!!binary` tags) and the `openai` SDK (generic base64 ↔ binary-buffer conversion helpers). They perform ordinary data-format conversions and are **not** used to obfuscate API keys, hide URLs, or mask code payloads. Nothing in the build is minified or obfuscated — the complete human-readable source is published in [the repository](https://github.com/gengbl/articlewriter-obsidian); please audit it directly if you have concerns.
+**Base64 usage (`atob` / `btoa`).** The plugin's own source contains exactly **one** decode call: a single `atob` that turns a QR-code image *bundled into the build itself* (the author's contact QR inlined as a data URL at build time) back into a PNG file written next to 《使用说明.md》 in your work folder — a static bundled asset, no network, no user data, no encoding calls at all. Every other base64 occurrence in the shipped bundle originates from third-party libraries that esbuild bundles: the `yaml` parser (its standard handler for YAML `!!binary` tags) and the `openai` SDK (generic base64 ↔ binary-buffer conversion helpers). They perform ordinary data-format conversions and are **not** used to obfuscate API keys, hide URLs, or mask code payloads. Nothing in the build is minified or obfuscated — the complete human-readable source is published in [the repository](https://github.com/gengbl/articlewriter-obsidian); please audit it directly if you have concerns.
 
 ### Vault Enumeration Disclosure
 This plugin inspects file structures inside your vault through Obsidian's standard `app.vault` APIs, in exactly two scopes:
 * **Purpose — vault-wide *path* listing (two small UI pickers):** (a) the folder picker shown on first use / when switching the working directory (`work_dir`) lists existing folders so you can fuzzy-search where your manuscripts live; this walk starts at the vault root but is deliberately bounded — it descends only **3 levels deep**, stops after **500 entries**, and skips hidden directories such as `.obsidian/`; (b) the dockable chat panel's @reference candidate list calls `vault.getFiles()` when rendering so that *any* document in your vault can be quoted into an LLM prompt with one keystroke. Both list **paths only** — no content is read at either point. A file's text is loaded only after you act on it: picking a folder merely sets the scope for later local operations, and referencing a file adds its content to the explicit request sent to the model endpoint you configured yourself (see the Network-requests note above).
-* **Purpose — working-directory-scoped operations:** Everything else (building the story status tree, listing volumes/chapters, counting words per chapter/book, and loading outline / world-building / character / scene documents into writing prompts) operates exclusively inside the work folder **you select on first use** (`work_dir`). Files outside that folder are never opened or scanned by these features.
+* **Purpose — working-directory-scoped operations:** Everything else (building the story status tree, listing volumes/chapters, counting words per chapter/book, loading outline / world-building / character / scene documents into writing prompts, the chat panel's tool-calling feature, the deterministic sensitive-word scanner, and typing statistics) operates exclusively inside the work folder **you select on first use** (`work_dir`), plus the plugin's own `SKILLS/` folder inside it. Files outside that folder are never opened or scanned by these features. Chat-panel tool calls (the model asking to read a chapter or run a writing command) are local executions triggered by chat turns *you* initiate, and they only touch the current story inside `work_dir`.
 * **Privacy Assurance:** All enumeration runs entirely locally and in-memory on your machine. File paths and contents are processed strictly on-device and are **never** uploaded, indexed remotely, leaked, or shared with any external server — except for the deliberate LLM requests described in the Network-requests note that you trigger yourself.
 * **Summary for reviewers:** Vault-wide listing happens in exactly two UI pickers and exposes **paths only** (the folder picker even caps at 3 levels deep / 500 entries); all other file access stays inside the user-selected working directory, everything runs locally in-memory, and nothing leaves the machine except LLM requests you explicitly send to your own configured endpoint.
 
 ## Overview
 
-ArticleWriter turns your vault into an AI-assisted novel workshop. It organizes each story as a folder of plain Markdown files (state doc, outline, world-building, characters, scenes, foreshadowing notes and one folder per chapter) and adds LLM-powered writing commands on top: write / continue / rewrite / polish chapters, strip AI-sounding phrasing, review from a global perspective, plus a dockable chat panel that can quote any vault file via @references. All data stays local; no external services are required beyond the OpenAI-compatible model endpoint you configure yourself.
+ArticleWriter turns your vault into an AI-assisted novel workshop. Each story is a folder of plain Markdown files (a YAML-frontmatter state doc, a `案头资料/` desk folder of reference docs, a `书稿/` manuscript folder organized into volumes and chapter folders), and on top of that sits the full writing pipeline: **six-stage fully-automatic book generation from a one-line premise** (worldview → planning guide → timeline → book outline → volume outlines → chapters), or single commands for any individual step — write / continue / rewrite / polish chapters, strip AI-sounding phrasing, detect typos and sensitive words, review from a global perspective, analyze characters & scenes out of finished prose.
 
-Nothing depends on external services — every operation works on the Markdown documents inside your vault through Obsidian's built-in Vault / Workspace APIs.
+A **skill system** (`SKILLS/` Markdown files, seeded with 29 built-ins) supplies craft technique, genre guides, banned-word lists and per-stage identity prompts, injected into the exact prompts per stage and fully user-editable. Five **persistent dockable panels** — Writing Desk, LLM Chat (with model tool-calling that can read your chapters and run writing commands for you), Relationship graph, Timeline and Scene canvas — keep the book's structure one click away. All data stays local; no external services are required beyond the OpenAI-compatible model endpoint you configure yourself. The plugin runs on **both desktop and mobile** (all panels work on phones; mouse-only gestures degrade gracefully).
+
+> **Note (v0.3.5+):** the old three-tier `WRITING_GUIDE.md` system is **retired** — the files and the five related commands were removed and are auto-purged from existing vaults on startup. Its functionality moved into the skill system (genre/technique skills, banned-word list, chapter-writing requirements) plus the `word_range` field of 《故事状态.md》 (command "设置本章字数区间").
 
 ## Data Layout
 
 ```
-<novel root>/<book title>/
-├── 故事状态.md              # Obsidian "file properties" style: YAML frontmatter holds the version-2 runtime state (title/genre/current volume·scene·chapter/per-chapter metadata); body is free-form notes; legacy story_state.json is auto-migrated with a backup in _backup/ on first save
-├── WRITING_GUIDE.md         # Story-level writing guide (the user-level one of the same name lives under work_dir)
-├── 写作指南汇总.md           # Per-book merged guide (auto-generated, change-detected via hash); the only writing-guide content injected into LLM prompts
-├── 大纲.md                  # Master outline
-├── 世界观.md                # World-building template
-├── 卷.md                    # Volumes (grouping container)
-├── 伏笔.md                  # Foreshadowing log
-├── 笔记.md                  # Notes
-└── 第NN章-<标题>/           # One folder per chapter
-    ├── NN-<标题>.md          # Chapter body (file prefix is the numeric chapter number)
-    ├── NN-<标题>-大纲.md      # Chapter outline
-    ├── NN-<标题>-人物.md      # Characters
-    ├── NN-<标题>-人物关系.md  # Character relations
-    ├── NN-<标题>-场景.md      # Scenes
-    └── NN-<标题>-信息.md      # Chapter info
+<work_dir>/
+├── SKILLS/                     # skill library (see Skills below) — seeded built-ins, plain editable .md
+│   ├── 题材/<genre>.md          # genre skills (auto-loaded per book's genre)
+│   ├── 编写类型/<style>.md      # writing-style skills (auto-loaded per book's style)
+│   ├── 系统提示词/<name>.md     # system-prompt overrides (internal, automatic)
+│   └── <technique>.md          # technique skills, opted in per stage
+└── <小说名>/
+    ├── 故事状态.md              # YAML frontmatter = runtime state (title/genre/word_range/prev_chapters/
+    │                           #   auto_book pipeline config/book_skills per-stage skill picks/per-chapter meta);
+    │                           #   legacy story_state.json auto-migrated with a _backup/ copy
+    ├── 案头资料/                # desk docs: 9 default reference docs (大纲/策划指南/世界观/伏笔/笔记/
+    │   │                       #   人物/人物关系/场景/时间线) + user files
+    │   ├── 灵感/灵感.md         # inspiration toolkit (one ## block per idea)
+    │   ├── 码字记录.md          # typing stats (auto-appended)
+    │   ├── 敏感词报告.md        # whole-book sensitive-word reports (appended)
+    │   ├── AI会话/              # chat-panel session transcripts (auto-saved)
+    │   └── Skill/<技能名>.md    # book-level skills
+    ├── 书稿/
+    │   ├── 引言/                # prologue docs (auto-seeded folder)
+    │   ├── <卷名>/              # volume entity folder (chapters live under it)
+    │   │   ├── 文档/            # volume docs (卷大纲/人物/场景/时间线…, bare names)
+    │   │   └── 卷摘要.md        # volume summary (LLM, rebuilt from chapter summaries)
+    │   └── 第NN章-<标题>/       # one folder per chapter (unassigned chapters sit directly under 书稿/)
+    │       ├── NN-<标题>.md             # body
+    │       ├── NN-<标题>-大纲.md         # chapter outline
+    │       ├── NN-<标题>-摘要.md         # chapter summary (lazy-generated)
+    │       ├── NN-<标题>-人物.md / -人物关系.md / -场景.md / -信息.md / -时间线.md
+    └── AI提示词/                # only if you run "Export AI prompts" (exact prompts per stage, no LLM call)
 ```
 
-Volume-level template docs are named after the volume too (e.g. `<卷名>-大纲.md`, `<卷名>-人物.md`, `<卷名>-人物关系.md`, `<卷名>-场景.md`).
+Missing docs are auto-created as "HTML-comment example" templates when creating a book/volume/chapter; existing files are never overwritten. All names go through `safeFilename()`. Old layouts (docs at the book root, bare `章节.md`, old prefixes like `初见-章节.md`) are detected and auto-migrated into the `案头资料/` + `书稿/` structure; legacy names can also be batch-renamed on book switch.
 
-Missing documents are auto-created as "HTML comment example" templates when creating a new book/chapter; existing files are skipped and never overwrite user content. All file names are normalized through `safeFilename()`. Legacy documents (bare names like `章节.md`/`卷大纲.md`, or older prefix forms like `初见-章节.md`) are auto-detected when switching books and can be batch-migrated to the new names (rename only, content untouched).
+## Skills (`SKILLS/`)
 
-## Commands
+Skills are short craft-technique Markdown docs stored in `<work_dir>/SKILLS/` (one flat level, plain files you can edit in Obsidian). Built-ins are seeded on startup **only when missing** — never overwriting your edits. They are **strictly opt-in** per stage: each of the five writing stages (worldview generation / planning guide / book & volume outline / chapter outline / chapter writing) has a reference-document list in Settings where `skill:<name>` entries decide what gets injected; built-in defaults already include the tension toolbox, per-stage identity-boost skills, the high-frequency banned-word list and the worldview framework (29 built-ins total: technique / genre / identity-boost).
 
-Search the command palette for "ArticleWriter" or the Chinese description.
+* **Genre & writing-style skills** (`SKILLS/题材/`, `SKILLS/编写类型/`) auto-load based on the book's genre/style — the dropdowns in "Create story" / "Edit story info" are generated from that folder.
+* **Word-range placeholders**: skill text may use `{{word_low}}` / `{{word_high}}` / `{{word_range}}`, interpolated from the book's `word_range` setting at prompt-assembly time.
+* **Book-level skills**: same format, stored under `<book>/案头资料/Skill/`, picked per stage via the "书籍 Skill 阶段配置…" command; injected after system skills.
+* **System-prompt overrides** (`SKILLS/系统提示词/`) replace seven internal system prompts (cast analysis, summaries, outline generation, timeline, typo check…) — automatic, not part of the opt-in list.
+* Commands: **新建 Skill…** (create), **书籍 Skill 阶段配置…** (per-stage picks); editing/deleting = just edit/delete the file.
 
-| Command | Implementation notes |
+## Commands (command palette: search "ArticleWriter" or the Chinese name)
+
+| Group | Commands & notes |
 | --- | --- |
-| Create new story | `vault.createFolder` + `vault.create` build the book folder and all template docs, then write the state doc |
-| New chapter | Creates the `第NN章-title/` directory with its 6 documents (named `NN-title.md`, `NN-title-大纲.md`, …) and updates the current chapter |
-| Chapter list | Scans chapter folders; picking one opens its body via `workspace.getLeaf("tab").openFile` and sets it as the current chapter |
-| Open outline / world-building / foreshadowing / notes | Created from template first if missing, then opened |
-| Next / previous chapter | With no current chapter: next → first, prev → last; at a boundary a notice is shown without switching |
-| Word count of current chapter / whole book | Counts pure text characters only (excludes punctuation/symbols/whitespace) |
-| Save current chapter | Reads the focused editor's content and force-flushes it to disk via `vault.modify` |
-| Story status | Shows title / genre / current chapter / chapter count / total word count |
-| View / edit writing guide | Three tiers: story-level `<book>/WRITING_GUIDE.md` > user-level file of the same name under work_dir > **system level = a fixed plugin-data-dir file** `.obsidian/plugins/articlewriter/WRITING_GUIDE.md` (seeded on first run from the built-in default; no longer user-configurable — the old `system_guide_path` setting was removed). Each tier opens its own file directly; multiple tiers open a picker. Editing saves the full text for the chosen tier and refreshes that book's merged《写作指南汇总》 |
-| Generate empty writing-guide templates | Creates a same-format skeleton (section headings kept, body cleared) for both the user-level `work_dir/WRITING_GUIDE.md` and the current book's `WRITING_GUIDE.md`; skips any target that already has non-empty content and reports it. Does not touch the system tier |
-| Regenerate system writing guide | After a confirmation dialog, overwrites the system-tier `.obsidian/plugins/articlewriter/WRITING_GUIDE.md` with the built-in default, then best-effort refreshes the current book's merged guide |
-| Generate usage guide | Writes 《使用说明.md》(built-in user manual of this plugin) at the work_dir root. Also **auto-created and opened when missing at plugin start-up or whenever the work directory is set or switched** (only when missing or empty); an existing non-empty file is skipped and never overwritten |
-| LLM connection test | Uses the openai SDK against any OpenAI-compatible endpoint (DeepSeek/DashScope/Ollama/LM Studio/llama.cpp…); verifies the active config via GET /models |
-| Export AI prompts | Shows a checkbox selection dialog (select all / deselect all); only exports the selected feature points' prompt files (unselected ones are completely skipped, no entries written), while the "AI Prompts (Export Notes)" metadata entry is always included and not selectable. Assembles — **without any LLM call** — the exact system/user prompts every AI stage (writing/continue/rewrite/polish/de-AI/fix-chapter-refs/typo/review, planning guide, book outline, volume outline, volumes-from-outline, AI chapter-splitting, cast analysis, chapter & volume summaries) would send, using the same builder functions and arguments as the real commands against the book's on-disk data, and saves them to individual `.md` files under `<book>/AI提示词/` (overwrite on re-export) for feeding local models one-by-one. Popup inputs use export defaults; stages that wouldn't fire right now are listed with a skip reason only; incremental chains export their first step with placeholders where prior-step output is injected |
-| LLM chat window | **Persistent dockable panel** (custom view, draggable into any workspace area, position survives reloads; message icon in the sidebar as quick entry): multi-turn streaming chat, Enter sends / Shift+Enter newline, dropdown on top switches saved model configs, "Stop generating" only interrupts the current turn; every turn automatically carries a chat-specific prompt (friendly-assistant identity + writing guide + snapshot of the current story context), the current story·chapter is shown on top, history is not persisted |
-| Writing desk | **Persistent dockable panel** (book icon in the sidebar as quick entry): work directory, list of all stories (click to switch the current book), genre / writing type / total word count / update time of the current story, chapter list (activating a chapter also syncs its volume), global docs and per-chapter files (click opens them in the editor); story/chapter/file lists all support folder-like expand/collapse (title row or the arrow before a chapter); **right-clicking** a story/chapter/file row shows a shortcut menu: create/delete story, create/delete chapter, create an article .md at the book root or inside a chapter dir / delete file (all destructive actions require a second confirmation; deletions go to the Obsidian trash so they are recoverable); manual reload via "Refresh" at the top right |
-| Relationship panel | **Persistent dockable panel** (people icon in the sidebar as quick entry): aggregates the current story's relationship cards from the three tiers of 《人物关系.md》 (book / volume / chapter) — character pair, type badge (icon picked by relationship type), status dot (active green / pending yellow / ended grey) and description; click a card (or "Open document" on a group header) to open that tier's source md; the top offers a "Cards / Graph" toggle (kept for the session): Cards = grouped relationship cards, Graph = a circular node-link network (edge colour = relationship type with an in-graph legend, line style = active solid / pending dashed / ended dotted, thicker line = same pair registered in several places; hover a character to highlight its neighbours, hover an edge to highlight just that one, click a node or edge to open the source doc; a zoom bar above the graph (zoom out / zoom in / reset view) scales the whole drawing including character names, and **scrolling the mouse wheel over the graph also zooms** (the point under the mouse stays fixed across zoom; scroll down = zoom out, scroll up = zoom in). The part cropped by the pane can be reached by holding and dragging the graph itself — no scrollbars appear, dragging is clamped so the graph can never be lost off-view, and "Reset view" returns it to the initial fit-to-pane position), plus the filter box (character/type/status) and a "Refresh" button — no work-directory row and no story list (the panel shows relationships only; switch books via the "Switch current story" command or the Writing desk), groups collapse in card mode, and edits to relationship docs auto-refresh the panel |
-| Timeline panel | **Persistent dockable panel** (history icon): merges the current story's three tiers of hand-written 《时间线.md》 docs (book root / volume dir / chapter dirs) into a single top-to-bottom vertical timeline — every entry carries its source-tier label (book level / Volume · X / Chapter N Y) and is visually weighted by source tier (book > volume > chapter): book-level entries get the largest node dot with bold event text, chapter-level the smallest dot with dimmed text; sorted ascending by time point (`year` / `year-month` / `year-month-day`, e.g. `-129-06-15`; negatives/decimals/scientific notation also allowed); a summary line shows totals per tier. The filter box on top matches character/event keywords; **double-clicking an entry opens that doc in the editor and jumps to its `## <time-point>` heading row**. Docs are seeded from templates when creating books/volumes/chapters (and backfilled via the status view's complete-docs actions) but remain opt-in reference material only — never injected into writing prompts: place them at `<book>/时间线.md`, `<volDir>/<卷名>-时间线.md` (bare `时间线.md` also works) or `<chDir>/NN-<标题>-时间线.md` (bare name also works); format = one time point per `## <time-point>` heading + `- 人物：A、B` field line for involved characters and `- 事件：<text>` for the event (free text or ```text fenced blocks may follow); headings that aren't valid time points skip their whole block; edits to the docs auto-refresh the panel |
-| LLM model configuration | Obsidian Settings → ArticleWriter, stored in the plugin data directory `.obsidian/plugins/articlewriter/data.json` (first run presets three standard templates local/deepseek/qwen-dashscope awaiting api_key/model name) |
+| Story & structure | Create story (三问 dialog: title/genre/writing-style) · create/insert/delete/rename/renumber chapters · volume list/add/manage · volume mode on/off · organize volumes into folders · switch current story · scan-rebuild state doc · light state sync · complete state params · complete desk docs / outline docs |
+| LLM writing | Write chapter (auto de-AI before save) · consecutive writing (one chapter per run) · continue / rewrite / polish current chapter · de-AI (sentences flagged by the banned-word list get rewritten in place; unfinished runs resumable via the 《AI味清单.md》 ledger) · review chapter (global-logic report) · typo check (LLM, underlined spans with suggestions, intentionally persisted) · fix chapter-number references (LLM rewrite of meta-references) |
+| Pipeline & generation | **Fully-automatic book run + its config** (six stages orchestrated from the `auto_book` block of 《故事状态.md》: one-line premise → worldview → planning guide → timeline → book outline → volume outlines → chapters; any stage as start point, missing prerequisites reported, stop command available) · generate worldview / planning guide / timeline / book outline / volume outline · volumes from book outline · chapters from volume outline · sync new chapters from volume outline · append current chapter outline |
+| Entities | Characters: list/add/manage/rename (whole-vault replacement with backup)/**merge duplicate registrations** · analyze cast & scenes (per-chapter LLM analysis of finished prose writes 人物/场景/人物关系 docs by scope; incremental during outline stages) · scenes list/add/manage · foreshadow list/add/manage · worldview overview/fields · inspiration toolkit (open/locate/rename/delete/add blocks in 《案头资料/灵感/灵感.md》, template from the 灵感模板 skill) |
+| Word counts & stats | Count current chapter / whole book (pure-text chars) · per-book word-range setting · desk "码字状态" tab shows live typing stats (净增字数/时长/速度; auto-logged per segment to 《案头资料/码字记录.md》, pause-aware) |
+| Sensitive words (zero-LLM) | Detect in chapter (word list = `SKILLS/敏感词清单.md`, seeded ~180 entries, user-editable; hits persisted as colored spans with category tooltips) · whole-book summary appended to 《案头资料/敏感词报告.md》 · non-blocking reminders after write/continue/rewrite |
+| Export & misc | Pack chapters (all / range 3-7 / list 1、4、5) · export volume collection · article → screenplay · **Export AI prompts** (assembles the exact system/user prompts of every AI stage against the book's on-disk data, one `.md` per stage under 《AI提示词/》, no LLM call — for driving local models manually) · LLM connection test (GET /models) · generate 《使用说明.md》 (built-in manual; version-stamped, rebuilt after plugin upgrades; auto-created on setup) |
+
+Every LLM generation first streams into the unified **"生成过程" panel** and only reaches disk after you press 保存 (save) — nothing overwrites your text silently.
+
+## Persistent Panels
+
+* **Writing Desk** (book icon, left drawer on mobile): work dir, book list (click = switch), current-book info, **Novel-state / Typing-state tab strip**, desk-docs & manuscript tree (volumes → chapters, 引言 folder, expand/collapse, per-row right-click menus covering create/delete/rename/generate/export), Skill subfolder node, refresh. Opening a chapter file in the editor also activates that chapter on the desk.
+* **LLM Chat** (message icon): multi-turn streaming chat, per-turn model-config dropdown, @-references of any vault file, natural mentions auto-load the referenced chapter/volume/doc. Sessions are **auto-saved to 《案头资料/AI会话/》** and resumed on reopen; "compress context" plus automatic window-size compression keep long sessions alive. **Tool calling**: the model can, inside a chat turn, read chapters/outlines/docs, search the vault, set the current chapter, save text to files, and actually run writing/generation commands (write / continue / rewrite / polish / de-AI / review, outline & worldview & timeline generation, consecutive writing) — all executed locally against the current story, results fed back to the model. Chat reference docs/skills are opt-in in Settings, same picker as writing stages.
+* **Relationship panel**: aggregates the three tiers of 《人物关系.md》 (book / volume / chapter). **Cards mode**: grouped cards (pair + type badge + status dot + description), inline add/edit/delete. **Graph mode**: force-directed layout (protagonist centred, degree-tiered), arc edges, colour = relation type, line style = status, thicker = registered in several places; `Ctrl/Shift`+wheel zoom anchored at the cursor, drag to pan, double-click / right-click = fit-to-view, collapsible legend row; clicking a node fills the **character-state drawer** (settings from 《人物.md》, one collapsible entry per source doc) and offers merge for multiply-registered names. Doc edits auto-refresh.
+* **Timeline panel**: merges the three tiers of 《时间线.md》 into one vertical timeline sorted by numeric time point (`-129-06-15` style), tier-labelled & weighted, sub-events hang off parents with rails; fully editable in-panel (add / edit via dialog / delete / toggle done / **drag the time badge to change the time point** — hold Ctrl/⌘ on desktop, long-press then drag on mobile), `Ctrl+Z` undo, filters, jump-to-source; the merged timeline is injected into writing prompts as 【时间线】.
+* **Scene panel**: three tiers of 《场景.md》 as cards on a zoomable/pannable canvas — drag to arrange (positions persisted as `- 位置：x,y`), parent/child links, per-terrain tinting, in-panel add/edit/delete.
 
 ## Workflow (work_dir)
 
-1. The first time you use any ArticleWriter command, a **work directory picker** pops up automatically — choose an existing vault folder as your `work_dir` for novel writing. A 《使用说明.md》 usage guide is then dropped into that folder automatically (editable; re-created via the "Generate usage guide" command only when missing or empty).
-2. From then on, **creating stories, creating chapters, opening documents, switching chapters, word counts — everything operates under work_dir**; each story is one subfolder of work_dir.
-3. To change directories, use the "Select work directory" command or the "Re-select…" button on the settings page (switching clears the remembered last story).
+1. The first time you use any ArticleWriter command, a **work directory picker** pops up automatically — choose an existing vault folder as your `work_dir`. A version-stamped 《使用说明.md》 (built-in manual, includes the author contact QR image file) is dropped there automatically and rebuilt after plugin upgrades; `SKILLS/` built-ins are seeded alongside it.
+2. From then on, **everything operates under work_dir**; each story is one subfolder, and skill files are shared across books in `work_dir/SKILLS/`.
+3. To change directories, use the "Select work directory" command or the settings page; switching clears the remembered last story.
 4. With multiple books, commands show a story picker and remember your last choice.
 
-## Settings
+## Settings (Obsidian Settings → ArticleWriter)
 
-- **Work directory (work_dir)**: the folder where novels live; initialized by the automatic picker on first use, can be changed/re-selected manually.
-- **Auto-open document after creation**: opens `大纲.md` when a book is created, `章节.md` when a chapter is created.
+* **Work directory (work_dir)** — initialized by the first-use picker, re-selectable.
+* **LLM configs** — named model configurations (OpenAI-compatible), stored in `.obsidian/plugins/articlewriter/data.json`; presets for local / DeepSeek / DashScope on first run. One config is active globally; the **per-stage model tab strip** (worldview generation / planning guide / book & volume outline / chapter outline / chapter writing) assigns a specific config to each stage.
+* **Per-stage reference docs** — what each stage injects: built-in docs, any vault file, any skill; drag to reorder, "添加技能…" picker. Same list for the chat panel ("对话窗口引用文档/技能").
+* **Typing stats segment length** (码字记录段长, default 10 min), **include volume summary** in writing context (off by default), **auto-open doc after create** — most per-book overrides (`word_range`, `prev_chapters`, `include_volume_summary`, `auto_book`, `book_skills`) live in the book's 《故事状态.md》 frontmatter and win over global settings.
 
 ## Build & Install
 
@@ -91,6 +113,6 @@ npm install
 npm run build        # outputs main.js + manifest.json + styles.css into release/
 ```
 
-Development mode (watch): `npm run dev`.
+Development mode (watch): `npm run dev`. Tests: `npm test`; lint gate: `npm run lint`.
 
-Manual install: copy `main.js`, `manifest.json`, `styles.css` from `release/` to `<your vault>/.obsidian/plugins/articlewriter/`, then enable the plugin in Obsidian under "Settings → Community plugins".
+Manual install: copy `main.js`, `manifest.json`, `styles.css` from `release/` (or from the latest GitHub Release) to `<your vault>/.obsidian/plugins/articlewriter/`, then enable the plugin under "Settings → Community plugins". Reloading the plugin is required after updates.
