@@ -1420,6 +1420,7 @@
 .aw-tl-list.is-tl-tree .aw-tl-item.is-tl-held {
 	outline: 2px dashed var(--tl-lv-color, var(--interactive-accent));
 	z-index: 3; /* 描边要压过相邻卡片与子时间线轨道 */
+	touch-action: none; /* 从这张卡片起手的手指位移全部归拖动＝视野不平移、页面不滚动（v0.4.11+ 由内联 style 迁入类＝obsidianmd/no-static-styles-assignment 告警清零） */
 }
 
 .aw-tl-item.is-dragging .aw-tl-time {

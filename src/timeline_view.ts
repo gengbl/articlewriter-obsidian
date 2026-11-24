@@ -853,8 +853,7 @@ export class TimelineView extends ItemView {
 		this.clearTlHeld();
 		this.tlHeld = { row, node, item };
 		this.tlHoldMenuBlockUntil = Date.now() + 800;
-		item.addClass("is-tl-held");
-		item.style.setProperty("touch-action", "none"); // 之后从这张卡片起手＝视野不平移、页面不滚动＝手指位移全部归拖动
+		item.addClass("is-tl-held"); // styles.css 该类带 touch-action:none＝之后从这张卡片起手＝视野不平移、页面不滚动＝手指位移全部归拖动
 		const r = item.getBoundingClientRect();
 		this.tlHoldLbl = this.rootEl.createDiv({ cls: "aw-tl-holdlbl", text: "已抓住 · 上下拖动改时间点" });
 		this.tlHoldLbl.style.left = `${String(Math.round(r.left + 16))}px`;
@@ -865,10 +864,7 @@ export class TimelineView extends ItemView {
 	private clearTlHeld(): void {
 		const h = this.tlHeld;
 		this.tlHeld = null;
-		if (h) {
-			h.item.removeClass("is-tl-held");
-			h.item.style.removeProperty("touch-action");
-		}
+		if (h) h.item.removeClass("is-tl-held"); // touch-action 随类一起撤
 		const lbl = this.tlHoldLbl;
 		this.tlHoldLbl = null;
 		lbl?.remove();
