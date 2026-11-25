@@ -1,4 +1,4 @@
-import { App, Notice, Platform, Plugin, PluginSettingTab, TAbstractFile, TFile, TFolder, View, WorkspaceLeaf, WorkspaceSidedock, type Editor, type MarkdownFileInfo, type MarkdownView, type SettingDefinitionItem } from "obsidian";
+import { App, displayTooltip, Notice, Platform, Plugin, PluginSettingTab, TAbstractFile, TFile, TFolder, WorkspaceLeaf, type Editor, type MarkdownFileInfo, type MarkdownView, type SettingDefinitionItem } from "obsidian";
 import { ActionItem, ActionMenuModal, AddCharacterModal, RelationshipModal, AwGuideModal, AwModal, AutoBookConfigInput, AutoBookConfigModal, AutoBookInput, AutoBookModal, BookSkillPhaseModal, ChapterListModal, CharacterEditModal, ConfirmModal, ExportPromptsSelectModal, FixRefsReviewModal, FolderPickerModal, InspirationKitModal, MergeCharacterModal, MultiFieldModal, NewFilePickerModal, NewStoryInput, NewStoryModal, PanelLine, SaveReplyModal, SceneEditModal, type SceneEditResult, type SceneRelEdit, SkillEditModal, SkillPickerModal, SkillRangeModal, StoryMetaModal, StoryMetaInput, StoryPickerModal, TextAreaPrompt, TextPanelModal, TextInputModal, VaultFilePickerModal, VolumeBatchCreateModal, ensureParentFolders } from "./modals";
 import type { AddCharacterResult, RelationshipFormResult, CharacterEditResult, CharacterScopeOption, MergeCharacterResult, MergeCharacterTargetOption, MultiSelGroup, SaveReplyResult, SkillEditResult, SkillLevel } from "./modals";
 import { parseBookSkill, type BookSkillSpec } from "./book_skill"; // v0.4.1+ 旧「案头资料/」建书技能文件解析（仅供一次性迁移；建书配置已并入《故事状态.md》auto_book 块）
@@ -8,6 +8,8 @@ import { StatusView, type StatusAction, type StatusChapterEntry, type StatusDeta
 import { RelationshipView, REL_SCOPE_WORDS, type RelCharInfo, type RelEdgeEditInfo, type RelGroup, type RelRow, type RelSnapshot, type RelStoryEntry } from "./relationship_view";
 import { TimelineView, tlRowName, type TlDocRef, type TlLane, type TlRow, type TlSnapshot, type TlStoryEntry } from "./timeline_view"; // v0.3.3+ 合并大事件：面板承担事件增删改，构造第三参＝编辑弹窗人物候选；v0.4.7+ TlLane＝多时间线泳道汇总；v0.4.8+ tlRowName＝条目事件名口径（场景挂事件候选/索引共用）
 import { SceneView, sceneDisplayName, type SceneRow, type SceneSnapshot, type SceneScope, type SceneStoryEntry } from "./scene_view"; // v0.4.7+ 场景面板（卡片画布三层《场景.md》）
+import { sceneDescendantIds } from "./scene_tree"; // v0.4.11+ 场景编辑弹窗「父场景」防环的后代闭包＝与弹窗树形候选同一口径
+import { TOUCH_TIP_SKIP_SELECTOR, touchTipOptions, touchTipShouldShow } from "./touch_tips"; // v0.4.11+ 触屏 Tip 通道判定口径（平板/手机核心悬停 Tip 不弹＝点按补弹，见该文件头注）
 import { MAX_TYPE_DELTA, SEGMENT_MIN_DEFAULT, SEGMENT_MIN_MAX, SEGMENT_MIN_MIN, TYPE_STATS_HEADER, diffStats, liveSegStats, nextSegmentStart, normalizeSegmentMinutes, renderStatsRow, segActiveMs, segNetChars, segmentMs, segmentStartOf, summarizeStatsFile, type TypeSeg } from "./typing_stats"; // v0.4.5+ 打字统计纯计算（段长可配/停顿/表格渲染/文件汇总/窗口活跃时长）；采集与落盘在本文件接线
 import { chapterOutlineTemplate, countPureWords, FORESHADOW_TEMPLATE, formatLocalDateTime, NOTES_TEMPLATE, outlineTemplate, WORLD_TEMPLATE } from "./story_types";
 import { safeFilename } from "./story_types";
@@ -422,6 +424,35 @@ export default class ArticleWriterPlugin extends Plugin {
 		void this.checkWorkspaceDirOnStartup(); // v0.2.1+ 启动自检：检测 workspaces/ 缺失则创建（仅 console 留痕，不落盘任何文件；原 .heartbeat.txt 诊断机制在 IO 通路验证后移除）
 		// v0.2.20 启动即把写字台放进左栏切换列表（移动端抽屉可见可选）：等布局就绪后补位，不抢焦点、不展开抽屉
 		this.app.workspace.onLayoutReady(() => { void this.ensureStatusInLeftSidebar(); });
+		// v0.4.11+ 触屏 Tip 通道（平板／手机）：核心悬停 Tip 对非鼠标指针**主动不弹**＝时间线详情/来源位置这类 Tip 在平板上从来看不见；
+		// 这里补「点按＝弹出并保持、下次点按别处＝核心 pointerup 自动收」的通道（口径与坑位见 touch_tips.ts 头注）
+		this.register(this.attachTouchTipChannel()); // register(cb)＝卸载时调用cb（＝拆监听），这里存的是通道返回的拆除句柄
+	}
+
+	/** v0.4.11+ 触屏 Tip 通道的 DOM 接线（判定口径全在 `touch_tips.ts`＝node 可测）：监听注册晚于内核同阶段监听＝排在内核「pointerup 收起」之后 */
+	private attachTouchTipChannel(): () => void {
+		const onUp = (ev: PointerEvent): void => {
+			if (ev.pointerType === "mouse") return; // 鼠标＝核心悬停通道已够用，本通道全程掺和不得
+			// 判定用 `elementFromPoint`（抬手时手指正下方的元素）而不是 `ev.target`：EventTarget 上没有内核的跨窗口 `instanceOf`，
+			// 而 elementFromPoint 返回的就是本 document 的 Element＝popout 窗下也判得对
+			const hit = activeDocument.elementFromPoint(ev.clientX, ev.clientY);
+			if (!hit) return;
+			const host = hit.closest("[aria-label]");
+			if (!host || !host.instanceOf(HTMLElement)) return; // instanceOf＝Element(extends Node) 上的跨窗口判据
+			if (
+				!touchTipShouldShow({
+					pointerType: ev.pointerType,
+					inTooltip: hit.closest(".tooltip") !== null,
+					interactive: hit.closest(TOUCH_TIP_SKIP_SELECTOR) !== null, // 手指元素到宿主之间任一交互件（含宿主自己）＝不弹
+					label: host.getAttribute("aria-label"),
+					connected: host.isConnected,
+				})
+			)
+				return;
+			displayTooltip(host, (host.getAttribute("aria-label") ?? "").trim(), touchTipOptions(host));
+		};
+		activeDocument.addEventListener("pointerup", onUp);
+		return () => activeDocument.removeEventListener("pointerup", onUp);
 	}
 
 	/** 插件加载时检测一次工作区存档目录：缺失则递归创建；失败走统一上报（noteWsIoError），成功不打日志避免噪音 */
@@ -3785,9 +3816,11 @@ async cmdRenameChapterFile(): Promise<void> {
 		}
 	}
 
-	/** 打开常驻 LLM 对话面板：已有则直接激活，否则在工作区新建分割区域承载（UI 在 onOpen 建进 contentEl，勿用 getEmptyStateElement——本环境不调用它）；无配置时由面板内状态行提示去设置页 */
+	/** 打开常驻 LLM 对话面板：已有则直接激活，否则在工作区新建分割区域承载（UI 在 onOpen 建进 contentEl，勿用 getEmptyStateElement——本环境不调用它）；无配置时由面板内状态行提示去设置页。
+	 *  v0.4.11+：与常驻面板同一守卫＝移动端滞留侧栏区（右抽屉打不开）的旧窗口先搬家到主区域（共用 `relocateSideDockLeavesToMain`） */
 	private async openLlmPanel(): Promise<void> {
 		try {
+			if (Platform.isMobileApp && (await this.relocateSideDockLeavesToMain(LlmChatView.VIEW_TYPE))) return;
 			const existing = this.app.workspace.getLeavesOfType(LlmChatView.VIEW_TYPE);
 			if (existing.length) {
 				this.app.workspace.setActiveLeaf(existing[0]); // revealLeaf 已废弃，改用 setActiveLeaf（minAppVersion 1.4+ 可用）
@@ -3829,28 +3862,48 @@ async cmdRenameChapterFile(): Promise<void> {
 		}
 	}
 
+	/** **常驻面板是否被挤在「侧栏区」**（v0.4.11+ 平板事故根因）：＝桌面端 `WorkspaceSidedock`／手机端 `WorkspaceMobileDrawer`——
+	 *  ⚠️ 两个类在类型层**互不相干**（都直接继承 WorkspaceParent），`leaf.parent instanceof WorkspaceSidedock` 在手机/平板上**恒为 false**
+	 *  （移动端侧栏容器其实是 WorkspaceMobileDrawer）＝旧的「丢弃滞留右栏面板」守卫在移动端一直空转，
+	 *  从桌面同步过来的工作区把面板落在右栏 tab 里 → 平板右抽屉没有表头按钮＝根本打不开 → 「点不出面板」（用户报告）。
+	 *  唯一可靠口径＝直接比对 `ws.leftSplit` / `ws.rightSplit`（两值声明就是 Sidedock|MobileDrawer 联合类型，覆盖两端设备） */
+	private inSideDock(leaf: WorkspaceLeaf): boolean {
+		const ws = this.app.workspace;
+		return leaf.getRoot() === ws.leftSplit || leaf.getRoot() === ws.rightSplit;
+	}
+
+	/** 把 `viewType` 落在侧栏区（桌面左右栏／移动两端抽屉）里的叶子**搬家到主区域**并激活（v0.4.11+，常驻面板与 LLM 对话窗口共用）：
+	 *  移动端右抽屉没有表头按钮＝侧栏区里的面板 tab 打不开，激活它没有任何可见效果＝「点 ribbon 没反应」；
+	 *  先取走视图状态再 detach，经 `getPanelHostLeaf` 新建承载叶子后原样 `setViewState` 写回（面板状态尽量不丢）。
+	 *  返回 true＝至少搬了一个（调用方据此不再走「已有则激活」分支）；搬完后的活动叶子若仍不在主区域，先把主区域笔记切成活动叶子，
+	 *  保证随后 `getLeaf("split")` 分割的是主区域（＝旧守卫的正确版本） */
+	private async relocateSideDockLeavesToMain(viewType: string): Promise<boolean> {
+		const ws = this.app.workspace;
+		const stale = ws.getLeavesOfType(viewType).filter((l) => this.inSideDock(l));
+		if (!stale.length) return false;
+		const states = stale.map((l) => l.getViewState()); // 先取状态：detach 之后视图即销毁
+		const anchor = ws.getMostRecentLeaf(ws.rootSplit); // 主区域最近的叶子（getMostRecentLeaf 默认只遍历 rootSplit＋floatingSplit＝不会选中抽屉里的叶子）
+		if (anchor) ws.setActiveLeaf(anchor);
+		for (const l of stale) l.detach();
+		const host = this.getPanelHostLeaf();
+		await host.setViewState(states[0]);
+		for (const s of states.slice(1)) await ws.getLeaf("tab").setViewState(s); // 多份残留（理论上不该出现）：其余并入 tab 组，别丢
+		ws.setActiveLeaf(host);
+		return true;
+	}
+
 	/** 常驻面板（人物关系／时间线）的承载叶子：桌面端复用右栏叶子（写字台占左栏，两者可同屏对照），依次回退新建右栏→分割主区域；移动端右栏无 UI 入口（视图调不出来），改分割主区域承载（与 LLM 对话窗口相同） */
 	private getPanelHostLeaf(): WorkspaceLeaf {
 		if (Platform.isMobileApp) return this.app.workspace.getLeaf("split");
 		return this.app.workspace.getRightLeaf(false) ?? this.app.workspace.getRightLeaf(true) ?? this.app.workspace.getLeaf("split");
 	}
 
-	/** 打开常驻面板（人物关系／时间线）：移动端先丢弃仍滞留右栏的旧面板（旧版本/桌面端工作区持久化而来——移动端右栏无 UI 入口，激活它没有任何可见效果），主区域已有则直接激活，否则由 getPanelHostLeaf 取承载叶子新建 */
+	/** 打开常驻面板（人物关系／时间线／场景）：移动端先把仍滞留侧栏区（右抽屉没有表头按钮＝打不开）的旧面板**搬家到主区域**（v0.4.11+ 修平板「点不出面板」＝
+	 *  旧守卫 `instanceof WorkspaceSidedock` 在移动端恒 false＝空转，桌面同步来的右栏 tab 被 setActiveLeaf 激活但没有任何可见效果）；
+	 *  主区域已有则直接激活，否则由 getPanelHostLeaf 取承载叶子新建 */
 	private async openResidentPanel(viewType: string, failMsg: string): Promise<void> {
 		try {
-			if (Platform.isMobileApp) {
-				const stale = this.app.workspace.getLeavesOfType(viewType).filter((l) => l.parent instanceof WorkspaceSidedock);
-				for (const l of stale) l.detach();
-				if (stale.length) {
-					// 丢弃后活动叶子可能为空或仍指向右栏，先切到主区域的笔记，保证 getLeaf("split") 分割的是主区域
-					// （workspace.activeLeaf 已废弃：改用推荐替代 getActiveViewOfType(View) 再取 View.leaf）
-					const active = this.app.workspace.getActiveViewOfType(View)?.leaf ?? null;
-					if (!active || active.parent instanceof WorkspaceSidedock) {
-						const anchor = this.app.workspace.getLeavesOfType("markdown").find((l) => !(l.parent instanceof WorkspaceSidedock));
-						if (anchor) this.app.workspace.setActiveLeaf(anchor);
-					}
-				}
-			}
+			if (Platform.isMobileApp && (await this.relocateSideDockLeavesToMain(viewType))) return;
 			const existing = this.app.workspace.getLeavesOfType(viewType);
 			if (existing.length) {
 				this.app.workspace.setActiveLeaf(existing[0]);
@@ -4996,43 +5049,28 @@ async cmdRenameChapterFile(): Promise<void> {
 		return (row.related ?? []).map((id) => ({ id, note: row.relatedLabels?.[id] ?? "" }));
 	}
 
-	/** 场景编辑弹窗候选基座（v0.4.7+ 复用＝父场景/关联场景共用）：全部场景按 id 去重、label＝显示名口径 */
-	private sceneOptionPairs(rows: SceneRow[]): { id: string; label: string }[] {
+	/** 场景编辑弹窗候选基座（v0.4.7+ 复用＝父场景/关联场景共用）：全部场景按 id 去重、label＝显示名口径。
+	 *  v0.4.11+ 带上 `parent`＝弹窗里这两处候选改成**树形下拉**（`src/scene_tree.ts` 建树），只带 id/label/parent 三项＝不泄露别的数据 */
+	private sceneOptionPairs(rows: SceneRow[]): { id: string; label: string; parent?: string }[] {
 		const seen = new Set<string>();
-		const out: { id: string; label: string }[] = [];
+		const out: { id: string; label: string; parent?: string }[] = [];
 		for (const r of rows) {
 			if (seen.has(r.scene_id)) continue;
 			seen.add(r.scene_id);
-			out.push({ id: r.scene_id, label: sceneDisplayName(r) });
+			out.push({ id: r.scene_id, label: sceneDisplayName(r), parent: r.parent });
 		}
 		return out;
 	}
 
-	/** 场景编辑弹窗「父场景」候选：全部场景去重，excludeId 时排除自身＋全部后代（沿 `- 父场景：` 链闭包展开，防父子成环） */
-	private sceneParentOptions(rows: SceneRow[], excludeId: string | null): { id: string; label: string }[] {
-		const excl = excludeId ? this.collectDescendantIds(rows, excludeId) : new Set<string>();
+	/** 场景编辑弹窗「父场景」候选：全部场景去重，excludeId 时排除自身＋全部后代（防父子成环；口径＝`src/scene_tree.ts` 建树） */
+	private sceneParentOptions(rows: SceneRow[], excludeId: string | null): { id: string; label: string; parent?: string }[] {
+		const excl = excludeId ? sceneDescendantIds(this.sceneOptionPairs(rows), excludeId) : new Set<string>();
 		return this.sceneOptionPairs(rows).filter((o) => !excl.has(o.id));
 	}
 
-	/** 场景编辑弹窗「关联场景」候选（v0.4.7+）：全部场景去重、仅排除自身（关联无层级语义、无须防环） */
-	private sceneRelatedOptions(rows: SceneRow[], selfId: string | null): { id: string; label: string }[] {
+	/** 场景编辑弹窗「关联场景」候选（v0.4.7+）：全部场景去重、仅排除自身（关联无层级语义、无须防环；候选顺序＝文档序，弹窗侧按 `- 父场景：` 排成树） */
+	private sceneRelatedOptions(rows: SceneRow[], selfId: string | null): { id: string; label: string; parent?: string }[] {
 		return this.sceneOptionPairs(rows).filter((o) => o.id !== selfId);
-	}
-
-	/** 沿 parent 链做后代闭包（含 rootId 自身）；简单不动点迭代，场景量级小、无环假设由候选侧排除保证 */
-	private collectDescendantIds(rows: SceneRow[], rootId: string): Set<string> {
-		const out = new Set<string>([rootId]);
-		let grew = true;
-		while (grew) {
-			grew = false;
-			for (const r of rows) {
-				if (r.parent && out.has(r.parent) && !out.has(r.scene_id)) {
-					out.add(r.scene_id);
-					grew = true;
-				}
-			}
-		}
-		return out;
 	}
 
 	/** 场景面板 ✎ 编辑：弹窗预填现值 → 共用通道内 `md_docs.updateSceneBlock` 只改该块（未触碰字段/正文围栏/创建时间保留原行）。v0.4.8+：场景名也可改——改名走 renameSceneFlow（换块锚＋同步全部 `- 父场景：`/`- 关联：` 引用） */
@@ -10713,7 +10751,7 @@ class ArticleWriterSettingTab extends PluginSettingTab {
 
 	getSettingDefinitions(): SettingDefinitionItem[] {
 		// v0.4.3+：设置页挂 `.aw-form` 作用域类（与弹窗基类 AwModal 同一口径）——标签左对齐、输入框/下拉框占满剩余宽度（styles.css）
-		this.containerEl.addClass("aw-form");
+		this.containerEl.addClass("aw-form", "aw-settings-form");
 		this.llmNameSelects = []; // v0.4.6+ 整页重建＝旧设置页 DOM 即将废弃：模型名下拉登记表清空，各块渲染时重新登记（防登记表堆积游离节点）
 		const cfgs = this.conf().llm_configs ?? [];
 		const defs: SettingDefinitionItem[] = [];

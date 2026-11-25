@@ -239,7 +239,6 @@
 	margin: 6px 0 2px;
 }
 
-.aw-st-row,
 .aw-st-chap {
 	padding: 5px 8px;
 	border-radius: 6px;
@@ -251,12 +250,10 @@
 }
 
 /* 行悬停用中性半透明灰（主题 hover 变量在部分主题下接近白色、对比差） */
-.aw-st-row:hover,
 .aw-st-chap:hover {
 	background: rgba(128, 128, 128, 0.16);
 }
 
-.aw-st-row.is-active,
 .aw-st-chap.is-active {
 	background: var(--background-secondary-alt);
 }
@@ -473,7 +470,6 @@
 	margin: 4px 0;
 }
 
-.aw-st-row,
 .aw-st-chap {
 	padding-top: 3px;
 	padding-bottom: 3px;
@@ -1322,6 +1318,13 @@
 	transform: translate(var(--aw-canvas-pan-x, 0px), var(--aw-canvas-pan-y, 0px));
 }
 
+/* v0.4.11+ 画布容器共用类（CanvasPanel 构造时对 bodyEl 恒挂＝三面板都吃到，不管各面板自带 bodyCls）：
+   touch-action pan-x pan-y＝保留单指原生滚动，同时禁掉 WebView/浏览器**自带**的两指捏合整页缩放——捏合手势交给 CanvasPanel 的 pointer 事件处理
+   （桌面触控板捏合＝浏览器合成的 ctrl+wheel，走原滚轮通道，不受本条影响） */
+.aw-canvas-body {
+	touch-action: pan-x pan-y;
+}
+
 /* 底部固定汇总行：不参与缩放/平移，始终可见 */
 .aw-tl-sumrow {
 	flex: 0 0 auto;
@@ -1614,14 +1617,6 @@
 	height: 5px;
 }
 
-.aw-tl-item.lv-1 .aw-tl-event {
-	font-weight: 600;
-}
-
-.aw-tl-item.lv-5 .aw-tl-event {
-	color: var(--text-muted);
-}
-
 /* 折叠状态提示：条目折叠后紧随其后的弱化小字，标明隐藏了多少条子事件 */
 .aw-tl-collapsed-hint {
 	margin-left: 6px;
@@ -1789,14 +1784,7 @@
 	color: var(--text-muted);
 }
 
-/* 事件正文：保留原文换行，长词/长串可断行不撑破窄面板 */
-.aw-tl-event {
-	margin-top: 3px;
-	font-size: 0.95em;
-	white-space: pre-wrap;
-	word-break: break-word;
-	color: var(--text-normal);
-}
+/* 事件正文旧类 `.aw-tl-event` 已删（v0.4.11+ 详情不内联在卡片上、仅悬浮 Tip 显示＝`.tooltip.aw-tl-tip` 承接换行/对齐） */
 
 /* 事件名（标题行时间点之后的文本；旧「纯时间点」标题无名则不渲染） */
 .aw-tl-name {
@@ -1992,29 +1980,154 @@
 	text-align: left;
 }
 
-/* v0.4.11+ 手机端弹窗「自然排布」（用户要求＝和 PC 端一样、不必占满整个窗口的高度）：
-   根因——Obsidian 手机版核心（实测 app 包内 CSS）把 .is-phone .modal-content 强制成
-   display:flex;flex-direction:column 且吃 flex:1 1 auto（撑满弹窗全高），又把每个普通
-   Setting 行强制 flex-direction:column；插件 .aw-form .setting-item-control{flex:1 1 auto}
-   本是横向撑满，行被改 column 后同一声明变成纵向 grow/shrink——叠加出「内容沿高度平均分布」。
-   作用域＝本插件弹窗（AwModal 基类在 modalEl 挂 .aw-modal；SuggestModal 搜索类弹窗不沾）。
-   修正＝内容层只占自然高度、行高按内容不拉伸，行仍保留手机版「标签上/控件下」排布（触摸友好，不动）。 */
+/* v0.4.11+ 手机端弹窗＝PC 自然排布（用户两轮反馈：第一轮只挡了「撑满全高」仍显占屏，第二轮明确＝和 PC 端一样、检查所有弹窗）。
+   手机版核心对本插件弹窗做两件事：①`.is-phone .modal-content` 强制 flex 纵向列并吃 flex:1 1 auto 撑满弹窗高；
+   ②普通 Setting 行强制 column（标签上/控件下）且控件/input/button 一律 width:100%＝每行数倍变高、整窗铺满屏幕。
+   本段把**所有本插件弹窗**（AwModal 构造期在 modalEl 挂 .aw-modal；SuggestModal 搜索式选择窗是核心 prompt 形态、不在此列）
+   恢复 PC 结构：行方向=row（标签左/控件右、沿用 .aw-form 控件吃剩余宽口径）、按钮 auto 宽、行距收紧、
+   内容层自然高度（内容多高弹窗多高，上限仍是核心 --dialog-max-height，超高滚动）。
+   特异性：核心手机规则最深为 `.is-phone .modal .setting-item:not(:is(…)) .setting-item-control`〔0,5,0〕，
+   本段对应〔0,6,0〕稳赢；按钮 width 与核心〔0,4,1〕打平靠插件 CSS 后加载取胜。`:has()` 禁用，走挂类路线。 */
 .is-phone .aw-modal {
 	height: auto;
 	min-height: 0;
 }
 
 .is-phone .aw-modal .modal-content {
-	flex: 0 1 auto; /* 不再撑满弹窗高度＝内容多高弹窗多高（上限仍是核心的 --dialog-max-height） */
-	justify-content: flex-start; /* 兜底：万一高度受限也不平均分布，从顶部自然顺排 */
+	flex: 0 1 auto; /* 不撑满弹窗高度＝内容决定弹窗高 */
+	justify-content: flex-start; /* 万一高度受限也从顶顺排，不平均分布 */
 }
 
-.is-phone .aw-modal .modal-content > .setting-item {
+.is-phone .aw-modal .setting-item {
 	flex: 0 0 auto; /* 行高＝内容：不增长也不被滚动容器压缩 */
+	gap: var(--size-4-2); /* 核心手机上给行内加的 16px gap 收紧回 PC 手感 */
 }
 
-.is-phone .aw-modal .modal-content > .setting-item .setting-item-control {
-	flex: 0 0 auto; /* 行已是 column（核心改的），控件 flex 复位＝防本文件 .aw-form 的纵向 grow 残留 */
+.is-phone .aw-modal .setting-item:not(:is(.mod-toggle,.mod-navigable,.mod-action,.setting-item-heading)) {
+	flex-direction: row; /* 撤销核心「标签上/控件下」＝恢复 PC 左右结构（含嵌在 setting-group 里的行） */
+	align-items: flex-start;
+}
+
+.is-phone .aw-modal .setting-item:not(:is(.mod-toggle,.mod-navigable,.mod-action,.setting-item-heading)) .setting-item-control {
+	width: auto; /* 撤销核心控件列 width:100%〔核心 (0,5,0)→本条 (0,6,0)〕 */
+	flex: 1 1 auto; /* 吃标签之外剩余行宽＝与桌面 .aw-form 口径一致 */
+}
+
+.is-phone .aw-modal .setting-item-control button:not(.clickable-icon) {
+	width: auto; /* 撤销核心按钮全宽＝按钮按内容宽、组内贴右（.aw-form 首钮 margin-left:auto 生效） */
+	max-width: 100%;
+}
+
+/* 场景树形选择器的**触发按钮**（v0.4.11+ 父场景／关联场景）＝它是「下拉的替身」，必须撑满控件列
+   （与核心 `.dropdown` 同宽才不突兀），同时撤销核心手机版 `padding:10px` 的胖尺寸。
+   ⚠️ 上面那条 `button{width:auto}` 特异性 (0,5,1) 会把它的 `width:100%` 压掉＝这里同结构再写一遍 (0,6,1) */
+.is-phone .aw-modal .setting-item.aw-ev-msel-row .setting-item-control .aw-tree-btn {
+	width: 100%;
+	max-width: 100%;
+	flex: 1 1 auto;
+	padding: var(--size-4-1) var(--size-4-3);
+	height: var(--input-height);
+	font-size: var(--font-ui-small);
+}
+
+/* 弹窗内的**列表/正文容器**用 vh 设上限（`.aw-action-list` 60vh／`.aw-panel-body` 65vh／`.aw-fixrefs-review` 55vh／
+   `.aw-chat-body` 58vh）＝PC 上防止弹窗高过屏幕。手机上弹窗本身已被核心 `--dialog-max-height` 限高＋内容层滚动，
+   再叠一层 vh 上限＝双重限高（外层还没满、内层先出滚动条）。手机版把内层上限放开，交给弹窗外层滚动。 */
+.is-phone .aw-modal .aw-action-list,
+.is-phone .aw-modal .aw-panel-body,
+.is-phone .aw-modal .aw-fixrefs-review {
+	max-height: none;
+}
+
+/* 手机端＝设置页里的**自定义行**（LLM 配置 / 写作阶段：标签定宽 220px 在窄屏会吃掉大半行宽、控件被挤瘪）：
+   标签让位成整行、控件换到下一行吃满（行仍是内容高＝不会纵向拉伸）。只作用在手机，桌面保持左右排布 */
+.is-phone .aw-llm-row,
+.is-phone .aw-phase-model-row {
+	flex-wrap: wrap;
+	row-gap: 4px;
+}
+
+.is-phone .aw-llm-label {
+	flex: 1 1 100%;
+}
+
+/* PC 窄窗口/分屏版同口径：核心有一条**与设备无关**的 `@container (max-width:400px)` 窄容器规则族
+   （容器＝`.vertical-tab-content{container-type:inline-size}`＝设置页滚动容器），设置页宽度 ≤400px 时
+   会把行改成「标签上/控件下」并把 control 内的 input／select／button 一律 `width:100%`＝
+   tab 页头、模型配置列表操作钮、引用文档增删钮各自独占一整行。此前所有反打规则都带 `.is-phone` 前缀＝这种场景没盖住。
+   选择器链上的三个类都是我们自己在 `getSettingDefinitions()` 挂的（`.setting-page-content`＝核心 PluginSettingTab
+   的 containerEl 固定类）＝与设备无关；特异性〔0,5,1〕＞核心窄容器〔0,4,1〕。
+   ⚠️ 没有 `.modal-content`/`.aw-modal` 的容器查询风险：核心 `container-type` 只挂在 `.vertical-tab-content`
+   （＋empty-state/tab-header/metadata 具名容器），弹窗内不受这条族影响。 */
+.setting-page-content.aw-form.aw-settings-form .setting-item:not(:is(.mod-toggle,.mod-navigable,.mod-action,.setting-item-heading)) {
+	flex-direction: row; /* 窄容器下仍保持 PC 左右结构 */
+	align-items: center;
+}
+
+.setting-page-content.aw-form.aw-settings-form .setting-item:not(:is(.mod-toggle,.mod-navigable,.mod-action,.setting-item-heading)) .setting-item-control {
+	width: auto;
+	max-width: 100%;
+	justify-content: flex-start;
+	flex: 1 1 auto; /* 吃标签之外的剩余行宽＝桌面 .aw-form 口径 */
+}
+
+.setting-page-content.aw-form.aw-settings-form .setting-item-control button:not(.clickable-icon),
+.setting-page-content.aw-form.aw-settings-form .aw-phase-tabs-container button:not(.clickable-icon) {
+	width: auto;
+	max-width: 100%;
+	flex: 0 0 auto; /* 撤销核心窄容器 width:100%（flex-basis 定死＝不被拉成整行） */
+}
+
+.setting-page-content.aw-form.aw-settings-form .aw-llm-row,
+.setting-page-content.aw-form.aw-settings-form .aw-phase-model-row {
+	flex-wrap: wrap;
+	row-gap: 4px;
+}
+
+.setting-page-content.aw-form.aw-settings-form .aw-llm-label {
+	flex: 1 1 100%;
+}
+
+/* 手机端＝**设置页**（本插件设置挂在核心 `.modal.mod-settings` 的 `.setting-group > .setting-items` 里，
+   容器挂 `.aw-form`＋`.aw-settings-form`）：与弹窗同口径＝恢复 PC 排布（用户要求「和 PC 端一样」）。
+   核心手机版把每一行做高/做长的四条规则（逐条已从安装包内 CSS 核对）：
+     ① `.is-phone .modal .setting-item{gap:16px}`＋行本身 `padding:16px`/`margin-bottom:8px`
+     ② `.is-phone .modal .setting-item:not(:is(.mod-toggle,.mod-navigable,.mod-action,.setting-item-heading)){flex-direction:column;align-items:flex-start}`
+     ③ 同上的 `.setting-item-control{width:100%}`（控件列整宽）
+     ④ `.is-phone .modal .setting-item-control input/select/.combobox-button/button:not(.clickable-icon){width:100%;margin:0}`
+        ＋ `.setting-item-control button{padding:10px}` ← **这条才是「纵向拉伸」的最大元凶**：
+        设置页里所有按钮（tab 页头、模型配置列表的操作钮、引用文档增删钮…）被拉成每人一整行、还加 10px 内边距。
+   ⚠️ 坑位一：上一版只写 `flex:0 0 auto` 复位——设置页的行不是 flex 项（`.setting-items` 是块级、核心不给 grow）＝空转。
+   ⚠️ 坑位二：`.is-phone` 之外还有一条**容器查询**同效果规则
+      `@container (max-width:400px){.setting-item:not(:is(…,.mod-list *)){flex-direction:column}…}`
+      （容器＝`.vertical-tab-content{container-type:inline-size}`）；特异性仅〔0,5,0〕，被本段〔0,6,0〕压住，
+      所以不必针对 `@container` 另写规则。
+   特异性：本段行〔0,6,0〕＞核心〔0,5,0〕；控件/按钮 width 本段〔0,5,1〕＞核心〔0,4,1〕；
+   按钮 padding/height 本段〔0,3,1〕＞核心〔0,3,0〕；行 padding 与核心 `.setting-group .setting-item:not(…)`〔0,3,0〕打平、插件 CSS 后加载取胜 */
+.is-phone .aw-settings-form .setting-item {
+	padding: var(--size-4-2) var(--size-4-3);
+	margin-bottom: var(--size-4-1);
+	gap: var(--size-4-2);
+}
+
+.is-phone .aw-settings-form .setting-item:not(:is(.mod-toggle,.mod-navigable,.mod-action,.setting-item-heading)) {
+	flex-direction: row; /* 标签左／控件右＝PC 结构（开关行核心本就是 row，不在改写范围） */
+	align-items: center;
+}
+
+.is-phone .aw-settings-form .setting-item:not(:is(.mod-toggle,.mod-navigable,.mod-action,.setting-item-heading)) .setting-item-control {
+	width: auto; /* 撤销核心控件列整宽 */
+	flex: 1 1 auto; /* 吃标签之外的剩余行宽＝与桌面 .aw-form 一致（输入框仍 width:100% 撑满控件列） */
+}
+
+.is-phone .aw-settings-form .setting-item-control button:not(.clickable-icon) {
+	width: auto; /* 撤销核心按钮整宽＝按钮按内容宽（核心 width:100%＋margin:0 让每个按钮独占一行） */
+	max-width: 100%;
+	flex: 0 0 auto;
+	margin: 0;
+	padding: var(--size-4-1) var(--size-4-3); /* 撤销核心手机版 .setting-item-control button{padding:10px} */
+	height: var(--input-height); /* 回到桌面核心按钮基线高度（手机版那 10px 内边距会把它撑高） */
+	font-size: var(--font-ui-small);
 }
 
 /* 多字段表单统一紧凑行距（MultiFieldModal「新增/编辑人物」等 + AddCharacterModal「添加人物」）：
@@ -2068,9 +2181,14 @@
 	font-size: 0.9em;
 }
 
-/* 按钮（「+ 添加关系」/「创建」等）贴右：control 已改成 justify-content:stretch 让输入框撑满，
-   按钮必须用 margin-left:auto 自己顶回右侧，右缘才与上方输入框右缘对齐 */
-.aw-form-compact .setting-item-control button {
+/* 按钮尺寸统一（本弹窗基准＝保存/取消按钮＝24px）＋贴右 auto margin：
+   - 尺寸除 Setting 行内按钮外，还覆盖自定义行里的按钮（`.aw-addchar-rels` 关系行的 ✕＝Setting 之外的容器）；
+     胶囊角标 ✕（`.aw-ev-msel-chipx`）在本段之后按更高特异性保持 15px 小圆点。
+   - `margin-left:auto`＝control 已被改成 justify-content:stretch（输入框撑满），按钮得自己顶回右侧才与输入框右缘对齐。
+     ⚠️ 底部按钮行不吃这条：`.aw-btns-right` 规则（上面那条，特异性更高）把组内按钮 margin 归零并改 control flex-end；
+     两个按钮若都留 auto margin＝空档被平分到「组前」与「两钮之间」＝保存落到行中部（v0.4.11+ 用户报告过）。 */
+.aw-form-compact .setting-item-control button,
+.aw-form-compact .aw-addchar-rels button {
 	height: 24px;
 	font-size: 0.9em;
 	margin: 0 0 0 auto;
@@ -2081,19 +2199,28 @@
 	padding-top: 6px;
 }
 
-/* 弹窗按钮行（保存/取消）成组贴右：上面按钮规则给每个按钮 margin-left:auto，两个按钮时空档被平分、
-   各自撑开（保存落到行中部）；这里隐藏空标签列、control 改 flex-end、清掉按钮 auto，让按钮组整体靠右 */
-.aw-form-compact .setting-item.aw-btns-right > .setting-item-info {
+/* 弹窗底部按钮行统一口径＝整组贴右（基类 `AwModal.addButtonsRow` 挂 `.aw-btns-right`，**所有**插件弹窗共用，
+   不再只服务 `.aw-form-compact`）：隐藏空标签列、control 改 flex-end、清掉「首钮 margin-left:auto」的顶右机制
+   ＝同一套贴右口径，避免 compact 弹窗（靠 .aw-btns-right）与非 compact 弹窗（靠 auto margin）两套对齐方式并存。
+   特异性：(0,4,0)/(0,4,1) 压过 `.aw-form .setting-item-control{flex:1 1 auto}`(0,2,0) 与 `.aw-form … > button:first-child`(0,4,1)（同分靠本条写在后面取胜） */
+.aw-form .setting-item.aw-btns-right > .setting-item-info {
 	display: none;
 }
-.aw-form-compact .setting-item.aw-btns-right > .setting-item-control {
+.aw-form .setting-item.aw-btns-right > .setting-item-control {
 	justify-content: flex-end;
 }
-.aw-form-compact .setting-item.aw-btns-right .setting-item-control button {
+.aw-form .setting-item.aw-btns-right .setting-item-control button {
 	margin-left: 0;
+	flex: 0 0 auto; /* 按钮不被任何「width:100%」口径（核心窄容器／手机）拉成整行＝整组始终贴右成一行 */
 }
 
 .aw-form-compact h3 {
+	margin: 0 0 6px;
+}
+
+/* 弹窗标题＝所有插件弹窗统一（h3 恒为 contentEl 直接子元素）：非 compact 弹窗此前吃核心默认边距＝
+   与 compact 弹窗（6px）不一致，现两处同值；字号仍走核心/主题默认，不动 */
+.aw-form > h3 {
 	margin: 0 0 6px;
 }
 
@@ -2134,15 +2261,12 @@
 
 .aw-addchar-relrm {
 	flex: 0 0 auto;
-	padding: 0 8px;
 	cursor: pointer;
+	/* v0.4.11+ 不再自带 padding:0 8px：那会盖掉弹窗统一按钮口径（.aw-form-compact 段）让 ✕ 高出邻排控件；
+	   胶囊角标形态由后面的 .aw-ev-msel-chipx 自设 padding/尺寸，不依赖这里 */
 }
 
-.aw-addchar-actions {
-	display: flex;
-	justify-content: flex-end;
-	margin-top: 12px;
-}
+/* `.aw-addchar-actions`（旧的自定义贴右按钮 div）已废弃＝弹窗底部按钮行统一走基类 `addButtonsRow()`＋`.aw-btns-right` */
 
 /* 事件编辑弹窗（EventEditModal）人物/关联下拉多选：v0.4.7+ 已选胶囊排成一行＋行尾下拉补选（溢出横向滚动）；下拉复用 .aw-addchar-sel/.aw-addchar-relrm */
 /* v0.4.8+：多选改进行式 Setting 行（标签列与上方字段标签对齐、不再标签独占一行）。
@@ -2273,11 +2397,173 @@
 	line-height: 1.4;
 }
 
-.aw-rel-row-add {
-	align-self: flex-start;
-	min-width: 14em;
+/* ===== 场景「树形候选」选择器（v0.4.11+ 用户要求＝父场景与关联场景的下拉框按场景层级树展示）=====
+   结构：宿主（`.setting-item-control`／`.aw-rel-addhost`，需 position:relative）→ `.aw-tree-btn`（当前值／补选按钮）
+   ＋ `.aw-tree-panel`（absolute 浮在宿主下方＝搜索框 `.aw-tree-search` ＋ `.aw-tree-list` 行列表）
+   行＝`.aw-tree-row`（**按层嵌套在 `.aw-st-kids aw-tree-kids` 容器里**＝与写字台面板那棵树同一观感：缩进＋左侧竖指示线）
+   ＝`.aw-st-caret aw-tree-toggle`（▸/▾，叶子行＝`.aw-st-caret-ph` 隐形占位、搜索态＝`.is-off`）＋`.aw-st-icon`（前导图标＝有子场景 folder/folder-open、叶子 map）＋`.aw-tree-name`＋`.aw-tree-kidcount`＋`.aw-tree-check` */
+.aw-form .setting-item.aw-ev-msel-row .setting-item-control,
+.aw-rel-addhost {
+	position: relative; /* 树形面板的定位包含块 */
+}
+
+.aw-tree-btn {
+	width: 100%;
+	max-width: 100%;
+	min-width: 0;
+	text-align: left; /* 长场景名从左读起、省略号收尾（控件列本身 text-align:end，按钮内默认居中＝看不清全名） */
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.aw-tree-btn.is-empty {
+	color: var(--text-faint);
+}
+
+.aw-tree-panel {
+	position: absolute;
+	top: 100%;
+	left: 0;
+	text-align: left; /* 核心 `.setting-item-control{text-align:end}` 会顺着继承下来＝树行/搜索框/提示全变成右对齐（用户报告＝文字要左对齐）；面板内一律复位 */
+	z-index: var(--layer-modal, 30);
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+	width: 100%;
+	min-width: 12em;
 	max-width: 100%;
 	margin-top: 2px;
+	padding: 6px;
+	background-color: var(--background-primary);
+	border: var(--border-width) solid var(--background-modifier-border);
+	border-radius: var(--radius-s);
+	box-shadow: var(--shadow-s);
+}
+
+.aw-tree-search {
+	width: 100%;
+	min-width: 0;
+	font-size: 0.9em;
+}
+
+.aw-tree-list {
+	max-height: min(240px, var(--aw-tree-list-max, 240px)); /* 默认同旧值 240；弹窗里由 JS 按「弹窗内剩余空间」写 --aw-tree-list-max＝面板绝不溢出被裁（核心 .modal-content{overflow:hidden}） */
+	overflow-y: auto;
+	display: flex;
+	flex-direction: column;
+}
+
+/* v0.4.11+ 面板翻到宿主上方（＝弹窗下方放不下、上方更宽裕时由 treePanelPlacement 决定）：
+   不翻的话下半截行落在 .modal-content 的裁剪区外＝看不见也滚不到（平板横屏弹窗只有 85vh 高＝最容易撞） */
+.aw-tree-panel.is-up {
+	top: auto;
+	bottom: 100%;
+	margin-top: 0;
+	margin-bottom: 2px;
+}
+
+.aw-tree-row {
+	display: flex;
+	align-items: center;
+	gap: 4px;
+	padding: 3px 6px;
+	border-radius: var(--radius-s);
+	cursor: var(--cursor-pointer, pointer);
+	font-size: 0.9em;
+	white-space: nowrap;
+}
+
+.aw-tree-row:hover {
+	background-color: var(--background-modifier-hover);
+}
+
+.aw-tree-row.is-selected {
+	background-color: var(--interactive-accent);
+	color: var(--interactive-accent-text, var(--text-on-accent));
+}
+
+.aw-tree-row.is-picked .aw-tree-check {
+	color: var(--text-accent);
+}
+
+.aw-tree-row.is-cyclic {
+	color: var(--text-error);
+	text-decoration: line-through;
+	cursor: not-allowed;
+}
+
+.aw-tree-row.is-none {
+	color: var(--text-faint);
+}
+
+/* 展开/折叠三角＝**span**（写字台面板同款 `.aw-st-caret`）＝天然不会被核心
+   `.setting-item:not(:is(…)) .setting-item-control button:not(.clickable-icon){width:100%}`〔0,4,1〕
+   与手机版 `.is-phone .modal .setting-item-control button{padding:10px}` 打进（＝一个 ▾ 被拉成整行）。
+   叶子行的隐形占位＝`.aw-st-caret-ph`（同宽空盒子＝同层文字严格对齐）。下面只做弹窗内的微调 */
+.aw-tree-toggle {
+	text-align: center;
+	color: var(--text-muted);
+	cursor: var(--cursor-pointer, pointer);
+}
+
+.aw-tree-row.is-selected .aw-tree-toggle,
+.aw-tree-row.is-selected .aw-tree-kidcount {
+	color: inherit; /* 选中行整行反色＝三角与计数也跟着走，不留在原 muted 色上 */
+}
+
+/* 层级容器＝复用写字台的 `.aw-st-kids`（缩进＋左侧竖指示线）；弹窗内行距紧＝把面板那条下边距收掉 */
+.aw-tree-kids {
+	margin-bottom: 0;
+}
+
+.aw-tree-name {
+	flex: 1 1 auto;
+	min-width: 0;
+	text-align: left; /* 名字这个 flex 项会被拉满剩余宽＝继承到 `text-align:end` 就会右贴边（＝用户报告的「文字没左对齐」），显式复位 */
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.aw-tree-kidcount {
+	flex: 0 0 auto;
+	font-size: 11px;
+	color: var(--text-faint);
+}
+
+.aw-tree-check {
+	flex: 0 0 auto;
+	font-weight: var(--font-semibold);
+}
+
+/* v0.4.11+ 触屏输入设备（平板／手机＝`pointer: coarse`）下的树形候选尺寸：默认行高≈25px／字号 0.9em 在手指上偏挤，
+   而 `.is-phone` 那批加大规则只覆盖手机（平板＝`is-tablet` 走桌面档＝吃不到）＝**按输入设备判定、不按设备类**，两端都盖住。
+   ⚠️ 搜索框字号必须 ≥16px＝WebView/Android 聚焦小于 16px 的输入框会强制整屏放大（＝「一点搜索框画面就放大」的根因） */
+@media (pointer: coarse) {
+	.aw-tree-row {
+		min-height: 40px;
+		padding: 8px;
+		font-size: 1em;
+	}
+
+	.aw-tree-search {
+		font-size: 16px;
+		padding: 8px;
+	}
+
+	.aw-tree-btn {
+		min-height: 40px;
+	}
+
+	.aw-tree-toggle {
+		min-width: 24px; /* 展开三角＝span，天然没有按钮的命中区＝给它一个手指宽的方块（文本仍居中＝不影响同层对齐） */
+		font-size: 1.1em;
+	}
+
+	.aw-tree-kidcount {
+		font-size: 12px;
+		padding-left: 4px;
+	}
 }
 
 /* ===== 静态样式集中化（原 JS 内联 style 赋值迁移至此）===== */
@@ -2659,11 +2945,6 @@
 	gap: 8px;
 	margin-left: auto;
 }
-.aw-llm-item-open {
-	flex: 0 0 auto;
-	font-size: var(--font-ui-smaller);
-	color: var(--text-muted);
-}
 .aw-llm-back {
 	margin-bottom: 8px;
 }
@@ -2883,12 +3164,9 @@
 	gap: 4px;
 }
 
-.aw-insp-btn {
-	font-size: var(--font-ui-smaller);
-	padding: 2px 8px;
-	height: auto;
-}
-
+/* v0.4.11+ 去掉自设 font-size/padding/height：本弹窗（InspirationKitModal＝非 compact 表单）底部
+   「新增灵感/打开灵感文件」＝核心默认按钮，行内 定位/改名/删除 之前被压成小一号＝大小不一（用户报告）；
+   现在两者都走核心默认尺寸，本类只保留删除钮的红色 hover 语义 */
 .aw-insp-btn.aw-insp-del:hover {
 	color: var(--text-error);
 	border-color: var(--text-error);

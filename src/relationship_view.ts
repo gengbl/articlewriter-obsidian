@@ -354,6 +354,16 @@ export class RelationshipView extends ItemView {
 				}
 			},
 		});
+		// 触屏（平板／手机）＝**没有 mouseleave**＝图 tip 会一直挂在屏幕上：按下别的任何位置即收起（＝桌面「悬停离开」的触屏替身）。
+		// 按在同一触发元素（人物 `<g>`／连线 `<g>`）上＝不收＝随后 Blink 合成的 mouseenter 会把这份 tip 重新弹出来（＝触屏点一下看得见）
+		this.graphCanvas.bodyEl.addEventListener("pointerdown", (ev: PointerEvent) => {
+			if (ev.pointerType === "mouse") return;
+			const owner = this.graphTipOwner;
+			// 判「按在原触发元素上」用 elementFromPoint 而不是 ev.target（target 的 instanceof 判定在 popout 窗会误判＝内核 prefer-instanceof 的顾虑）
+			const hit = owner ? activeDocument.elementFromPoint(ev.clientX, ev.clientY) : null;
+			if (owner && hit && owner.contains(hit)) return;
+			this.hideGraphTip();
+		});
 		// 图表 tip 浮层（自定义 HTML＝人物节点与连线共用同一份同一样式，不用 SVG <title>）：挂在 document.body 上，避开侧栏祖先的 transform/contain/overflow 把 position:fixed 变成局部定位或裁切导致看不见
 		this.graphTipEl = document.body.createDiv({ cls: "aw-rel-gtip" });
 		// 主体空白双击＝适应全图的兜底监听（挂在常驻 treeEl＝一次绑定，不随重渲染累加）

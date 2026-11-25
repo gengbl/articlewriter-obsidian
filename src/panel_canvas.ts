@@ -6,6 +6,10 @@ export const PANEL_ZOOM_MAX = 3;
 
 export const clampNum = (v: number, lo: number, hi: number): number => (v < lo ? lo : v > hi ? hi : v);
 
+/** **v0.4.11+ 双指捏合的一步倍率**（手机端缩放，node 可测）：当前倍率 × 捏合比例（两指此刻距离 ÷ 上一帧距离），夹进 `[lo, hi]`。
+ *  取「逐帧增量」而不是「相对捏合起始的总比例」＝第三指加入／两指离开时起点自动重估，画面不会跳档 */
+export const pinchNextZoom = (z: number, ratio: number, lo: number, hi: number): number => clampNum(z * ratio, lo, hi);
+
 /** **「适应全图」的纯算法**（v0.4.9+，node 可测）：把内容矩形 `rect` 装进视口 `vw×vh`（四周留 `pad`）→ 倍率＋虚拟平移偏移。
  *  倍率＝min((vw−2pad)/w, (vh−2pad)/h) 再夹到 `[lo, min(hi,1)]`＝**只缩小不放大**（内容比视口小＝100% 居中，不糊卡片）；
  *  偏移＝包围盒缩放后中心对齐聚中（`pan＝(视口−内容·z)/2 − rect 起点·z`），口径与 `CanvasPanel.toContentPoint` 一致（scroll 取 0）。
@@ -148,10 +152,12 @@ export class CanvasPanel {
 	private zoomLblHost: HTMLElement | null = null; // 标签挂载的头部容器（同一容器重复 attach＝只刷新文案，不再新建）
 	private suppressClickUntil = 0; // 条目拖拽结束后需吞掉紧随 click/dblclick 的时间戳上限
 	private sizeWatcher: ElementSizeWatcher | null = null; // v0.4.9+ 尺寸观察句柄（共用 watchElementSize；dispose 断开、notify＝ItemView.onResize 兜底）
+	private pinchCleanup: (() => void) | null = null; // v0.4.11+ 双指捏合的 document 级监听拆除句柄（dispose 时摘掉）
 	private contentW = 0; // 内容真实宽（0＝按视口宽；场景画布等绝对定位内容用它撑出横向可滚动/可拖动范围）
 
 	constructor(parent: HTMLElement, private readonly opts: CanvasPanelOptions) {
 		this.bodyEl = opts.parentBodyEl ?? parent.createDiv({ cls: opts.bodyCls ?? "aw-canvas-body" });
+		this.bodyEl.addClass("aw-canvas-body"); // v0.4.11+ 共用类恒挂（各面板自带 bodyCls 也要吃到画布公共设施 CSS＝touch-action 口径）
 		this.sizerEl = this.bodyEl.createDiv({ cls: opts.sizerCls });
 		this.panEl = this.sizerEl.createDiv({ cls: "aw-canvas-pan" });
 		this.zoomEl = this.panEl.createDiv({ cls: opts.zoomCls });
@@ -170,7 +176,7 @@ export class CanvasPanel {
 			return;
 		}
 		this.zoomLblHost = container;
-		this.zoomLbl = container.createSpan({ text: "", cls: this.opts.zoomLabelCls ?? "aw-dim aw-panel-zoomlbl", title: this.opts.zoomLabelTitle ?? "Ctrl|Shift＋滚轮缩放 / 普通滚轮滚动 / 左键拖动平移（Alt＋左键或中键＝任意位置平移）；点击复位为 100%" });
+		this.zoomLbl = container.createSpan({ text: "", cls: this.opts.zoomLabelCls ?? "aw-dim aw-panel-zoomlbl", title: this.opts.zoomLabelTitle ?? "Ctrl|Shift＋滚轮缩放（手机＝画布上双指捏合）/ 普通滚轮滚动 / 左键拖动平移（Alt＋左键或中键＝任意位置平移）；点击复位为 100%" });
 		this.zoomLbl.addEventListener("click", () => this.resetView());
 		this.apply(); // 头部重建后按当前缩放状态恢复倍率标签显示
 	}
@@ -268,6 +274,8 @@ export class CanvasPanel {
 	dispose(): void {
 		this.sizeWatcher?.dispose();
 		this.sizeWatcher = null;
+		this.pinchCleanup?.(); // v0.4.11+ 摘掉双指捏合的 document 级监听（面板关闭后不再收全局 pointer 事件）
+		this.pinchCleanup = null;
 	}
 
 	/** v0.4.9+ 外部（`ItemView.onResize`）告知「容器尺寸可能变了」＝与观察器同一套防抖测量与处理（无 ResizeObserver 环境里这是唯一路径） */
@@ -362,6 +370,52 @@ export class CanvasPanel {
 			document.addEventListener("pointercancel", endDrag); // v0.4.7+：取消事件也收尾，防 dragFrom 残留导致后续裸 pointermove 继续拽视野
 			if (ev.pointerType === "mouse") ev.preventDefault(); // 鼠标拖动不选中文字；触屏保持原生滚动手势
 		});
+
+		// v0.4.11+ **手机端双指捏合＝画布缩放**（时间线／人物关系图／场景画布共用本设施＝一处实现三面板生效）：
+		// 画布上聚到第二根手指即进入捏合＝先 endDrag 关掉第一根手指可能已起手的平移手势（两手势不抢画面）；
+		// 每帧按「两指距离 ÷ 上一帧距离」推进一步倍率（pinchNextZoom），锚点＝两指中点＝与滚轮「以鼠标为中心」同一套 zoomAtPointView 不动点公式；
+		// 手指少于 2 根即结束本把捏合（余下的单指不回填成平移＝捏合松手画面不跳）。桌面触控板的“捏合”仍走 ctrl+wheel 老路，两路互不冲突。
+		const touchPts = new Map<number, { x: number; y: number }>(); // 按 pointerId 跟踪落在画布上的手指
+		let pinchDist = 0; // 上一帧两指间距（0＝尚未定标/已收指）
+		this.bodyEl.addEventListener("pointerdown", (ev: PointerEvent) => {
+			if (this.opts.panIgnoreSelector && (ev.target as HTMLElement | null)?.closest(this.opts.panIgnoreSelector)) return; // 状态区/分隔条这类固定子项＝不参与捏合
+			touchPts.set(ev.pointerId, { x: ev.clientX, y: ev.clientY });
+			if (touchPts.size < 2) return;
+			endDrag(); // 第二指落定＝平移手势让位给捏合
+			pinchDist = 0; // 间距起点推迟到第一帧 move 再定（两指刚落下可能重叠）
+		});
+		const onPinchMove = (ev: PointerEvent): void => {
+			const pt = touchPts.get(ev.pointerId);
+			if (!pt) return;
+			pt.x = ev.clientX;
+			pt.y = ev.clientY;
+			if (touchPts.size < 2) return;
+			const [a, b] = [...touchPts.values()]; // 多于两指＝仍取最先落下的两根
+			const cur = Math.hypot(a.x - b.x, a.y - b.y);
+			if (pinchDist <= 0 || cur <= 0) {
+				pinchDist = cur; // 定标帧／两指正重叠＝这一步不缩放
+				return;
+			}
+			const nz = pinchNextZoom(this.zoomLevel, cur / pinchDist, lo, hi);
+			pinchDist = cur;
+			if (nz === this.zoomLevel) return;
+			const rect = this.bodyEl.getBoundingClientRect();
+			const midX = (a.x + b.x) / 2;
+			const midY = (a.y + b.y) / 2;
+			this.zoomAtPoint(this.toContentPoint(midX, midY), midX - rect.left, midY - rect.top, nz);
+		};
+		const endPinchPointer = (ev: PointerEvent): void => {
+			if (!touchPts.delete(ev.pointerId)) return;
+			if (touchPts.size < 2) pinchDist = 0; // 收指＝本把捏合结束（若还剩一指，其平移手势早已随 endDrag 结束，不再回填）
+		};
+		document.addEventListener("pointermove", onPinchMove);
+		document.addEventListener("pointerup", endPinchPointer);
+		document.addEventListener("pointercancel", endPinchPointer);
+		this.pinchCleanup = () => {
+			document.removeEventListener("pointermove", onPinchMove);
+			document.removeEventListener("pointerup", endPinchPointer);
+			document.removeEventListener("pointercancel", endPinchPointer);
+		};
 		for (const type of ["click", "dblclick"] as const) {
 			this.bodyEl.addEventListener(type, (ev: MouseEvent) => {
 				if (!dragged) return;

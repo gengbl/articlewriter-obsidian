@@ -2,7 +2,9 @@
 
 ## 模块概要
 
-写字台是常驻 ItemView（面板显示名 getDisplayText="写字台"，命令/ribbon 文案同用此名；可停靠任意区域、重载保留位置）。**v0.2.20+ 同时常驻左栏（移动端抽屉／桌面端左栏）视图切换列表**——插件启动时自动补位、切书恢复工作区后亦自动补回（main.ts `ensureStatusInLeftSidebar` 经 `ensureSideLeaf` 幂等补 tab、不抢焦点、不展开抽屉），始终可被选中；「打开写字台」命令与侧边栏书本图标即激活它。渲染陷阱见 [l3-view-rendering.md](./l3-view-rendering.md)「常驻 ItemView 渲染陷阱」。
+写字台是常驻 ItemView（面板显示名 getDisplayText="写字台"，命令/ribbon 文案同用此名；可停靠任意区域、重载保留位置）。**v0.2.20+ 同时常驻左栏（移动端抽屉／桌面端左栏）视图切换列表**——插件启动时自动补位、切书恢复工作区后亦自动补回（main.ts `ensureStatusInLeftSidebar` 经 `ensureSideLeaf` 幂等补 t
+
+- **常驻面板的移动端／平板承载口径（v0.4.11+ 修平板「点不出时间线／人物关系／场景面板」）**：Obsidian 断点＝`matchMedia("(min-width:600px) and (min-height:600px)")`（安装包 app.js 内核对），宽高都达标＝`body.is-tablet`（排布走桌面档）、否则 `is-phone`；移动端侧栏容器实际是 **`WorkspaceMobileDrawer`，与 `WorkspaceSidedock` 在类型层互不相干（都直接继承 WorkspaceParent）＝`leaf.parent instanceof WorkspaceSidedock` 在手机/平板恒 false**——旧「丢弃滞留右栏面板」守卫因此一直空转：桌面端同步来的工作区把面板落在右栏 tab，移动端**右抽屉没有表头按钮＝那层永远打不开**，ribbon/命令走「已有则 `setActiveLeaf`」＝激活一个看不见的叶子＝点了没反应。现口径＝main.ts 三个共用语义：① `inSideDock(leaf)`＝**比对 `ws.leftSplit`/`ws.rightSplit`**（联合类型声明覆盖两端设备，唯一可靠判据，别再用 instanceof）；② `relocateSideDockLeavesToMain(viewType)`（常驻面板＋LLM 对话窗口共用＝代码重用）＝先 `getViewState()` 存档再 detach，把**活动叶子先切成主区域最近叶子**（`getMostRecentLeaf(ws.rootSplit)`；`getMostRecentLeaf` 默认只遍历 rootSplit＋floatingSplit＝不会选中抽屉叶子），经 `getPanelHostLeaf()` 新建承载叶子后 `setViewState` 原样写回并激活；③ `openResidentPanel` 在 `Platform.isMobileApp` 时先跑②（搬成功即返回），其余走「已有则激活／否则 getPanelHostLeaf 新建」。`getPanelHostLeaf`：桌面右栏优先，移动端＝`getLeaf("split")` 分割主区域（⚠️ 移动端 `createLeafBySplit` 会退化为**同 tab 组加页签**＝活动叶子若在抽屉里，新面板会被塞进看不见的抽屉）。写字台本身仍走左栏（左抽屉有 ribbon 表头按钮＝可达）。ab、不抢焦点、不展开抽屉），始终可被选中；「打开写字台」命令与侧边栏书本图标即激活它。渲染陷阱见 [l3-view-rendering.md](./l3-view-rendering.md)「常驻 ItemView 渲染陷阱」。
 
 - **布局自上而下**：工作目录行（标签 + 路径 + 「刷新」按钮，行下有细分隔横线）→ **「小说状态 / 码字状态」Tab 区（v0.4.5+ 合并，默认码字状态）**：小说状态页＝当前激活书概要（书名行＝名称左对齐 + 更新时间右对齐、题材/编写类型、`N章·第X章·总字数Y字`），码字状态页＝打字统计读数 →「书籍列表（n）」分组（分组标题行右侧下拉框选书；组内只渲染激活书的「全局文档」「章节」两个小节）。头部固定不随内容滚走，树主体独立滚动。
 - **下拉框选书**：选择即激活对应小说（同 statusSwitchStory 语义）、已选中项再选不重复触发；分组标题行右键＝新建小说…/[有卷模式]新建卷…/从书级大纲生成卷…｜改名…｜删除当前小说（删书唯一出现处——改名同步改状态文档 title + 顶层目录 + 全书 MD 文档内旧书名，删除整目录入回收站并清 lastStory）。

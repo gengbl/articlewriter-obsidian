@@ -1,4 +1,4 @@
-import { App, Modal, Notice, setTooltip, SuggestModal, Setting, TFile, TFolder, ToggleComponent } from "obsidian";
+import { App, Modal, Notice, setTooltip, setIcon, SuggestModal, Setting, TFile, TFolder, ToggleComponent } from "obsidian";
 import { PIPELINE_STAGES, type StageId } from "./pipeline"; // v0.3.0+：AutoBookModal 起始节点下拉（pipeline.ts 纯数据、不 import obsidian，无循环依赖）
 import {
 	applyCharacterMerge,
@@ -14,6 +14,7 @@ import {
 	type CharacterMergeSource,
 } from "./md_docs"; // v0.3.3+：EventEditModal 时间点校验；v0.4.8+：SceneEditModal「地形」下拉候选；v0.4.11+：MergeCharacterModal 合并人物（md_docs 纯数据模块，无循环依赖）
 import { type BookSkillPhase } from "./state_doc"; // v0.3.4+：BookSkillPhaseModal 阶段键（state_doc 纯数据模块，无循环依赖）
+import { flattenSceneTree, sceneDescendantIds, type SceneTreeRow, treePanelPlacement } from "./scene_tree"; // v0.4.11+：场景「父场景／关联场景」树形候选的建树口径＋面板摆位口径（纯函数模块，node 可测）
 import { GENRE_SKILL_NAMES } from "./skills_default"; // v0.3.6+：NewStoryModal 旧四题材回落；v0.4.3+ skills_default 会派生题材/编写类型目录技能（story_types 为单向依赖）
 import { INSPIRATION_SKILL_NAME, inspirationMatches, inspirationPreview, type InspirationBlock } from "./inspiration"; // v0.4.3+ 灵感工具包弹窗（inspiration.ts 纯解析/渲染、不 import obsidian，无循环依赖）
 
@@ -37,6 +38,25 @@ export class AwModal extends Modal {
 		// v0.4.11+ 弹窗根元素作用域类：styles.css 手机端「自然排布」修正（.is-phone .aw-modal）需要选中弹窗本体，
 		// 而 `.aw-form` 挂在 contentEl（= .modal-content）没法向上选，故在 modalEl 另挂一类
 		this.modalEl.addClass("aw-modal");
+	}
+
+	/** 弹窗底部**动作按钮行**＝所有插件弹窗统一口径（styles.css `.aw-btns-right`：隐藏空标签列＋control 整组贴右＋清 auto margin）。
+	 *  用法：`const row = this.addButtonsRow(); row.addButton(...); row.addButton(...);`——不要再手写 `new Setting()`＋事后 `addClass("aw-btns-right")`，
+	 *  也不要在非 compact 弹窗里靠「首钮 margin-left:auto」顶右（两套对齐口径并存＝保存/取消在各弹窗位置不一致） */
+	protected addButtonsRow(): Setting {
+		const row = new Setting(this.contentEl);
+		row.settingEl.addClass("aw-btns-right");
+		return row;
+	}
+
+	/** 表单类弹窗底部「保存／取消」＝`addButtonsRow()` 的固定搭配（AddCharacterModal、RelationshipModal 共用）：
+	 *  取消＝`close()`→`onClose()`→`submitted=false`→调用方 `onCancel`。
+	 *  文案口径＝「保存／取消」（v0.4.11+ 用户要求：编辑表单统一这对按钮，不再用「确定」） */
+	protected addSaveCancelRow(onSave: () => void): Setting {
+		const row = this.addButtonsRow();
+		row.addButton((b) => b.setButtonText("保存").setCta().onClick(() => onSave()));
+		row.addButton((b) => b.setButtonText("取消").onClick(() => this.close()));
+		return row;
 	}
 }
 
@@ -93,10 +113,9 @@ export class TextInputModal extends AwModal {
 			});
 			row.infoEl.remove(); // 无标签行：去掉 .aw-form-compact 定宽 6.5em 的空 info 列，textarea 才真正占满整行（否则左侧留白）
 			// 显式提交/取消按钮行（同 SkillEditModal 口径）：多行裸回车是换行不能只靠键盘提交；取消走 close()→onClose→submitted=false→onCancel
-			const btns = new Setting(this.contentEl)
+			this.addButtonsRow()
 				.addButton((btn) => btn.setButtonText("确定").setCta().onClick(() => { if (taEl) commit(taEl); }))
 				.addButton((btn) => btn.setButtonText("取消").onClick(() => this.close()));
-			btns.settingEl.addClass("aw-btns-right"); // 确定/取消成组贴右（既有类：隐藏空标签列＋control flex-end＋清 auto margin）
 		} else {
 			new Setting(this.contentEl).addText((text) => {
 				text.setPlaceholder(this.placeholderText);
@@ -160,7 +179,7 @@ export class NewFilePickerModal extends AwModal {
 				row.addClass("is-selected");
 			});
 		}
-		new Setting(this.contentEl).addButton((b) => b.setCta().setButtonText("确定").onClick(() => this.submit(inputEl.value.trim()))); // 「确定」置于弹窗最底部：标准名→std 路径（main.ts 按存在性分支），自定义名直接建空文件
+		this.addButtonsRow().addButton((b) => b.setCta().setButtonText("确定").onClick(() => this.submit(inputEl.value.trim()))); // 「确定」置于弹窗最底部：标准名→std 路径（main.ts 按存在性分支），自定义名直接建空文件
 	}
 
 	private submit(value: string): void {
@@ -230,7 +249,7 @@ export class NewStoryModal extends AwModal {
 				text.onChange((v) => (style = v || style));
 			});
 
-		new Setting(this.contentEl).addButton((btn) =>
+		this.addButtonsRow().addButton((btn) =>
 			btn.setButtonText("创建").setCta().onClick(async () => {
 				if (!title.trim()) return;
 				this.submitted = true;
@@ -292,7 +311,7 @@ export class StoryMetaModal extends AwModal {
 			text.setPlaceholder("或输入自定义类型名");
 			text.onChange((v) => { if (v.trim()) style = v.trim(); });
 		});
-		new Setting(this.contentEl).addButton((btn) =>
+		this.addButtonsRow().addButton((btn) =>
 			btn.setButtonText("保存").setCta().onClick(async () => {
 				this.submitted = true;
 				this.close();
@@ -468,7 +487,7 @@ export class AutoBookModal extends AwModal {
 			t.setValue(overwrite).onChange((v) => (overwrite = v));
 		});
 
-		new Setting(this.contentEl).addButton((btn) =>
+		this.addButtonsRow().addButton((btn) =>
 			btn.setButtonText("开始").setCta().onClick(async () => {
 				const rangeErr = range.error();
 				if (rangeErr) { errText = rangeErr; errEl.setText(errText); return; }
@@ -562,7 +581,7 @@ export class AutoBookConfigModal extends AwModal {
 			t.setValue(overwrite).onChange((v) => (overwrite = v));
 		});
 
-		new Setting(this.contentEl).addButton((btn) =>
+		this.addButtonsRow().addButton((btn) =>
 			btn.setButtonText("保存配置").setCta().onClick(async () => {
 				const rangeErr = range.error();
 				if (rangeErr) { errText = rangeErr; errEl.setText(errText); return; }
@@ -605,13 +624,14 @@ export class SkillRangeModal extends AwModal {
 
 		const range = addStageRangeSettings(this.contentEl, this.init);
 
-		const btn = new Setting(this.contentEl).addButton((b) => b.setButtonText("取消").onClick(() => this.close()));
+		const btn = this.addButtonsRow();
 		btn.addButton((b) => b.setButtonText("开始").setCta().onClick(async () => {
 			const rangeErr = range.error();
 			if (rangeErr) { errText = rangeErr; errEl.setText(errText); return; }
 			this.close();
 			await this.onSubmit(range.startAt(), range.endAt());
 		}));
+		btn.addButton((b) => b.setButtonText("取消").onClick(() => this.close()));
 	}
 
 	onClose(): void {
@@ -660,7 +680,7 @@ export class VolumeBatchCreateModal extends AwModal {
 		this.statusEl = this.contentEl.createDiv();
 		this.listEl = this.contentEl.createDiv();
 		this.renderList();
-		new Setting(this.contentEl)
+		this.addButtonsRow()
 			.addButton((btn) =>
 				btn.setButtonText("确定创建").setCta().onClick(async () => {
 					if (!this.pending.length) return;
@@ -968,7 +988,7 @@ export class ActionMenuModal extends AwModal {
 		this.contentEl.createEl("h3", { text: this.title });
 		const list = this.contentEl.createDiv({ cls: "aw-action-list" }); // max-height/overflow-y 走 styles.css .aw-action-list
 		this.renderList(list);
-		new Setting(this.contentEl).addButton((btn) =>
+		this.addButtonsRow().addButton((btn) =>
 			btn.setButtonText("确认").setCta().onClick(() => this.choose())
 		);
 		this.onKeydown = (e) => {
@@ -1058,7 +1078,7 @@ export class TextAreaPrompt extends AwModal {
 		ta.placeholder = this.placeholderText;
 		ta.value = this.initialValue ?? "";
 		ta.focus();
-		new Setting(this.contentEl).addButton((btn) =>
+		this.addButtonsRow().addButton((btn) =>
 			btn.setButtonText(this.submitLabel || "保存").setCta().onClick(async () => {
 				value = ta.value.trim();
 				this.submitted = true;
@@ -1144,7 +1164,7 @@ export class MultiFieldModal extends AwModal {
 				text.onChange((v) => (values[field.key] = v.trim()));
 			});
 		}
-		new Setting(this.contentEl).addButton((btn) =>
+		this.addButtonsRow().addButton((btn) =>
 			btn.setButtonText(this.submitLabel || "保存").setCta().onClick(async () => {
 				this.submitted = true;
 				this.close();
@@ -1189,7 +1209,7 @@ export interface AddCharacterResult {
 /**
  * 添加人物弹窗：单页表单——姓名 + 人物级别（书/卷/章，决定写入哪份《人物.md》）+ 设定字段 + 关系区。
  * 关系区初始为空，点「+ 添加关系」在下方新增一行（关系对象下拉 = 该级别范围内人物优先 + 全书其余人物、关系类型下拉 = 预设类型），
- * 每行可单独删除、可加多行；底部「确定」提交（姓名为空不提交）。关系条目由调用方写入同层级《人物关系.md》。
+ * 每行可单独删除、可加多行；底部「保存／取消」提交（姓名为空不提交、点保存只弹提示不关窗）。关系条目由调用方写入同层级《人物关系.md》。
  */
 export class AddCharacterModal extends AwModal {
 	private submitted = false;
@@ -1257,8 +1277,7 @@ export class AddCharacterModal extends AwModal {
 				this.renderRelations();
 			})
 		);
-		const actions = this.contentEl.createDiv({ cls: "aw-addchar-actions" });
-		actions.createEl("button", { text: "确定", cls: "mod-cta" }).addEventListener("click", () => this.submit());
+		this.addSaveCancelRow(() => this.submit()); // 「保存／取消」（基类共用行；此前只有「确定」＝缺取消入口）
 	}
 
 	/** 关系行列表：对象下拉（本级别范围内人物优先，其余全书人物追加在后）+ 类型下拉 + 删除 */
@@ -1344,7 +1363,7 @@ export interface RelationshipFormInitial {
 /**
  * 人物关系表单弹窗（v0.4.11+）：人物关系面板头部「＋ 关系」＝新增；图视图双击连线＝编辑（同一份表单，代码重用）。
  * 级别（书/卷/章，决定写入哪份《人物关系.md》；编辑态只读）＋两个人物（可下拉选全书已登记角色，也允许手填未登记名字）
- * ＋类型／状态下拉＋描述；写盘由 main.ts 分别走 manager.appendRelationships / md_docs.updateRelationshipBlock。
+ * ＋类型／状态下拉＋描述；底部按钮＝「保存／取消」（两种模式同口径，v0.4.11+）；写盘由 main.ts 分别走 manager.appendRelationships / md_docs.updateRelationshipBlock。
  */
 export class RelationshipModal extends AwModal {
 	private submitted = false;
@@ -1432,9 +1451,7 @@ export class RelationshipModal extends AwModal {
 			ta.setValue(this.desc);
 			ta.onChange((v) => (this.desc = v));
 		});
-		const actions = this.contentEl.createDiv({ cls: "aw-addchar-actions" });
-		actions.createEl("button", { text: "确定", cls: "mod-cta" }).addEventListener("click", () => this.submit());
-		actions.createEl("button", { text: "取消" }).addEventListener("click", () => this.close());
+		this.addSaveCancelRow(() => this.submit()); // 「保存／取消」（基类共用行，编辑与添加两种模式同口径）
 	}
 
 	private submit(): void {
@@ -1533,7 +1550,7 @@ export class CharacterEditModal extends AwModal {
 				t.onChange((v) => (fields[key] = v.trim()));
 			});
 		}
-		const btns = new Setting(this.contentEl).addButton((btn) =>
+		const btns = this.addButtonsRow().addButton((btn) =>
 			btn
 				.setButtonText("保存")
 				.setCta()
@@ -1549,7 +1566,6 @@ export class CharacterEditModal extends AwModal {
 				})
 		);
 		btns.addButton((btn) => btn.setButtonText("取消").onClick(() => this.close()));
-		btns.settingEl.addClass("aw-btns-right");
 	}
 
 	override onClose(): void {
@@ -1643,7 +1659,7 @@ export class MergeCharacterModal extends AwModal {
 		}
 		this.previewEl = this.contentEl.createDiv({ cls: "aw-merge-preview" });
 		this.refreshPreview();
-		const btns = new Setting(this.contentEl).addButton((btn) =>
+		const btns = this.addButtonsRow().addButton((btn) =>
 			btn
 				.setButtonText("合并")
 				.setCta()
@@ -1658,7 +1674,6 @@ export class MergeCharacterModal extends AwModal {
 				})
 		);
 		btns.addButton((btn) => btn.setButtonText("取消").onClick(() => this.close()));
-		btns.settingEl.addClass("aw-btns-right");
 	}
 
 	/** 预览＝按当前口径拼出的条目块（＝落盘时 `formatCharacterBlock` 写进目标文档的内容，一字不差） */
@@ -1721,7 +1736,7 @@ export class SaveReplyModal extends AwModal {
 			this.openTgl = t;
 			t.setValue(true);
 		});
-		new Setting(this.contentEl)
+		this.addButtonsRow()
 			.addButton((b) => {
 				this.saveBtn = b.buttonEl;
 				b.setCta().setButtonText("保存").onClick(() => this.submit());
@@ -1797,7 +1812,7 @@ export class ConfirmModal extends AwModal {
 		this.contentEl.createEl("h3", { text: this.title });
 		const p = this.contentEl.createEl("p");
 		p.setText(this.message);
-		new Setting(this.contentEl)
+		this.addButtonsRow()
 			.addButton((btn) => btn.setButtonText(this.confirmLabel || "确认").setCta().onClick(() => this.do(true)))
 			.addButton((btn) => btn.setButtonText("取消").onClick(() => this.do(false)));
 	}
@@ -1845,7 +1860,7 @@ export class FixRefsReviewModal extends AwModal {
 				box.createDiv({ cls: "aw-fixrefs-pair aw-fixrefs-pair-new" }).appendText(`新：${cut(pair.to)}`);
 			}
 		}
-		new Setting(this.contentEl)
+		this.addButtonsRow()
 			.addButton((btn) => btn.setButtonText(`确认保存（${String(this.chapters.length)} 章）`).setCta().onClick(() => void this.do(true)))
 			.addButton((btn) => btn.setButtonText("取消（全部不落盘）").onClick(() => void this.do(false)));
 	}
@@ -1912,7 +1927,7 @@ export class ExportPromptsSelectModal extends AwModal {
 			}
 		}
 
-		new Setting(contentEl)
+		this.addButtonsRow()
 			.addButton((b) => b.setCta().setButtonText("导出选中").onClick(() => this.submit()))
 			.addButton((b) => b.setButtonText("取消").onClick(() => this.close()));
 	}
@@ -2045,8 +2060,287 @@ const makeMultiSelectRow = (
 };
 
 /**
+ * **写字台式树节点的三个 DOM 件**（v0.4.11+ 抽成共用＝写字台面板与弹窗里的场景树同一观感、样式只有一套
+ * `.aw-st-caret` / `.aw-st-icon`）：⚠️ 展开三角＝**span 不是 button**（核心
+ * `.setting-item … .setting-item-control button:not(.clickable-icon){width:100%}`＋手机版
+ * `.is-phone .modal .setting-item-control button{padding:10px}` 会把弹窗里的按钮拉成整行＝三角没法用 button）。
+ */
+export const addTreeIcon = (parent: HTMLElement, name: string): HTMLElement => {
+	const span = parent.createSpan({ cls: "aw-st-icon" });
+	setIcon(span, name);
+	return span;
+};
+
+/** 展开/折叠三角（▾＝展开、▸＝折叠）＝调用方自己绑 click */
+export const addTreeCaret = (parent: HTMLElement, open: boolean): HTMLElement =>
+	parent.createSpan({ text: open ? "▾" : "▸", cls: "aw-st-caret" });
+
+/**
+ * **浮层「点外部即收」的统一接线**（v0.4.11+，代码重用＝弹窗里的场景树面板与写字台自定义右键菜单共用一份）：
+ * ① 监听用 **`pointerdown`** 而不是 `mousedown`＝触屏（手机/平板）上 mousedown 的合成时机不稳＝「点外面收不掉」（平板用户报告口径）；
+ * ② 捕获阶段＝先于浮层外控件自己的 click（浮层先收、动作照常执行）；
+ * ③ 挂在 `activeDocument`（不是 `document`）＝popout 窗口下也指对文档。返回拆除函数（浮层销毁/重渲染时必须调）。
+ */
+export const attachOutsideClose = (
+	floatEl: HTMLElement,
+	close: () => void,
+	keepOpenEls: readonly HTMLElement[] = [],
+): (() => void) => {
+	const doc = activeDocument;
+	const onDown = (ev: Event): void => {
+		const t = ev.target;
+		if (!(t instanceof Node)) return;
+		if (floatEl.contains(t)) return;
+		for (const keep of keepOpenEls) if (keep.contains(t)) return;
+		close();
+	};
+	doc.addEventListener("pointerdown", onDown, true);
+	return () => doc.removeEventListener("pointerdown", onDown, true);
+};
+
+/** 叶子行的隐形 caret 占位（与真三角同宽＝同层图标/文字严格对齐） */
+export const addTreeCaretPh = (parent: HTMLElement): HTMLElement => parent.createSpan({ cls: "aw-st-caret aw-st-caret-ph" });
+
+/** 候选项（v0.4.11+ 带 `parent`＝可排成树；不带＝平铺一行，建树侧把空/找不到的 parent 当顶层） */
+export interface SceneSelOption {
+	id: string;
+	label: string;
+	parent?: string;
+}
+
+/**
+ * **场景树形选择器**（v0.4.11+ 用户要求＝「父场景那里使用树形展示可用的场景下拉框」「关联场景中也用树形展示」）：
+ * 取代原来的平铺 `<select>`——点按钮弹出**树形面板**（按 `- 父场景：` 关系缩进成层、带搜索框、可展开/折叠），
+ * 两种模式共用同一实现（代码重用）：
+ *  - `single`＝单选（父场景）：面板首行「（无 · 顶层场景）」＝空串；点一行＝选中并关面板；`get()` 取当前值。
+ *  - `multi`＝多选（关联场景）：已选渲染成胶囊（带 ✕），面板点一行＝切换选中、面板不关（连着挑多个）。
+ * 建树/搜索/防环剪枝的唯一口径＝`src/scene_tree.ts`（`flattenSceneTree`＋`sceneDescendantIds`），本函数只管渲染。
+ * 数据里出现父子环（手写 `- 父场景：` 互指）＝该行标红并禁点（`cyclic`）；`excludeSubtreeOf`＝排除自身＋全部子孙。
+ */
+const makeSceneTreePicker = (
+	host: HTMLElement,
+	opts: {
+		mode: "single" | "multi";
+		placeholder: string; // single＝未选时的按钮文案；multi＝补选按钮文案
+		noneLabel?: string; // single＝面板首行「（无 · 顶层场景）」的文案（不传＝没有这一项）
+		options: readonly SceneSelOption[];
+		initialIds: readonly string[];
+		excludeIds?: ReadonlySet<string>;
+		excludeSubtreeOf?: string; // 便捷口＝排除该 id 及其全部子孙（父场景候选防环）
+		showChips?: boolean; // multi＝是否渲染已选胶囊（默认 true；调用方自己已用行式展示已选时传 false＝不重复显示）
+		onChange?: () => void;
+	}
+): { get: () => string[]; render: () => void } => {
+	const selected: string[] = [...new Set(opts.initialIds)];
+	const labels = new Map<string, string>();
+	for (const o of opts.options) if (!labels.has(o.id)) labels.set(o.id, o.label || o.id);
+	const excl = new Set<string>(opts.excludeIds ?? []);
+	if (opts.excludeSubtreeOf) for (const id of sceneDescendantIds(opts.options, opts.excludeSubtreeOf)) excl.add(id);
+	// 建树与搜索＝唯一口径 `flattenSceneTree`（候选**全量**传入、被排除的整支剪掉＝保留其余节点的层级，不让被剪节点的子节点掉成根）
+	const flat = (q: string): SceneTreeRow[] => flattenSceneTree(opts.options, { excludeIds: excl, query: q });
+	const rowsAll = flat("");
+	// 默认展开：小树＝全展开（一上来就能看出层级）；大树＝只把**当前值所在的那条支**展开（其余先折叠）
+	const expanded = new Set<string>();
+	if (rowsAll.length <= 120) for (const r of rowsAll) if (r.hasKids) expanded.add(r.id);
+	else
+		for (const id of selected) {
+			const r = rowsAll.find((x) => x.id === id);
+			if (r) for (const a of r.ancIds) expanded.add(a);
+		}
+	let query = "";
+	let open = false;
+	let panel: HTMLDivElement | null = null;
+	let detachOutside: (() => void) | null = null;
+
+	const close = (): void => {
+		open = false;
+		panel?.remove();
+		panel = null;
+		detachOutside?.(); // 摘掉「点外部即收」的 document 级监听（共用件 attachOutsideClose）
+		detachOutside = null;
+	};
+	const render = (): void => {
+		if (!open) return;
+		panel?.empty();
+		if (!panel) return;
+		const search = panel.createEl("input", { type: "search", cls: "aw-tree-search", placeholder: "搜索场景…" });
+		search.value = query;
+		search.addEventListener("input", () => {
+			query = search.value;
+			render();
+			search.focus(); // 重渲染后把焦点还给搜索框（连着打字）
+		});
+		const list = panel.createDiv({ cls: "aw-tree-list" });
+		if (opts.mode === "single" && opts.noneLabel) {
+			const r = list.createDiv({ cls: "aw-tree-row is-none" });
+			addTreeCaretPh(r); // 与树行同宽的占位＝「（无 · 顶层场景）」的文字与下面各行严格对齐
+			addTreeIcon(r, "layers");
+			r.createSpan({ text: opts.noneLabel, cls: "aw-tree-name" });
+			if (!selected.length) r.addClass("is-selected");
+			r.addEventListener("click", () => pick(""));
+		}
+		const rows = flat(query);
+		if (!rows.length) {
+			list.createDiv({ text: "（没有匹配的场景）", cls: "aw-dim aw-ev-msel-empty" });
+			return;
+		}
+		const cap = 300; // 大书兜底：一次最多渲染 300 行（超出提示用搜索过滤）
+		// 折叠口径＝**两个集合、不能合并**：`collapsedIds`＝这行有子场景但当前折叠（**这行本身仍要显示**＝
+		// 合并成一个集合会把折叠行自己也跳过＝▸ 再也点不到＝用户报告的「折叠后无法展开」）；
+		// `hiddenByCollapse`＝某层祖先被折叠＝这行不显示。祖先＝DFS 序里栈顶那个 depth 恰小 1 的行（depth 连续无空洞）
+		const collapsedIds = new Set<string>();
+		const hiddenByCollapse = new Set<string>();
+		const stack: SceneTreeRow[] = [];
+		const searching = query.trim().length > 0;
+		for (const row of rows) {
+			while (stack.length && stack[stack.length - 1].depth >= row.depth) stack.pop();
+			const parentRow = stack[stack.length - 1];
+			if (parentRow && (collapsedIds.has(parentRow.id) || hiddenByCollapse.has(parentRow.id))) hiddenByCollapse.add(row.id);
+			stack.push(row);
+			if (!searching && row.hasKids && !expanded.has(row.id)) collapsedIds.add(row.id); // 搜索时忽略折叠＝命中项必须看得见
+		}
+		// 层级＝**按层嵌套的容器**（复用写字台面板的 `.aw-st-kids`＝缩进＋左侧竖指示线）＝与写字台那棵树同一观感；
+		// 原来的假缩进（扁平行 ＋ `padding-left:depth*12px`）没有包含关系的视觉＝用户反馈「看不出来是树」
+		const boxes: HTMLElement[] = [list]; // boxes[d]＝depth d 的行往哪儿挂；depth 变深＝在上一层容器里再建一个 `.aw-st-kids`
+		let drawn = 0;
+		for (const row of rows) {
+			if (drawn >= cap) break;
+			if (!searching && hiddenByCollapse.has(row.id)) continue;
+			while (boxes.length > row.depth + 1) boxes.pop();
+			while (boxes.length < row.depth + 1) boxes.push(boxes[boxes.length - 1].createDiv({ cls: "aw-st-kids aw-tree-kids" }));
+			drawn++;
+			const line = boxes[boxes.length - 1].createDiv({ cls: "aw-tree-row" });
+			if (row.path.length) setTooltip(line, `${row.path.join(" / ")} / ${row.label}`); // 用 setTooltip 而不是 title＝平板／手机上原生 title 永远不显示（点按 Tip 由 touch_tips 通道弹出）
+			// 展开三角＋前导图标＝写字台面板同款（`.aw-st-caret`/`.aw-st-icon`＝共用件 `addTreeCaret`/`addTreeIcon`）
+			// ＝用户要求「和写字台面板上的树形相似」；三角＝**span 不是 button**（核心会把 control 里的按钮拉成整行）
+			const isOpen = searching || expanded.has(row.id);
+			if (row.hasKids) {
+				const caret = addTreeCaret(line, isOpen);
+				caret.addClass("aw-tree-toggle");
+				if (searching) caret.addClass("is-off"); // 搜索态＝层级全展开、三角只做视觉（写字台同款 `.aw-st-caret.is-off`＝置灰不出手型）
+				else {
+					caret.setAttribute("aria-label", `${expanded.has(row.id) ? "折叠" : "展开"}「${row.label}」的子场景`);
+					caret.addEventListener("click", (ev) => {
+						ev.stopPropagation();
+						if (expanded.has(row.id)) expanded.delete(row.id);
+						else expanded.add(row.id);
+						render();
+					});
+				}
+			} else addTreeCaretPh(line).addClass("aw-tree-toggle");
+			addTreeIcon(line, row.hasKids ? (isOpen ? "folder-open" : "folder") : "map"); // 有子场景＝大场景（文件夹）／叶子＝普通场景
+			line.createSpan({ text: row.label, cls: "aw-tree-name" });
+			if (row.kidCount > 0) line.createSpan({ text: String(row.kidCount), cls: "aw-tree-kidcount", title: `${row.kidCount} 个子场景` });
+			const picked = selected.includes(row.id);
+			if (picked) {
+				line.createSpan({ text: "✓", cls: "aw-tree-check" }); // multi＝已勾选；single＝当前值（配合 is-selected 整行反色）
+				line.addClass(opts.mode === "single" ? "is-selected" : "is-picked");
+			}
+			if (row.cyclic) {
+				line.addClass("is-cyclic");
+				line.title = "候选数据里父链成环（`- 父场景：` 互相引用）＝不能选";
+				continue; // 环上的行不能选＝点了只会写出成环的父链
+			}
+			line.addEventListener("click", () => pick(row.id));
+		}
+		if (query.trim()) list.createDiv({ text: `匹配 ${String(rows.length)} 条／共 ${String(rowsAll.length)} 条候选`, cls: "aw-dim aw-ev-msel-empty" });
+		// 只有**真的撞到渲染上限**才提示＝折叠掉的行不算「未显示」（否则只要树里有折叠的分支就会出现这句误导的话）
+		if (drawn >= cap && rows.length > drawn)
+			list.createDiv({ text: `仅显示前 ${String(drawn)} 条（共 ${String(rows.length)} 条）＝输入关键字过滤`, cls: "aw-dim aw-ev-msel-empty" });
+	};
+	const pick = (id: string): void => {
+		if (id && excl.has(id)) return; // 被排除的（自身与子孙＝防环）不进选中
+		if (opts.mode === "single") {
+			if (id) selected.splice(0, selected.length, id);
+			else selected.length = 0; // 「（无 · 顶层场景）」＝清空＝写盘删掉 `- 父场景：` 行
+			close();
+			draw();
+			opts.onChange?.();
+			return;
+		}
+		const i = selected.indexOf(id);
+		if (i >= 0) selected.splice(i, 1);
+		else selected.push(id);
+		draw(); // 面板开着＝重画树（✓ 跟着变）；关着＝只更新按钮/胶囊
+		opts.onChange?.();
+	};
+	// 常驻节点＝触发按钮＋（multi）已选胶囊容器＝**跨重渲染存活**：调用方 `render()` 只换它们的内容，
+	// 正在打开的面板也重新挂回按钮后面＝不会出现「按钮 ref 失效／面板被甩出 DOM」
+	const btn: HTMLButtonElement = host.createEl("button", { text: opts.placeholder, cls: "aw-tree-btn" });
+	const chipsEl: HTMLDivElement | null = opts.mode === "multi" && opts.showChips !== false ? host.createDiv({ cls: "aw-ev-msel-chips" }) : null;
+	const drawBtn = (): void => {
+		if (opts.mode !== "single") return;
+		const cur = selected[0];
+		btn.textContent = cur ? labels.get(cur) ?? cur : opts.placeholder;
+		btn.title = cur ? `${cur}（写盘值）` : opts.placeholder;
+		btn.classList.toggle("is-empty", !cur);
+	};
+	const openPanel = (): void => {
+		if (!btn.isConnected) return; // 宿主被调用方摘掉＝不在文档里就别挂面板
+		open = true;
+		const el = host.createDiv({ cls: "aw-tree-panel" });
+		panel = el;
+		// 摆位＝**弹窗才是裁切边界**（核心 `.modal-content{overflow:hidden}`＋`.modal{max-height:85vh}`）＝按视口算会误判：
+		// 下方放不下＝翻到宿主上方（`.is-up`），并按那一侧可用高给列表封顶（`--aw-tree-list-max`）＝
+		// 行绝不被裁进「看不见也滚不到」的区域（平板横屏弹窗只有 85vh 高＝最容易撞，v0.4.11+ 用户报「弹窗里下拉被切」）
+		const bound = el.closest(".modal-content") ?? activeDocument.body;
+		const place = treePanelPlacement(host.getBoundingClientRect(), bound.getBoundingClientRect());
+		el.toggleClass("is-up", place.flipUp);
+		el.style.setProperty("--aw-tree-list-max", `${String(place.listMaxH)}px`);
+		render();
+		panel.addEventListener("keydown", (e) => {
+			if (e.key === "Escape") {
+				e.stopPropagation(); // 面板开着＝Esc 先收面板，不顺手关掉整个弹窗
+				close();
+			}
+		});
+		detachOutside = attachOutsideClose(el, close, [btn]); // 「点外部即收」＝共用件（pointerdown＝触屏也收得来）
+	};
+	btn.addEventListener("click", (ev) => {
+		ev.stopPropagation();
+		if (open) close();
+		else openPanel();
+	});
+	const drawChips = (): void => {
+		if (!chipsEl) return;
+		chipsEl.empty();
+		if (!selected.length) {
+			chipsEl.hide();
+			return;
+		}
+		chipsEl.show();
+		for (const v of selected) {
+			const label = labels.get(v) ?? v;
+			const chip = chipsEl.createSpan({ cls: "aw-ev-msel-chip" });
+			chip.title = `${v}（写盘值）`;
+			chip.createSpan({ text: label, cls: "aw-ev-msel-val" });
+			chip
+				.createEl("button", { text: "✕", cls: "aw-addchar-relrm aw-ev-msel-chipx", attr: { "aria-label": `移除「${label}」` } })
+				.addEventListener("click", () => {
+					const i = selected.indexOf(v);
+					if (i >= 0) selected.splice(i, 1);
+					draw();
+					opts.onChange?.();
+				});
+		}
+	};
+	const draw = (): void => {
+		drawBtn();
+		drawChips();
+		if (open) {
+			close(); // 必须先 close＝顺手摘掉 document 上的 outside 监听（否则每次重渲染都会再挂一条＝监听泄漏）
+			openPanel();
+		}
+	};
+	draw();
+	return { get: () => [...selected], render: draw };
+};
+
+/**
  * **带说明的关联行多选**（v0.4.9+ 用户要求，SceneEditModal「关联场景」用）：每条已选关联**独占一行**
- * ＝场景名 ＋「联通性说明」输入框（写在名字后面）＋**删除按钮在该行最后**；补选下拉仍单独一行（候选＝options 去已选）。
+ * ＝场景名 ＋「联通性说明」输入框（写在名字后面）＋**删除按钮在该行最后**。
+ * v0.4.11+：补选控件＝**树形下拉**（`makeSceneTreePicker` multi 模式，用户要求＝关联场景也按场景层级树展示候选），
+ * 不再用平铺 `<select>`；已选仍按行展示（说明输入框需要行宽），补选时看树。
  * 说明即写盘的 `- 关联：名（说明）` 括号段＝面板连线中点上的文字。
  * 返回 get()＝`[{id, note}]`（保持加入顺序、去重；note 已 trim）。
  */
@@ -2054,9 +2348,9 @@ const makeRelNoteRowsRow = (
 	setting: Setting,
 	placeholder: string,
 	emptyHint: string,
-	options: readonly { id: string; label: string }[],
+	options: readonly SceneSelOption[],
 	initial: readonly { id: string; note?: string }[],
-	notePlaceholder: string,
+	notePlaceholder: string
 ): (() => Array<{ id: string; note: string }>) => {
 	setting.settingEl.addClass("aw-ev-msel-row");
 	const el = setting.controlEl.createDiv({ cls: "aw-ev-msel aw-rel-rows" });
@@ -2065,7 +2359,21 @@ const makeRelNoteRowsRow = (
 		if (!it.id || selected.some((s) => s.id === it.id)) continue;
 		selected.push({ id: it.id, note: (it.note ?? "").trim() });
 	}
-	const render = (): void => {
+	const addHost = el.createDiv({ cls: "aw-rel-addhost" }); // 补选控件＝常驻子宿主（el.empty() 不会连它一起清掉＝树面板开着也不会被重渲染打断）
+	const picker = makeSceneTreePicker(addHost, {
+		mode: "multi",
+		placeholder,
+		options,
+		initialIds: selected.map((s) => s.id),
+		showChips: false, // 已关联的场景已经在下面按行展示（带说明输入框），这里不再重复成胶囊
+		onChange: () => {
+			const ids = picker.get();
+			for (const id of ids) if (!selected.some((s) => s.id === id)) selected.push({ id, note: "" });
+			for (const s of [...selected]) if (!ids.includes(s.id)) selected.splice(selected.indexOf(s), 1);
+			renderRows();
+		},
+	});
+	const renderRows = (): void => {
 		el.empty();
 		for (const item of selected) {
 			const name = options.find((o) => o.id === item.id)?.label ?? item.id; // 候选里没有（改名/快照过期）＝原样显示 id，不让它凭空消失
@@ -2078,24 +2386,14 @@ const makeRelNoteRowsRow = (
 			row.createEl("button", { text: "✕", cls: "aw-addchar-relrm aw-rel-row-x", attr: { "aria-label": `移除关联「${name}」` } }).addEventListener("click", () => {
 				const i = selected.findIndex((s) => s.id === item.id);
 				if (i >= 0) selected.splice(i, 1);
-				render();
+				renderRows();
 			});
 		}
-		const remaining = options.filter((o) => !selected.some((s) => s.id === o.id));
-		if (!remaining.length) {
-			if (emptyHint) el.createDiv({ text: emptyHint, cls: "aw-dim aw-ev-msel-empty" });
-			return;
-		}
-		const drop = el.createEl("select", { cls: "dropdown aw-addchar-sel aw-rel-row-add" });
-		drop.createEl("option", { text: placeholder, value: "" });
-		for (const o of remaining) drop.createEl("option", { text: o.label, value: o.id });
-		drop.addEventListener("change", () => {
-			if (!drop.value) return;
-			selected.push({ id: drop.value, note: "" });
-			render();
-		});
+		if (!options.length && emptyHint) el.createDiv({ text: emptyHint, cls: "aw-dim aw-ev-msel-empty" }); // 只有「一个候选都没有」时才提示（已选不再占用候选位）
+		el.appendChild(addHost); // 补选控件永远排在已选行后面（addHost 是常驻节点＝树面板不会被 empty 掉）
+		picker.render(); // 行增删后把树里的 ✓ 跟上行列表（面板开着＝顺手重画＝连着挑多个时看得见刚选中的）
 	};
-	render();
+	renderRows();
 	return () => selected.map((s) => ({ id: s.id, note: s.note.trim() }));
 };
 
@@ -2181,7 +2479,7 @@ export class EventEditModal extends AwModal {
 			ta.onChange((v) => (impact = v));
 		});
 		const getRelated = makeMultiSelectRow(new Setting(this.contentEl).setName("关联"), "＋ 选择关联事件…", this.relatedOptions.length ? "（既有事件已全部选用）" : "（暂无其它既有事件可关联）", this.relatedOptions, this.initialValues?.related ?? []); // 下拉多选（候选＝面板既有事件名，已排除自身）
-		const btns = new Setting(this.contentEl).addButton((btn) =>
+		const btns = this.addButtonsRow().addButton((btn) =>
 			btn.setButtonText("保存").setCta().onClick(async () => {
 				if (!parseTimelineTime(timeText)) { // 时间点必填且格式必须可解析（年 / 年-月 / 年-月-日）：非法则内联报错、不关闭弹窗
 					timeErr.setText(`时间点无效：「${timeText || "（空）"}」无法解析，请用 120 / 120-06 / 120-06-15 这类写法`);
@@ -2194,7 +2492,6 @@ export class EventEditModal extends AwModal {
 			})
 		);
 		btns.addButton((btn) => btn.setButtonText("取消").onClick(() => this.close())); // onClose 未提交时触发 onCancel
-		btns.settingEl.addClass("aw-btns-right"); // 保存/取消成组贴右（同 SkillEditModal）
 	}
 
 	override onClose(): void {
@@ -2225,7 +2522,7 @@ export interface SceneEditResult {
 /**
  * 场景编辑弹窗（场景面板「新增/编辑场景」共用）：**级别下拉（v0.4.9+，仅新建时出现＝弹窗第一个字段）**＝选写入哪一层《场景.md》
  * 选项文字只有「书级／卷级／章级」三词（按此顺序排，默认选中卷级；候选由调用方按当前激活卷章算好传入、**这一行不带说明文字**＝用户要求），编辑态只给 `label`＝**该行的值＝场景所在位置**（层级 · 来源《场景.md》路径，禁用下拉、不换层）→
- * **父场景下拉**（v0.4.9+ 用户要求＝排在场景名上面）→场景名（＝显示名＝`## id` 块锚；**编辑态也可改**——改名由调用方 renameSceneBlock 换块锚＋renameSceneRefs 同步其它场景的 `- 父场景：`/`- 关联：` 引用）→角色（下拉多选，候选＝三层《人物.md》）→**关联场景（v0.4.9+ 行式：每条独占一行＝场景名＋联通性说明输入框＋行末删除按钮，补选下拉单独一行）**→**地形下拉**（v0.4.8+：候选＝md_docs 内置地形色板名＋自定义旧值，写 `- 地形：`）→**事件（v0.4.8+ 多选：候选＝该书各层《时间线.md》事件名、按所在文件分组为 `<optgroup>` 树状分类，写 `- 事件：`）**→**描述（多行 rows5，放全部字段最下方）**。
+ * **父场景＝树形选择器**（v0.4.9+ 排在场景名上面＝层级先定再写名字；v0.4.11+ 用户要求＝**树形展示可用场景的下拉框**＝`makeSceneTreePicker` single 模式：按 `- 父场景：` 缩进成层＋搜索框＋展开/折叠，首行「（无 · 顶层场景）」＝空串）→场景名（＝显示名＝`## id` 块锚；**编辑态也可改**——改名由调用方 renameSceneBlock 换块锚＋renameSceneRefs 同步其它场景的 `- 父场景：`/`- 关联：` 引用）→角色（下拉多选，候选＝三层《人物.md》）→**关联场景（v0.4.9+ 行式：每条独占一行＝场景名＋联通性说明输入框＋行末删除按钮；v0.4.11+ 补选控件也换成树形选择器＝`makeSceneTreePicker` multi 模式，已选不再重复成胶囊）**→**地形下拉**（v0.4.8+：候选＝md_docs 内置地形色板名＋自定义旧值，写 `- 地形：`）→**事件（v0.4.8+ 多选：候选＝该书各层《时间线.md》事件名、按所在文件分组为 `<optgroup>` 树状分类，写 `- 事件：`）**→**描述（多行 rows5，放全部字段最下方）**。
  * v0.4.8+：**「备注」「正文」输入已删**——弹窗不再提交这两字段，文档里已有的 `- 备注：` 行与 ```text 正文围栏写回时**未触碰原样保留**。
  * initialValues 预填（编辑＝条目现值；新增＝空）；名称非法（空 / 含 `\\ / : * ? " < > |`）内联报错、不关闭弹窗；关闭弹窗即放弃（onCancel）。
  */
@@ -2238,8 +2535,8 @@ export class SceneEditModal extends AwModal {
 		private editing: { scene_id: string } | null,
 		private initialValues: Partial<SceneEditResult> | undefined,
 		private charOptions: readonly string[],
-		private parentOptions: readonly { id: string; label: string }[] = [], // 父场景候选（调用方给：全部场景去自身与后代防环）
-		private sceneOptions: readonly { id: string; label: string }[] = [], // 关联场景候选（v0.4.7+：全部场景去自身；label 展示、id 为选中值与写盘值）
+		private parentOptions: readonly SceneSelOption[] = [], // 父场景候选（调用方给：全部场景去自身与后代防环；v0.4.11+ 带 parent＝弹窗里排成树）
+		private sceneOptions: readonly SceneSelOption[] = [], // 关联场景候选（v0.4.7+：全部场景去自身；label 展示、id 为选中值与写盘值；v0.4.11+ 同样排成树）
 		private eventOptions: readonly MultiSelGroup[] = [], // v0.4.8+ 时间线事件候选：按所在《时间线.md》分组（下拉＝optgroup 树状分类；选中值＝事件名）
 		private level: { options?: readonly { value: string; label: string }[]; value?: string; label?: string } | undefined = undefined, // v0.4.9+ 级别：`options`＋`value`＝弹窗最上方「级别」下拉（默认值＝value）；只给 `label`＝只读行（值＝场景所在位置、不换层）。（名字不叫 scope＝基类 Modal 已有公开 `scope`；SceneEditResult.scope 才是提交字段）
 		private onSubmit: (result: SceneEditResult) => void | Promise<void>,
@@ -2278,11 +2575,16 @@ export class SceneEditModal extends AwModal {
 		let parent = this.initialValues?.parent ?? ""; // v0.4.7+ 大场景包含小场景
 		let terrain = this.initialValues?.terrain ?? ""; // v0.4.8+ 地形下拉（空＝不着色/删行）
 		const ed = this.editing; // 收窄一次（回调闭包里窄化不保留）
-		new Setting(this.contentEl).setName("父场景").addDropdown((d) => { // v0.4.7+ 大场景包含小场景：写 `- 父场景：<id>`（选「无」＝删除该行、升为顶层）；v0.4.9+ 用户要求＝**排在场景名上面**（层级先定，再写名字）
-			d.addOption("", "（无 · 顶层场景）");
-			for (const o of this.parentOptions) d.addOption(o.id, o.label);
-			d.setValue(this.initialValues?.parent ?? "");
-			d.onChange((v) => (parent = v));
+		const parentSetting = new Setting(this.contentEl).setName("父场景"); // v0.4.7+ 大场景包含小场景：写 `- 父场景：<id>`（选「无」＝删除该行、升为顶层）；v0.4.9+ 用户要求＝**排在场景名上面**（层级先定，再写名字）
+		parentSetting.settingEl.addClass("aw-ev-msel-row"); // 控件列吃满剩余宽＝与角色/关联场景同标签列对齐
+		const parentPicker = makeSceneTreePicker(parentSetting.controlEl, {
+			mode: "single", // v0.4.11+ 用户要求＝「父场景那里使用树形展示可用的场景下拉框」：树形面板按 `- 父场景：` 缩进成层＋搜索框
+			placeholder: "（无 · 顶层场景）",
+			noneLabel: "（无 · 顶层场景）",
+			options: this.parentOptions,
+			initialIds: parent ? [parent] : [],
+			excludeSubtreeOf: this.editing?.scene_id, // 编辑态＝不能把自己或自己的子孙当父（防环；与 main.ts sceneParentOptions 双保险）
+			onChange: () => (parent = parentPicker.get()[0] ?? ""),
 		});
 		new Setting(this.contentEl).setName("场景名").addText((t) => { // v0.4.8+：编辑态也可改名（＝`## id` 块锚改名）——调用方 renameSceneBlock＋renameSceneRefs 同步全部 `- 父场景：`/`- 关联：` 引用；非法字符内联报错
 			if (ed) t.setValue(ed.scene_id);
@@ -2309,7 +2611,7 @@ export class SceneEditModal extends AwModal {
 			ta.inputEl.rows = 5;
 			ta.onChange((v) => (description = v));
 		});
-		const btns = new Setting(this.contentEl).addButton((btn) =>
+		const btns = this.addButtonsRow().addButton((btn) =>
 			btn.setButtonText("保存").setCta().onClick(async () => {
 				if (!sceneId || /[\\/:*?"<>|]/.test(sceneId)) {
 					nameErr?.setText(sceneId ? `场景名无效：「${sceneId}」不能包含 \\ / : * ? " < > |` : "场景名不能为空");
@@ -2322,7 +2624,6 @@ export class SceneEditModal extends AwModal {
 			})
 		);
 		btns.addButton((btn) => btn.setButtonText("取消").onClick(() => this.close()));
-		btns.settingEl.addClass("aw-btns-right");
 	}
 
 	override onClose(): void {
@@ -2398,7 +2699,7 @@ export class SkillEditModal extends AwModal {
 			ta.inputEl.rows = 16;
 			ta.onChange((v) => (content = v));
 		});
-		const btns = new Setting(this.contentEl).addButton((btn) =>
+		const btns = this.addButtonsRow().addButton((btn) =>
 			btn.setButtonText("保存").setCta().onClick(async () => {
 				if (!ed && (!name || /[\\/:*?"<>|]/.test(name) || name.toLowerCase().endsWith(".md"))) {
 					nameErr?.setText(name ? `Skill 名称无效：「${name}」不能包含 \\ / : * ? " < > | 或以 .md 结尾` : "Skill 名称不能为空");
@@ -2411,7 +2712,6 @@ export class SkillEditModal extends AwModal {
 			})
 		);
 		btns.addButton((btn) => btn.setButtonText("取消").onClick(() => this.close())); // onClose 未提交时触发 onCancel
-		btns.settingEl.addClass("aw-btns-right"); // 保存/取消成组贴右（aw-form-compact 默认每钮 margin-left:auto，双钮会把空档平分拆散）
 	}
 
 	override onClose(): void {
@@ -2465,7 +2765,7 @@ export class BookSkillPhaseModal extends AwModal {
 			btn.onclick = () => { if (activeTab !== idx) showTab(idx); };
 		});
 		showTab(0);
-		const btns = new Setting(this.contentEl).addButton((btn) =>
+		const btns = this.addButtonsRow().addButton((btn) =>
 			btn.setButtonText("保存").setCta().onClick(async () => {
 				this.submitted = true;
 				const out: Partial<Record<BookSkillPhase, string[]>> = {};
@@ -2478,7 +2778,6 @@ export class BookSkillPhaseModal extends AwModal {
 			})
 		);
 		btns.addButton((btn) => btn.setButtonText("取消").onClick(() => this.close())); // onClose 未提交时触发 onCancel
-		btns.settingEl.addClass("aw-btns-right"); // 保存/取消成组贴右（同 SkillEditModal）
 	}
 
 	override onClose(): void {
@@ -2544,11 +2843,10 @@ export class InspirationKitModal extends AwModal {
 		});
 		this.listEl = this.contentEl.createDiv({ cls: "aw-action-list aw-insp-list" });
 		this.renderList();
-		const btns = new Setting(this.contentEl)
+		this.addButtonsRow()
 			.addButton((b) => b.setButtonText("新增灵感").setCta().onClick(() => void this.run(() => this.h.newBlock(), true)))
 			.addButton((b) => b.setButtonText("打开灵感文件").onClick(() => void this.run(() => this.h.openDoc(), true)))
 			.addButton((b) => b.setButtonText("编辑灵感模板").onClick(() => void this.run(() => this.h.editTemplate(), true)));
-		btns.settingEl.addClass("aw-btns-right");
 	}
 
 	private filtered(): InspirationBlock[] {
@@ -2618,8 +2916,8 @@ export class AwGuideModal extends AwModal {
 	onOpen(): void {
 		this.contentEl.empty();
 		this.contentEl.createEl("h3", { text: this.opts.title });
-		this.contentEl.createEl("p", { cls: "aw-prompt-hint", text: this.opts.body });
-		const btns = new Setting(this.contentEl);
+		this.contentEl.createDiv({ cls: "aw-prompt-hint", text: this.opts.body }); // 与其余弹窗同款提示节点（div＋.aw-prompt-hint，pre-line 多行）
+		const btns = this.addButtonsRow();
 		for (const a of this.opts.actions) {
 			btns.addButton((b) => {
 				b.setButtonText(a.label).onClick(() => {

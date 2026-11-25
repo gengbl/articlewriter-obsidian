@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { clampNum, fitZoomTo, viewPointToContent, zoomAtPointView } from "./panel_canvas";
+import { clampNum, fitZoomTo, pinchNextZoom, viewPointToContent, zoomAtPointView } from "./panel_canvas";
 
 // v0.4.9+ 「首次打开自动适应全图」与「以鼠标为中心缩放」共用的换算口径（纯算法侧，DOM 侧靠同一函数）
 
@@ -129,4 +129,14 @@ void test("viewPointToContent：滚动与虚拟平移都补偿（负 pan／大�
 	assert.deepEqual(viewPointToContent(v, 50, 50), { x: (300 + 50 + 400) / 1.5, y: (120 + 50 - 80) / 1.5 });
 	const bad = viewPointToContent({ scrollLeft: 10, scrollTop: 10, panX: 0, panY: 0, zoom: 0 }, 20, 20);
 	assert.deepEqual(bad, { x: 30, y: 30 }, "zoom=0＝按 1 算（不出现 Infinity）");
+});
+
+// ---------- v0.4.11+ pinchNextZoom（手机端双指捏合＝一步倍率推进，DOM 侧靠同一函数） ----------
+
+void test("pinchNextZoom：倍率＝当前×两指距离比；夹进上下限（捏过头不会无限放大/缩没）", () => {
+	assert.equal(pinchNextZoom(1, 1.25, 0.4, 3), 1.25); // 两指拉开 25% ＝放大一档
+	assert.equal(pinchNextZoom(2, 0.5, 0.4, 3), 1); // 两指收拢一半＝倍率减半
+	assert.equal(pinchNextZoom(2.8, 4, 0.4, 3), 3); // 拉过头＝钳到上限 300%
+	assert.equal(pinchNextZoom(0.5, 0.1, 0.4, 3), 0.4); // 捏过头＝钳到下限 40%
+	assert.equal(pinchNextZoom(1.5, 1, 0.4, 3), 1.5); // 距离不变＝倍率不动
 });

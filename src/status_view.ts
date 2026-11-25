@@ -1,4 +1,5 @@
-import { ItemView, TFile, WorkspaceLeaf, setIcon } from "obsidian";
+import { ItemView, TFile, WorkspaceLeaf } from "obsidian"; // activeDocument（＝当前活动文档，popout 窗下才是 document）是 obsidian.d.ts 的全局声明＝直接引用
+import { addTreeCaretPh, addTreeIcon, attachOutsideClose } from "./modals"; // v0.4.11+：树节点前导图标／隐形 caret 占位＋「点外部即收」共用件＝与弹窗里的场景树同一套（modals 不 import 本文件＝无循环依赖）
 import { formatLocalDateTime } from "./story_types";
 import { PROMPT_DOCS_CHAPTER, PROMPT_DOCS_ROOT, PROMPT_DOCS_VOLUME } from "./prompts";
 import { INSPIRATION_FOLDER_NAME } from "./inspiration"; // v0.4.3+：「案头资料/灵感」文件夹行的「灵感工具包…」入口（inspiration.ts 纯数据模块）
@@ -209,9 +210,7 @@ export class StatusView extends ItemView {
 	/** 最近一次成功拉取的快照：开合是纯展示态，优先用它本地重渲染、不再读盘（getData 要逐章统计字数，手机上明显卡顿） */
 	private lastSnap: StatusSnapshot | null = null;
 	private menuEl: HTMLElement | null = null;
-	private docMouseHandler = (e: Event): void => {
-		if (this.menuEl && !this.menuEl.contains(e.target as Node)) this.closeMenu();
-	};
+	private menuDetach: (() => void) | null = null; // 「点外部即收」的拆除句柄（共用件 attachOutsideClose＝pointerdown＋activeDocument）
 	private escKeyHandler = (e: KeyboardEvent): void => {
 		if (e.key === "Escape") this.closeMenu();
 	};
@@ -266,14 +265,15 @@ export class StatusView extends ItemView {
 		});
 	}
 
-	/** 树节点前导图标（v0.4.3+）：统一挂 .aw-st-icon 容器（尺寸/对齐见 styles.css）；SVG 颜色继承所在行文字色（v0.4.3+ 统一着色口径、全树天然一种颜色） */
+	/** 树节点前导图标（v0.4.3+）：统一挂 .aw-st-icon 容器（尺寸/对齐见 styles.css）；SVG 颜色继承所在行文字色（v0.4.3+ 统一着色口径、全树天然一种颜色）。
+	 *  v0.4.11+ 实现抽到共用件 `addTreeIcon`（modals.ts）＝本面板与弹窗里的场景树同一套 DOM/样式 */
 	private addIcon(parent: HTMLElement, name: string): void {
-		setIcon(parent.createSpan({ cls: "aw-st-icon" }), name);
+		addTreeIcon(parent, name);
 	}
 
-	/** 叶子行（无子节点）的隐形 caret 占位（v0.4.3+）：占与真 caret 完全相同的盒子（宽 1em+0.35em），使同层「有子节点」与「无子节点」节点的前导图标/文字严格对齐（典型：案头资料组文件行 vs 文件夹行） */
+	/** 叶子行（无子节点）的隐形 caret 占位（v0.4.3+）：占与真 caret 完全相同的盒子（宽 1em+0.35em），使同层「有子节点」与「无子节点」节点的前导图标/文字严格对齐（典型：案头资料组文件行 vs 文件夹行）；v0.4.11+ 走共用件 `addTreeCaretPh` */
 	private addCaretPh(parent: HTMLElement): void {
-		parent.createSpan({ cls: "aw-st-caret aw-st-caret-ph" });
+		addTreeCaretPh(parent);
 	}
 
 	/** 某目录下「新建」类右键项（标签不带位置提示；文章级与章节级之间用横线隔开；不含任何删除——删除只挂在被点中的条目自身）。volId=该条目所在卷（新建章节落该卷；缺省走当前卷/书根） */
@@ -887,7 +887,7 @@ export class StatusView extends ItemView {
 		if (!items.length) return;
 		this.closeMenu();
 		e.preventDefault();
-		const menu = document.body.createDiv({ cls: "aw-st-menu" });
+		const menu = activeDocument.body.createDiv({ cls: "aw-st-menu" });
 		for (const it of items) {
 			if ("sep" in it) {
 				menu.createDiv({ cls: "aw-st-menu-sep" });
@@ -903,16 +903,17 @@ export class StatusView extends ItemView {
 		menu.style.left = `${Math.max(8, Math.min(e.clientX, window.innerWidth - menu.offsetWidth - 8))}px`;
 		menu.style.top = `${Math.max(8, Math.min(e.clientY, window.innerHeight - menu.offsetHeight - 8))}px`;
 		this.menuEl = menu;
-		document.addEventListener("mousedown", this.docMouseHandler, true);
-		document.addEventListener("keydown", this.escKeyHandler, true);
+		this.menuDetach = attachOutsideClose(menu, () => this.closeMenu()); // pointerdown（捕获）＋activeDocument＝触屏也收得来（共用件，见 modals.ts）
+		activeDocument.addEventListener("keydown", this.escKeyHandler, true);
 	}
 
 	private closeMenu(): void {
 		if (!this.menuEl) return;
 		this.menuEl.remove();
 		this.menuEl = null;
-		document.removeEventListener("mousedown", this.docMouseHandler, true);
-		document.removeEventListener("keydown", this.escKeyHandler, true);
+		this.menuDetach?.();
+		this.menuDetach = null;
+		activeDocument.removeEventListener("keydown", this.escKeyHandler, true);
 	}
 
 	private async doSwitchStory(name: string): Promise<void> {
